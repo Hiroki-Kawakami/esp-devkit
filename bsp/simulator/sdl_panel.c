@@ -20,14 +20,17 @@
  */
 
 #include "sdl_panel.h"
+#include "sim_harness.h"
 
 #include <SDL2/SDL.h>
+#include <jpeglib.h>
 
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 static SDL_Window   *s_window;
 static SDL_Renderer *s_renderer;
@@ -271,6 +274,97 @@ static esp_err_t touch_deinit(bsp_touch_t *self) {
     return ESP_OK;
 }
 
+/* MARK: sim harness capture callback */
+
+/* Encode the current on-glass image to a JPEG at path (registered with the sim
+ * harness in sdl_panel_create). The panel format is already ours, so the encoder
+ * lives here rather than in the harness — that keeps the harness BSP-agnostic.
+ * The snapshot is a plain memory read, so this is safe to call from the harness's
+ * interpreter thread concurrently with the main-thread present. */
+static void make_parent_dirs(const char *path) {
+    char buf[1024];
+    size_t n = strlen(path);
+    if (n == 0 || n >= sizeof(buf)) return;
+    memcpy(buf, path, n + 1);
+    for (char *p = buf + 1; *p; p++) {
+        if (*p == '/') {
+            *p = '\0';
+            mkdir(buf, 0755);
+            *p = '/';
+        }
+    }
+}
+
+static bool sdl_panel_capture(const char *path) {
+    if (!s_present_src) return false;
+
+    make_parent_dirs(path);
+    FILE *f = fopen(path, "wb");
+    if (!f) {
+        fprintf(stderr, "[sim] capture: cannot open %s\n", path);
+        return false;
+    }
+    uint8_t *row = malloc((size_t)s_panel_w * 3);
+    if (!row) { fclose(f); return false; }
+
+    struct jpeg_compress_struct cinfo;
+    struct jpeg_error_mgr jerr;
+    cinfo.err = jpeg_std_error(&jerr);
+    jpeg_create_compress(&cinfo);
+    jpeg_stdio_dest(&cinfo, f);
+    cinfo.image_width = (JDIMENSION)s_panel_w;
+    cinfo.image_height = (JDIMENSION)s_panel_h;
+    cinfo.input_components = 3;
+    cinfo.in_color_space = JCS_RGB;
+    jpeg_set_defaults(&cinfo);
+    jpeg_set_quality(&cinfo, 90, TRUE);
+    jpeg_start_compress(&cinfo, TRUE);
+
+    const size_t stride = (size_t)s_panel_w * s_bpp;
+    while (cinfo.next_scanline < (JDIMENSION)s_panel_h) {
+        const uint8_t *src = s_present_src + (size_t)cinfo.next_scanline * stride;
+        switch (s_format) {
+        case BSP_PIXEL_FORMAT_RGB888:
+            // Framebuffer holds B,G,R (LVGL native); JCS_RGB wants R,G,B.
+            for (int x = 0; x < s_panel_w; x++) {
+                row[x * 3 + 0] = src[x * 3 + 2];
+                row[x * 3 + 1] = src[x * 3 + 1];
+                row[x * 3 + 2] = src[x * 3 + 0];
+            }
+            break;
+        case BSP_PIXEL_FORMAT_L8:
+            for (int x = 0; x < s_panel_w; x++) {
+                uint8_t g = src[x];
+                row[x * 3 + 0] = g;
+                row[x * 3 + 1] = g;
+                row[x * 3 + 2] = g;
+            }
+            break;
+        case BSP_PIXEL_FORMAT_RGB565:
+        default: {
+            const uint16_t *p = (const uint16_t *)src;   /* native order */
+            for (int x = 0; x < s_panel_w; x++) {
+                uint16_t v = p[x];
+                uint8_t r5 = (v >> 11) & 0x1F, g6 = (v >> 5) & 0x3F, b5 = v & 0x1F;
+                row[x * 3 + 0] = (uint8_t)((r5 << 3) | (r5 >> 2));
+                row[x * 3 + 1] = (uint8_t)((g6 << 2) | (g6 >> 4));
+                row[x * 3 + 2] = (uint8_t)((b5 << 3) | (b5 >> 2));
+            }
+            break;
+        }
+        }
+        JSAMPROW rp = row;
+        jpeg_write_scanlines(&cinfo, &rp, 1);
+    }
+
+    jpeg_finish_compress(&cinfo);
+    jpeg_destroy_compress(&cinfo);
+    free(row);
+    fclose(f);
+    fprintf(stderr, "[sim] captured %s (%dx%d)\n", path, s_panel_w, s_panel_h);
+    return true;
+}
+
 /* MARK: lifecycle */
 
 esp_err_t sdl_panel_create(const sdl_panel_config_t *config,
@@ -381,6 +475,11 @@ esp_err_t sdl_panel_create(const sdl_panel_config_t *config,
     s_touch.read           = touch_read;
     s_touch.wait_interrupt = touch_wait_interrupt;
     s_touch.deinit         = touch_deinit;
+
+    /* Self-register with the sim harness: it drives these without ever knowing
+     * about sdl_panel (input injection + frame capture are this backend's job). */
+    sim_harness_set_input_callback(sdl_panel_inject_down, sdl_panel_inject_up);
+    sim_harness_set_capture_callback(sdl_panel_capture);
 
     *out_display = &s_display;
     if (out_touch) *out_touch = &s_touch;
