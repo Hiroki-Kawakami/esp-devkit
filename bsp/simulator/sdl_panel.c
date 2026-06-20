@@ -65,6 +65,21 @@ static bool s_headless;
 static bool s_dirty;
 
 static bsp_display_t s_display;
+static bsp_touch_t   s_touch;
+
+/* Touch snapshot in PANEL coordinates. touch_read runs on a background task (not
+ * the LVGL/main thread), so it must not call SDL (the event pump + mouse query
+ * are main-thread-only on macOS). Instead the MAIN thread samples the source and
+ * updates this snapshot under s_touch_mtx: sdl_panel_pump_input() reads the mouse
+ * (interactive, id 0) and the harness writes it via sdl_panel_inject_* (any id).
+ * touch_read just copies it. Multiple ids are held at once for multi-touch. */
+#define SDL_PANEL_MAX_TOUCH 10
+static SDL_mutex *s_touch_mtx;
+static struct {
+    bool active;
+    int  id;
+    int  x, y;
+} s_touch_pts[SDL_PANEL_MAX_TOUCH];
 
 static Uint32 sdl_texture_format(bsp_pixel_format_t fmt) {
     switch (fmt) {
@@ -78,13 +93,52 @@ static Uint32 sdl_texture_format(bsp_pixel_format_t fmt) {
     }
 }
 
-/* Drain the SDL event queue. Touch is not handled yet, so the only event we act
- * on is window close. */
+/* Drain the SDL event queue. The only event we must act on is window close;
+ * touch is sampled from the mouse state in pump_input, not from events. */
 static void pump_events(void) {
     SDL_Event ev;
     while (SDL_PollEvent(&ev)) {
         if (ev.type == SDL_QUIT) exit(0);
     }
+}
+
+/* Map on-screen window coordinates to panel pixels, accounting for scale_div and
+ * any live window resize, and clamp to the panel bounds. */
+static void window_to_panel(int wx, int wy, int *px, int *py) {
+    int ww = s_panel_w / s_scale_div, wh = s_panel_h / s_scale_div;
+    if (s_window) SDL_GetWindowSize(s_window, &ww, &wh);
+    if (ww <= 0) ww = s_panel_w;
+    if (wh <= 0) wh = s_panel_h;
+    int x = (int)((int64_t)wx * s_panel_w / ww);
+    int y = (int)((int64_t)wy * s_panel_h / wh);
+    if (x < 0) x = 0; else if (x > s_panel_w - 1) x = s_panel_w - 1;
+    if (y < 0) y = 0; else if (y > s_panel_h - 1) y = s_panel_h - 1;
+    *px = x;
+    *py = y;
+}
+
+/* Update the snapshot slot for one finger id under the lock (any setter, any
+ * thread). pressed=true sets/updates the contact (allocating a free slot for a
+ * new id); pressed=false releases the id's slot. */
+static void touch_set_point(int id, bool pressed, int x, int y) {
+    if (s_touch_mtx) SDL_LockMutex(s_touch_mtx);
+    int found = -1, free_slot = -1;
+    for (int i = 0; i < SDL_PANEL_MAX_TOUCH; i++) {
+        if (s_touch_pts[i].active && s_touch_pts[i].id == id) { found = i; break; }
+        if (free_slot < 0 && !s_touch_pts[i].active) free_slot = i;
+    }
+    if (pressed) {
+        int slot = found >= 0 ? found : free_slot;
+        if (slot >= 0) {
+            s_touch_pts[slot].active = true;
+            s_touch_pts[slot].id = id;
+            s_touch_pts[slot].x = x;
+            s_touch_pts[slot].y = y;
+        }
+    } else if (found >= 0) {
+        s_touch_pts[found].active = false;
+    }
+    if (s_touch_mtx) SDL_UnlockMutex(s_touch_mtx);
 }
 
 /* Blit a rectangle of source pixels into a panel-sized destination buffer at the
@@ -187,12 +241,45 @@ static esp_err_t display_refresh(bsp_display_t *self, bsp_rect_t area, bsp_epd_m
     return ESP_OK;
 }
 
+/* MARK: bsp_touch vtable */
+
+/* Copy the active contacts the main thread / harness maintains — no SDL calls
+ * here, so this is safe from the background touch task. */
+static int touch_read(bsp_touch_t *self, bsp_touch_point_t *points, uint8_t max_points) {
+    (void)self;
+    if (max_points == 0) return 0;
+    int n = 0;
+    if (s_touch_mtx) SDL_LockMutex(s_touch_mtx);
+    for (int i = 0; i < SDL_PANEL_MAX_TOUCH && n < max_points; i++) {
+        if (!s_touch_pts[i].active) continue;
+        points[n].x = s_touch_pts[i].x;
+        points[n].y = s_touch_pts[i].y;
+        points[n].id = s_touch_pts[i].id;
+        n++;
+    }
+    if (s_touch_mtx) SDL_UnlockMutex(s_touch_mtx);
+    return n;
+}
+
+static void touch_wait_interrupt(bsp_touch_t *self) {
+    (void)self;
+    SDL_Delay(5);  /* host has no IRQ line — fall back to polling */
+}
+
+static esp_err_t touch_deinit(bsp_touch_t *self) {
+    (void)self;
+    return ESP_OK;
+}
+
 /* MARK: lifecycle */
 
-esp_err_t sdl_panel_create(const sdl_panel_config_t *config, bsp_display_t **out_display) {
+esp_err_t sdl_panel_create(const sdl_panel_config_t *config,
+                           bsp_display_t **out_display,
+                           bsp_touch_t **out_touch) {
     if (!config || !out_display) return ESP_ERR_INVALID_ARG;
     if (s_present_src || s_window) {  /* already created — single window per process */
         *out_display = &s_display;
+        if (out_touch) *out_touch = &s_touch;
         return ESP_OK;
     }
 
@@ -203,6 +290,7 @@ esp_err_t sdl_panel_create(const sdl_panel_config_t *config, bsp_display_t **out
     s_bpp       = bsp_pixel_format_bytes(config->format);
     s_format    = config->format;
     s_headless  = getenv("SIMULATOR_HEADLESS") != NULL;
+    s_touch_mtx = SDL_CreateMutex();  /* guards the touch snapshot (cross-thread) */
 
     SDL_SetMainReady();
     /* Headless still needs the SDL timer (LVGL's tick source is SDL_GetTicks)
@@ -290,12 +378,16 @@ esp_err_t sdl_panel_create(const sdl_panel_config_t *config, bsp_display_t **out
         SDL_RenderPresent(s_renderer);
     }
 
+    s_touch.read           = touch_read;
+    s_touch.wait_interrupt = touch_wait_interrupt;
+    s_touch.deinit         = touch_deinit;
+
     *out_display = &s_display;
+    if (out_touch) *out_touch = &s_touch;
     return ESP_OK;
 }
 
 void sdl_panel_present(void) {
-    if (!s_headless) pump_events();
     if (s_headless || !s_texture || !s_dirty || !s_present_src) return;
     s_dirty = false;
 
@@ -313,6 +405,31 @@ void sdl_panel_present(void) {
     }
     SDL_RenderCopy(s_renderer, s_texture, NULL, NULL);
     SDL_RenderPresent(s_renderer);
+}
+
+void sdl_panel_pump_input(void) {
+    /* Main thread only. Drain events (so a window close quits) and, when there is
+     * a window, sample the mouse into the id-0 snapshot slot the background
+     * touch_read consumes. Headless touch comes from sdl_panel_inject_* instead. */
+    if (s_headless) return;
+    pump_events();
+    int wx, wy;
+    Uint32 buttons = SDL_GetMouseState(&wx, &wy);
+    if (buttons & SDL_BUTTON(SDL_BUTTON_LEFT)) {
+        int px, py;
+        window_to_panel(wx, wy, &px, &py);
+        touch_set_point(0, true, px, py);
+    } else {
+        touch_set_point(0, false, 0, 0);
+    }
+}
+
+void sdl_panel_inject_down(int id, int x, int y) {
+    touch_set_point(id, true, x, y);
+}
+
+void sdl_panel_inject_up(int id) {
+    touch_set_point(id, false, 0, 0);
 }
 
 const void *sdl_panel_snapshot(int *width, int *height, bsp_pixel_format_t *format) {
