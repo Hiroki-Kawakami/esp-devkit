@@ -18,10 +18,13 @@ if(ESP_PLATFORM)
         SRCS
             ${BSP_COMMON_SRCS}
             "boards/paper_s3/paper_s3.c"
+            "boards/paper_s3/paper_s3_panel.c"
             "devices/gt911/gt911.c"
+            "devices/ed047tc1/ed047tc1.c"
+            "driver/epd_ll.c"
         INCLUDE_DIRS "inc"
-        PRIV_INCLUDE_DIRS "inc_private" "devices"
-        PRIV_REQUIRES driver nvs_flash bt fatfs sdmmc esp_driver_sdmmc)
+        PRIV_INCLUDE_DIRS "inc_private" "devices" "devices/ed047tc1" "driver"
+        PRIV_REQUIRES driver esp_lcd nvs_flash bt fatfs sdmmc esp_driver_sdmmc)
 
     # Enable Link Time Optimization
     target_compile_options(${COMPONENT_LIB} PRIVATE -flto)
