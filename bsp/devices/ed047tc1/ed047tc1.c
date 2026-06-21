@@ -170,17 +170,6 @@ esp_err_t ed047tc1_epd_create(const ed047tc1_config_t *cfg, bsp_display_t **out_
         memset(s->line[i], 0, lb);   /* padding region stays zero */
     }
 
-    /* OE held off until the first refresh powers up. PWR is set up by epd_ll:
-     * it doubles as the i80 dummy D/C pin (the EPD has no D/C line), and epd_ll
-     * hands it back as a plain GPIO output (low) after bus init. */
-    gpio_config_t gc = {
-        .pin_bit_mask = (1ULL << cfg->oe_pin),
-        .mode         = GPIO_MODE_OUTPUT,
-        .intr_type    = GPIO_INTR_DISABLE,
-    };
-    ESP_ERROR_CHECK(gpio_config(&gc));
-    gpio_set_level(cfg->oe_pin, 0);
-
     epd_ll_config_t ll = {
         .sph_pin      = cfg->sph_pin,
         .cl_pin       = cfg->cl_pin,
@@ -194,6 +183,18 @@ esp_err_t ed047tc1_epd_create(const ed047tc1_config_t *cfg, bsp_display_t **out_
     };
     for (int i = 0; i < 8; i++) ll.data_pins[i] = cfg->data_pins[i];
     ESP_ERROR_CHECK(epd_ll_init(&ll));
+
+    /* Power rails off. Configure AFTER epd_ll_init: PWR was lent as the i80
+     * dummy D/C and epd_ll hands it back as an output without setting a level,
+     * so we own the level here (and the bus init can't clobber it). */
+    gpio_config_t gc = {
+        .pin_bit_mask = (1ULL << cfg->oe_pin) | (1ULL << cfg->pwr_pin),
+        .mode         = GPIO_MODE_OUTPUT,
+        .intr_type    = GPIO_INTR_DISABLE,
+    };
+    ESP_ERROR_CHECK(gpio_config(&gc));
+    gpio_set_level(cfg->oe_pin, 0);
+    gpio_set_level(cfg->pwr_pin, 0);
 
     /* Establish a known white screen so later refreshes start from a clean
      * state. Uniform white clear -> fast (one prebuilt line, no per-row build). */

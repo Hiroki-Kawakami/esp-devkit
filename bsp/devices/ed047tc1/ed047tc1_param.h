@@ -20,9 +20,9 @@
  * 8-bit source bus, so one scanline is width/4 bytes. */
 #define ED047TC1_WIDTH        960
 #define ED047TC1_HEIGHT       540
-#define ED047TC1_PCLK_HZ      16000000
+#define ED047TC1_PCLK_HZ      20000000
 #define ED047TC1_LINE_BYTES   (ED047TC1_WIDTH / 4)   /* 240 */
-#define ED047TC1_LINE_PADDING 8
+#define ED047TC1_LINE_PADDING 16
 
 /* Table-local shorthand: T() packs one frame; B/W name the drive directions
  * (0 = hold). All three are #undef'd after the tables so they don't leak. */
@@ -31,25 +31,25 @@
              (d8<<16)|(d9<<18)|(da<<20)|(db<<22)|(dc<<24)|(dd<<26)|(de<<28)|(df<<30))
 #define B 1   /* drive to black */
 #define W 2   /* drive to white */
+#define STOP 0u   /* settle frame: every gray holds / column released (no drive) */
 
 /* 16-grayscale, flashing, highest quality (GC16-class). */
 static const uint32_t ed047tc1_lut_quality[] = {
 /*         0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15   (gray column) */
-/*  1 */ T(B, B, B, B, B, B, B, W, B, W, W, B, B, B, B, B),
-/*  2 */ T(W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W),
-/*  3 */ T(W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W),
-/*  4 */ T(B, B, B, B, B, B, B, B, B, B, B, B, B, B, B, B),
-/*  5 */ T(B, B, B, B, B, B, B, B, B, B, B, B, B, B, B, B),
-/*  6 */ T(B, B, B, B, B, B, B, B, W, B, B, B, B, B, B, B),
-/*  7 */ T(B, B, W, W, B, B, B, W, B, W, B, B, B, B, B, 0),
-/*  8 */ T(B, B, B, B, B, W, B, B, W, W, B, W, B, W, W, W),
-/*  9 */ T(B, B, 0, W, W, B, W, W, W, W, W, W, B, B, W, W),
-/* 10 */ T(0, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W),
-/* 11 */ T(0, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W),
-/* 12 */ T(B, B, B, B, 0, W, W, W, W, W, W, W, W, W, W, W),
-/* 13 */ T(B, B, B, B, B, B, B, B, B, B, 0, 0, W, W, W, W),
-/* 14 */ T(0, B, B, B, B, B, B, B, B, B, B, B, B, B, B, 0),
-/* 15 */ T(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, W, W, W, 0),
+/*  1 */ T(B, B, B, W, W, B, B, W, W, B, B, B, B, B, B, W),
+/*  2 */ T(W, W, W, B, B, W, W, B, B, W, W, W, W, W, W, B),
+/*  3 */ T(W, W, W, B, B, W, W, B, B, B, B, W, W, W, W, B),
+/*  4 */ T(B, B, B, 0, B, B, B, B, B, B, B, B, B, B, B, W),
+/*  5 */ T(B, B, B, W, B, B, B, B, B, B, B, B, B, B, B, W),
+/*  6 */ T(B, 0, 0, W, B, B, 0, W, W, B, B, B, B, 0, B, W),
+/*  7 */ T(B, W, W, W, W, W, W, W, W, B, 0, 0, B, 0, B, W),
+/*  8 */ T(B, B, W, B, W, W, W, W, W, B, B, B, 0, 0, W, W),
+/*  9 */ T(B, B, B, B, B, B, B, B, W, W, W, W, W, W, W, W),
+/* 10 */ T(B, 0, B, 0, 0, 0, 0, 0, B, 0, 0, 0, 0, 0, 0, W),
+/* 11 */ T(B, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, W),
+    /* settle tail (16 frames, no drive) */
+    STOP, STOP, STOP, STOP, STOP, STOP, STOP, STOP,
+    STOP, STOP, STOP, STOP, STOP, STOP, STOP, STOP,
 };
 
 /* 2-level fast direct update: only black/white columns drive, mid-grays held. */
@@ -63,6 +63,8 @@ static const uint32_t ed047tc1_lut_fast[] = {
 /*  6 */ T(B, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, W),
 /*  7 */ T(B, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, W),
 /*  8 */ T(B, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, W),
+    /* settle tail (shorter: fast mode trades settle for speed) */
+    STOP, STOP, STOP, STOP,
 };
 
 /* Drive everything to white. Uniform frames, so refresh reuses one prebuilt
@@ -70,14 +72,21 @@ static const uint32_t ed047tc1_lut_fast[] = {
 static const uint32_t ed047tc1_lut_clear[] = {
 /*         0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15   (gray column) */
 /*  1 */ T(W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W),
-/*  2 */ T(W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W),
-/*  3 */ T(W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W),
+/*  2 */ T(B, B, B, B, B, B, B, B, B, B, B, B, B, B, B, B),
+/*  3 */ T(B, B, B, B, B, B, B, B, B, B, B, B, B, B, B, B),
 /*  4 */ T(W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W),
+/*  5 */ T(W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W),
+/*  6 */ T(W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W),
+/*  7 */ T(W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W),
+    /* settle tail (16 frames, no drive) */
+    STOP, STOP, STOP, STOP, STOP, STOP, STOP, STOP,
+    STOP, STOP, STOP, STOP, STOP, STOP, STOP, STOP,
 };
 
 #undef T
 #undef B
 #undef W
+#undef STOP
 
 #define ED047TC1_LUT_QUALITY_STEPS (sizeof(ed047tc1_lut_quality) / sizeof(uint32_t))
 #define ED047TC1_LUT_FAST_STEPS    (sizeof(ed047tc1_lut_fast)    / sizeof(uint32_t))

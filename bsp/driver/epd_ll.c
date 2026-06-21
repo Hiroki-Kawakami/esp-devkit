@@ -23,26 +23,20 @@ static esp_lcd_panel_io_handle_t  s_io;
 static epd_ll_config_t            s_cfg;
 static volatile bool              s_busy;   /* a scanline DMA is in flight */
 
-static inline void row_step(void) {
-    gpio_set_level(s_cfg.ckv_pin, 0);
-    gpio_set_level(s_cfg.le_pin, 1);
-    gpio_set_level(s_cfg.le_pin, 0);
-}
-
 static IRAM_ATTR bool on_trans_done(esp_lcd_panel_io_handle_t io,
                                     esp_lcd_panel_io_event_data_t *edata,
                                     void *user_ctx) {
-    row_step();          /* latch this line + advance the gate, immediately */
+    gpio_set_level(s_cfg.ckv_pin, 0);
+    gpio_set_level(s_cfg.le_pin, 1);
     s_busy = false;
-    return false;        /* no task to wake; nothing for the driver to yield to */
+    return false;
 }
 
 esp_err_t epd_ll_init(const epd_ll_config_t *cfg) {
     s_cfg = *cfg;
     s_busy = false;
 
-    /* Bit-banged control lines: CKV/SPV (gate) + LE (source latch). SPV idles
-     * high (gate-shift inactive); CKV/LE idle low. */
+    /* Bit-banged control lines CKV/SPV (gate) + LE (latch), all idle low. */
     gpio_config_t gc = {
         .pin_bit_mask = (1ULL << cfg->ckv_pin) | (1ULL << cfg->spv_pin) | (1ULL << cfg->le_pin),
         .mode         = GPIO_MODE_OUTPUT,
@@ -50,8 +44,8 @@ esp_err_t epd_ll_init(const epd_ll_config_t *cfg) {
     };
     ESP_RETURN_ON_ERROR(gpio_config(&gc), TAG, "ctrl gpio");
     gpio_set_level(cfg->ckv_pin, 0);
+    gpio_set_level(cfg->spv_pin, 0);
     gpio_set_level(cfg->le_pin, 0);
-    gpio_set_level(cfg->spv_pin, 1);
 
     esp_lcd_i80_bus_config_t bus_cfg = {
         .dc_gpio_num        = cfg->dc_dummy_pin,
@@ -69,6 +63,11 @@ esp_err_t epd_ll_init(const epd_ll_config_t *cfg) {
     gpio_set_direction(cfg->sph_pin, GPIO_MODE_OUTPUT);
     ESP_RETURN_ON_ERROR(esp_lcd_new_i80_bus(&bus_cfg, &s_bus), TAG, "i80 bus");
 
+    /* Reclaim the dummy D/C pin as a plain GPIO output (caller sets its level).
+     * gpio_set_direction alone re-routes the pad; gpio_reset_pin would enable the
+     * pull-up and briefly drive it -- a stray glitch on the PWR pin. */
+    gpio_set_direction(cfg->dc_dummy_pin, GPIO_MODE_OUTPUT);
+
     esp_lcd_panel_io_i80_config_t io_cfg = {
         .cs_gpio_num         = cfg->sph_pin,
         .pclk_hz             = cfg->pclk_hz,
@@ -81,12 +80,6 @@ esp_err_t epd_ll_init(const epd_ll_config_t *cfg) {
     };
     ESP_RETURN_ON_ERROR(esp_lcd_new_panel_io_i80(s_bus, &io_cfg, &s_io), TAG, "i80 io");
 
-    /* The i80 bus claimed dc_dummy_pin; this panel has no D/C line, so hand it
-     * back as a plain (unused) GPIO output. */
-    gpio_reset_pin(cfg->dc_dummy_pin);
-    gpio_set_direction(cfg->dc_dummy_pin, GPIO_MODE_OUTPUT);
-    gpio_set_level(cfg->dc_dummy_pin, 0);
-
     return ESP_OK;
 }
 
@@ -96,28 +89,29 @@ size_t epd_ll_line_buf_size(void) {
 
 void epd_ll_frame_begin(void) {
     const int ckv = s_cfg.ckv_pin, spv = s_cfg.spv_pin;
-    gpio_set_level(ckv, 1); esp_rom_delay_us(7);
-    gpio_set_level(spv, 0); esp_rom_delay_us(10);
-    gpio_set_level(ckv, 0);
-    gpio_set_level(ckv, 1); esp_rom_delay_us(8);
-    gpio_set_level(spv, 1); esp_rom_delay_us(10);
-    gpio_set_level(ckv, 0);
-    gpio_set_level(ckv, 1); esp_rom_delay_us(18);
-    gpio_set_level(ckv, 0);
-    gpio_set_level(ckv, 1); esp_rom_delay_us(18);
-    gpio_set_level(ckv, 0);
-    gpio_set_level(ckv, 1);
+    while (s_busy) taskYIELD();
+    gpio_set_level(spv, 0); esp_rom_delay_us(1);
+    gpio_set_level(ckv, 0); esp_rom_delay_us(3);
+    gpio_set_level(ckv, 1); esp_rom_delay_us(1);
+    gpio_set_level(spv, 1);
+    for (int i = 0; i < 3; i++) {
+        esp_rom_delay_us(3);
+        gpio_set_level(ckv, 0);
+        esp_rom_delay_us(3);
+        gpio_set_level(ckv, 1);
+    }
 }
 
 void epd_ll_write_line(const uint8_t *data) {
-    while (s_busy) taskYIELD();          /* wait previous scanline DMA + its latch */
+    while (s_busy) taskYIELD();           /* wait previous scanline DMA + its latch */
     s_busy = true;
-    gpio_set_level(s_cfg.ckv_pin, 1);    /* CKV high for this line (ISR left it low) */
+    gpio_set_level(s_cfg.le_pin, 0);      /* close the latch before shifting */
+    gpio_set_level(s_cfg.ckv_pin, 1);     /* CKV high for this line */
     esp_lcd_panel_io_tx_color(s_io, -1, data, s_cfg.line_bytes + s_cfg.line_padding);
 }
 
 void epd_ll_frame_end(void) {
-    while (s_busy) taskYIELD();          /* wait last line (the ISR already latched it) */
-    gpio_set_level(s_cfg.ckv_pin, 0);
+    while (s_busy) taskYIELD();           /* wait last line (the ISR already latched it) */
     gpio_set_level(s_cfg.le_pin, 0);
+    gpio_set_level(s_cfg.ckv_pin, 1);
 }
