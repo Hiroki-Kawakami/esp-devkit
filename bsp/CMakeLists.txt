@@ -23,7 +23,7 @@ if(ESP_PLATFORM)
             "devices/ed047tc1/ed047tc1.c"
             "driver/epd_ll.c"
         INCLUDE_DIRS "inc"
-        PRIV_INCLUDE_DIRS "inc_private" "devices" "devices/ed047tc1" "driver"
+        PRIV_INCLUDE_DIRS "inc_private" "devices" "devices/ed047tc1" "devices/gt911" "driver"
         PRIV_REQUIRES driver esp_lcd nvs_flash bt fatfs sdmmc esp_driver_sdmmc)
 
     # Enable Link Time Optimization
