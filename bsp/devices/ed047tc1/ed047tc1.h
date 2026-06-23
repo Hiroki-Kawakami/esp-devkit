@@ -2,11 +2,11 @@
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 Hiroki Kawakami
  *
- * ED047TC1 grayscale EPD driver. Owns the framebuffer (GRAM) + waveform engine
- * and produces a bsp_display_t provider. Panel-intrinsic values (geometry,
- * timing, waveforms) live in the driver; the board supplies the GPIO map via
- * ed047tc1_config_t. The signal pins are forwarded to epd_ll; the power-rail
- * pins (OE/PWR) are sequenced by this driver around each refresh.
+ * ED047TC1 grayscale EPD panel descriptor. The framebuffer + waveform engine +
+ * i80 bus all live in the epd_ll driver; this just binds the panel-intrinsic
+ * values (geometry, timing, waveforms; see ed047tc1.c) to the
+ * board's GPIO map (ed047tc1_config_t) and calls epd_ll_create, returning the
+ * resulting bsp_display_t provider.
  */
 
 #pragma once
