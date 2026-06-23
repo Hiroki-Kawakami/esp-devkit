@@ -66,9 +66,15 @@ typedef enum {
 } bsp_rotation_t;
 
 typedef enum {
-    BSP_EPD_MODE_NONE,    /* draw() writes framebuffer only, no panel refresh */
-    BSP_EPD_MODE_FAST,    /* 2-level direct update, fast                      */
-    BSP_EPD_MODE_QUALITY, /* 16 grayscales, flashing, highest quality         */
+    BSP_EPD_MODE_NONE    = 0, /* draw() writes framebuffer only, no panel refresh */
+    BSP_EPD_MODE_FAST    = 1, /* 2-level direct update, fast                      */
+    BSP_EPD_MODE_QUALITY = 2, /* 16 grayscales, flashing, highest quality         */
+    /* OR-able flag: drive every pixel, ignoring the diff against the displayed
+     * state (e.g. periodic full-screen flush to clear ghosting). The waveform is
+     * still selected by the low bits. */
+    BSP_EPD_MODE_FULL    = 0x80,
+    BSP_EPD_MODE_FAST_FULL = BSP_EPD_MODE_FULL | BSP_EPD_MODE_FAST,
+    BSP_EPD_MODE_QUALITY_FULL = BSP_EPD_MODE_FULL | BSP_EPD_MODE_QUALITY,
 } bsp_epd_mode_t;
 
 typedef struct {

@@ -4,14 +4,18 @@
  *
  * ED047TC1 grayscale EPD driver -- see ed047tc1.h.
  *
- * MVP scope: full-screen blocking refresh. draw_bitmap updates an L8 GRAM in
- * PSRAM; refresh() replays a time-axis waveform LUT, rebuilding every scanline
- * from GRAM each frame and clocking it out through epd_ll. EPD gate scanning
- * always covers the whole panel, so refresh ignores the dirty rect.
+ * Blocking refresh with differential drive. draw_bitmap updates an L8 target
+ * GRAM in PSRAM; refresh() replays a time-axis waveform LUT, rebuilding every
+ * scanline from GRAM each frame and clocking it out through epd_ll. Only pixels
+ * whose target differs from the displayed state (`disp`) are driven; the rest
+ * hold. The BSP_EPD_MODE_FULL flag forces every pixel to drive (ghost clear).
+ * EPD gate scanning always covers the whole panel, so refresh ignores the dirty
+ * rect and compares the full frame each time.
  *
  * Scanline packing: 4 source pixels -> one byte, leftmost pixel in the high
- * 2-bit pair (MSB-first), giving width/4 bytes per line. Uniform frames (every
- * gray drives the same) reuse a single prebuilt line for all rows.
+ * 2-bit pair (MSB-first), giving width/4 bytes per line. Rows with no driven
+ * pixel reuse a constant all-hold line; uniform frames (every gray drives the
+ * same) likewise reuse a single prebuilt line for all rows.
  */
 
 #include "ed047tc1.h"
@@ -25,8 +29,10 @@
 
 typedef struct {
     bsp_display_t  base;
-    uint8_t       *gram;       /* L8, WIDTH*HEIGHT, PSRAM            */
+    uint8_t       *gram;       /* L8 target, WIDTH*HEIGHT, PSRAM     */
+    uint8_t       *disp;       /* L8 displayed state, PSRAM          */
     uint8_t       *line[2];    /* DMA scanline ping-pong, internal   */
+    uint8_t       *hold_line;  /* constant all-hold (0x00) DMA line  */
     bsp_epd_mode_t mode;       /* persistent draw mode               */
     int            oe_pin;
     int            pwr_pin;
@@ -44,15 +50,28 @@ static void power_off(ed047tc1_t *s) {
 
 /* Build one DMA scanline from a GRAM row (L8) for the given waveform frame.
  * 4 pixels pack into one byte, leftmost pixel in the high 2-bit pair (MSB-first);
- * byte k holds pixels 4k..4k+3 -> width/4 bytes per line. */
-static void build_line(const uint8_t *row, uint32_t frame, uint8_t *dst) {
+ * byte k holds pixels 4k..4k+3 -> width/4 bytes per line. A pixel drives only
+ * when its target nibble differs from the displayed one; a NULL disp_row drives
+ * every pixel (full refresh). Pixels that hold emit action 0. */
+static void build_line(const uint8_t *row, const uint8_t *disp_row,
+                       uint32_t frame, uint8_t *dst) {
     for (int x = 0; x < ED047TC1_WIDTH; x += 4) {
-        int d0 = (frame >> ((row[x + 0] >> 4) * 2)) & 3;
-        int d1 = (frame >> ((row[x + 1] >> 4) * 2)) & 3;
-        int d2 = (frame >> ((row[x + 2] >> 4) * 2)) & 3;
-        int d3 = (frame >> ((row[x + 3] >> 4) * 2)) & 3;
-        dst[x >> 2] = (uint8_t)((d0 << 6) | (d1 << 4) | (d2 << 2) | d3);
+        int d[4];
+        for (int k = 0; k < 4; k++) {
+            int g = row[x + k] >> 4;
+            bool drive = !disp_row || (disp_row[x + k] >> 4) != g;
+            d[k] = drive ? ((frame >> (g * 2)) & 3) : 0;
+        }
+        dst[x >> 2] = (uint8_t)((d[0] << 6) | (d[1] << 4) | (d[2] << 2) | d[3]);
     }
+}
+
+/* True if any pixel in the row has a target nibble differing from displayed. */
+static bool row_changed(const uint8_t *row, const uint8_t *disp_row) {
+    for (int x = 0; x < ED047TC1_WIDTH; x++) {
+        if ((row[x] >> 4) != (disp_row[x] >> 4)) return true;
+    }
+    return false;
 }
 
 /* A frame is uniform when every gray column decodes to the same 2-bit drive
@@ -67,28 +86,50 @@ static bool frame_uniform(uint32_t frame, uint8_t *line_byte) {
     return false;
 }
 
-static void refresh_lut(ed047tc1_t *s, const uint32_t *lut, size_t steps) {
+/* Replay a waveform LUT. In diff mode (full == false) only rows with a changed
+ * pixel are driven -- the rest emit a constant all-hold line -- and within a
+ * driven row only changed pixels move; the uniform fast path stays off because
+ * held pixels break per-row uniformity. Full mode drives every pixel and keeps
+ * the uniform fast path (one prebuilt line for uniform frames). The displayed
+ * state is committed to match the target after the scan. */
+static void refresh_lut(ed047tc1_t *s, const uint32_t *lut, size_t steps, bool full) {
+    bool row_drv[ED047TC1_HEIGHT];
+    bool any = false;
+    for (int y = 0; y < ED047TC1_HEIGHT; y++) {
+        bool d = full || row_changed(s->gram + (size_t)y * ED047TC1_WIDTH,
+                                     s->disp + (size_t)y * ED047TC1_WIDTH);
+        row_drv[y] = d;
+        any |= d;
+    }
+    if (!any) return;   /* nothing changed: skip power-up and the whole scan */
+
     power_on(s);
     for (size_t f = 0; f < steps; f++) {
         uint32_t frame = lut[f];
         uint8_t uni_byte;
-        bool uniform = frame_uniform(frame, &uni_byte);
+        bool uniform = full && frame_uniform(frame, &uni_byte);
         if (uniform) memset(s->line[0], uni_byte, ED047TC1_LINE_BYTES);
 
         epd_ll_frame_begin();
         for (int y = 0; y < ED047TC1_HEIGHT; y++) {
             uint8_t *buf;
-            if (uniform) {
-                buf = s->line[0];   /* same constant line for every row */
+            if (!row_drv[y]) {
+                buf = s->hold_line;   /* whole row holds */
+            } else if (uniform) {
+                buf = s->line[0];     /* same constant line for every row */
             } else {
                 buf = s->line[y & 1];
-                build_line(s->gram + (size_t)y * ED047TC1_WIDTH, frame, buf);
+                build_line(s->gram + (size_t)y * ED047TC1_WIDTH,
+                           full ? NULL : s->disp + (size_t)y * ED047TC1_WIDTH,
+                           frame, buf);
             }
             epd_ll_write_line(buf);
         }
         epd_ll_frame_end();
     }
     power_off(s);
+
+    memcpy(s->disp, s->gram, (size_t)ED047TC1_WIDTH * ED047TC1_HEIGHT);
 }
 
 // MARK: - vtable
@@ -123,12 +164,13 @@ static esp_err_t op_set_epd_mode(bsp_display_t *self, bsp_epd_mode_t mode) {
 static esp_err_t op_refresh(bsp_display_t *self, bsp_rect_t area, bsp_epd_mode_t mode) {
     (void)area;   /* gate scan always covers the full panel */
     ed047tc1_t *s = (ed047tc1_t *)self;
-    switch (mode) {
+    bool full = mode & BSP_EPD_MODE_FULL;
+    switch (mode & ~BSP_EPD_MODE_FULL) {
         case BSP_EPD_MODE_FAST:
-            refresh_lut(s, ed047tc1_lut_fast, ED047TC1_LUT_FAST_STEPS);
+            refresh_lut(s, ed047tc1_lut_fast, ED047TC1_LUT_FAST_STEPS, full);
             break;
         case BSP_EPD_MODE_QUALITY:
-            refresh_lut(s, ed047tc1_lut_quality, ED047TC1_LUT_QUALITY_STEPS);
+            refresh_lut(s, ed047tc1_lut_quality, ED047TC1_LUT_QUALITY_STEPS, full);
             break;
         default:
             break;
@@ -140,8 +182,10 @@ static esp_err_t op_deinit(bsp_display_t *self) {
     ed047tc1_t *s = (ed047tc1_t *)self;
     power_off(s);
     free(s->gram);
+    free(s->disp);
     free(s->line[0]);
     free(s->line[1]);
+    free(s->hold_line);
     free(s);
     return ESP_OK;
 }
@@ -163,9 +207,12 @@ esp_err_t ed047tc1_epd_create(const ed047tc1_config_t *cfg, bsp_display_t **out_
     s->oe_pin            = cfg->oe_pin;
     s->pwr_pin           = cfg->pwr_pin;
 
-    s->gram = heap_caps_malloc((size_t)ED047TC1_WIDTH * ED047TC1_HEIGHT, MALLOC_CAP_SPIRAM);
-    if (!s->gram) { free(s); return ESP_ERR_NO_MEM; }
-    memset(s->gram, 0xFF, (size_t)ED047TC1_WIDTH * ED047TC1_HEIGHT);   /* white */
+    size_t fb = (size_t)ED047TC1_WIDTH * ED047TC1_HEIGHT;
+    s->gram = heap_caps_malloc(fb, MALLOC_CAP_SPIRAM);
+    s->disp = heap_caps_malloc(fb, MALLOC_CAP_SPIRAM);
+    if (!s->gram || !s->disp) { op_deinit(&s->base); return ESP_ERR_NO_MEM; }
+    memset(s->gram, 0xFF, fb);   /* white target  */
+    memset(s->disp, 0xFF, fb);   /* white on glass after the init clear below */
 
     size_t lb = (ED047TC1_LINE_BYTES + ED047TC1_LINE_PADDING + 15) & ~(size_t)15;
     for (int i = 0; i < 2; i++) {
@@ -173,6 +220,9 @@ esp_err_t ed047tc1_epd_create(const ed047tc1_config_t *cfg, bsp_display_t **out_
         if (!s->line[i]) { op_deinit(&s->base); return ESP_ERR_NO_MEM; }
         memset(s->line[i], 0, lb);   /* padding region stays zero */
     }
+    s->hold_line = heap_caps_aligned_alloc(16, lb, MALLOC_CAP_DMA);
+    if (!s->hold_line) { op_deinit(&s->base); return ESP_ERR_NO_MEM; }
+    memset(s->hold_line, 0, lb);   /* all pixels hold (action 0), padding zero */
 
     epd_ll_config_t ll = {
         .sph_pin      = cfg->sph_pin,
@@ -201,8 +251,9 @@ esp_err_t ed047tc1_epd_create(const ed047tc1_config_t *cfg, bsp_display_t **out_
     gpio_set_level(cfg->pwr_pin, 0);
 
     /* Establish a known white screen so later refreshes start from a clean
-     * state. Uniform white clear -> fast (one prebuilt line, no per-row build). */
-    refresh_lut(s, ed047tc1_lut_clear, ED047TC1_LUT_CLEAR_STEPS);
+     * state. Full clear (drives every pixel) with uniform white frames -> one
+     * prebuilt line, no per-row build. */
+    refresh_lut(s, ed047tc1_lut_clear, ED047TC1_LUT_CLEAR_STEPS, true);
 
     *out_display = &s->base;
     return ESP_OK;
