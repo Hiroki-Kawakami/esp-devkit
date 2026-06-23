@@ -134,20 +134,48 @@ static void pump_events(void) {
             default: break;
             }
             break;
+        case SDL_WINDOWEVENT:
+            if (ev.window.event == SDL_WINDOWEVENT_SIZE_CHANGED ||
+                ev.window.event == SDL_WINDOWEVENT_EXPOSED) {
+                s_dirty = true;   /* re-letterbox at the new drawable size */
+            }
+            break;
         default: break;
         }
     }
 }
 
-/* Map on-screen window coordinates to panel pixels, undoing scale_div, any live
- * window resize, and the host-view rotation; clamp to the panel bounds. */
+/* Aspect-preserving fit of the (rotated) content into a vw×vh viewport, centered.
+ * Content footprint is the panel size, swapped for 90/270. Outputs the on-screen
+ * rect; works in whatever units the viewport is given (drawable px or window pts). */
+static void content_fit(int vw, int vh, int *ox, int *oy, int *ow, int *oh) {
+    bool swap = (s_window_rotation == 90 || s_window_rotation == 270);
+    double cw = swap ? s_panel_h : s_panel_w;
+    double ch = swap ? s_panel_w : s_panel_h;
+    double scale = ((double)vw / cw < (double)vh / ch) ? (double)vw / cw : (double)vh / ch;
+    int fw = (int)(cw * scale + 0.5);
+    int fh = (int)(ch * scale + 0.5);
+    *ow = fw; *oh = fh;
+    *ox = (vw - fw) / 2;
+    *oy = (vh - fh) / 2;
+}
+
+/* Map on-screen window coordinates to panel pixels, undoing the aspect-preserving
+ * letterbox (any window size), the host-view rotation, and clamping to the panel. */
 static void window_to_panel(int wx, int wy, int *px, int *py) {
     int ww = s_panel_w / s_scale_div, wh = s_panel_h / s_scale_div;
     if (s_window) SDL_GetWindowSize(s_window, &ww, &wh);
     if (ww <= 0) ww = 1;
     if (wh <= 0) wh = 1;
-    double nx = (double)wx / ww, ny = (double)wy / wh;   /* normalized window coords */
-    double fx, fy;                                        /* normalized panel coords */
+    int cx, cy, cw, ch;
+    content_fit(ww, wh, &cx, &cy, &cw, &ch);
+    if (cw <= 0) cw = 1;
+    if (ch <= 0) ch = 1;
+    double nx = (double)(wx - cx) / cw;   /* normalized within the displayed content */
+    double ny = (double)(wy - cy) / ch;
+    if (nx < 0.0) nx = 0.0; else if (nx > 1.0) nx = 1.0;
+    if (ny < 0.0) ny = 0.0; else if (ny > 1.0) ny = 1.0;
+    double fx, fy;                         /* normalized panel coords */
     switch (s_window_rotation) {
         case 90:  fx = ny;       fy = 1.0 - nx; break;
         case 180: fx = 1.0 - nx; fy = 1.0 - ny; break;
@@ -459,7 +487,8 @@ esp_err_t sdl_panel_create(const sdl_panel_config_t *config,
                                     SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
                                     (rot_swap ? s_panel_h : s_panel_w) / s_scale_div,
                                     (rot_swap ? s_panel_w : s_panel_h) / s_scale_div,
-                                    SDL_WINDOW_SHOWN | SDL_WINDOW_ALLOW_HIGHDPI);
+                                    SDL_WINDOW_SHOWN | SDL_WINDOW_ALLOW_HIGHDPI |
+                                    SDL_WINDOW_RESIZABLE);
         s_renderer = SDL_CreateRenderer(s_window, -1,
                                         SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
         s_texture = SDL_CreateTexture(s_renderer, sdl_texture_format(config->format),
@@ -565,19 +594,22 @@ void sdl_panel_present(void) {
         SDL_UpdateTexture(s_texture, NULL, s_present_src, s_panel_w * (int)s_bpp);
     }
 
-    SDL_RenderClear(s_renderer);   /* paint the letterbox margins when rotated */
+    SDL_RenderClear(s_renderer);   /* paint the letterbox margins */
     int dw, dh;
     SDL_GetRendererOutputSize(s_renderer, &dw, &dh);
+    int fx, fy, fw, fh;            /* upright content rect, aspect-preserved */
+    content_fit(dw, dh, &fx, &fy, &fw, &fh);
     SDL_Rect  dst;
     SDL_Point center;
     if (s_window_rotation == 90 || s_window_rotation == 270) {
-        /* Rotating about the center swaps the texture's footprint, so place a
-         * dh×dw rect centered in the dw×dh drawable. */
-        dst    = (SDL_Rect){ (dw - dh) / 2, (dh - dw) / 2, dh, dw };
-        center = (SDL_Point){ dh / 2, dw / 2 };
+        /* The texture is panel-oriented; rotating about its center swaps the
+         * footprint, so place an fh×fw rect centered on the content center. */
+        int ccx = fx + fw / 2, ccy = fy + fh / 2;
+        dst    = (SDL_Rect){ ccx - fh / 2, ccy - fw / 2, fh, fw };
+        center = (SDL_Point){ fh / 2, fw / 2 };
     } else {
-        dst    = (SDL_Rect){ 0, 0, dw, dh };
-        center = (SDL_Point){ dw / 2, dh / 2 };
+        dst    = (SDL_Rect){ fx, fy, fw, fh };
+        center = (SDL_Point){ fw / 2, fh / 2 };
     }
     SDL_RenderCopyEx(s_renderer, s_texture, NULL, &dst,
                      (double)s_window_rotation, &center, SDL_FLIP_NONE);
