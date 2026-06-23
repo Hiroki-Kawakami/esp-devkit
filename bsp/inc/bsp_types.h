@@ -54,6 +54,17 @@ static inline size_t bsp_pixel_format_bytes(bsp_pixel_format_t format) {
     }
 }
 
+/* Source orientation for bsp_display_draw_bitmap: the pixels are rotated by this
+ * much relative to the panel, and the driver un-rotates them into the (panel-
+ * coordinate) destination rect while writing. Values mirror lv_display_rotation_t.
+ * For 90/270 the source dimensions are the destination rect's, transposed. */
+typedef enum {
+    BSP_ROTATION_0,
+    BSP_ROTATION_90,
+    BSP_ROTATION_180,
+    BSP_ROTATION_270,
+} bsp_rotation_t;
+
 typedef enum {
     BSP_EPD_MODE_NONE,    /* draw() writes framebuffer only, no panel refresh */
     BSP_EPD_MODE_FAST,    /* 2-level direct update, fast                      */

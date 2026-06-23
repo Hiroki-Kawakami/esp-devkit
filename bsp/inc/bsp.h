@@ -23,7 +23,7 @@ bsp_display_type_t bsp_display_get_type(void);
 bsp_size_t bsp_display_get_size(void);
 bsp_pixel_format_t bsp_display_get_pixel_format(void);
 void bsp_display_set_brightness(int brightness);
-void bsp_display_draw_bitmap(bsp_rect_t area, const void *pixels);
+void bsp_display_draw_bitmap(bsp_rect_t area, const void *pixels, bsp_rotation_t rotation);
 void *bsp_display_get_frame_buffer(int fb_index);
 void bsp_display_flush(int fb_index);
 

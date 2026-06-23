@@ -15,6 +15,7 @@
 
 #include "bsp.h"
 #include "bsp_display.h"
+#include <string.h>
 
 static bsp_display_t *s_display;
 static void **s_frame_buffers;   /* cached from get_framebuffers() at registration */
@@ -42,8 +43,28 @@ void bsp_display_set_brightness(int brightness) {
     if (s_display && s_display->set_brightness) s_display->set_brightness(s_display, brightness);
 }
 
-void bsp_display_draw_bitmap(bsp_rect_t area, const void *pixels) {
-    if (s_display && s_display->draw_bitmap) s_display->draw_bitmap(s_display, area, pixels);
+void bsp_display_draw_bitmap(bsp_rect_t area, const void *pixels, bsp_rotation_t rotation) {
+    if (s_display && s_display->draw_bitmap) s_display->draw_bitmap(s_display, area, pixels, rotation);
+}
+
+void bsp_blit_rotated(uint8_t *dst, int dst_stride_px, size_t px,
+                      bsp_rect_t area, const void *pixels, bsp_rotation_t rotation) {
+    const uint8_t *src = pixels;
+    const int w = area.size.width, h = area.size.height;   /* destination rect */
+    const int x0 = area.origin.x, y0 = area.origin.y;
+    for (int dr = 0; dr < h; dr++) {
+        uint8_t *drow = dst + ((size_t)(y0 + dr) * dst_stride_px + x0) * px;
+        for (int dc = 0; dc < w; dc++) {
+            size_t si;   /* source pixel index (packed, stride = source width) */
+            switch (rotation) {
+                case BSP_ROTATION_90:  si = (size_t)dc * h + (h - 1 - dr); break;
+                case BSP_ROTATION_270: si = (size_t)(w - 1 - dc) * h + dr; break;
+                case BSP_ROTATION_180: si = (size_t)(h - 1 - dr) * w + (w - 1 - dc); break;
+                default:               si = (size_t)dr * w + dc; break;
+            }
+            memcpy(drow + (size_t)dc * px, src + si * px, px);
+        }
+    }
 }
 
 void *bsp_display_get_frame_buffer(int fb_index) {

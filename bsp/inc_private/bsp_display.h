@@ -35,7 +35,8 @@ struct bsp_display {
     bsp_pixel_format_t  format;
 
     /* portable base contract (always non-NULL) */
-    esp_err_t (*draw_bitmap)(bsp_display_t *self, bsp_rect_t area, const void *pixels);
+    esp_err_t (*draw_bitmap)(bsp_display_t *self, bsp_rect_t area, const void *pixels,
+                             bsp_rotation_t rotation);
     esp_err_t (*deinit)(bsp_display_t *self);
 
     /* backlight — NULL when the panel has no controllable backlight */
@@ -54,3 +55,10 @@ struct bsp_display {
  * implements the model-agnostic public bsp_display_* API on top of it. A board's
  * bsp_init() calls this once after creating its display provider. */
 void bsp_display_set_active(bsp_display_t *display);
+
+/* Shared rotated blit for copy-based backends (EPD GRAM, SPI glass): write the
+ * source pixels into the panel-coordinate rect `area`, un-rotating by `rotation`.
+ * `dst_stride_px` is the destination's full row width in pixels; `px_bytes` the
+ * bytes per pixel. rotation == BSP_ROTATION_0 callers use a plain row copy instead. */
+void bsp_blit_rotated(uint8_t *dst, int dst_stride_px, size_t px_bytes,
+                      bsp_rect_t area, const void *pixels, bsp_rotation_t rotation);

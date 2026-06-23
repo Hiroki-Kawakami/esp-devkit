@@ -93,7 +93,8 @@ static void refresh_lut(ed047tc1_t *s, const uint32_t *lut, size_t steps) {
 
 // MARK: - vtable
 
-static esp_err_t op_draw_bitmap(bsp_display_t *self, bsp_rect_t area, const void *pixels) {
+static esp_err_t op_draw_bitmap(bsp_display_t *self, bsp_rect_t area, const void *pixels,
+                                bsp_rotation_t rotation) {
     ed047tc1_t *s = (ed047tc1_t *)self;
     const uint8_t *src = pixels;
     int x0 = area.origin.x, y0 = area.origin.y;
@@ -101,9 +102,12 @@ static esp_err_t op_draw_bitmap(bsp_display_t *self, bsp_rect_t area, const void
     if (x0 < 0 || y0 < 0 || x0 + w > ED047TC1_WIDTH || y0 + h > ED047TC1_HEIGHT) {
         return ESP_ERR_INVALID_ARG;
     }
-    for (int r = 0; r < h; r++) {
-        memcpy(s->gram + (size_t)(y0 + r) * ED047TC1_WIDTH + x0,
-               src + (size_t)r * w, w);
+    if (rotation == BSP_ROTATION_0) {
+        for (int r = 0; r < h; r++) {
+            memcpy(s->gram + (size_t)(y0 + r) * ED047TC1_WIDTH + x0, src + (size_t)r * w, w);
+        }
+    } else {
+        bsp_blit_rotated(s->gram, ED047TC1_WIDTH, 1, area, pixels, rotation);
     }
     if (s->mode != BSP_EPD_MODE_NONE) {
         return self->refresh(self, area, s->mode);

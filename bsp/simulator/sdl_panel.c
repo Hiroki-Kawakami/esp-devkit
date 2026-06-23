@@ -178,11 +178,13 @@ static esp_err_t display_set_brightness(bsp_display_t *self, int brightness) {
 /* Blit straight to the presented buffer and mark it for present. For SPI that is
  * s_glass; for MIPI it is framebuffer 0 (draw_bitmap is the non-framebuffer
  * fallback path there — the usual MIPI path is flush). */
-static esp_err_t display_draw_bitmap(bsp_display_t *self, bsp_rect_t area, const void *pixels) {
+static esp_err_t display_draw_bitmap(bsp_display_t *self, bsp_rect_t area, const void *pixels,
+                                     bsp_rotation_t rotation) {
     (void)self;
     uint8_t *target = (s_type == BSP_DISPLAY_TYPE_MIPI_DSI) ? s_fb[0] : s_glass;
     if (!target) return ESP_ERR_INVALID_STATE;
-    blit_rect(target, area, pixels);
+    if (rotation == BSP_ROTATION_0) blit_rect(target, area, pixels);
+    else bsp_blit_rotated(target, s_panel_w, s_bpp, area, pixels, rotation);
     s_present_src = target;
     s_dirty = true;
     return ESP_OK;
@@ -224,10 +226,12 @@ static void epd_composite(bsp_rect_t area, bsp_epd_mode_t mode) {
     s_dirty = true;
 }
 
-static esp_err_t display_draw_bitmap_epd(bsp_display_t *self, bsp_rect_t area, const void *pixels) {
+static esp_err_t display_draw_bitmap_epd(bsp_display_t *self, bsp_rect_t area, const void *pixels,
+                                         bsp_rotation_t rotation) {
     (void)self;
     if (!s_gram) return ESP_ERR_INVALID_STATE;
-    blit_rect(s_gram, area, pixels);
+    if (rotation == BSP_ROTATION_0) blit_rect(s_gram, area, pixels);
+    else bsp_blit_rotated(s_gram, s_panel_w, s_bpp, area, pixels, rotation);
     if (s_epd_mode != BSP_EPD_MODE_NONE) epd_composite(area, s_epd_mode);
     return ESP_OK;
 }
