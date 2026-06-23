@@ -6,34 +6,41 @@
  *
  * Two concerns live here, both SoC/bus-specific (re-tailored per peripheral, not
  * abstracted): the low-level i80 bus + CKV/SPV/LE scan protocol (file-static, the
- * `bus_*` helpers), and the refresh engine on top of it (the framebuffer, the
- * time-axis waveform LUT, differential drive, and the async refresh task). The
- * engine is panel-agnostic -- geometry, scanline format, power pins, and the
- * waveform LUTs all arrive via epd_ll_config_t. epd_ll_create wires them together
- * and returns a bsp_display_t.
+ * `bus_*` helpers), and the refresh engine on top of it. The engine's algorithmic
+ * core -- the transaction-index waveform logic -- is the panel-agnostic, SoC-free
+ * epd_waveform.h (host unit-tested via driver/test/run.sh); this file adds the
+ * framebuffer, the i80 scan, the locking, and the async task around it.
  *
- * Refresh model. draw_bitmap updates an L8 target GRAM and returns; refresh()
- * coalesces a request and wakes the background task, also returning immediately.
- * The task freezes GRAM into a `snapshot`, then replays the waveform LUT,
- * rebuilding every scanline from the snapshot each frame. Only pixels whose
- * target differs from the displayed state (`disp`) are driven; the rest hold. The
- * BSP_EPD_MODE_FULL flag forces every pixel to drive (ghost clear). Gate scanning
- * always covers the whole panel, so refresh ignores the dirty rect.
+ * Transaction model. There is ONE framebuffer, `state`, a byte per pixel:
+ * [7:4] = target/confirmed gray, [3:0] = transaction id. id 0 means idle (the
+ * pixel holds; its nibble is the confirmed on-glass value). ids 1..15 are refresh
+ * generations that progress independently -- up to 15 in flight -- so disjoint
+ * regions can run different waveforms in different phases concurrently.
  *
- * Coherency: three full-frame buffers. `gram` is written by the caller (UI),
- * `snapshot` is the frozen target the task drives, `disp` is the committed
- * on-glass state. A mutex guards only the short ops -- GRAM writes, the
- * gram->snapshot copy, the busy/pending state -- never the multi-frame scan. Each
- * refresh diffs snapshot vs disp and commits disp = snapshot; draws that land
- * mid-scan are picked up by the next (coalesced) refresh.
+ *   draw_bitmap  stamps the open generation `pending_id` onto changed pixels only
+ *                (the diff-skip is done here, against the byte's current nibble --
+ *                no second "displayed" buffer needed) and returns.
+ *   refresh      binds a waveform LUT to the open generation, activating it, and
+ *                returns (O(1)); the background task drives it.
  *
- * Scanline packing: 4 source pixels -> one byte, leftmost pixel in the high 2-bit
- * pair (MSB-first), giving width/4 bytes per line. Rows with no driven pixel reuse
- * a constant all-hold line; uniform frames (every gray drives the same) likewise
- * reuse a single prebuilt line for all rows.
+ * The task runs a continuous frame loop while any generation is ACTIVE: each
+ * frame it builds a 256-entry action table from the live generation states,
+ * packs every scanline through it (read-only -- the scan never writes `state`, so
+ * it cannot race a concurrent draw), and on a generation's final frame reclaims
+ * its id->0 in a short locked pass. A FULL/CLEAR refresh aborts every in-flight
+ * generation and drives the whole panel uniformly (ghost clear / bring-up white).
+ *
+ * Locking. A single mutex guards every WRITE to `state`/`tx`/`pending_id` (the
+ * draw stamp, the LUT bind, the terminal reclaim) plus the short per-frame table
+ * build -- never the multi-row scan. The scan reads `state` unlocked; byte reads
+ * are atomic, so a concurrent draw only makes a freshly-drawn pixel render a frame
+ * late, never corrupts a byte. (Cost of the single buffer: no frozen snapshot, so
+ * redrawing a pixel mid-flight interrupts its waveform -- recovered by the next
+ * refresh. The diff-skip and the 15-way pipeline are kept.)
  */
 
 #include "epd_ll.h"
+#include "epd_waveform.h"
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -164,23 +171,27 @@ typedef struct {
     uint8_t        line_padding;
     const uint32_t *(*get_waveform_lut)(bsp_epd_mode_t mode, size_t *steps);
 
-    uint8_t       *gram;       /* L8 target (caller-written), PSRAM   */
-    uint8_t       *snapshot;   /* L8 frozen target the task drives    */
-    uint8_t       *disp;       /* L8 displayed state, PSRAM           */
-    bool          *row_drv;    /* per-row "needs drive", height bytes */
-    uint8_t       *line[2];    /* DMA scanline ping-pong, internal    */
-    uint8_t       *hold_line;  /* constant all-hold (0x00) DMA line   */
-    bsp_epd_mode_t mode;       /* persistent draw mode                */
+    uint8_t       *state;      /* [7:4]=gray, [3:0]=tx id -- the only framebuffer */
+    uint16_t      *row_nonidle;/* per-row count of non-idle (id != 0) pixels      */
+    uint8_t       *line[2];    /* DMA scanline ping-pong, internal                */
+    uint8_t       *hold_line;  /* constant all-hold (0x00) DMA line               */
+    uint8_t        act_tab[256];/* per-frame action table (task-owned)            */
+
+    epd_tx_t       tx[EPD_TX_SLOTS];
+    int            pending_id;  /* open draw generation, 0 = none                 */
+
+    bsp_epd_mode_t mode;        /* persistent draw mode                           */
     int            oe_pin;
     int            pwr_pin;
 
-    TaskHandle_t      task;    /* background waveform engine          */
-    SemaphoreHandle_t mtx;     /* guards gram write / snapshot / state */
-    SemaphoreHandle_t done;    /* task signals exit on deinit         */
-    bsp_epd_mode_t    pending_mode;  /* coalesced next refresh        */
-    volatile bool     busy;    /* a refresh is in flight              */
-    volatile bool     pending; /* a refresh is queued                 */
-    volatile bool     stop;    /* deinit requested                    */
+    TaskHandle_t      task;     /* background waveform engine                     */
+    SemaphoreHandle_t mtx;      /* guards state/tx/pending_id writes + table build*/
+    SemaphoreHandle_t done;     /* task signals exit on deinit                    */
+    SemaphoreHandle_t slot_free;/* binary: posted when the engine frees a slot    */
+    bsp_epd_mode_t    full_mode;     /* coalesced pending FULL/CLEAR mode         */
+    volatile bool     full_pending;  /* a FULL/CLEAR refresh is queued (aborts all)*/
+    volatile bool     running;  /* task is awake (driving), not sleeping on notify*/
+    volatile bool     stop;     /* deinit requested                               */
 } epd_t;
 
 static void power_on(epd_t *s) {
@@ -193,36 +204,16 @@ static void power_off(epd_t *s) {
     gpio_set_level(s->oe_pin, 0);  esp_rom_delay_us(100);
 }
 
-/* Build one DMA scanline from a GRAM row (L8) for the given waveform frame.
- * 4 pixels pack into one byte, leftmost pixel in the high 2-bit pair (MSB-first);
- * byte k holds pixels 4k..4k+3 -> width/4 bytes per line. A pixel drives only
- * when its target nibble differs from the displayed one; a NULL disp_row drives
- * every pixel (full refresh). Pixels that hold emit action 0. */
-static void build_line(int width, const uint8_t *row, const uint8_t *disp_row,
-                       uint32_t frame, uint8_t *dst) {
-    for (int x = 0; x < width; x += 4) {
-        int d[4];
-        for (int k = 0; k < 4; k++) {
-            int g = row[x + k] >> 4;
-            bool drive = !disp_row || (disp_row[x + k] >> 4) != g;
-            d[k] = drive ? ((frame >> (g * 2)) & 3) : 0;
-        }
-        dst[x >> 2] = (uint8_t)((d[0] << 6) | (d[1] << 4) | (d[2] << 2) | d[3]);
-    }
-}
-
-/* True if any pixel in the row has a target nibble differing from displayed. */
-static bool row_changed(int width, const uint8_t *row, const uint8_t *disp_row) {
-    for (int x = 0; x < width; x++) {
-        if ((row[x] >> 4) != (disp_row[x] >> 4)) return true;
+static bool tx_any_active(const epd_tx_t tx[EPD_TX_SLOTS]) {
+    for (int id = 1; id < EPD_TX_SLOTS; id++) {
+        if (tx[id].state == EPD_TX_ACTIVE) return true;
     }
     return false;
 }
 
 /* A frame is uniform when every gray column decodes to the same 2-bit drive
  * (code c repeated 16x = c * 0x55555555). Then one prebuilt scanline serves all
- * rows -- no per-row packing, no GRAM reads -- which is most of the speed win
- * for clears and the solid frames inside a waveform. */
+ * rows -- the speed win for clears and the solid frames inside a waveform. */
 static bool frame_uniform(uint32_t frame, uint8_t *line_byte) {
     if (frame == 0x00000000u || frame == 0x55555555u || frame == 0xAAAAAAAAu) {
         *line_byte = (uint8_t)(frame & 0xFF);   /* 0x00 / 0x55 / 0xAA */
@@ -231,114 +222,172 @@ static bool frame_uniform(uint32_t frame, uint8_t *line_byte) {
     return false;
 }
 
-/* Replay a waveform LUT. In diff mode (full == false) only rows with a changed
- * pixel are driven -- the rest emit a constant all-hold line -- and within a
- * driven row only changed pixels move; the uniform fast path stays off because
- * held pixels break per-row uniformity. Full mode drives every pixel and keeps
- * the uniform fast path. The displayed state is committed to match the target
- * after the scan. */
-static void refresh_lut(epd_t *s, const uint8_t *src,
-                        const uint32_t *lut, size_t steps, bool full) {
+/* Render one frame of every ACTIVE generation. The table build + the post-scan
+ * terminal reclaim are short locked ops; the multi-row scan in between is
+ * lock-free and read-only on `state`. */
+static void run_one_frame(epd_t *s) {
     const int W = s->width, H = s->height;
-    bool any = false;
-    for (int y = 0; y < H; y++) {
-        bool d = full || row_changed(W, src + (size_t)y * W, s->disp + (size_t)y * W);
-        s->row_drv[y] = d;
-        any |= d;
-    }
-    if (!any) return;   /* nothing changed: skip power-up and the whole scan */
+    uint16_t active_mask, ended;
 
+    xSemaphoreTake(s->mtx, portMAX_DELAY);
+    bool active = epd_frame_mark(s->tx, &active_mask, &ended);
+    if (!active) { xSemaphoreGive(s->mtx); return; }
+    epd_build_act_tab(s->tx, s->act_tab);
+    xSemaphoreGive(s->mtx);
+
+    bus_frame_begin();
+    for (int y = 0; y < H; y++) {
+        uint8_t *buf;
+        if (s->row_nonidle[y] == 0) {
+            buf = s->hold_line;                          /* whole row idle: hold */
+        } else {
+            buf = s->line[y & 1];
+            epd_blit_line(W, s->state + (size_t)y * W, s->act_tab, buf);
+        }
+        bus_write_line(buf);
+    }
+    bus_frame_end();
+
+    xSemaphoreTake(s->mtx, portMAX_DELAY);
+    if (ended) {
+        for (int y = 0; y < H; y++) {
+            if (!s->row_nonidle[y]) continue;
+            int freed = epd_reclaim_row(W, s->state + (size_t)y * W, ended);
+            s->row_nonidle[y] -= (uint16_t)freed;
+        }
+    }
+    epd_frame_advance(s->tx, active_mask);
+    xSemaphoreGive(s->mtx);
+    if (ended) xSemaphoreGive(s->slot_free);   /* a slot freed: wake a blocked draw */
+}
+
+/* FULL / CLEAR: abort every in-flight generation and drive the whole panel
+ * uniformly. Self-contained (owns the power sequence) so it also serves the
+ * synchronous bring-up white before the task exists. Concurrent draws are
+ * subsumed -- this is a quiescent reset point, not for use mid-animation. */
+static void do_full_drive(epd_t *s, bsp_epd_mode_t mode) {
+    bool clear = (mode & ~BSP_EPD_MODE_FULL) == BSP_EPD_MODE_CLEAR;
+    size_t steps = 0;
+    const uint32_t *lut = s->get_waveform_lut(mode & ~BSP_EPD_MODE_FULL, &steps);
+    if (!lut || !steps) return;
+
+    if (s->mtx) xSemaphoreTake(s->mtx, portMAX_DELAY);
+    for (int id = 1; id < EPD_TX_SLOTS; id++) s->tx[id].state = EPD_TX_FREE;
+    s->pending_id = 0;
+    if (s->mtx) xSemaphoreGive(s->mtx);
+
+    const int W = s->width, H = s->height;
     power_on(s);
     for (size_t f = 0; f < steps; f++) {
         uint32_t frame = lut[f];
-        uint8_t uni_byte;
-        bool uniform = full && frame_uniform(frame, &uni_byte);
-        if (uniform) memset(s->line[0], uni_byte, s->line_bytes);
-
+        uint8_t uni;
+        bool uniform = frame_uniform(frame, &uni);
+        if (uniform) memset(s->line[0], uni, s->line_bytes);
         bus_frame_begin();
         for (int y = 0; y < H; y++) {
             uint8_t *buf;
-            if (!s->row_drv[y]) {
-                buf = s->hold_line;   /* whole row holds */
-            } else if (uniform) {
-                buf = s->line[0];     /* same constant line for every row */
-            } else {
-                buf = s->line[y & 1];
-                build_line(W, src + (size_t)y * W,
-                           full ? NULL : s->disp + (size_t)y * W, frame, buf);
-            }
+            if (uniform) buf = s->line[0];
+            else { buf = s->line[y & 1]; epd_blit_line_full(W, s->state + (size_t)y * W, frame, buf); }
             bus_write_line(buf);
         }
         bus_frame_end();
     }
     power_off(s);
 
-    memcpy(s->disp, src, (size_t)W * H);
+    /* Commit: every pixel now shows its target. Clear ids (idle/confirmed); for
+     * CLEAR also set the confirmed gray to white. */
+    size_t fb = (size_t)W * H;
+    if (s->mtx) xSemaphoreTake(s->mtx, portMAX_DELAY);
+    if (clear) memset(s->state, 0xF0, fb);
+    else for (size_t p = 0; p < fb; p++) s->state[p] &= 0xF0;
+    memset(s->row_nonidle, 0, (size_t)H * sizeof(uint16_t));
+    if (s->mtx) xSemaphoreGive(s->mtx);
+    if (s->slot_free) xSemaphoreGive(s->slot_free);
 }
 
-/* Look up the waveform for a refresh mode (FULL stripped) and replay it. */
-static void do_refresh(epd_t *s, const uint8_t *src, bsp_epd_mode_t mode) {
-    bool full = mode & BSP_EPD_MODE_FULL;
-    size_t steps = 0;
-    const uint32_t *lut = s->get_waveform_lut(mode & ~BSP_EPD_MODE_FULL, &steps);
-    if (lut && steps) refresh_lut(s, src, lut, steps, full);
-}
-
-/* Coalesce two pending refresh modes: keep FULL if either has it, and the
- * stronger waveform (QUALITY > FAST > NONE by enum value). */
-static bsp_epd_mode_t mode_coalesce(bsp_epd_mode_t a, bsp_epd_mode_t b) {
-    bsp_epd_mode_t full = (a | b) & BSP_EPD_MODE_FULL;
-    bsp_epd_mode_t wa = a & ~BSP_EPD_MODE_FULL, wb = b & ~BSP_EPD_MODE_FULL;
-    return (wa > wb ? wa : wb) | full;
-}
-
-/* Background waveform engine. Sleeps on a task notification; once woken, drains
- * coalesced refreshes -- snapshotting GRAM under the mutex, then driving the scan
- * lock-free -- until none remain, then sleeps again. */
+/* Background waveform engine. Sleeps on a task notification when there is nothing
+ * to drive; once woken, runs frames continuously -- a queued FULL/CLEAR aborts
+ * and drives uniformly, otherwise one frame of the active generations -- powering
+ * the panel for the duration and parking it when the queue and all generations
+ * drain. */
 static void refresh_task(void *arg) {
     epd_t *s = arg;
-    const size_t fb = (size_t)s->width * s->height;
+    bool powered = false;
     for (;;) {
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        for (;;) {
-            xSemaphoreTake(s->mtx, portMAX_DELAY);
-            if (s->stop)      { xSemaphoreGive(s->mtx); goto done; }
-            if (!s->pending)  { s->busy = false; xSemaphoreGive(s->mtx); break; }
-            bsp_epd_mode_t m = s->pending_mode;
-            s->pending = false;
-            s->pending_mode = BSP_EPD_MODE_NONE;
-            memcpy(s->snapshot, s->gram, fb);   /* freeze target under the lock */
+        xSemaphoreTake(s->mtx, portMAX_DELAY);
+        if (s->stop) { xSemaphoreGive(s->mtx); break; }
+        bool full = s->full_pending;
+        bsp_epd_mode_t fmode = s->full_mode;
+        bool active = tx_any_active(s->tx);
+        if (full) s->full_pending = false;
+        if (!full && !active) {
+            s->running = false;                  /* idle: re-kick needed to wake us */
             xSemaphoreGive(s->mtx);
-            do_refresh(s, s->snapshot, m);
+            if (powered) { power_off(s); powered = false; }
+            ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+            continue;
+        }
+        xSemaphoreGive(s->mtx);
+
+        if (full) {
+            do_full_drive(s, fmode);             /* owns its own power sequence */
+            powered = false;
+        } else {
+            if (!powered) { power_on(s); powered = true; }
+            run_one_frame(s);
         }
     }
-done:
+    if (powered) power_off(s);
     xSemaphoreGive(s->done);
     vTaskDelete(NULL);
 }
 
 // MARK: - vtable
 
+/* Stamp the open generation onto the drawn rect, doing the diff-skip per pixel.
+ * Mirrors bsp_blit_rotated's source<->panel mapping, but folds compare+stamp into
+ * the walk instead of a plain copy (so it can't reuse that helper). */
 static esp_err_t op_draw_bitmap(bsp_display_t *self, bsp_rect_t area, const void *pixels,
                                 bsp_rotation_t rotation) {
     epd_t *s = (epd_t *)self;
     const uint8_t *src = pixels;
-    int x0 = area.origin.x, y0 = area.origin.y;
-    int w = area.size.width, h = area.size.height;
-    if (x0 < 0 || y0 < 0 || x0 + w > s->width || y0 + h > s->height) {
+    const int W = s->width;
+    const int x0 = area.origin.x, y0 = area.origin.y;
+    const int w = area.size.width, h = area.size.height;
+    if (x0 < 0 || y0 < 0 || x0 + w > W || y0 + h > s->height) {
         return ESP_ERR_INVALID_ARG;
     }
-    /* Guard GRAM against the task's snapshot copy (the lock is held only for the
-     * copy, never the scan). */
+
     xSemaphoreTake(s->mtx, portMAX_DELAY);
-    if (rotation == BSP_ROTATION_0) {
-        for (int r = 0; r < h; r++) {
-            memcpy(s->gram + (size_t)(y0 + r) * s->width + x0, src + (size_t)r * w, w);
+    while (s->pending_id == 0) {                  /* open a generation for this draw */
+        int id = epd_tx_alloc(s->tx);
+        if (id) { s->pending_id = id; break; }
+        xSemaphoreGive(s->mtx);                   /* slots exhausted: wait for a free */
+        xSemaphoreTake(s->slot_free, portMAX_DELAY);
+        xSemaphoreTake(s->mtx, portMAX_DELAY);
+    }
+    const int id = s->pending_id;
+    for (int dr = 0; dr < h; dr++) {
+        const int py = y0 + dr;
+        uint8_t *drow = s->state + (size_t)py * W;
+        uint16_t gained = 0;
+        for (int dc = 0; dc < w; dc++) {
+            size_t si;
+            switch (rotation) {
+                case BSP_ROTATION_90:  si = (size_t)dc * h + (h - 1 - dr); break;
+                case BSP_ROTATION_270: si = (size_t)(w - 1 - dc) * h + dr; break;
+                case BSP_ROTATION_180: si = (size_t)(h - 1 - dr) * w + (w - 1 - dc); break;
+                default:               si = (size_t)dr * w + dc; break;
+            }
+            bool now_nonidle;
+            uint8_t *cell = &drow[x0 + dc];
+            *cell = epd_draw_pixel(*cell, src[si] >> 4, id, &now_nonidle);
+            if (now_nonidle) gained++;
         }
-    } else {
-        bsp_blit_rotated(s->gram, s->width, 1, area, pixels, rotation);
+        s->row_nonidle[py] += gained;
     }
     xSemaphoreGive(s->mtx);
+
     if (s->mode != BSP_EPD_MODE_NONE) {
         return self->refresh(self, area, s->mode);
     }
@@ -350,18 +399,42 @@ static esp_err_t op_set_epd_mode(bsp_display_t *self, bsp_epd_mode_t mode) {
     return ESP_OK;
 }
 
+/* Coalesce two pending FULL/CLEAR modes: keep the stronger waveform
+ * (CLEAR > QUALITY > FAST by enum value) and the FULL flag. */
+static bsp_epd_mode_t full_coalesce(bsp_epd_mode_t a, bsp_epd_mode_t b) {
+    bsp_epd_mode_t wa = a & ~BSP_EPD_MODE_FULL, wb = b & ~BSP_EPD_MODE_FULL;
+    return (wa > wb ? wa : wb) | BSP_EPD_MODE_FULL;
+}
+
 /* Enqueue a refresh and return immediately; the background task does the scan.
- * Concurrent requests coalesce (stronger waveform / FULL wins) into one. */
+ * A partial refresh binds the open generation's waveform and activates it (O(1));
+ * a FULL/CLEAR refresh is queued to abort everything and drive uniformly. The
+ * gate scan always covers the whole panel, so `area` is unused (pixels carry
+ * their own generation id). */
 static esp_err_t op_refresh(bsp_display_t *self, bsp_rect_t area, bsp_epd_mode_t mode) {
-    (void)area;   /* gate scan always covers the full panel */
+    (void)area;
     epd_t *s = (epd_t *)self;
     if ((mode & ~BSP_EPD_MODE_FULL) == BSP_EPD_MODE_NONE) return ESP_OK;   /* no waveform */
 
     bool wake = false;
     xSemaphoreTake(s->mtx, portMAX_DELAY);
-    s->pending_mode = mode_coalesce(s->pending_mode, mode);
-    s->pending = true;
-    if (!s->busy) { s->busy = true; wake = true; }   /* idle->busy: kick the task */
+    if (mode & BSP_EPD_MODE_FULL) {
+        s->full_mode = s->full_pending ? full_coalesce(s->full_mode, mode) : mode;
+        s->full_pending = true;
+        if (!s->running) { s->running = true; wake = true; }
+    } else if (s->pending_id) {
+        size_t steps = 0;
+        const uint32_t *lut = s->get_waveform_lut(mode & ~BSP_EPD_MODE_FULL, &steps);
+        if (lut && steps) {                       /* unknown mode (no LUT): leave open */
+            int id = s->pending_id;
+            s->tx[id].lut   = lut;
+            s->tx[id].steps = (uint16_t)steps;
+            s->tx[id].frame = 0;
+            s->tx[id].state = EPD_TX_ACTIVE;
+            s->pending_id   = 0;                  /* close the generation */
+            if (!s->running) { s->running = true; wake = true; }
+        }
+    }
     xSemaphoreGive(s->mtx);
     if (wake) xTaskNotifyGive(s->task);
     return ESP_OK;
@@ -376,13 +449,12 @@ static esp_err_t op_deinit(bsp_display_t *self) {
         xTaskNotifyGive(s->task);
         xSemaphoreTake(s->done, portMAX_DELAY);
     }
-    if (s->mtx)  vSemaphoreDelete(s->mtx);
-    if (s->done) vSemaphoreDelete(s->done);
+    if (s->mtx)       vSemaphoreDelete(s->mtx);
+    if (s->done)      vSemaphoreDelete(s->done);
+    if (s->slot_free) vSemaphoreDelete(s->slot_free);
     power_off(s);
-    free(s->gram);
-    free(s->snapshot);
-    free(s->disp);
-    free(s->row_drv);
+    free(s->state);
+    free(s->row_nonidle);
     free(s->line[0]);
     free(s->line[1]);
     free(s->hold_line);
@@ -413,16 +485,10 @@ esp_err_t epd_ll_create(const epd_ll_config_t *cfg, bsp_display_t **out_display)
     s->get_waveform_lut  = cfg->get_waveform_lut;
 
     size_t fb = (size_t)cfg->width * cfg->height;
-    s->gram     = heap_caps_malloc(fb, MALLOC_CAP_SPIRAM);
-    s->snapshot = heap_caps_malloc(fb, MALLOC_CAP_SPIRAM);
-    s->disp     = heap_caps_malloc(fb, MALLOC_CAP_SPIRAM);
-    s->row_drv  = malloc((size_t)cfg->height * sizeof(bool));
-    if (!s->gram || !s->snapshot || !s->disp || !s->row_drv) {
-        op_deinit(&s->base);
-        return ESP_ERR_NO_MEM;
-    }
-    memset(s->gram, 0xFF, fb);   /* white target  */
-    memset(s->disp, 0xFF, fb);   /* white on glass after the init clear below */
+    s->state       = heap_caps_malloc(fb, MALLOC_CAP_SPIRAM);
+    s->row_nonidle = heap_caps_calloc((size_t)cfg->height, sizeof(uint16_t), MALLOC_CAP_SPIRAM);
+    if (!s->state || !s->row_nonidle) { op_deinit(&s->base); return ESP_ERR_NO_MEM; }
+    memset(s->state, 0xF0, fb);   /* white, idle (id 0) -- matches the bring-up clear */
 
     size_t lb = (cfg->line_bytes + cfg->line_padding + 15) & ~(size_t)15;
     for (int i = 0; i < 2; i++) {
@@ -448,17 +514,18 @@ esp_err_t epd_ll_create(const epd_ll_config_t *cfg, bsp_display_t **out_display)
     gpio_set_level(cfg->oe_pin, 0);
     gpio_set_level(cfg->pwr_pin, 0);
 
+    s->mtx       = xSemaphoreCreateMutex();
+    s->done      = xSemaphoreCreateBinary();
+    s->slot_free = xSemaphoreCreateBinary();
+    if (!s->mtx || !s->done || !s->slot_free) { op_deinit(&s->base); return ESP_ERR_NO_MEM; }
+
     /* Establish a known white screen so later refreshes start from a clean state.
-     * CLEAR_FULL drives every pixel through the (uniform) clear waveform to white.
-     * Synchronous -- runs before the task exists, straight from gram (== disp ==
-     * white). */
-    do_refresh(s, s->gram, BSP_EPD_MODE_CLEAR_FULL);
+     * Synchronous -- runs before the task exists, driving every pixel to white via
+     * the (uniform) clear waveform. */
+    do_full_drive(s, BSP_EPD_MODE_CLEAR_FULL);
 
     /* Bring up the async waveform engine. Pinned to core 0 to keep its DMA
      * busy-waits off the UI/LVGL core. */
-    s->mtx  = xSemaphoreCreateMutex();
-    s->done = xSemaphoreCreateBinary();
-    if (!s->mtx || !s->done) { op_deinit(&s->base); return ESP_ERR_NO_MEM; }
     if (xTaskCreatePinnedToCore(refresh_task, "epd_refresh", 4096, s, 5, &s->task, 0) != pdPASS) {
         s->task = NULL;
         op_deinit(&s->base);
