@@ -341,6 +341,31 @@ static void make_parent_dirs(const char *path) {
     }
 }
 
+/* Convert one panel pixel (by linear index) from the on-glass format to RGB24. */
+static void capture_pixel_rgb(size_t s_idx, uint8_t *dst) {
+    switch (s_format) {
+    case BSP_PIXEL_FORMAT_RGB888: {   /* framebuffer holds B,G,R (LVGL native) */
+        const uint8_t *p = s_present_src + s_idx * 3;
+        dst[0] = p[2]; dst[1] = p[1]; dst[2] = p[0];
+        break;
+    }
+    case BSP_PIXEL_FORMAT_L8: {
+        uint8_t g = s_present_src[s_idx];
+        dst[0] = dst[1] = dst[2] = g;
+        break;
+    }
+    case BSP_PIXEL_FORMAT_RGB565:
+    default: {
+        uint16_t v = ((const uint16_t *)s_present_src)[s_idx];
+        uint8_t r5 = (v >> 11) & 0x1F, g6 = (v >> 5) & 0x3F, b5 = v & 0x1F;
+        dst[0] = (uint8_t)((r5 << 3) | (r5 >> 2));
+        dst[1] = (uint8_t)((g6 << 2) | (g6 >> 4));
+        dst[2] = (uint8_t)((b5 << 3) | (b5 >> 2));
+        break;
+    }
+    }
+}
+
 static bool sdl_panel_capture(const char *path) {
     if (!s_present_src) return false;
 
@@ -350,7 +375,16 @@ static bool sdl_panel_capture(const char *path) {
         fprintf(stderr, "[sim] capture: cannot open %s\n", path);
         return false;
     }
-    uint8_t *row = malloc((size_t)s_panel_w * 3);
+
+    /* Apply the host-view rotation so the saved image is in the orientation the
+     * window shows (CW by s_window_rotation). Headless never runs the r/l keys, so
+     * this is exactly the build-time SDL_PANEL_DEFAULT_ROTATION — deterministic. */
+    const int  rot    = s_window_rotation;
+    const bool swap   = (rot == 90 || rot == 270);
+    const int  out_w  = swap ? s_panel_h : s_panel_w;
+    const int  out_h  = swap ? s_panel_w : s_panel_h;
+
+    uint8_t *row = malloc((size_t)out_w * 3);
     if (!row) { fclose(f); return false; }
 
     struct jpeg_compress_struct cinfo;
@@ -358,46 +392,24 @@ static bool sdl_panel_capture(const char *path) {
     cinfo.err = jpeg_std_error(&jerr);
     jpeg_create_compress(&cinfo);
     jpeg_stdio_dest(&cinfo, f);
-    cinfo.image_width = (JDIMENSION)s_panel_w;
-    cinfo.image_height = (JDIMENSION)s_panel_h;
+    cinfo.image_width = (JDIMENSION)out_w;
+    cinfo.image_height = (JDIMENSION)out_h;
     cinfo.input_components = 3;
     cinfo.in_color_space = JCS_RGB;
     jpeg_set_defaults(&cinfo);
     jpeg_set_quality(&cinfo, 90, TRUE);
     jpeg_start_compress(&cinfo, TRUE);
 
-    const size_t stride = (size_t)s_panel_w * s_bpp;
-    while (cinfo.next_scanline < (JDIMENSION)s_panel_h) {
-        const uint8_t *src = s_present_src + (size_t)cinfo.next_scanline * stride;
-        switch (s_format) {
-        case BSP_PIXEL_FORMAT_RGB888:
-            // Framebuffer holds B,G,R (LVGL native); JCS_RGB wants R,G,B.
-            for (int x = 0; x < s_panel_w; x++) {
-                row[x * 3 + 0] = src[x * 3 + 2];
-                row[x * 3 + 1] = src[x * 3 + 1];
-                row[x * 3 + 2] = src[x * 3 + 0];
+    for (int oy = 0; oy < out_h; oy++) {
+        for (int ox = 0; ox < out_w; ox++) {
+            int sx, sy;   /* source (panel-native) coords for output (ox, oy) */
+            switch (rot) {
+                case 90:  sx = oy;                 sy = s_panel_h - 1 - ox; break;
+                case 270: sx = s_panel_w - 1 - oy; sy = ox;                 break;
+                case 180: sx = s_panel_w - 1 - ox; sy = s_panel_h - 1 - oy; break;
+                default:  sx = ox;                 sy = oy;                 break;
             }
-            break;
-        case BSP_PIXEL_FORMAT_L8:
-            for (int x = 0; x < s_panel_w; x++) {
-                uint8_t g = src[x];
-                row[x * 3 + 0] = g;
-                row[x * 3 + 1] = g;
-                row[x * 3 + 2] = g;
-            }
-            break;
-        case BSP_PIXEL_FORMAT_RGB565:
-        default: {
-            const uint16_t *p = (const uint16_t *)src;   /* native order */
-            for (int x = 0; x < s_panel_w; x++) {
-                uint16_t v = p[x];
-                uint8_t r5 = (v >> 11) & 0x1F, g6 = (v >> 5) & 0x3F, b5 = v & 0x1F;
-                row[x * 3 + 0] = (uint8_t)((r5 << 3) | (r5 >> 2));
-                row[x * 3 + 1] = (uint8_t)((g6 << 2) | (g6 >> 4));
-                row[x * 3 + 2] = (uint8_t)((b5 << 3) | (b5 >> 2));
-            }
-            break;
-        }
+            capture_pixel_rgb((size_t)sy * s_panel_w + sx, row + (size_t)ox * 3);
         }
         JSAMPROW rp = row;
         jpeg_write_scanlines(&cinfo, &rp, 1);
@@ -407,7 +419,7 @@ static bool sdl_panel_capture(const char *path) {
     jpeg_destroy_compress(&cinfo);
     free(row);
     fclose(f);
-    fprintf(stderr, "[sim] captured %s (%dx%d)\n", path, s_panel_w, s_panel_h);
+    fprintf(stderr, "[sim] captured %s (%dx%d)\n", path, out_w, out_h);
     return true;
 }
 
