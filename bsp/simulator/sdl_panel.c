@@ -32,6 +32,13 @@
 #include <string.h>
 #include <sys/stat.h>
 
+/* Initial host-view rotation (0/90/180/270). The build overrides it — the
+ * simulator CMakeLists passes SDL_PANEL_DEFAULT_ROTATION; the r/l keys change it
+ * from here at runtime. */
+#ifndef SDL_PANEL_DEFAULT_ROTATION
+#define SDL_PANEL_DEFAULT_ROTATION 0
+#endif
+
 static SDL_Window   *s_window;
 static SDL_Renderer *s_renderer;
 static SDL_Texture  *s_texture;
@@ -40,6 +47,7 @@ static bsp_display_type_t s_type = BSP_DISPLAY_TYPE_NONE;
 static int                s_panel_w;
 static int                s_panel_h;
 static int                s_scale_div = 1;
+static int                s_window_rotation = SDL_PANEL_DEFAULT_ROTATION;   /* host-view rotation only (r/l keys); panel + touch coords are unaffected */
 static size_t             s_bpp = 2;          /* bytes per pixel of the panel format */
 static bsp_pixel_format_t s_format = BSP_PIXEL_FORMAT_RGB565;
 
@@ -96,24 +104,58 @@ static Uint32 sdl_texture_format(bsp_pixel_format_t fmt) {
     }
 }
 
-/* Drain the SDL event queue. The only event we must act on is window close;
- * touch is sampled from the mouse state in pump_input, not from events. */
+/* Rotate the host view by `delta` degrees (r/l keys), swapping the window's
+ * aspect for 90/270. This only changes how the glass is presented on screen and
+ * how the mouse is mapped back — the panel buffers and touch coordinate space are
+ * untouched. */
+static void rotate_window(int delta) {
+    if (!s_window) return;
+    s_window_rotation = (s_window_rotation + delta + 360) % 360;
+    int base_w = s_panel_w / s_scale_div;
+    int base_h = s_panel_h / s_scale_div;
+    bool swap = (s_window_rotation == 90 || s_window_rotation == 270);
+    SDL_SetWindowSize(s_window, swap ? base_h : base_w, swap ? base_w : base_h);
+    s_dirty = true;   /* re-present at the new size/orientation */
+}
+
+/* Drain the SDL event queue: window close quits; r/l rotate the host view; ESC
+ * quits. Touch is sampled from the mouse state in pump_input, not from events. */
 static void pump_events(void) {
     SDL_Event ev;
     while (SDL_PollEvent(&ev)) {
-        if (ev.type == SDL_QUIT) exit(0);
+        switch (ev.type) {
+        case SDL_QUIT:
+            exit(0);
+        case SDL_KEYDOWN:
+            switch (ev.key.keysym.sym) {
+            case SDLK_ESCAPE: exit(0);
+            case SDLK_r: rotate_window( 90); break;
+            case SDLK_l: rotate_window(-90); break;
+            default: break;
+            }
+            break;
+        default: break;
+        }
     }
 }
 
-/* Map on-screen window coordinates to panel pixels, accounting for scale_div and
- * any live window resize, and clamp to the panel bounds. */
+/* Map on-screen window coordinates to panel pixels, undoing scale_div, any live
+ * window resize, and the host-view rotation; clamp to the panel bounds. */
 static void window_to_panel(int wx, int wy, int *px, int *py) {
     int ww = s_panel_w / s_scale_div, wh = s_panel_h / s_scale_div;
     if (s_window) SDL_GetWindowSize(s_window, &ww, &wh);
-    if (ww <= 0) ww = s_panel_w;
-    if (wh <= 0) wh = s_panel_h;
-    int x = (int)((int64_t)wx * s_panel_w / ww);
-    int y = (int)((int64_t)wy * s_panel_h / wh);
+    if (ww <= 0) ww = 1;
+    if (wh <= 0) wh = 1;
+    double nx = (double)wx / ww, ny = (double)wy / wh;   /* normalized window coords */
+    double fx, fy;                                        /* normalized panel coords */
+    switch (s_window_rotation) {
+        case 90:  fx = ny;       fy = 1.0 - nx; break;
+        case 180: fx = 1.0 - nx; fy = 1.0 - ny; break;
+        case 270: fx = 1.0 - ny; fy = nx;       break;
+        default:  fx = nx;       fy = ny;       break;
+    }
+    int x = (int)(fx * s_panel_w);
+    int y = (int)(fy * s_panel_h);
     if (x < 0) x = 0; else if (x > s_panel_w - 1) x = s_panel_w - 1;
     if (y < 0) y = 0; else if (y > s_panel_h - 1) y = s_panel_h - 1;
     *px = x;
@@ -400,9 +442,11 @@ esp_err_t sdl_panel_create(const sdl_panel_config_t *config,
     }
 
     if (!s_headless) {
+        bool rot_swap = (s_window_rotation == 90 || s_window_rotation == 270);
         s_window = SDL_CreateWindow(config->title ? config->title : "BSP Simulator",
                                     SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                                    s_panel_w / s_scale_div, s_panel_h / s_scale_div,
+                                    (rot_swap ? s_panel_h : s_panel_w) / s_scale_div,
+                                    (rot_swap ? s_panel_w : s_panel_h) / s_scale_div,
                                     SDL_WINDOW_SHOWN | SDL_WINDOW_ALLOW_HIGHDPI);
         s_renderer = SDL_CreateRenderer(s_window, -1,
                                         SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
@@ -485,6 +529,8 @@ esp_err_t sdl_panel_create(const sdl_panel_config_t *config,
     sim_harness_set_input_callback(sdl_panel_inject_down, sdl_panel_inject_up);
     sim_harness_set_capture_callback(sdl_panel_capture);
 
+    if (!s_headless) fprintf(stderr, "[sim] keys: r/l rotate view, ESC quit\n");
+
     *out_display = &s_display;
     if (out_touch) *out_touch = &s_touch;
     return ESP_OK;
@@ -506,7 +552,23 @@ void sdl_panel_present(void) {
     } else {
         SDL_UpdateTexture(s_texture, NULL, s_present_src, s_panel_w * (int)s_bpp);
     }
-    SDL_RenderCopy(s_renderer, s_texture, NULL, NULL);
+
+    SDL_RenderClear(s_renderer);   /* paint the letterbox margins when rotated */
+    int dw, dh;
+    SDL_GetRendererOutputSize(s_renderer, &dw, &dh);
+    SDL_Rect  dst;
+    SDL_Point center;
+    if (s_window_rotation == 90 || s_window_rotation == 270) {
+        /* Rotating about the center swaps the texture's footprint, so place a
+         * dh×dw rect centered in the dw×dh drawable. */
+        dst    = (SDL_Rect){ (dw - dh) / 2, (dh - dw) / 2, dh, dw };
+        center = (SDL_Point){ dh / 2, dw / 2 };
+    } else {
+        dst    = (SDL_Rect){ 0, 0, dw, dh };
+        center = (SDL_Point){ dw / 2, dh / 2 };
+    }
+    SDL_RenderCopyEx(s_renderer, s_texture, NULL, &dst,
+                     (double)s_window_rotation, &center, SDL_FLIP_NONE);
     SDL_RenderPresent(s_renderer);
 }
 
