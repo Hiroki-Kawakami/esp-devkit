@@ -41,3 +41,5 @@ typedef struct {
 esp_err_t lvgl_port_init(const lvgl_port_cfg_t *cfg);
 void lvgl_sim_loop(std::function<bool(bool is_idle)> tick);
 #endif
+
+#include "widgets/layout.hpp"
