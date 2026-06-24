@@ -125,11 +125,26 @@ static inline void epd_build_act_tab(const epd_tx_t tx[EPD_TX_SLOTS], uint8_t ac
 
 /* Pack one scanline (read-only): `width` state bytes -> width/4 action bytes,
  * 4 px/byte with the leftmost pixel in the high 2-bit pair. Returns true if any
- * pixel drives, so an all-hold row can fall back to a constant line. */
-static inline bool epd_blit_line(int width, const uint8_t *state_row,
-                                 const uint8_t *act_tab, uint8_t *dst) {
-    int acc = 0;
-    for (int x = 0; x < width; x += 4) {
+ * pixel drives, so an all-hold row can fall back to a constant line.
+ *
+ * `width` is a multiple of 4. The hot loop unrolls 8 px/iteration so eight
+ * independent state->act_tab load chains are in flight at once: the dependent
+ * table lookups overlap instead of each stalling on the prior load's latency.
+ * `restrict` lets the compiler keep act_tab/state_row across the dst stores
+ * (they cannot alias) rather than reloading defensively. */
+static inline bool epd_blit_line(int width, const uint8_t *restrict state_row,
+                                 const uint8_t *restrict act_tab, uint8_t *restrict dst) {
+    int acc = 0, x = 0;
+    for (; x + 8 <= width; x += 8) {
+        int a0 = act_tab[state_row[x + 0]], a1 = act_tab[state_row[x + 1]];
+        int a2 = act_tab[state_row[x + 2]], a3 = act_tab[state_row[x + 3]];
+        int a4 = act_tab[state_row[x + 4]], a5 = act_tab[state_row[x + 5]];
+        int a6 = act_tab[state_row[x + 6]], a7 = act_tab[state_row[x + 7]];
+        dst[(x >> 2) + 0] = (uint8_t)((a0 << 6) | (a1 << 4) | (a2 << 2) | a3);
+        dst[(x >> 2) + 1] = (uint8_t)((a4 << 6) | (a5 << 4) | (a6 << 2) | a7);
+        acc |= a0 | a1 | a2 | a3 | a4 | a5 | a6 | a7;
+    }
+    for (; x < width; x += 4) {   /* tail when width % 8 == 4 */
         int a0 = act_tab[state_row[x + 0]], a1 = act_tab[state_row[x + 1]];
         int a2 = act_tab[state_row[x + 2]], a3 = act_tab[state_row[x + 3]];
         dst[x >> 2] = (uint8_t)((a0 << 6) | (a1 << 4) | (a2 << 2) | a3);

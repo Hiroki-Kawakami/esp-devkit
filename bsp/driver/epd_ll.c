@@ -41,6 +41,7 @@
 
 #include "epd_ll.h"
 #include "epd_waveform.h"
+#include "epd_blit_simd.h"
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -53,6 +54,14 @@
 #include "esp_attr.h"
 #include "esp_check.h"
 
+/* Diagnostic: per-frame blit/bus timing split + the on-HW SIMD-vs-scalar selftest.
+ * Off by default; set to 1 to re-enable while tuning the refresh path. */
+#define EPD_PROFILE 0
+#if EPD_PROFILE
+#include "esp_timer.h"
+#include "esp_log.h"
+#endif
+
 static const char *TAG = "epd_ll";
 
 // MARK: - i80 bus + CKV/SPV/LE scan protocol (singleton, internal)
@@ -63,6 +72,9 @@ static volatile bool              s_dma_busy;   /* a scanline DMA is in flight *
 static int      s_ckv_pin, s_spv_pin, s_le_pin;
 static uint16_t s_line_bytes;
 static uint8_t  s_line_padding;
+#if EPD_PROFILE
+static int64_t  s_wait_us, s_tx_us;   /* bus_write_line split: dma-wait vs tx_color */
+#endif
 
 static IRAM_ATTR bool on_trans_done(esp_lcd_panel_io_handle_t io,
                                     esp_lcd_panel_io_event_data_t *edata,
@@ -148,11 +160,20 @@ static void bus_frame_begin(void) {
  * so the caller can reuse a buffer between calls; the buffer passed here stays in
  * use by DMA until the *next* call (or bus_frame_end), so pipeline with two. */
 static void bus_write_line(const uint8_t *data) {
+#if EPD_PROFILE
+    int64_t w0 = esp_timer_get_time();
+#endif
     while (s_dma_busy) taskYIELD();        /* wait previous scanline DMA + its latch */
+#if EPD_PROFILE
+    int64_t w1 = esp_timer_get_time(); s_wait_us += w1 - w0;
+#endif
     s_dma_busy = true;
     gpio_set_level(s_le_pin, 0);           /* close the latch before shifting */
     gpio_set_level(s_ckv_pin, 1);          /* CKV high for this line */
     esp_lcd_panel_io_tx_color(s_io, -1, data, s_line_bytes + s_line_padding);
+#if EPD_PROFILE
+    s_tx_us += esp_timer_get_time() - w1;
+#endif
 }
 
 /* Wait for the last in-flight scanline and park CKV/LE. */
@@ -235,6 +256,12 @@ static void run_one_frame(epd_t *s) {
     epd_build_act_tab(s->tx, s->act_tab);
     xSemaphoreGive(s->mtx);
 
+#if EPD_PROFILE
+    int64_t t_scan0 = esp_timer_get_time();
+    int64_t blit_us = 0;
+    int rows_blit = 0;
+    s_wait_us = 0; s_tx_us = 0;
+#endif
     bus_frame_begin();
     for (int y = 0; y < H; y++) {
         uint8_t *buf;
@@ -242,11 +269,24 @@ static void run_one_frame(epd_t *s) {
             buf = s->hold_line;                          /* whole row idle: hold */
         } else {
             buf = s->line[y & 1];
+#if EPD_PROFILE
+            int64_t a = esp_timer_get_time();
+#endif
             epd_blit_line(W, s->state + (size_t)y * W, s->act_tab, buf);
+#if EPD_PROFILE
+            blit_us += esp_timer_get_time() - a; rows_blit++;
+#endif
         }
         bus_write_line(buf);
     }
     bus_frame_end();
+#if EPD_PROFILE
+    int64_t scan_us = esp_timer_get_time() - t_scan0;
+    ESP_LOGI(TAG, "QUAL frame: scan=%.1f us/line | blit=%.1f wait=%.1f tx=%.1f (%d/%d blitted)",
+             (double)scan_us / H,
+             rows_blit ? (double)blit_us / rows_blit : 0.0,
+             (double)s_wait_us / H, (double)s_tx_us / H, rows_blit, H);
+#endif
 
     xSemaphoreTake(s->mtx, portMAX_DELAY);
     if (ended) {
@@ -283,14 +323,50 @@ static void do_full_drive(epd_t *s, bsp_epd_mode_t mode) {
         uint8_t uni;
         bool uniform = frame_uniform(frame, &uni);
         if (uniform) memset(s->line[0], uni, s->line_bytes);
+        epd_simd_frame_t sf;
+        if (!uniform) epd_simd_frame_init(&sf, frame);
+#if EPD_PROFILE
+        /* One-shot: verify the SIMD blit is byte-exact vs the scalar reference, on
+         * real hardware (the only place PIE runs). Uses line[0]/line[1] as scratch
+         * before the scan starts. */
+        static bool simd_checked = false;
+        if (!uniform && !simd_checked) {
+            simd_checked = true;
+            int mism = 0;
+            for (int y = 0; y < H; y++) {
+                const uint8_t *src = s->state + (size_t)y * W;
+                epd_blit_line_full(W, src, frame, s->line[0]);   /* scalar reference */
+                epd_blit_line_full_simd(W, src, &sf, s->line[1]);/* SIMD             */
+                for (int i = 0; i < s->line_bytes; i++)
+                    if (s->line[0][i] != s->line[1][i]) mism++;
+            }
+            ESP_LOGI(TAG, "SIMD selftest: %d mismatched bytes over %d rows", mism, H);
+        }
+        s_wait_us = 0; s_tx_us = 0;
+        int64_t blit_us = 0;
+#endif
         bus_frame_begin();
         for (int y = 0; y < H; y++) {
             uint8_t *buf;
             if (uniform) buf = s->line[0];
-            else { buf = s->line[y & 1]; epd_blit_line_full(W, s->state + (size_t)y * W, frame, buf); }
+            else {
+                buf = s->line[y & 1];
+#if EPD_PROFILE
+                int64_t a = esp_timer_get_time();
+#endif
+                epd_blit_line_full_simd(W, s->state + (size_t)y * W, &sf, buf);
+#if EPD_PROFILE
+                blit_us += esp_timer_get_time() - a;
+#endif
+            }
             bus_write_line(buf);
         }
         bus_frame_end();
+#if EPD_PROFILE
+        ESP_LOGI(TAG, "FULL frame %d: uniform=%d | blit=%.1f wait=%.1f tx=%.1f us/line",
+                 (int)f, uniform, uniform ? 0.0 : (double)blit_us / H,
+                 (double)s_wait_us / H, (double)s_tx_us / H);
+#endif
     }
     power_off(s);
 
@@ -485,7 +561,7 @@ esp_err_t epd_ll_create(const epd_ll_config_t *cfg, bsp_display_t **out_display)
     s->get_waveform_lut  = cfg->get_waveform_lut;
 
     size_t fb = (size_t)cfg->width * cfg->height;
-    s->state       = heap_caps_malloc(fb, MALLOC_CAP_SPIRAM);
+    s->state       = heap_caps_aligned_alloc(16, fb, MALLOC_CAP_SPIRAM);   /* 16B for PIE VLD */
     s->row_nonidle = heap_caps_calloc((size_t)cfg->height, sizeof(uint16_t), MALLOC_CAP_SPIRAM);
     if (!s->state || !s->row_nonidle) { op_deinit(&s->base); return ESP_ERR_NO_MEM; }
     memset(s->state, 0xF0, fb);   /* white, idle (id 0) -- matches the bring-up clear */
