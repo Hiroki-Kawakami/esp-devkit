@@ -41,7 +41,6 @@
 
 #include "epd_ll.h"
 #include "epd_waveform.h"
-#include "epd_blit_simd.h"
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -54,7 +53,7 @@
 #include "esp_attr.h"
 #include "esp_check.h"
 
-/* Diagnostic: per-frame blit/bus timing split + the on-HW SIMD-vs-scalar selftest.
+/* Diagnostic: per-frame blit/bus timing split (scan / blit / dma-wait / tx_color).
  * Off by default; set to 1 to re-enable while tuning the refresh path. */
 #define EPD_PROFILE 0
 #if EPD_PROFILE
@@ -323,25 +322,8 @@ static void do_full_drive(epd_t *s, bsp_epd_mode_t mode) {
         uint8_t uni;
         bool uniform = frame_uniform(frame, &uni);
         if (uniform) memset(s->line[0], uni, s->line_bytes);
-        epd_simd_frame_t sf;
-        if (!uniform) epd_simd_frame_init(&sf, frame);
+        else epd_build_full_act_tab(frame, s->act_tab);   /* gray->action, ids ignored */
 #if EPD_PROFILE
-        /* One-shot: verify the SIMD blit is byte-exact vs the scalar reference, on
-         * real hardware (the only place PIE runs). Uses line[0]/line[1] as scratch
-         * before the scan starts. */
-        static bool simd_checked = false;
-        if (!uniform && !simd_checked) {
-            simd_checked = true;
-            int mism = 0;
-            for (int y = 0; y < H; y++) {
-                const uint8_t *src = s->state + (size_t)y * W;
-                epd_blit_line_full(W, src, frame, s->line[0]);   /* scalar reference */
-                epd_blit_line_full_simd(W, src, &sf, s->line[1]);/* SIMD             */
-                for (int i = 0; i < s->line_bytes; i++)
-                    if (s->line[0][i] != s->line[1][i]) mism++;
-            }
-            ESP_LOGI(TAG, "SIMD selftest: %d mismatched bytes over %d rows", mism, H);
-        }
         s_wait_us = 0; s_tx_us = 0;
         int64_t blit_us = 0;
 #endif
@@ -354,7 +336,7 @@ static void do_full_drive(epd_t *s, bsp_epd_mode_t mode) {
 #if EPD_PROFILE
                 int64_t a = esp_timer_get_time();
 #endif
-                epd_blit_line_full_simd(W, s->state + (size_t)y * W, &sf, buf);
+                epd_blit_line(W, s->state + (size_t)y * W, s->act_tab, buf);
 #if EPD_PROFILE
                 blit_us += esp_timer_get_time() - a;
 #endif
@@ -561,7 +543,7 @@ esp_err_t epd_ll_create(const epd_ll_config_t *cfg, bsp_display_t **out_display)
     s->get_waveform_lut  = cfg->get_waveform_lut;
 
     size_t fb = (size_t)cfg->width * cfg->height;
-    s->state       = heap_caps_aligned_alloc(16, fb, MALLOC_CAP_SPIRAM);   /* 16B for PIE VLD */
+    s->state       = heap_caps_malloc(fb, MALLOC_CAP_SPIRAM);
     s->row_nonidle = heap_caps_calloc((size_t)cfg->height, sizeof(uint16_t), MALLOC_CAP_SPIRAM);
     if (!s->state || !s->row_nonidle) { op_deinit(&s->base); return ESP_ERR_NO_MEM; }
     memset(s->state, 0xF0, fb);   /* white, idle (id 0) -- matches the bring-up clear */

@@ -153,6 +153,16 @@ static inline bool epd_blit_line(int width, const uint8_t *restrict state_row,
     return acc != 0;
 }
 
+/* Build the per-byte action table for a FULL/CLEAR frame: every pixel drives by
+ * its gray nibble (ids ignored), act = (frame >> gray*2) & 3, for all 16 ids.
+ * Keys the per-byte table blit (epd_blit_line / epd_blit_line_asm). */
+static inline void epd_build_full_act_tab(uint32_t frame, uint8_t act_tab[256]) {
+    for (int g = 0; g < 16; g++) {
+        uint8_t a = (uint8_t)((frame >> (g * 2)) & 3u);
+        for (int id = 0; id < 16; id++) act_tab[(g << 4) | id] = a;
+    }
+}
+
 /* Pack one scanline driving EVERY pixel by its gray nibble for `frame`, ignoring
  * ids -- the FULL / CLEAR path (no diff, no transactions). */
 static inline bool epd_blit_line_full(int width, const uint8_t *state_row,
