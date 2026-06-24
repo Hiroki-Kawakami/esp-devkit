@@ -35,6 +35,17 @@ void bsp_display_refresh(bsp_rect_t area, bsp_epd_mode_t mode);
 int bsp_touch_read(bsp_touch_point_t *points, uint8_t max_points);
 void bsp_touch_wait_interrupt(void);
 
+// MARK: SD Card
+typedef struct {
+    bool    format_if_mount_failed;  /*!< default: false */
+    uint8_t max_files;               /*!< open-file limit; 0 -> 5 */
+    int     max_freq_khz;            /*!< 0 -> SDMMC_FREQ_HIGHSPEED (40 MHz) */
+} bsp_sd_mount_config_t;
+
+esp_err_t bsp_sd_mount(const char *mount_point, const bsp_sd_mount_config_t *config);
+esp_err_t bsp_sd_unmount(void);
+bool bsp_sd_is_mounted(void);
+
 #ifdef __cplusplus
 }
 #endif
