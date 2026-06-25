@@ -31,7 +31,7 @@ esp_err_t bsp_sd_mount(const char *mount_point, const bsp_sd_mount_config_t *con
 
     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
     host.slot = PAPER_SPI_HOST;
-    host.max_freq_khz = config->max_freq_khz > 0 ? config->max_freq_khz : SDMMC_FREQ_HIGHSPEED;
+    host.max_freq_khz = config->max_freq_khz > 0 ? config->max_freq_khz : SDMMC_FREQ_DEFAULT;
 
     sdspi_device_config_t dev_cfg = SDSPI_DEVICE_CONFIG_DEFAULT();
     dev_cfg.gpio_cs = PAPER_SD_PIN_CS;
