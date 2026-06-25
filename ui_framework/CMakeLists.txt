@@ -19,6 +19,7 @@
 set(UI_FRAMEWORK_SRCS
     "src/lvgl.cpp"
     "src/screen_manager.cpp"
+    "src/widgets/modal.cpp"
     "src/widgets/navigation.cpp")
 
 if(ESP_PLATFORM)

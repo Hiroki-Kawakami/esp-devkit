@@ -5,4 +5,5 @@
 
 #pragma once
 #include "widgets/layout.hpp"
+#include "widgets/modal.hpp"
 #include "widgets/navigation.hpp"
