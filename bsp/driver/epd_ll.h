@@ -67,7 +67,11 @@ typedef struct {
      * CLEAR_FULL. Returned tables are caller-owned and must outlive the display. */
     const uint32_t *(*get_waveform_lut)(bsp_epd_mode_t mode, size_t *steps);
     uint8_t  task_priority;     /* reserved (refresh is currently synchronous)  */
-    int      task_affinity;     /* reserved (refresh is currently synchronous)  */
+    /* Core to run the i80 bus + its trans-done ISR on. MUST differ from the core
+     * that calls refresh (the UI/LVGL core): esp_lcd's tx_color re-enables the ISR
+     * inline, so a same-core ISR runs synchronously and stalls every scanline.
+     * <0 (or out of range) -> the core opposite epd_ll_create's caller. */
+    int      task_affinity;
 } epd_ll_config_t;
 
 /* Bring up the panel -- allocate the framebuffers, init the i80 bus, clear to a

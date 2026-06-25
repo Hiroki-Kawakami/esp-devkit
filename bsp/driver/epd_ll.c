@@ -395,6 +395,39 @@ static esp_err_t op_deinit(bsp_display_t *self) {
 
 // MARK: - create
 
+/* Allocate the i80 bus (and so its completion ISR) on a core OTHER than the one that
+ * drives refresh. esp_lcd's tx_color ends by re-enabling the trans-done interrupt; with
+ * the event pending the ISR runs *synchronously inside tx_color* when called on the
+ * ISR's own core -- ~50µs/scanline of in-line ISR work. Refresh is synchronous on the
+ * UI/LVGL core, so co-locating the ISR there stalls every line; on a different core the
+ * ISR overlaps the next blit instead. esp_lcd registers the ISR on whatever core calls
+ * it, so a short-lived task does bus_init pinned to `cfg->task_affinity` (the EPD bus
+ * core; must differ from the UI core), defaulting to the core opposite this one. */
+static esp_err_t              s_bus_init_err;
+static const epd_ll_config_t *s_bus_init_cfg;
+static TaskHandle_t           s_bus_init_waiter;
+
+static void bus_init_task(void *arg) {
+    (void)arg;
+    s_bus_init_err = bus_init(s_bus_init_cfg);
+    xTaskNotifyGive(s_bus_init_waiter);
+    vTaskDelete(NULL);
+}
+
+static esp_err_t bus_init_pinned(const epd_ll_config_t *cfg) {
+    int core = cfg->task_affinity;
+    if (core < 0 || core >= portNUM_PROCESSORS) {
+        core = (xPortGetCoreID() + 1) % portNUM_PROCESSORS;   /* opposite the caller */
+    }
+    s_bus_init_cfg    = cfg;
+    s_bus_init_waiter = xTaskGetCurrentTaskHandle();
+    if (xTaskCreatePinnedToCore(bus_init_task, "epd_businit", 4096, NULL, 5, NULL, core) != pdPASS) {
+        return bus_init(cfg);   /* fallback: init (and ISR) on this core */
+    }
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    return s_bus_init_err;
+}
+
 esp_err_t epd_ll_create(const epd_ll_config_t *cfg, bsp_display_t **out_display) {
     epd_t *s = calloc(1, sizeof(*s));
     if (!s) return ESP_ERR_NO_MEM;
@@ -435,7 +468,7 @@ esp_err_t epd_ll_create(const epd_ll_config_t *cfg, bsp_display_t **out_display)
     if (!s->hold_line) { op_deinit(&s->base); return ESP_ERR_NO_MEM; }
     memset(s->hold_line, 0, lb);   /* all pixels hold (action 0), padding zero */
 
-    ESP_ERROR_CHECK(bus_init(cfg));
+    ESP_ERROR_CHECK(bus_init_pinned(cfg));
 
     /* Power rails off. Configure AFTER bus_init: PWR is lent as the i80 dummy D/C
      * and bus_init hands it back as an output without setting a level, so we own
