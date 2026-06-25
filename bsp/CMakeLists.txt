@@ -1,43 +1,51 @@
 # esp-devkit bsp — shared board-support component.
 #
-# The model-agnostic glue (src/) is built for both targets; the per-model
-# bring-up under boards/<model>/ has a device variant (<model>.c, using the
-# real chip drivers in devices/) and a simulator variant (<model>_sim.cpp,
-# using the reusable SDL backend in simulator/). The build selects the variant
-# by target: ESP_PLATFORM is defined only under ESP-IDF (device); the
-# simulator consumes this file through the idf_component_register shim in
-# simulator/CMakeLists.txt, where ESP_PLATFORM is unset.
-# Model-agnostic display/touch/audio dispatch + the shared audio_dsp chain —
-# built for both targets.
+# The model-agnostic glue (src/) and the simulator's SDL backend are built
+# unconditionally; everything board-specific (which chip drivers, include dirs,
+# requirements, and the per-target bring-up files) comes from the selected
+# board's boards/<board>/board.cmake. The board is chosen at configure time by
+# BSP_BOARD — set by each build root (esp32s3/ -> paper_s3, esp32/ -> paper) and
+# by simulator/CMakeLists.txt; it defaults to paper_s3 here. There is no runtime
+# board detection: one target builds one board.
+#
+# The build selects device vs. simulator by target: ESP_PLATFORM is defined only
+# under ESP-IDF (device); the simulator consumes this file through the
+# idf_component_register shim in simulator/CMakeLists.txt, where ESP_PLATFORM is
+# unset.
+
+# Model-agnostic display/touch dispatch — built for both targets.
 set(BSP_COMMON_SRCS
     "src/bsp_display.c"
     "src/bsp_touch.c")
+
+if(NOT DEFINED BSP_BOARD)
+    set(BSP_BOARD paper_s3)
+endif()
+
+# board.cmake fills BOARD_DEVICE_SRCS / BOARD_DEVICE_PRIV_INCLUDE_DIRS /
+# BOARD_DEVICE_PRIV_REQUIRES (device) and BOARD_SIM_SRCS (simulator).
+include("${CMAKE_CURRENT_LIST_DIR}/boards/${BSP_BOARD}/board.cmake")
 
 if(ESP_PLATFORM)
     idf_component_register(
         SRCS
             ${BSP_COMMON_SRCS}
-            "boards/paper_s3/paper_s3.c"
-            "boards/paper_s3/paper_s3_panel.c"
-            "boards/paper_s3/paper_s3_sd.c"
-            "devices/gt911/gt911.c"
-            "devices/ed047tc1/ed047tc1.c"
-            "driver/epd_ll.c"
+            ${BOARD_DEVICE_SRCS}
         INCLUDE_DIRS "inc"
-        PRIV_INCLUDE_DIRS "inc_private" "devices" "devices/ed047tc1" "devices/gt911" "driver"
-        PRIV_REQUIRES driver esp_lcd nvs_flash bt fatfs sdmmc esp_driver_sdmmc esp_driver_sdspi)
+        PRIV_INCLUDE_DIRS "inc_private" ${BOARD_DEVICE_PRIV_INCLUDE_DIRS}
+        PRIV_REQUIRES ${BOARD_DEVICE_PRIV_REQUIRES})
 
     # Enable Link Time Optimization
     target_compile_options(${COMPONENT_LIB} PRIVATE -flto)
     target_link_libraries(${COMPONENT_LIB} PRIVATE -flto)
 else()
-    # Simulator: SDL backend + the simulator host bring-up. SDL2 is already linked to
-    # the `simulator` executable (see simulator/CMakeLists.txt), so its headers
-    # are on the global include path here.
+    # Simulator: SDL backend + the selected board's simulator bring-up. SDL2 is
+    # already linked to the `simulator` executable (see simulator/CMakeLists.txt),
+    # so its headers are on the global include path here.
     idf_component_register(
         SRCS
             ${BSP_COMMON_SRCS}
-            "boards/paper_s3/paper_s3_sim.c"
+            ${BOARD_SIM_SRCS}
             "simulator/sdl_panel.c"
             "simulator/sd_redirect.c"
         INCLUDE_DIRS "inc"
