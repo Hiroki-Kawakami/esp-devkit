@@ -47,7 +47,8 @@ static esp_err_t enable_power(void) {
 }
 
 esp_err_t bsp_init(const bsp_config_t *config) {
-    (void)config;   /* IT8951E refreshes synchronously: no async task to tune */
+    bsp_config_t defaults = {0};   /* IT8951E refreshes synchronously: no EPD task */
+    if (!config) config = &defaults;
 
     esp_err_t err = enable_power();
     if (err != ESP_OK) {
@@ -69,7 +70,7 @@ esp_err_t bsp_init(const bsp_config_t *config) {
         return err;
     }
 
-    return paper_panel_init();
+    return paper_panel_init(config);
 }
 
 void bsp_restart(void) {

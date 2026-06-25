@@ -13,12 +13,17 @@ extern "C" {
 #endif
 
 typedef struct {
-    union {
-        struct {
-            uint8_t task_priority;  /*!< refresh-task priority; 0 -> default (5) */
-            int8_t  task_affinity;  /*!< core to pin to (0/1); <0 -> no affinity */
-        } epd;
-    };
+    struct {
+        uint8_t task_priority;  /*!< refresh-task priority; 0 -> default (5) */
+        int8_t  task_affinity;  /*!< core to pin to (0/1); <0 -> no affinity */
+    } epd;
+    /* Touch reader task: when task_priority > 0, samples are pushed to
+     * bsp_touch_set_event_cb(). Zeroed -> no task (poll via bsp_touch_read). */
+    struct {
+        uint8_t  task_priority;     /*!< reader-task priority; 0 -> no task */
+        int8_t   task_affinity;     /*!< core to pin to (0/1); <0 -> no affinity */
+        uint16_t poll_interval_ms;  /*!< reader-task INT-wait fallback; 0 -> default */
+    } touch;
 } bsp_config_t;
 
 esp_err_t bsp_init(const bsp_config_t *config);
@@ -40,6 +45,12 @@ void bsp_display_refresh(bsp_rect_t area, bsp_epd_mode_t mode);
 // MARK: Touch
 int bsp_touch_read(bsp_touch_point_t *points, uint8_t max_points);
 void bsp_touch_wait_interrupt(void);
+
+/* Push delivery from the touch reader task (bsp_config.touch): `cb` gets
+ * display-space points as each sample arrives (count 0 = all released). Runs off
+ * the UI thread, so keep it short and synchronize shared state. NULL unregisters. */
+typedef void (*bsp_touch_event_cb_t)(const bsp_touch_point_t *points, int count, void *arg);
+void bsp_touch_set_event_cb(bsp_touch_event_cb_t cb, void *arg);
 
 // MARK: SD Card
 typedef struct {

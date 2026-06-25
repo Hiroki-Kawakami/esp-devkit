@@ -15,7 +15,7 @@
 
 static const char *TAG = "paper_panel";
 
-static esp_err_t touch_init(void) {
+static esp_err_t touch_init(const bsp_config_t *config) {
     const i2c_master_bus_config_t i2c_cfg = {
         .i2c_port          = PAPER_I2C_PORT,
         .sda_io_num        = PAPER_I2C_PIN_SDA,
@@ -46,6 +46,11 @@ static esp_err_t touch_init(void) {
         .mirror_y    = true,
         .width       = 960,
         .height      = 540,
+        .acquire = {
+            .task_priority    = config->touch.task_priority,
+            .task_affinity    = config->touch.task_affinity,
+            .poll_interval_ms = config->touch.poll_interval_ms,
+        },
     };
     bsp_touch_t *touch = NULL;
     err = gt911_touch_create(&cfg, &touch);
@@ -57,7 +62,7 @@ static esp_err_t touch_init(void) {
     return ESP_OK;
 }
 
-esp_err_t paper_panel_init(void) {
+esp_err_t paper_panel_init(const bsp_config_t *config) {
     const it8951e_config_t epd_cfg = {
         .spi_host = PAPER_SPI_HOST,
         .cs_io    = PAPER_EPD_PIN_CS,
@@ -74,7 +79,7 @@ esp_err_t paper_panel_init(void) {
 
     /* Touch is non-fatal: a failure leaves bsp_touch_read a no-op rather than
      * blocking display bring-up. */
-    err = touch_init();
+    err = touch_init(config);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "touch unavailable: %s", esp_err_to_name(err));
     }

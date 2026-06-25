@@ -211,7 +211,18 @@ static void touch_set_point(int id, bool pressed, int x, int y) {
     } else if (found >= 0) {
         s_touch_pts[found].active = false;
     }
+    bsp_touch_point_t pts[SDL_PANEL_MAX_TOUCH];
+    int n = 0;
+    for (int i = 0; i < SDL_PANEL_MAX_TOUCH; i++) {
+        if (!s_touch_pts[i].active) continue;
+        pts[n].x = s_touch_pts[i].x;
+        pts[n].y = s_touch_pts[i].y;
+        pts[n].id = s_touch_pts[i].id;
+        n++;
+    }
     if (s_touch_mtx) SDL_UnlockMutex(s_touch_mtx);
+
+    bsp_touch_emit_event(pts, n);   /* mirror the device reader task's push path */
 }
 
 /* Blit a rectangle of source pixels into a panel-sized destination buffer at the

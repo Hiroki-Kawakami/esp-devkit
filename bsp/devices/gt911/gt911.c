@@ -38,6 +38,8 @@ static const char *TAG = "gt911";
 #define ADDR_HOLD_MS      5u      /* INT level held after RESET rising edge  */
 #define BOOT_MS           50u     /* let firmware come up before I2C         */
 #define I2C_TIMEOUT_MS    50
+#define POLL_INTERVAL_MS  10      /* reader-task poll fallback when INT idles  */
+#define TASK_STACK_DEFAULT 3072
 
 typedef struct {
     uint8_t  track_id;
@@ -55,10 +57,17 @@ typedef struct {
     SemaphoreHandle_t       lock;
     SemaphoreHandle_t       irq;      /* given by the INT ISR; NULL if no INT */
 
-    /* Cached snapshot of the chip's last coord poll. */
+    /* Optional background reader task (pushes samples to bsp_touch_emit_event). */
+    TaskHandle_t            task;
+    SemaphoreHandle_t       task_done; /* task signals exit on deinit          */
+    volatile bool           task_stop;
+    bool                    has_task;  /* task owns acquisition when set        */
+
+    /* The chip's last coord poll. `fresh` is set when a poll actually read a new
+     * frame (count may be 0 -- an all-released event). */
     gt911_point_t           points[GT911_MAX_TOUCH_POINTS];
     uint8_t                 count;
-    bool                    fresh;    /* unconsumed sample in points[]        */
+    bool                    fresh;
 } gt911_dev_t;
 
 /* ========================================================================
@@ -231,14 +240,13 @@ static void log_info_locked(gt911_dev_t *dev) {
 /* ========================================================================
  * Coord poll
  *
- * Reads 0x814E once. On a fresh sample, reads all touch points into the cache
- * and clears the chip's data-ready latch. Idempotent — back-to-back calls with
- * no new sample are cheap (a single status read) and leave the cache unchanged.
- * Caller must hold dev->lock.
+ * Reads 0x814E once. On a fresh sample, reads all touch points into the cache,
+ * sets `fresh`, and clears the chip's data-ready latch. Idempotent — back-to-back
+ * calls with no new sample are cheap (a single status read) and leave the cache
+ * unchanged (fresh stays false). Caller must hold dev->lock.
  * ===================================================================== */
 static esp_err_t coord_poll_locked(gt911_dev_t *dev) {
-    /* Fast-path: skip the I2C round-trip when INT says there's nothing new. */
-    if (dev->int_is_input && gpio_get_level(dev->cfg.int_io)) return ESP_OK;
+    dev->fresh = false;
 
     uint8_t status = 0;
     esp_err_t err = reg_read_locked(dev, REG_STATUS, &status, 1);
@@ -248,11 +256,8 @@ static esp_err_t coord_poll_locked(gt911_dev_t *dev) {
     uint8_t n = status & STATUS_COUNT_MASK;
     if (n > GT911_MAX_TOUCH_POINTS) n = GT911_MAX_TOUCH_POINTS;
 
-    /* A fresh sample overwrites the cache — even count=0 is meaningful
-     * (it's an "all fingers released" event). */
     dev->count = 0;
     dev->fresh = true;
-
     if (n > 0) {
         uint8_t raw[GT911_MAX_TOUCH_POINTS * POINT_SIZE];
         err = reg_read_locked(dev, REG_TOUCH_DATA, raw, (size_t)n * POINT_SIZE);
@@ -290,8 +295,35 @@ static void transform(const gt911_dev_t *dev, const gt911_point_t *in, bsp_touch
  * bsp_touch_t vtable
  * ===================================================================== */
 
+/* Reader task: push each fresh sample (display space) to bsp_touch_emit_event.
+ * INT-woken with a poll-interval fallback. */
+static void touch_task(void *arg) {
+    gt911_dev_t *dev = arg;
+    uint32_t ms = dev->cfg.acquire.poll_interval_ms;
+    const TickType_t timeout = pdMS_TO_TICKS(ms ? ms : POLL_INTERVAL_MS);
+    while (!dev->task_stop) {
+        if (dev->irq) xSemaphoreTake(dev->irq, timeout);
+        else          vTaskDelay(timeout);
+
+        bsp_touch_point_t pts[GT911_MAX_TOUCH_POINTS];
+        int n = -1;
+        dev_lock(dev);
+        if (coord_poll_locked(dev) == ESP_OK && dev->fresh) {
+            n = dev->count;
+            for (int i = 0; i < n; i++) transform(dev, &dev->points[i], &pts[i]);
+        }
+        dev_unlock(dev);
+
+        if (n >= 0) bsp_touch_emit_event(pts, n);  /* outside the lock */
+    }
+    xSemaphoreGive(dev->task_done);
+    vTaskDelete(NULL);
+}
+
 static int gt911_read(bsp_touch_t *self, bsp_touch_point_t *points, uint8_t max_points) {
     gt911_dev_t *dev = (gt911_dev_t *)self;
+    if (dev->has_task) return 0;   /* task owns the chip; inline poll would race it */
+
     int out = 0;
     dev_lock(dev);
     if (coord_poll_locked(dev) == ESP_OK && dev->fresh) {
@@ -299,8 +331,6 @@ static int gt911_read(bsp_touch_t *self, bsp_touch_point_t *points, uint8_t max_
         if (n > max_points) n = max_points;
         for (uint8_t i = 0; i < n; i++) transform(dev, &dev->points[i], &points[i]);
         out = n;
-        dev->fresh = false;
-        dev->count = 0;
     }
     dev_unlock(dev);
     return out;
@@ -318,6 +348,12 @@ static void gt911_wait_interrupt(bsp_touch_t *self) {
 static esp_err_t gt911_deinit(bsp_touch_t *self) {
     gt911_dev_t *dev = (gt911_dev_t *)self;
     if (!dev) return ESP_OK;
+    if (dev->has_task) {
+        dev->task_stop = true;
+        if (dev->irq) xSemaphoreGive(dev->irq);   /* wake it out of the INT wait */
+        xSemaphoreTake(dev->task_done, portMAX_DELAY);
+        vSemaphoreDelete(dev->task_done);
+    }
     if (dev->cfg.int_io != GPIO_NUM_NC && dev->int_is_input) {
         gpio_intr_disable(dev->cfg.int_io);
         gpio_isr_handler_remove(dev->cfg.int_io);
@@ -361,6 +397,21 @@ esp_err_t gt911_touch_create(const gt911_config_t *config, bsp_touch_t **out_tou
     dev_unlock(dev);
 
     int_enable_irq(dev);
+
+    if (config->acquire.task_priority > 0) {
+        const gt911_acquire_config_t *a = &config->acquire;
+        dev->task_done = xSemaphoreCreateBinary();
+        BaseType_t core = a->task_affinity < 0 ? tskNO_AFFINITY : a->task_affinity;
+        uint32_t stack = a->task_stack ? a->task_stack : TASK_STACK_DEFAULT;
+        if (dev->task_done &&
+            xTaskCreatePinnedToCore(touch_task, "gt911", stack, dev,
+                                    a->task_priority, &dev->task, core) == pdPASS) {
+            dev->has_task = true;
+        } else {
+            ESP_LOGW(TAG, "reader task create failed; using on-demand polling");
+            if (dev->task_done) { vSemaphoreDelete(dev->task_done); dev->task_done = NULL; }
+        }
+    }
 
     *out_touch = &dev->base;
     return ESP_OK;

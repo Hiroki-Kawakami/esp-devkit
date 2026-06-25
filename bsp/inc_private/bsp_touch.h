@@ -23,3 +23,7 @@ struct bsp_touch {
  * implements the model-agnostic public bsp_touch_* API on top of it. A board's
  * bsp_init() calls this once after creating its touch provider. */
 void bsp_touch_set_active(bsp_touch_t *touch);
+
+/* Provider upcall: dispatch display-space contacts to the registered
+ * bsp_touch_set_event_cb (no-op if none). count 0 = release. */
+void bsp_touch_emit_event(const bsp_touch_point_t *points, int count);

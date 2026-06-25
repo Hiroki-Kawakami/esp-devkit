@@ -11,9 +11,21 @@
 #include "bsp_touch.h"
 
 static bsp_touch_t *s_touch;
+static bsp_touch_event_cb_t s_event_cb;
+static void               *s_event_arg;
 
 void bsp_touch_set_active(bsp_touch_t *touch) {
     s_touch = touch;
+}
+
+void bsp_touch_set_event_cb(bsp_touch_event_cb_t cb, void *arg) {
+    s_event_arg = arg;
+    s_event_cb  = cb;
+}
+
+void bsp_touch_emit_event(const bsp_touch_point_t *points, int count) {
+    bsp_touch_event_cb_t cb = s_event_cb;
+    if (cb) cb(points, count, s_event_arg);
 }
 
 int bsp_touch_read(bsp_touch_point_t *points, uint8_t max_points) {

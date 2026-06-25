@@ -34,6 +34,16 @@ extern "C" {
 /* GT911 reports up to 5 simultaneous contacts. */
 #define GT911_MAX_TOUCH_POINTS    5
 
+/* Optional reader task. task_priority > 0 spawns a task that samples the chip and
+ * pushes each sample to bsp_touch_set_event_cb() in display space; zeroed -> no
+ * task (touch is read synchronously via bsp_touch_read). */
+typedef struct {
+    int      task_priority;     /* > 0 to spawn the reader task                   */
+    int      task_affinity;     /* core to pin to; < 0 -> no affinity             */
+    uint32_t task_stack;        /* 0 -> default                                   */
+    uint32_t poll_interval_ms;  /* INT-wait fallback period; 0 -> default         */
+} gt911_acquire_config_t;
+
 typedef struct {
     i2c_master_bus_handle_t i2c_bus;     /* bus from i2c_new_master_bus()        */
     uint8_t                 i2c_address; /* 0x14, 0x5D, or GT911_I2C_ADDR_AUTO   */
@@ -48,6 +58,8 @@ typedef struct {
     bool                    mirror_y;
     uint16_t                width;       /* display width  (for mirror_x clamp)  */
     uint16_t                height;      /* display height (for mirror_y clamp)  */
+
+    gt911_acquire_config_t  acquire;     /* sampling/delivery policy (see above) */
 } gt911_config_t;
 
 /* Reset + probe the chip, attach to the bus, and return a bsp_touch_t provider.

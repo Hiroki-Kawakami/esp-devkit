@@ -22,7 +22,7 @@ static const char *TAG = "paper_s3_panel";
 #define PAPER_S3_TOUCH_PIN_INT GPIO_NUM_48
 #define PAPER_S3_TOUCH_PIN_RST GPIO_NUM_NC
 
-static esp_err_t touch_init(void) {
+static esp_err_t touch_init(const bsp_config_t *config) {
     const i2c_master_bus_config_t i2c_cfg = {
         .i2c_port          = PAPER_S3_I2C_PORT,
         .sda_io_num        = PAPER_S3_I2C_PIN_SDA,
@@ -53,6 +53,11 @@ static esp_err_t touch_init(void) {
         .mirror_y    = true,
         .width       = 960,
         .height      = 540,
+        .acquire = {
+            .task_priority    = config->touch.task_priority,
+            .task_affinity    = config->touch.task_affinity,
+            .poll_interval_ms = config->touch.poll_interval_ms,
+        },
     };
     bsp_touch_t *touch = NULL;
     err = gt911_touch_create(&cfg, &touch);
@@ -64,7 +69,7 @@ static esp_err_t touch_init(void) {
     return ESP_OK;
 }
 
-esp_err_t paper_s3_panel_init(uint8_t epd_task_priority, int epd_task_affinity) {
+esp_err_t paper_s3_panel_init(const bsp_config_t *config) {
     ed047tc1_config_t cfg = {
         .data_pins     = { 6, 14, 7, 12, 9, 11, 8, 10 },
         .sph_pin       = 13,
@@ -74,8 +79,8 @@ esp_err_t paper_s3_panel_init(uint8_t epd_task_priority, int epd_task_affinity) 
         .le_pin        = 15,
         .oe_pin        = 45,
         .pwr_pin       = 46,
-        .task_priority = epd_task_priority,
-        .task_affinity = epd_task_affinity,
+        .task_priority = config->epd.task_priority ? config->epd.task_priority : 5,
+        .task_affinity = config->epd.task_affinity,
     };
 
     bsp_display_t *display = NULL;
@@ -85,7 +90,7 @@ esp_err_t paper_s3_panel_init(uint8_t epd_task_priority, int epd_task_affinity) 
 
     /* Touch is non-fatal: a failure (no panel on the bus) leaves bsp_touch_read
      * a no-op rather than blocking display bring-up. */
-    err = touch_init();
+    err = touch_init(config);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "touch unavailable: %s", esp_err_to_name(err));
     }

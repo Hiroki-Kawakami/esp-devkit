@@ -11,10 +11,9 @@
 #include "paper_s3_panel.h"
 
 esp_err_t bsp_init(const bsp_config_t *config) {
-    bsp_config_t defaults = {0};   /* NULL/zeroed config -> priority 5, core 0 */
+    bsp_config_t defaults = {0};   /* NULL/zeroed config -> EPD priority 5, core 0 */
     if (!config) config = &defaults;
-    uint8_t priority = config->epd.task_priority ? config->epd.task_priority : 5;
-    return paper_s3_panel_init(priority, config->epd.task_affinity);
+    return paper_s3_panel_init(config);
 }
 
 void bsp_restart(void) {

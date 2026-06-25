@@ -7,7 +7,8 @@
  */
 
 #pragma once
+#include "bsp.h"
 #include "bsp_display.h"
 #include "bsp_touch.h"
 
-esp_err_t paper_panel_init(void);
+esp_err_t paper_panel_init(const bsp_config_t *config);
