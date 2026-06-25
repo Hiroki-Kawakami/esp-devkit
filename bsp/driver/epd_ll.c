@@ -582,9 +582,10 @@ esp_err_t epd_ll_create(const epd_ll_config_t *cfg, bsp_display_t **out_display)
      * the (uniform) clear waveform. */
     do_full_drive(s, BSP_EPD_MODE_CLEAR_FULL);
 
-    /* Bring up the async waveform engine. Pinned to core 0 to keep its DMA
-     * busy-waits off the UI/LVGL core. */
-    if (xTaskCreatePinnedToCore(refresh_task, "epd_refresh", 4096, s, 5, &s->task, 0) != pdPASS) {
+    /* Bring up the async waveform engine. Caller picks the priority/core
+     * (default core 0 keeps its DMA busy-waits off the UI/LVGL core). */
+    BaseType_t core = cfg->task_affinity < 0 ? tskNO_AFFINITY : cfg->task_affinity;
+    if (xTaskCreatePinnedToCore(refresh_task, "epd_refresh", 4096, s, cfg->task_priority, &s->task, core) != pdPASS) {
         s->task = NULL;
         op_deinit(&s->base);
         return ESP_ERR_NO_MEM;

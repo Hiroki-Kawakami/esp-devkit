@@ -64,16 +64,18 @@ static esp_err_t touch_init(void) {
     return ESP_OK;
 }
 
-esp_err_t paper_s3_panel_init(void) {
+esp_err_t paper_s3_panel_init(uint8_t epd_task_priority, int epd_task_affinity) {
     ed047tc1_config_t cfg = {
-        .data_pins    = { 6, 14, 7, 12, 9, 11, 8, 10 },
-        .sph_pin      = 13,
-        .cl_pin       = 16,
-        .ckv_pin      = 18,
-        .spv_pin      = 17,
-        .le_pin       = 15,
-        .oe_pin       = 45,
-        .pwr_pin      = 46,
+        .data_pins     = { 6, 14, 7, 12, 9, 11, 8, 10 },
+        .sph_pin       = 13,
+        .cl_pin        = 16,
+        .ckv_pin       = 18,
+        .spv_pin       = 17,
+        .le_pin        = 15,
+        .oe_pin        = 45,
+        .pwr_pin       = 46,
+        .task_priority = epd_task_priority,
+        .task_affinity = epd_task_affinity,
     };
 
     bsp_display_t *display = NULL;

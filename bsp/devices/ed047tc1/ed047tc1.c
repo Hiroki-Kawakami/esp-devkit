@@ -128,6 +128,8 @@ esp_err_t ed047tc1_epd_create(const ed047tc1_config_t *cfg, bsp_display_t **out_
         .line_bytes       = ED047TC1_LINE_BYTES,
         .line_padding     = ED047TC1_LINE_PADDING,
         .get_waveform_lut = get_waveform_lut,
+        .task_priority    = cfg->task_priority,
+        .task_affinity    = cfg->task_affinity,
     };
     for (int i = 0; i < 8; i++) ec.data_pins[i] = cfg->data_pins[i];
     return epd_ll_create(&ec, out_display);

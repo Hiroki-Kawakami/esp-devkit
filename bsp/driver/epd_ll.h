@@ -65,6 +65,8 @@ typedef struct {
      * BSP_EPD_MODE_CLEAR waveform: the bring-up white baseline runs it as
      * CLEAR_FULL. Returned tables are caller-owned and must outlive the display. */
     const uint32_t *(*get_waveform_lut)(bsp_epd_mode_t mode, size_t *steps);
+    uint8_t  task_priority;     /* async refresh-task priority             */
+    int      task_affinity;     /* core to pin the refresh task to; <0 -> no affinity */
 } epd_ll_config_t;
 
 /* Bring up the panel -- allocate the framebuffers, init the i80 bus, clear to a

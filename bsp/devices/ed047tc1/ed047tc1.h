@@ -22,6 +22,8 @@ typedef struct {
     int oe_pin;         /* OE  (panel output enable, power seq)      */
     int pwr_pin;        /* PWR (EPD DC/DC enable, power seq); also    */
                         /* lent to the i80 bus as its dummy D/C pin   */
+    uint8_t task_priority;  /* async refresh-task priority               */
+    int     task_affinity;  /* core to pin the refresh task to; <0 -> none */
 } ed047tc1_config_t;
 
 esp_err_t ed047tc1_epd_create(const ed047tc1_config_t *cfg, bsp_display_t **out_display);

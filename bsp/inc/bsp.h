@@ -13,6 +13,12 @@ extern "C" {
 #endif
 
 typedef struct {
+    union {
+        struct {
+            uint8_t task_priority;  /*!< refresh-task priority; 0 -> default (5) */
+            int8_t  task_affinity;  /*!< core to pin to (0/1); <0 -> no affinity */
+        } epd;
+    };
 } bsp_config_t;
 
 esp_err_t bsp_init(const bsp_config_t *config);
