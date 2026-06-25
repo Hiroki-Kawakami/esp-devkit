@@ -81,7 +81,10 @@ static esp_err_t op_refresh(bsp_display_t *self, bsp_rect_t area, bsp_epd_mode_t
 
     if (wf == BSP_EPD_MODE_CLEAR) {
         memset(s->gram, 0xF0, (size_t)s->panel_w * s->panel_h);   /* white */
-        esp_err_t err = it8951e_clear(s->epd);
+        esp_err_t err = it8951e_bus_acquire(s->epd);
+        if (err != ESP_OK) return err;
+        err = it8951e_clear(s->epd);
+        it8951e_bus_release(s->epd);
         if (err == ESP_OK) err = it8951e_wait_idle(s->epd, REFRESH_TIMEOUT_MS);
         return err;
     }
@@ -115,8 +118,14 @@ static esp_err_t op_refresh(bsp_display_t *self, bsp_rect_t area, bsp_epd_mode_t
         .data      = s->packed,
         .data_size = (size_t)aw * ah / 2,
     };
-    esp_err_t err = it8951e_load_image(s->epd, &it_area, &img);
+    /* Hold the shared bus across the SPI-active upload+display so an SD read on
+     * the same bus can't interleave between packets; release before wait_idle so
+     * the bus stays free while the panel physically refreshes. */
+    esp_err_t err = it8951e_bus_acquire(s->epd);
+    if (err != ESP_OK) return err;
+    err = it8951e_load_image(s->epd, &it_area, &img);
     if (err == ESP_OK) err = it8951e_display(s->epd, &it_area, to_it8951e_mode(mode));
+    it8951e_bus_release(s->epd);
     if (err == ESP_OK) err = it8951e_wait_idle(s->epd, REFRESH_TIMEOUT_MS);
     return err;
 }

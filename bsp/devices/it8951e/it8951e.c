@@ -79,6 +79,7 @@ struct it8951e_dev {
     spi_device_handle_t  spi;
     it8951e_panel_info_t info;
     bool                 info_valid;
+    int                  bus_depth;  /* >0 = bus held across packets (nestable) */
 };
 
 /* ========================================================================
@@ -165,7 +166,11 @@ static esp_err_t spi_write_u16_array(it8951e_dev_t *dev,
 
 /* ---- IT8951 packet primitives ------------------------------------------ */
 
+/* While the bus is held (it8951e_bus_acquire / a wrapped primitive), each packet
+ * skips the per-packet acquire/release so an SD transaction can't slip between
+ * the packets of one logical operation on the shared bus. */
 static esp_err_t io_begin(it8951e_dev_t *dev) {
+    if (dev->bus_depth) return wait_hrdy(dev, HRDY_TIMEOUT_MS);
     esp_err_t err = spi_device_acquire_bus(dev->spi, portMAX_DELAY);
     if (err != ESP_OK) return err;
     err = wait_hrdy(dev, HRDY_TIMEOUT_MS);
@@ -174,7 +179,7 @@ static esp_err_t io_begin(it8951e_dev_t *dev) {
 }
 
 static void io_end(it8951e_dev_t *dev) {
-    spi_device_release_bus(dev->spi);
+    if (!dev->bus_depth) spi_device_release_bus(dev->spi);
 }
 
 static esp_err_t pkt_write_cmd(it8951e_dev_t *dev, uint16_t cmd) {
@@ -232,18 +237,28 @@ static esp_err_t pkt_read_data(it8951e_dev_t *dev,
 
 /* ---- Convenience wrappers for cmd + args ------------------------------- */
 
+/* cmd_with_args and reg_read span multiple packets; hold the bus across them so
+ * the cmd/args/data sub-packets stay contiguous against an SD device on the same
+ * bus. The hold is nestable, so it composes when a caller already holds the bus
+ * (e.g. op_refresh) and self-protects the standalone polls (wait_idle). */
 static esp_err_t cmd_with_args(it8951e_dev_t *dev, uint16_t cmd,
                                const uint16_t *args, size_t n_args) {
-    esp_err_t err = pkt_write_cmd(dev, cmd);
+    esp_err_t err = it8951e_bus_acquire(dev);
+    if (err != ESP_OK) return err;
+    err = pkt_write_cmd(dev, cmd);
     if (err == ESP_OK && n_args > 0) err = pkt_write_data(dev, args, n_args);
+    it8951e_bus_release(dev);
     return err;
 }
 
 static esp_err_t reg_read(it8951e_dev_t *dev, uint16_t reg, uint16_t *out) {
-    uint16_t arg = reg;
-    esp_err_t err = cmd_with_args(dev, CMD_REG_RD, &arg, 1);
+    esp_err_t err = it8951e_bus_acquire(dev);
     if (err != ESP_OK) return err;
-    return pkt_read_data(dev, out, 1);
+    uint16_t arg = reg;
+    err = cmd_with_args(dev, CMD_REG_RD, &arg, 1);
+    if (err == ESP_OK) err = pkt_read_data(dev, out, 1);
+    it8951e_bus_release(dev);
+    return err;
 }
 
 static esp_err_t reg_write(it8951e_dev_t *dev, uint16_t reg, uint16_t value) {
@@ -254,6 +269,21 @@ static esp_err_t reg_write(it8951e_dev_t *dev, uint16_t reg, uint16_t value) {
 /* ========================================================================
  * Public API
  * ===================================================================== */
+
+esp_err_t it8951e_bus_acquire(it8951e_handle_t handle) {
+    ESP_RETURN_ON_FALSE(handle, ESP_ERR_INVALID_ARG, TAG, "null arg");
+    if (handle->bus_depth > 0) { handle->bus_depth++; return ESP_OK; }
+    esp_err_t err = spi_device_acquire_bus(handle->spi, portMAX_DELAY);
+    if (err == ESP_OK) handle->bus_depth = 1;
+    return err;
+}
+
+esp_err_t it8951e_bus_release(it8951e_handle_t handle) {
+    ESP_RETURN_ON_FALSE(handle, ESP_ERR_INVALID_ARG, TAG, "null arg");
+    if (handle->bus_depth == 0) return ESP_OK;
+    if (--handle->bus_depth == 0) spi_device_release_bus(handle->spi);
+    return ESP_OK;
+}
 
 esp_err_t it8951e_read_reg(it8951e_handle_t handle, uint16_t reg, uint16_t *out_value) {
     ESP_RETURN_ON_FALSE(handle && out_value, ESP_ERR_INVALID_ARG, TAG, "null arg");
@@ -282,10 +312,19 @@ esp_err_t it8951e_sleep(it8951e_handle_t handle) {
 
 esp_err_t it8951e_wait_idle(it8951e_handle_t handle, uint32_t timeout_ms) {
     ESP_RETURN_ON_FALSE(handle, ESP_ERR_INVALID_ARG, TAG, "null arg");
+
+    /* A full-panel high-quality refresh holds HRDY low for seconds — longer than
+     * a single packet's HRDY_TIMEOUT_MS. Wait for the controller to accept SPI
+     * again on the caller's full budget first (GPIO only, no bus), so a slow
+     * refresh isn't misreported as a 3 s HRDY timeout by the LUTAFSR poll's own
+     * per-packet wait. */
+    esp_err_t err = wait_hrdy(handle, timeout_ms);
+    if (err != ESP_OK) return err;
+
     int64_t deadline = esp_timer_get_time() + (int64_t)timeout_ms * 1000;
     while (1) {
         uint16_t v = 0xffff;
-        esp_err_t err = reg_read(handle, REG_LUTAFSR, &v);
+        err = reg_read(handle, REG_LUTAFSR, &v);
         if (err != ESP_OK) return err;
         if (v == 0) return ESP_OK;
         if (timeout_ms == 0) return ESP_ERR_TIMEOUT;

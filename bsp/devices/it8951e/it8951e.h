@@ -27,7 +27,11 @@ extern "C" {
  * with spi_bus_add_device(), so other devices (e.g. microSD) can share the
  * same host. The driver acquires the bus around each transfer with
  * spi_device_acquire_bus() so concurrent users are safe as long as they all
- * go through spi_master.
+ * go through spi_master. That bracket is per-packet, so on a shared bus an SD
+ * transaction can interleave between the packets of one load/display sequence;
+ * wrap such a sequence in it8951e_bus_acquire()/it8951e_bus_release() to hold
+ * the bus across it (release before the long wait_idle so the bus stays free
+ * while the panel physically refreshes).
  * -------------------------------------------------------------------------- */
 
 typedef struct it8951e_dev *it8951e_handle_t;
@@ -113,6 +117,13 @@ typedef struct {
 
 esp_err_t it8951e_create(const it8951e_config_t *config, it8951e_handle_t *out_handle);
 esp_err_t it8951e_destroy(it8951e_handle_t handle);
+
+/* Hold the shared SPI bus across several packets (e.g. a whole load+display)
+ * so no other device on the bus can interleave. Reentrant-safe: nested driver
+ * packets see the bus already held and skip their own acquire. Release before
+ * any long idle wait to keep the bus free for other devices. */
+esp_err_t it8951e_bus_acquire(it8951e_handle_t handle);
+esp_err_t it8951e_bus_release(it8951e_handle_t handle);
 
 /* Hardware reset via RESET pin, then re-run SYS_RUN / VCOM setup. */
 esp_err_t it8951e_reset(it8951e_handle_t handle);
