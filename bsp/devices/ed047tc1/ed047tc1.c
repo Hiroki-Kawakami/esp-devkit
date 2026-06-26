@@ -40,16 +40,16 @@
 /* 16-grayscale, flashing, highest quality (GC16-class). */
 static const uint32_t ed047tc1_lut_quality[] = {
 /*         0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15   (gray column) */
-/*  1 */ T(B, B, B, W, W, W, B, B, W, B, B, B, B, B, B, W),
-/*  2 */ T(W, W, W, B, B, W, W, W, B, W, W, W, W, W, W, B),
-/*  3 */ T(W, W, W, B, B, 0, W, W, B, B, W, W, W, W, W, B),
-/*  4 */ T(W, W, B, 0, W, B, B, B, B, B, B, B, B, B, B, B),
-/*  5 */ T(W, W, B, W, W, B, B, B, B, B, B, B, B, B, B, B),
-/*  6 */ T(W, 0, 0, W, W, B, B, 0, W, B, B, B, B, 0, B, B),
-/*  7 */ T(B, B, W, W, W, B, W, W, W, 0, 0, B, 0, 0, B, W),
-/*  8 */ T(B, B, W, B, B, W, W, W, W, B, B, 0, 0, 0, W, W),
-/*  9 */ T(B, B, B, B, B, W, B, B, B, W, W, W, W, W, W, W),
-/* 10 */ T(B, 0, B, 0, 0, B, 0, 0, 0, 0, 0, 0, 0, 0, 0, W),
+/*  1 */ T(B, B, B, B, B, B, B, B, B, B, B, B, B, B, B, W),
+/*  2 */ T(W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, B),
+/*  3 */ T(W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, B),
+/*  4 */ T(W, W, B, B, 0, B, B, B, B, B, B, 0, B, B, B, B),
+/*  5 */ T(W, 0, B, B, B, B, B, 0, B, B, B, B, B, B, B, B),
+/*  6 */ T(W, 0, 0, W, W, W, 0, B, B, B, B, B, B, 0, B, B),
+/*  7 */ T(B, 0, W, W, W, W, W, W, B, 0, B, B, 0, 0, B, W),
+/*  8 */ T(B, B, 0, 0, 0, W, 0, W, B, B, 0, 0, 0, 0, W, W),
+/*  9 */ T(B, B, B, B, B, B, 0, 0, W, W, W, W, W, W, W, W),
+/* 10 */ T(B, B, B, B, B, B, B, B, 0, 0, 0, 0, 0, 0, 0, W),
 /* 11 */ T(B, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, W),
     /* settle tail (16 frames, no drive) */
     STOP, STOP, STOP, STOP, STOP, STOP, STOP, STOP,
@@ -60,15 +60,11 @@ static const uint32_t ed047tc1_lut_quality[] = {
 static const uint32_t ed047tc1_lut_fast[] = {
 /*         0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15   (gray column) */
 /*  1 */ T(W, W, W, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, B, B, B),
-/*  2 */ T(W, W, W, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, B, B, B),
-/*  3 */ T(W, W, W, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, B, B, B),
-/*  4 */ T(W, W, W, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, B, B, B),
-/*  5 */ T(B, B, B, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, W, W, W),
-/*  6 */ T(B, B, B, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, W, W, W),
-/*  7 */ T(B, B, B, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, W, W, W),
-/*  8 */ T(B, B, B, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, W, W, W),
+/*  2 */ T(B, B, B, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, W, W, W),
+/*  3 */ T(B, B, B, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, W, W, W),
+/*  4 */ T(B, B, B, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, W, W, W),
     /* settle tail (shorter: fast mode trades settle for speed) */
-    STOP, STOP, STOP, STOP,
+    STOP,
 };
 
 /* Drive everything to white. Uniform frames, so (with FULL) refresh reuses one
