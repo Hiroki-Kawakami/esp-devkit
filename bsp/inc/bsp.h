@@ -52,6 +52,31 @@ void bsp_touch_wait_interrupt(void);
 typedef void (*bsp_touch_event_cb_t)(const bsp_touch_point_t *points, int count, void *arg);
 void bsp_touch_set_event_cb(bsp_touch_event_cb_t cb, void *arg);
 
+// MARK: RTC
+/* External I2C RTC (BM8563 on Paper/PaperS3, RX8130 on some M5Stack). Chip is
+ * board-selected at build time; calls return ESP_ERR_INVALID_STATE with no RTC. */
+bool bsp_rtc_is_available(void);
+esp_err_t bsp_rtc_get_time(bsp_rtc_datetime_t *out) BSP_NONNULL(1);
+esp_err_t bsp_rtc_set_time(const bsp_rtc_datetime_t *dt) BSP_NONNULL(1);
+
+/* false when power was lost / the oscillator stopped since the last set_time
+ * (chip voltage-low flag); set_time clears it. */
+esp_err_t bsp_rtc_time_is_valid(bool *out_valid) BSP_NONNULL(1);
+
+/* Countdown: after `seconds` the chip asserts INT and latches the expiry flag,
+ * both surviving deep sleep; repeat = auto-reload (interval) vs one-shot.
+ * Resolution/max span are chip-specific; an unrepresentable span returns
+ * ESP_ERR_INVALID_ARG. */
+esp_err_t bsp_rtc_timer_start(uint32_t seconds, bool repeat);
+esp_err_t bsp_rtc_timer_stop(void);
+esp_err_t bsp_rtc_timer_is_expired(bool *out_expired) BSP_NONNULL(1);
+esp_err_t bsp_rtc_timer_clear(void);
+
+/* INT-line callback; needs a board-wired INT gpio, runs ISR-deferred, NULL
+ * unregisters. For deep-sleep wakeup use esp_sleep on the INT gpio instead. */
+typedef void (*bsp_rtc_int_cb_t)(void *arg);
+esp_err_t bsp_rtc_set_int_cb(bsp_rtc_int_cb_t cb, void *arg);
+
 // MARK: SD Card
 typedef struct {
     bool    format_if_mount_failed;  /*!< default: false */

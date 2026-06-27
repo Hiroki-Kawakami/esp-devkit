@@ -10,27 +10,11 @@
 #include "paper_config.h"
 #include "it8951e_epd.h"
 #include "gt911.h"
-#include "driver/i2c_master.h"
 #include "esp_log.h"
 
 static const char *TAG = "paper_panel";
 
-static esp_err_t touch_init(const bsp_config_t *config) {
-    const i2c_master_bus_config_t i2c_cfg = {
-        .i2c_port          = PAPER_I2C_PORT,
-        .sda_io_num        = PAPER_I2C_PIN_SDA,
-        .scl_io_num        = PAPER_I2C_PIN_SCL,
-        .clk_source        = I2C_CLK_SRC_DEFAULT,
-        .glitch_ignore_cnt = 7,
-        .flags.enable_internal_pullup = true,
-    };
-    i2c_master_bus_handle_t bus = NULL;
-    esp_err_t err = i2c_new_master_bus(&i2c_cfg, &bus);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "i2c_new_master_bus: %s", esp_err_to_name(err));
-        return err;
-    }
-
+static esp_err_t touch_init(const bsp_config_t *config, i2c_master_bus_handle_t bus) {
     /* Same display geometry (960x540 landscape) as M5PaperS3, so the GT911 raw
      * portrait coordinates map to display space the same way: transpose, then
      * mirror the Y axis. Verify on hardware — the M5Paper digitizer mounting may
@@ -53,7 +37,7 @@ static esp_err_t touch_init(const bsp_config_t *config) {
         },
     };
     bsp_touch_t *touch = NULL;
-    err = gt911_touch_create(&cfg, &touch);
+    esp_err_t err = gt911_touch_create(&cfg, &touch);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "gt911_touch_create: %s", esp_err_to_name(err));
         return err;
@@ -62,7 +46,7 @@ static esp_err_t touch_init(const bsp_config_t *config) {
     return ESP_OK;
 }
 
-esp_err_t paper_panel_init(const bsp_config_t *config) {
+esp_err_t paper_panel_init(const bsp_config_t *config, i2c_master_bus_handle_t i2c_bus) {
     const it8951e_config_t epd_cfg = {
         .spi_host = PAPER_SPI_HOST,
         .cs_io    = PAPER_EPD_PIN_CS,
@@ -79,9 +63,9 @@ esp_err_t paper_panel_init(const bsp_config_t *config) {
 
     /* Touch is non-fatal: a failure leaves bsp_touch_read a no-op rather than
      * blocking display bring-up. */
-    err = touch_init(config);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "touch unavailable: %s", esp_err_to_name(err));
+    if (i2c_bus) {
+        err = touch_init(config, i2c_bus);
+        if (err != ESP_OK) ESP_LOGW(TAG, "touch unavailable: %s", esp_err_to_name(err));
     }
     return ESP_OK;
 }

@@ -13,10 +13,11 @@
 # idf_component_register shim in simulator/CMakeLists.txt, where ESP_PLATFORM is
 # unset.
 
-# Model-agnostic display/touch dispatch — built for both targets.
+# Model-agnostic display/touch/rtc dispatch — built for both targets.
 set(BSP_COMMON_SRCS
     "src/bsp_display.c"
-    "src/bsp_touch.c")
+    "src/bsp_touch.c"
+    "src/bsp_rtc.c")
 
 if(NOT DEFINED BSP_BOARD)
     set(BSP_BOARD paper_s3)
@@ -48,6 +49,7 @@ else()
             ${BOARD_SIM_SRCS}
             "simulator/sdl_panel.c"
             "simulator/sd_redirect.c"
+            "simulator/rtc_sim.c"
         INCLUDE_DIRS "inc"
         PRIV_INCLUDE_DIRS "inc_private" "simulator")
 endif()

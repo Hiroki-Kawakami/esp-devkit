@@ -4,8 +4,9 @@
  *
  * M5Paper (ESP32) board: device-side bsp_init orchestration. Sequences the
  * power rails, brings up the SPI bus shared by the IT8951E EPD and the microSD
- * card, then hands off to paper_panel_init (display + touch). The host-side
- * counterpart is paper_sim.c.
+ * card and the I2C bus shared by the GT911 touch and the BM8563 RTC, hands the
+ * panel off to paper_panel_init (display + touch), and creates the RTC. The
+ * host-side counterpart is paper_sim.c.
  */
 
 #include "bsp.h"
@@ -13,10 +14,42 @@
 #include "esp_log.h"
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
+#include "driver/i2c_master.h"
+#include "bm8563.h"
 #include "paper_config.h"
 #include "paper_panel.h"
 
 static const char *TAG = "paper";
+
+static esp_err_t i2c_bus_init(i2c_master_bus_handle_t *out_bus) {
+    const i2c_master_bus_config_t i2c_cfg = {
+        .i2c_port          = PAPER_I2C_PORT,
+        .sda_io_num        = PAPER_I2C_PIN_SDA,
+        .scl_io_num        = PAPER_I2C_PIN_SCL,
+        .clk_source        = I2C_CLK_SRC_DEFAULT,
+        .glitch_ignore_cnt = 7,
+        .flags.enable_internal_pullup = true,
+    };
+    esp_err_t err = i2c_new_master_bus(&i2c_cfg, out_bus);
+    if (err != ESP_OK) ESP_LOGE(TAG, "i2c_new_master_bus: %s", esp_err_to_name(err));
+    return err;
+}
+
+/* BM8563 INT gates the M5Paper power latch (not a readable GPIO), so leave int_io
+ * NC: the countdown timer's INT still asserts in hardware. */
+static esp_err_t rtc_init(i2c_master_bus_handle_t bus) {
+    const bm8563_config_t cfg = {
+        .i2c_bus     = bus,
+        .i2c_address = BM8563_I2C_ADDR,
+        .clock_hz    = BM8563_I2C_DEFAULT_HZ,
+        .int_io      = GPIO_NUM_NC,
+    };
+    bsp_rtc_t *rtc = NULL;
+    esp_err_t err = bm8563_rtc_create(&cfg, &rtc);
+    if (err != ESP_OK) return err;
+    bsp_rtc_set_active(rtc);
+    return ESP_OK;
+}
 
 /* Raise the power rails in order; the IT8951E needs ~1 s to boot before it will
  * respond on SPI. */
@@ -70,7 +103,18 @@ esp_err_t bsp_init(const bsp_config_t *config) {
         return err;
     }
 
-    return paper_panel_init(config);
+    /* Touch + RTC share this I2C bus; both are non-fatal (a failure leaves their
+     * bsp_* API a no-op rather than blocking display bring-up). */
+    i2c_master_bus_handle_t i2c_bus = NULL;
+    (void)i2c_bus_init(&i2c_bus);
+
+    err = paper_panel_init(config, i2c_bus);
+    if (err != ESP_OK) return err;
+
+    if (i2c_bus && (err = rtc_init(i2c_bus)) != ESP_OK) {
+        ESP_LOGW(TAG, "rtc unavailable: %s", esp_err_to_name(err));
+    }
+    return ESP_OK;
 }
 
 void bsp_restart(void) {

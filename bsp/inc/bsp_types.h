@@ -84,6 +84,14 @@ typedef struct {
     int id;         /*!< pointer track id from the touch controller */
 } bsp_touch_point_t;
 
+typedef struct {
+    uint16_t year;     /*!< full year, e.g. 2026 */
+    uint8_t  month;    /*!< 1-12 */
+    uint8_t  day;      /*!< 1-31 */
+    uint8_t  hour, minute, second;
+    uint8_t  weekday;  /*!< 0-6, 0 = Sunday */
+} bsp_rtc_datetime_t;
+
 #ifdef __cplusplus
 }
 #endif
