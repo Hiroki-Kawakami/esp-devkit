@@ -53,9 +53,17 @@ void bsp_touch_wait_interrupt(void);
 typedef void (*bsp_touch_event_cb_t)(const bsp_touch_point_t *points, int count, void *arg);
 void bsp_touch_set_event_cb(bsp_touch_event_cb_t cb, void *arg);
 
+// MARK: HotKnot
+/* Proximity peer-to-peer over the touch panel. Needs the touch reader task;
+ * events (PAIRED / READY / RECEIVED / ERROR) arrive on `cb`. Ends must use
+ * opposite roles. No provider -> ESP_ERR_NOT_SUPPORTED. Caveats: docs/gotchas.md. */
+esp_err_t bsp_hotknot_begin(bsp_hotknot_role_t role, bsp_hotknot_event_cb_t cb, void *arg);
+esp_err_t bsp_hotknot_send(const void *data, size_t len, uint32_t timeout_ms);
+esp_err_t bsp_hotknot_end(void);
+
 // MARK: RTC
-/* External I2C RTC (BM8563 on Paper/PaperS3, RX8130 on some M5Stack). Chip is
- * board-selected at build time; calls return ESP_ERR_INVALID_STATE with no RTC. */
+/* External I2C RTC, board-selected at build time; calls return
+ * ESP_ERR_INVALID_STATE with no RTC. */
 bool bsp_rtc_is_available(void);
 esp_err_t bsp_rtc_get_time(bsp_rtc_datetime_t *out) BSP_NONNULL(1);
 esp_err_t bsp_rtc_set_time(const bsp_rtc_datetime_t *dt) BSP_NONNULL(1);

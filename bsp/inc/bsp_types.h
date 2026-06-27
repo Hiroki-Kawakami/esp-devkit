@@ -84,6 +84,32 @@ typedef struct {
     int id;         /*!< pointer track id from the touch controller */
 } bsp_touch_point_t;
 
+/* HotKnot — proximity peer-to-peer over the touch panel. Session events are
+ * delivered to a bsp_hotknot_event_cb_t (see bsp.h). */
+#define BSP_HOTKNOT_MAX_PAYLOAD 128
+
+typedef enum {
+    BSP_HOTKNOT_ROLE_SLAVE  = 0,  /*!< approach as slave  (chip cmd 0x20) */
+    BSP_HOTKNOT_ROLE_MASTER = 1,  /*!< approach as master (chip cmd 0x21) */
+} bsp_hotknot_role_t;
+
+typedef enum {
+    BSP_HOTKNOT_EVENT_PAIRED,    /*!< peer detected; FW load starting       */
+    BSP_HOTKNOT_EVENT_READY,     /*!< FW loaded; bsp_hotknot_send now allowed */
+    BSP_HOTKNOT_EVENT_RECEIVED,  /*!< data arrived (data/len valid in cb only) */
+    BSP_HOTKNOT_EVENT_ERROR,     /*!< session failed (err valid); session over */
+} bsp_hotknot_event_type_t;
+
+typedef struct {
+    bsp_hotknot_event_type_t type;
+    const uint8_t           *data;  /*!< RECEIVED only; valid only during the cb */
+    size_t                   len;   /*!< RECEIVED only */
+    esp_err_t                err;   /*!< ERROR only */
+} bsp_hotknot_event_t;
+
+/* Runs on the touch reader task — keep it short and marshal to the UI thread. */
+typedef void (*bsp_hotknot_event_cb_t)(const bsp_hotknot_event_t *ev, void *arg);
+
 typedef struct {
     uint16_t year;     /*!< full year, e.g. 2026 */
     uint8_t  month;    /*!< 1-12 */

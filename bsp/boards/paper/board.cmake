@@ -8,6 +8,9 @@ set(BOARD_DEVICE_SRCS
     "boards/paper/paper_panel.c"
     "boards/paper/paper_sd.c"
     "devices/gt911/gt911.c"
+    "devices/gt911/gt911_hotknot.c"
+    "devices/gt911/gt911_hotknot_fw_loader.c"
+    "devices/gt911/gt911_hotknot_fw_blob.c"
     "devices/bm8563/bm8563.c"
     "devices/it8951e/it8951e.c"
     "devices/it8951e/it8951e_epd.c")

@@ -36,13 +36,26 @@ extern "C" {
 
 /* Optional reader task. task_priority > 0 spawns a task that samples the chip and
  * pushes each sample to bsp_touch_set_event_cb() in display space; zeroed -> no
- * task (touch is read synchronously via bsp_touch_read). */
+ * task (touch is read synchronously via bsp_touch_read). HotKnot also needs this
+ * task — without it the session state machine has nothing to drive it. */
 typedef struct {
     int      task_priority;     /* > 0 to spawn the reader task                   */
     int      task_affinity;     /* core to pin to; < 0 -> no affinity             */
     uint32_t task_stack;        /* 0 -> default                                   */
     uint32_t poll_interval_ms;  /* INT-wait fallback period; 0 -> default         */
 } gt911_acquire_config_t;
+
+/* HotKnot SNR tuning applied to chip RAM at session start; each field -1 leaves
+ * the chip default. Battery boards lock the frequency and raise gains for SMPS noise. */
+typedef struct {
+    int16_t noise_map;      /* 0x80A1: 6-bit mask of 200-450K freqs to skip (0x3F = lock to 150K) */
+    int16_t pxy_threshold;  /* 0x80A3 hi: pair-detect strictness (spec floor 0x14)               */
+    int16_t dump_shift;     /* 0x80A4 lo: raw-data magnification 2^N (2..4)                       */
+    int16_t rx_gain;        /* 0x80A5: Rx analog PGA gain (0..7)                                  */
+    int16_t freq_gain;      /* 0x80A6: per-frequency software gain, applied to all 4 bytes        */
+} gt911_hotknot_tuning_t;
+
+#define GT911_HOTKNOT_TUNING_DEFAULTS { -1, -1, -1, -1, -1 }
 
 typedef struct {
     i2c_master_bus_handle_t i2c_bus;     /* bus from i2c_new_master_bus()        */
@@ -60,6 +73,7 @@ typedef struct {
     uint16_t                height;      /* display height (for mirror_y clamp)  */
 
     gt911_acquire_config_t  acquire;     /* sampling/delivery policy (see above) */
+    gt911_hotknot_tuning_t  hotknot;     /* HotKnot SNR tuning; all -1 to skip   */
 } gt911_config_t;
 
 /* Reset + probe the chip, attach to the bus, and return a bsp_touch_t provider.

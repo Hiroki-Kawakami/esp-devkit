@@ -10,6 +10,7 @@
 #include "paper_config.h"
 #include "it8951e_epd.h"
 #include "gt911.h"
+#include "gt911_hotknot.h"
 #include "esp_log.h"
 
 static const char *TAG = "paper_panel";
@@ -35,6 +36,16 @@ static esp_err_t touch_init(const bsp_config_t *config, i2c_master_bus_handle_t 
             .task_affinity    = config->touch.task_affinity,
             .poll_interval_ms = config->touch.poll_interval_ms,
         },
+        /* HotKnot SNR tuning: same battery-noise profile as M5PaperS3. M5Paper's
+         * INT is input-only (RESET also unwired), so a session leaves touch needing
+         * a power cycle — see bsp_hotknot_end docs. */
+        .hotknot = {
+            .noise_map     = 0x3F,
+            .pxy_threshold = 0x14,
+            .dump_shift    = 0x02,
+            .rx_gain       = 0x03,
+            .freq_gain     = 0x88,
+        },
     };
     bsp_touch_t *touch = NULL;
     esp_err_t err = gt911_touch_create(&cfg, &touch);
@@ -43,6 +54,10 @@ static esp_err_t touch_init(const bsp_config_t *config, i2c_master_bus_handle_t 
         return err;
     }
     bsp_touch_set_active(touch);
+
+    /* HotKnot needs the touch reader task; non-fatal if unavailable. */
+    bsp_hotknot_t *hk = NULL;
+    if (gt911_hotknot_create(&hk) == ESP_OK) bsp_hotknot_set_active(hk);
     return ESP_OK;
 }
 
