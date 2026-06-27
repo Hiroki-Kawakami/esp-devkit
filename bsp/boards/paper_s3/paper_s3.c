@@ -11,6 +11,8 @@
 #include "bsp.h"
 #include "esp_system.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "driver/gpio.h"
 #include "driver/i2c_master.h"
 #include "bm8563.h"
@@ -74,7 +76,7 @@ esp_err_t bsp_init(const bsp_config_t *config) {
 }
 
 void bsp_restart(void) {
-    if (bsp_rtc_timer_start(1, false) == ESP_OK) {
+    if (bsp_rtc_timer_start(200, false) == ESP_OK) {
         bsp_power_off();
     }
     esp_restart();

@@ -118,7 +118,7 @@ esp_err_t bsp_init(const bsp_config_t *config) {
 }
 
 void bsp_restart(void) {
-    if (bsp_rtc_timer_start(1, false) == ESP_OK) {
+    if (bsp_rtc_timer_start(200, false) == ESP_OK) {
         bsp_power_off();
     }
     esp_restart();

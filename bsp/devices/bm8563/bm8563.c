@@ -36,9 +36,11 @@ static const char *TAG = "bm8563";
 #define CS2_TIE           0x01u  /* timer interrupt (INT pin) enable         */
 
 #define TIMER_ENABLE      0x80u
-#define TIMER_SRC_1HZ     0x02u  /* 1 Hz tick  -> 1..255 s                   */
+#define TIMER_SRC_4096HZ  0x00u  /* ~244 us tick -> up to 62 ms              */
+#define TIMER_SRC_64HZ    0x01u  /* ~15.6 ms tick -> up to ~3.98 s           */
+#define TIMER_SRC_1HZ     0x02u  /* 1 s tick   -> up to 255 s                */
 #define TIMER_SRC_1_60HZ  0x03u  /* 1/60 Hz    -> minute granularity         */
-#define TIMER_MAX_SECONDS (255u * 60u)
+#define TIMER_MAX_MS      (255u * 60u * 1000u)
 
 #define I2C_TIMEOUT_MS    50
 #define TASK_STACK        2560
@@ -133,18 +135,32 @@ static esp_err_t bm8563_time_is_valid(bsp_rtc_t *self, bool *out_valid) {
 
 /* ---- Countdown timer ---------------------------------------------------- */
 
-static esp_err_t bm8563_timer_start(bsp_rtc_t *self, uint32_t seconds, bool repeat) {
+/* Pick the finest source clock that spans `ms` (count 1..255), rounding to the
+ * nearest tick. */
+static void pick_source(uint32_t ms, uint8_t *src, uint8_t *count) {
+    uint32_t c;
+    if (ms <= 62) {            /* 255 / 4096 * 1000 */
+        *src = TIMER_SRC_4096HZ;
+        c = (ms * 4096 + 500) / 1000;
+    } else if (ms <= 3984) {   /* 255 / 64 * 1000 */
+        *src = TIMER_SRC_64HZ;
+        c = (ms * 64 + 500) / 1000;
+    } else if (ms <= 255000) {
+        *src = TIMER_SRC_1HZ;
+        c = (ms + 500) / 1000;
+    } else {
+        *src = TIMER_SRC_1_60HZ;
+        c = (ms + 30000) / 60000;
+    }
+    *count = (uint8_t)(c < 1 ? 1 : c > 255 ? 255 : c);
+}
+
+static esp_err_t bm8563_timer_start(bsp_rtc_t *self, uint32_t ms, bool repeat) {
     bm8563_dev_t *dev = (bm8563_dev_t *)self;
-    if (seconds == 0 || seconds > TIMER_MAX_SECONDS) return ESP_ERR_INVALID_ARG;
+    if (ms == 0 || ms > TIMER_MAX_MS) return ESP_ERR_INVALID_ARG;
 
     uint8_t src, count;
-    if (seconds <= 255) {
-        src = TIMER_SRC_1HZ;
-        count = (uint8_t)seconds;
-    } else {
-        src = TIMER_SRC_1_60HZ;
-        count = (uint8_t)((seconds + 59) / 60);
-    }
+    pick_source(ms, &src, &count);
 
     dev_lock(dev);
     dev->repeat = repeat;

@@ -20,7 +20,7 @@ struct bsp_rtc {
     esp_err_t (*deinit)(bsp_rtc_t *self);
 
     /* Optional. */
-    esp_err_t (*timer_start)(bsp_rtc_t *self, uint32_t seconds, bool repeat);
+    esp_err_t (*timer_start)(bsp_rtc_t *self, uint32_t ms, bool repeat);
     esp_err_t (*timer_stop)(bsp_rtc_t *self);
     esp_err_t (*timer_is_expired)(bsp_rtc_t *self, bool *out_expired);
     esp_err_t (*timer_clear)(bsp_rtc_t *self);

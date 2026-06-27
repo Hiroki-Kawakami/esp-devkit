@@ -35,10 +35,10 @@ esp_err_t bsp_rtc_time_is_valid(bool *out_valid) {
     return s_rtc->time_is_valid(s_rtc, out_valid);
 }
 
-esp_err_t bsp_rtc_timer_start(uint32_t seconds, bool repeat) {
+esp_err_t bsp_rtc_timer_start(uint32_t ms, bool repeat) {
     if (!s_rtc) return ESP_ERR_INVALID_STATE;
     if (!s_rtc->timer_start) return ESP_ERR_NOT_SUPPORTED;
-    return s_rtc->timer_start(s_rtc, seconds, repeat);
+    return s_rtc->timer_start(s_rtc, ms, repeat);
 }
 
 esp_err_t bsp_rtc_timer_stop(void) {

@@ -64,11 +64,10 @@ esp_err_t bsp_rtc_set_time(const bsp_rtc_datetime_t *dt) BSP_NONNULL(1);
  * (chip voltage-low flag); set_time clears it. */
 esp_err_t bsp_rtc_time_is_valid(bool *out_valid) BSP_NONNULL(1);
 
-/* Countdown: after `seconds` the chip asserts INT and latches the expiry flag,
- * both surviving deep sleep; repeat = auto-reload (interval) vs one-shot.
- * Resolution/max span are chip-specific; an unrepresentable span returns
- * ESP_ERR_INVALID_ARG. */
-esp_err_t bsp_rtc_timer_start(uint32_t seconds, bool repeat);
+/* Countdown: after `ms` the chip asserts INT + latches the expiry flag (both
+ * survive deep sleep); repeat = interval vs one-shot. Resolution/max span are
+ * chip-specific; an unrepresentable span returns ESP_ERR_INVALID_ARG. */
+esp_err_t bsp_rtc_timer_start(uint32_t ms, bool repeat);
 esp_err_t bsp_rtc_timer_stop(void);
 esp_err_t bsp_rtc_timer_is_expired(bool *out_expired) BSP_NONNULL(1);
 esp_err_t bsp_rtc_timer_clear(void);
