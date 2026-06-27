@@ -20,8 +20,13 @@ inline lv_obj_t *lv_container_create(lv_obj_t *parent) {
 inline lv_obj_t *lv_container_create(lv_obj_t *parent, lv_flex_flow_t flow) {
     auto obj = lv_container_create(parent);
     lv_obj_set_flex_flow(obj, flow);
-    if (flow == LV_FLEX_FLOW_ROW || flow == LV_FLEX_FLOW_COLUMN) {
+    if (flow == LV_FLEX_FLOW_ROW) {
         lv_obj_set_flex_align(obj, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_size(obj, LV_PCT(100), LV_SIZE_CONTENT);
+    }
+    if (flow == LV_FLEX_FLOW_COLUMN) {
+        lv_obj_set_flex_align(obj, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_PCT(100));
     }
     return obj;
 }
