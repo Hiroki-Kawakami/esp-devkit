@@ -11,6 +11,7 @@
 #include "bsp.h"
 #include "esp_system.h"
 #include "esp_log.h"
+#include "driver/gpio.h"
 #include "driver/i2c_master.h"
 #include "bm8563.h"
 #include "paper_s3_panel.h"
@@ -21,6 +22,8 @@ static const char *TAG = "paper_s3";
 #define PAPER_S3_I2C_PORT     I2C_NUM_1
 #define PAPER_S3_I2C_PIN_SDA  GPIO_NUM_41
 #define PAPER_S3_I2C_PIN_SCL  GPIO_NUM_42
+
+#define PAPER_S3_PIN_PWROFF_PULSE  GPIO_NUM_44
 
 static esp_err_t i2c_bus_init(i2c_master_bus_handle_t *out_bus) {
     const i2c_master_bus_config_t i2c_cfg = {
@@ -72,4 +75,20 @@ esp_err_t bsp_init(const bsp_config_t *config) {
 
 void bsp_restart(void) {
     esp_restart();
+}
+
+esp_err_t bsp_power_off(void) {
+    const gpio_config_t out = {
+        .pin_bit_mask = 1ULL << PAPER_S3_PIN_PWROFF_PULSE,
+        .mode         = GPIO_MODE_OUTPUT,
+        .pull_up_en   = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type    = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&out);
+
+    gpio_set_level(PAPER_S3_PIN_PWROFF_PULSE, 1);
+    vTaskDelay(pdMS_TO_TICKS(500));
+    gpio_set_level(PAPER_S3_PIN_PWROFF_PULSE, 0);
+    return ESP_FAIL;
 }

@@ -28,6 +28,7 @@ typedef struct {
 
 esp_err_t bsp_init(const bsp_config_t *config);
 void bsp_restart(void);
+esp_err_t bsp_power_off(void);
 
 // MARK: Display
 bsp_display_type_t bsp_display_get_type(void);

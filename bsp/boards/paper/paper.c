@@ -120,3 +120,9 @@ esp_err_t bsp_init(const bsp_config_t *config) {
 void bsp_restart(void) {
     esp_restart();
 }
+
+esp_err_t bsp_power_off(void) {
+    gpio_set_level(PAPER_PIN_MAIN_PWR, 0);
+    vTaskDelay(pdMS_TO_TICKS(500));
+    return ESP_FAIL;
+}
