@@ -76,7 +76,8 @@ static inline uint8_t bpp_bits(it8951e_bpp_t bpp) {
 typedef struct it8951e_dev it8951e_dev_t;
 struct it8951e_dev {
     it8951e_config_t     cfg;
-    spi_device_handle_t  spi;
+    spi_device_handle_t  spi;        /* write/command device (fast clock)      */
+    spi_device_handle_t  spi_rd;     /* register-read device (slow clock)      */
     it8951e_panel_info_t info;
     bool                 info_valid;
     int                  bus_depth;  /* >0 = bus held across packets (nestable) */
@@ -91,6 +92,12 @@ struct it8951e_dev {
  * except the last in a group. The bus acquire also serializes against any
  * other device (e.g. the future microSD reader) sharing the same host.
  * ===================================================================== */
+
+/* CS is bit-banged (see it8951e_create); held low for one packet's worth of
+ * transfers — preamble, the HRDY wait, then the data words. */
+static inline void cs_set(it8951e_dev_t *dev, int level) {
+    gpio_set_level(dev->cfg.cs_io, level);
+}
 
 static esp_err_t wait_hrdy(it8951e_dev_t *dev, uint32_t timeout_ms) {
     if (gpio_get_level(dev->cfg.busy_io)) return ESP_OK;
@@ -113,7 +120,7 @@ static esp_err_t wait_hrdy(it8951e_dev_t *dev, uint32_t timeout_ms) {
     return ESP_OK;
 }
 
-static esp_err_t spi_write_bytes(it8951e_dev_t *dev,
+static esp_err_t spi_write_bytes(spi_device_handle_t io,
                                  const uint8_t *tx, size_t len,
                                  bool keep_cs) {
     spi_transaction_t t = {
@@ -121,10 +128,10 @@ static esp_err_t spi_write_bytes(it8951e_dev_t *dev,
         .length    = len * 8,
         .tx_buffer = tx,
     };
-    return spi_device_polling_transmit(dev->spi, &t);
+    return spi_device_polling_transmit(io, &t);
 }
 
-static esp_err_t spi_read_bytes(it8951e_dev_t *dev,
+static esp_err_t spi_read_bytes(spi_device_handle_t io,
                                 uint8_t *rx, size_t len,
                                 bool keep_cs) {
     spi_transaction_t t = {
@@ -133,18 +140,18 @@ static esp_err_t spi_read_bytes(it8951e_dev_t *dev,
         .rxlength  = len * 8,
         .rx_buffer = rx,
     };
-    return spi_device_polling_transmit(dev->spi, &t);
+    return spi_device_polling_transmit(io, &t);
 }
 
-static inline esp_err_t spi_write_u16(it8951e_dev_t *dev, uint16_t v, bool keep_cs) {
+static inline esp_err_t spi_write_u16(spi_device_handle_t io, uint16_t v, bool keep_cs) {
     uint8_t buf[2] = { (uint8_t)(v >> 8), (uint8_t)v };
-    return spi_write_bytes(dev, buf, 2, keep_cs);
+    return spi_write_bytes(io, buf, 2, keep_cs);
 }
 
 /* Write 16-bit words MSB-first from a host-endian uint16_t array. Uses a
  * stack scratch buffer to byte-swap in chunks; avoids allocating big buffers
  * for large image transfers. */
-static esp_err_t spi_write_u16_array(it8951e_dev_t *dev,
+static esp_err_t spi_write_u16_array(spi_device_handle_t io,
                                      const uint16_t *words, size_t n,
                                      bool keep_cs) {
     enum { CHUNK = 256 };
@@ -157,7 +164,7 @@ static esp_err_t spi_write_u16_array(it8951e_dev_t *dev,
             buf[2 * j + 1] = (uint8_t)w;
         }
         bool last_chunk = (i + take == n);
-        esp_err_t err = spi_write_bytes(dev, buf, take * 2, !last_chunk || keep_cs);
+        esp_err_t err = spi_write_bytes(io, buf, take * 2, !last_chunk || keep_cs);
         if (err != ESP_OK) return err;
         i += take;
     }
@@ -185,9 +192,11 @@ static void io_end(it8951e_dev_t *dev) {
 static esp_err_t pkt_write_cmd(it8951e_dev_t *dev, uint16_t cmd) {
     esp_err_t err = io_begin(dev);
     if (err != ESP_OK) return err;
-    err = spi_write_u16(dev, PRE_CMD, true);
+    cs_set(dev, 0);
+    err = spi_write_u16(dev->spi, PRE_CMD, true);
     if (err == ESP_OK) err = wait_hrdy(dev, HRDY_TIMEOUT_MS);
-    if (err == ESP_OK) err = spi_write_u16(dev, cmd, false);
+    if (err == ESP_OK) err = spi_write_u16(dev->spi, cmd, false);
+    cs_set(dev, 1);
     io_end(dev);
     return err;
 }
@@ -197,24 +206,32 @@ static esp_err_t pkt_write_data(it8951e_dev_t *dev,
     if (n_args == 0) return ESP_OK;
     esp_err_t err = io_begin(dev);
     if (err != ESP_OK) return err;
-    err = spi_write_u16(dev, PRE_WRITE, true);
+    cs_set(dev, 0);
+    err = spi_write_u16(dev->spi, PRE_WRITE, true);
     if (err == ESP_OK) err = wait_hrdy(dev, HRDY_TIMEOUT_MS);
-    if (err == ESP_OK) err = spi_write_u16_array(dev, args, n_args, false);
+    if (err == ESP_OK) err = spi_write_u16_array(dev->spi, args, n_args, false);
+    cs_set(dev, 1);
     io_end(dev);
     return err;
 }
 
+/* Reads run on the slow-clock read device with their own standalone bus
+ * acquire: the read preamble + dummy + data must stay CS-contiguous on one
+ * device handle, so the whole read (including its PRE_READ) goes through spi_rd.
+ * Reads are never nested inside a held write-bus, so no bus_depth bookkeeping. */
 static esp_err_t pkt_read_data(it8951e_dev_t *dev,
                                uint16_t *out, size_t n_words) {
     if (n_words == 0) return ESP_OK;
-    esp_err_t err = io_begin(dev);
+    esp_err_t err = spi_device_acquire_bus(dev->spi_rd, portMAX_DELAY);
     if (err != ESP_OK) return err;
 
-    err = spi_write_u16(dev, PRE_READ, true);
+    cs_set(dev, 0);
+    err = wait_hrdy(dev, HRDY_TIMEOUT_MS);
+    if (err == ESP_OK) err = spi_write_u16(dev->spi_rd, PRE_READ, true);
     if (err == ESP_OK) err = wait_hrdy(dev, HRDY_TIMEOUT_MS);
     /* Dummy word — protocol requires one read before real data. */
     uint8_t dummy[2];
-    if (err == ESP_OK) err = spi_read_bytes(dev, dummy, 2, true);
+    if (err == ESP_OK) err = spi_read_bytes(dev->spi_rd, dummy, 2, true);
     if (err == ESP_OK) err = wait_hrdy(dev, HRDY_TIMEOUT_MS);
 
     /* Read n_words * 2 bytes, byte-swap into host-endian uint16. Use a
@@ -224,23 +241,24 @@ static esp_err_t pkt_read_data(it8951e_dev_t *dev,
     for (size_t i = 0; i < n_words && err == ESP_OK; ) {
         size_t take = (n_words - i < CHUNK) ? (n_words - i) : CHUNK;
         bool last_chunk = (i + take == n_words);
-        err = spi_read_bytes(dev, buf, take * 2, !last_chunk);
+        err = spi_read_bytes(dev->spi_rd, buf, take * 2, !last_chunk);
         if (err != ESP_OK) break;
         for (size_t j = 0; j < take; j++) {
             out[i + j] = ((uint16_t)buf[2 * j] << 8) | buf[2 * j + 1];
         }
         i += take;
     }
-    io_end(dev);
+    cs_set(dev, 1);
+    spi_device_release_bus(dev->spi_rd);
     return err;
 }
 
 /* ---- Convenience wrappers for cmd + args ------------------------------- */
 
-/* cmd_with_args and reg_read span multiple packets; hold the bus across them so
- * the cmd/args/data sub-packets stay contiguous against an SD device on the same
- * bus. The hold is nestable, so it composes when a caller already holds the bus
- * (e.g. op_refresh) and self-protects the standalone polls (wait_idle). */
+/* cmd_with_args spans multiple write packets; hold the bus across them so the
+ * cmd/args sub-packets stay contiguous against an SD device on the same bus. The
+ * hold is nestable, so it composes when a caller already holds the bus (e.g.
+ * op_refresh) and self-protects the standalone polls (wait_idle). */
 static esp_err_t cmd_with_args(it8951e_dev_t *dev, uint16_t cmd,
                                const uint16_t *args, size_t n_args) {
     esp_err_t err = it8951e_bus_acquire(dev);
@@ -251,13 +269,13 @@ static esp_err_t cmd_with_args(it8951e_dev_t *dev, uint16_t cmd,
     return err;
 }
 
+/* No outer bus hold across the command and the read: the read takes its own
+ * acquire on the slow-clock read device, which would deadlock under a hold on
+ * the write device. */
 static esp_err_t reg_read(it8951e_dev_t *dev, uint16_t reg, uint16_t *out) {
-    esp_err_t err = it8951e_bus_acquire(dev);
-    if (err != ESP_OK) return err;
     uint16_t arg = reg;
-    err = cmd_with_args(dev, CMD_REG_RD, &arg, 1);
+    esp_err_t err = cmd_with_args(dev, CMD_REG_RD, &arg, 1);
     if (err == ESP_OK) err = pkt_read_data(dev, out, 1);
-    it8951e_bus_release(dev);
     return err;
 }
 
@@ -456,7 +474,8 @@ esp_err_t it8951e_load_image(it8951e_handle_t handle,
      * checked above). */
     err = io_begin(handle);
     if (err != ESP_OK) return err;
-    err = spi_write_u16(handle, PRE_WRITE, true);
+    cs_set(handle, 0);
+    err = spi_write_u16(handle->spi, PRE_WRITE, true);
     if (err == ESP_OK) err = wait_hrdy(handle, HRDY_TIMEOUT_MS);
     if (err == ESP_OK) {
         enum { CHUNK = 4096 };
@@ -465,11 +484,12 @@ esp_err_t it8951e_load_image(it8951e_handle_t handle,
         while (remaining > 0 && err == ESP_OK) {
             size_t take = remaining > CHUNK ? CHUNK : remaining;
             bool last = (take == remaining);
-            err = spi_write_bytes(handle, p, take, !last);
+            err = spi_write_bytes(handle->spi, p, take, !last);
             p += take;
             remaining -= take;
         }
     }
+    cs_set(handle, 1);
     io_end(handle);
     if (err != ESP_OK) return err;
 
@@ -528,7 +548,8 @@ esp_err_t it8951e_clear(it8951e_handle_t handle) {
 
     err = io_begin(handle);
     if (err != ESP_OK) return err;
-    err = spi_write_u16(handle, PRE_WRITE, true);
+    cs_set(handle, 0);
+    err = spi_write_u16(handle->spi, PRE_WRITE, true);
     if (err == ESP_OK) err = wait_hrdy(handle, HRDY_TIMEOUT_MS);
 
     if (err == ESP_OK) {
@@ -539,10 +560,11 @@ esp_err_t it8951e_clear(it8951e_handle_t handle) {
         while (remaining > 0 && err == ESP_OK) {
             size_t take = remaining > CHUNK ? CHUNK : remaining;
             bool last = (take == remaining);
-            err = spi_write_bytes(handle, white, take, !last);
+            err = spi_write_bytes(handle->spi, white, take, !last);
             remaining -= take;
         }
     }
+    cs_set(handle, 1);
     io_end(handle);
     if (err != ESP_OK) return err;
 
@@ -624,13 +646,28 @@ esp_err_t it8951e_create(const it8951e_config_t *config, it8951e_handle_t *out_h
         gpio_set_level(config->reset_io, 1);
     }
 
+    /* CS is driven manually (cs_set): the read device needs a separate clock,
+     * which means two spi_bus devices sharing this one CS pin — but the GPIO
+     * matrix routes only one device's CS signal to a pad, so a driver-managed CS
+     * would leave the other device unable to assert it. */
+    gpio_config_t cs = {
+        .pin_bit_mask = 1ULL << config->cs_io,
+        .mode         = GPIO_MODE_OUTPUT,
+        .pull_up_en   = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type    = GPIO_INTR_DISABLE,
+    };
+    err = gpio_config(&cs);
+    if (err != ESP_OK) goto fail_free;
+    gpio_set_level(config->cs_io, 1);
+
     /* Add to the (pre-initialized) SPI bus. The bus is shared with other
-     * devices (e.g. microSD); per-device CS is managed by the SPI driver
-     * and per-transfer locking is via spi_device_acquire_bus(). */
+     * devices (e.g. microSD); per-transfer locking is via
+     * spi_device_acquire_bus(). */
     spi_device_interface_config_t dev_cfg = {
         .clock_speed_hz = config->clock_hz > 0 ? config->clock_hz : IT8951E_SPI_DEFAULT_HZ,
         .mode           = IT8951E_SPI_MODE,
-        .spics_io_num   = config->cs_io,
+        .spics_io_num   = GPIO_NUM_NC,
         .queue_size     = 1,
         .flags          = 0,
     };
@@ -640,12 +677,24 @@ esp_err_t it8951e_create(const it8951e_config_t *config, it8951e_handle_t *out_h
         goto fail_free;
     }
 
+    /* Second device on the same bus, clocked slower for register reads. */
+    spi_device_interface_config_t rd_cfg = dev_cfg;
+    rd_cfg.clock_speed_hz = config->read_clock_hz > 0
+                                ? config->read_clock_hz : IT8951E_SPI_READ_DEFAULT_HZ;
+    err = spi_bus_add_device(config->spi_host, &rd_cfg, &dev->spi_rd);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "spi_bus_add_device (read): %s", esp_err_to_name(err));
+        goto fail_spi;
+    }
+
     err = it8951e_reset(dev);
-    if (err != ESP_OK) goto fail_spi;
+    if (err != ESP_OK) goto fail_spi_rd;
 
     *out_handle = dev;
     return ESP_OK;
 
+fail_spi_rd:
+    spi_bus_remove_device(dev->spi_rd);
 fail_spi:
     spi_bus_remove_device(dev->spi);
 fail_free:
@@ -655,6 +704,7 @@ fail_free:
 
 esp_err_t it8951e_destroy(it8951e_handle_t handle) {
     if (!handle) return ESP_OK;
+    if (handle->spi_rd) spi_bus_remove_device(handle->spi_rd);
     if (handle->spi) spi_bus_remove_device(handle->spi);
     free(handle);
     return ESP_OK;

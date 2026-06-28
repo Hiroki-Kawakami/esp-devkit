@@ -37,9 +37,11 @@ extern "C" {
 typedef struct it8951e_dev *it8951e_handle_t;
 
 /* Default SPI parameters for IT8951E. Datasheet allows up to ~24 MHz; M5Paper
- * is typically driven around 10 MHz. */
+ * is typically driven around 10 MHz. Register reads (GET_DEV_INFO, the LUTAFSR
+ * busy poll) are unreliable at the write clock and need a slower read clock. */
 #define IT8951E_SPI_MODE            0
 #define IT8951E_SPI_DEFAULT_HZ      (10 * 1000 * 1000)
+#define IT8951E_SPI_READ_DEFAULT_HZ (2 * 1000 * 1000)
 
 /* Waveform / update modes. Names match the IT8951E waveform LUT slots used by
  * the M5Paper firmware. Higher quality = slower; 2-level modes are fast. */
@@ -81,7 +83,8 @@ typedef struct {
     gpio_num_t        cs_io;      /* CS for this device                     */
     gpio_num_t        busy_io;    /* HRDY input, HIGH = TCON ready          */
     gpio_num_t        reset_io;   /* RESET output, active LOW; GPIO_NUM_NC to skip */
-    int               clock_hz;   /* 0 -> IT8951E_SPI_DEFAULT_HZ            */
+    int               clock_hz;   /* write clock; 0 -> IT8951E_SPI_DEFAULT_HZ */
+    int               read_clock_hz; /* register-read clock; 0 -> IT8951E_SPI_READ_DEFAULT_HZ */
     float             vcom_v;     /* desired VCOM in volts (e.g. -2.30f); 0 -> leave as-is */
 } it8951e_config_t;
 
