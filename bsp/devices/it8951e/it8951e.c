@@ -148,29 +148,6 @@ static inline esp_err_t spi_write_u16(spi_device_handle_t io, uint16_t v, bool k
     return spi_write_bytes(io, buf, 2, keep_cs);
 }
 
-/* Write 16-bit words MSB-first from a host-endian uint16_t array. Uses a
- * stack scratch buffer to byte-swap in chunks; avoids allocating big buffers
- * for large image transfers. */
-static esp_err_t spi_write_u16_array(spi_device_handle_t io,
-                                     const uint16_t *words, size_t n,
-                                     bool keep_cs) {
-    enum { CHUNK = 256 };
-    uint8_t buf[CHUNK * 2];
-    for (size_t i = 0; i < n; ) {
-        size_t take = (n - i < CHUNK) ? (n - i) : CHUNK;
-        for (size_t j = 0; j < take; j++) {
-            uint16_t w = words[i + j];
-            buf[2 * j + 0] = (uint8_t)(w >> 8);
-            buf[2 * j + 1] = (uint8_t)w;
-        }
-        bool last_chunk = (i + take == n);
-        esp_err_t err = spi_write_bytes(io, buf, take * 2, !last_chunk || keep_cs);
-        if (err != ESP_OK) return err;
-        i += take;
-    }
-    return ESP_OK;
-}
-
 /* ---- IT8951 packet primitives ------------------------------------------ */
 
 /* While the bus is held (it8951e_bus_acquire / a wrapped primitive), each packet
@@ -208,8 +185,12 @@ static esp_err_t pkt_write_data(it8951e_dev_t *dev,
     if (err != ESP_OK) return err;
     cs_set(dev, 0);
     err = spi_write_u16(dev->spi, PRE_WRITE, true);
-    if (err == ESP_OK) err = wait_hrdy(dev, HRDY_TIMEOUT_MS);
-    if (err == ESP_OK) err = spi_write_u16_array(dev->spi, args, n_args, false);
+    /* Re-check HRDY before every parameter word: the controller can de-assert it
+     * mid-list, and overrunning its input FIFO freezes the display engine. */
+    for (size_t i = 0; i < n_args && err == ESP_OK; i++) {
+        err = wait_hrdy(dev, HRDY_TIMEOUT_MS);
+        if (err == ESP_OK) err = spi_write_u16(dev->spi, args[i], true);
+    }
     cs_set(dev, 1);
     io_end(dev);
     return err;
