@@ -17,8 +17,7 @@ extern "C" {
  * source bus + per-line CKV/SPV/LE control, built on ESP-IDF's i80 LCD driver
  * (requires SOC_LCD_I80_SUPPORTED). This is the whole engine, not just the bus:
  * it owns the framebuffer, runs a time-axis waveform LUT with differential drive
- * synchronously (refresh blocks until the panel settles), and exposes a
- * bsp_display_t provider. Everything
+ * on an async background task, and exposes a bsp_display_t provider. Everything
  * panel-specific (geometry, scanline format, power-rail pins, waveform LUTs)
  * comes in through epd_ll_config_t; a per-panel descriptor (e.g. ed047tc1) just
  * fills this in and calls epd_ll_create. Re-tailored per SoC/bus, not abstracted.
@@ -66,16 +65,13 @@ typedef struct {
      * BSP_EPD_MODE_CLEAR waveform: the bring-up white baseline runs it as
      * CLEAR_FULL. Returned tables are caller-owned and must outlive the display. */
     const uint32_t *(*get_waveform_lut)(bsp_epd_mode_t mode, size_t *steps);
-    uint8_t  task_priority;     /* reserved (refresh is currently synchronous)  */
-    /* Core to run the i80 bus + its trans-done ISR on. MUST differ from the core
-     * that calls refresh (the UI/LVGL core): esp_lcd's tx_color re-enables the ISR
-     * inline, so a same-core ISR runs synchronously and stalls every scanline.
-     * <0 (or out of range) -> the core opposite epd_ll_create's caller. */
-    int      task_affinity;
+    uint8_t  task_priority;     /* async refresh-task priority             */
+    int      task_affinity;     /* core to pin the refresh task to; <0 -> no affinity */
 } epd_ll_config_t;
 
 /* Bring up the panel -- allocate the framebuffers, init the i80 bus, clear to a
- * known white baseline -- and hand back a bsp_display_t provider. */
+ * known white baseline, and start the refresh task -- and hand back a
+ * bsp_display_t provider. */
 esp_err_t epd_ll_create(const epd_ll_config_t *cfg, bsp_display_t **out_display);
 
 #ifdef __cplusplus
