@@ -22,6 +22,7 @@
 #include "imgf_jpege.h"
 #include "imgf_pngd.h"
 #include "imgf_raw_encoder.h"
+#include "imgf_recolor.h"
 #include "imgf_resize.h"
 #include "imgf_sniff.h"
 #include "imgf_stream.h"
@@ -1260,6 +1261,27 @@ static void test_async_basic_throughput(void) {
     CHECK(cons.ok   == 1);
 }
 
+static void test_async_start_poll_join(void) {
+    imgf_async_opts_t o = {0};
+    o.row_bytes = 16;
+    o.ring_slots = 3;
+    o.producer_core = -1;
+    o.consumer_core = -1;
+    async_prod_ctx_t prod = { .n_rows = 200, .sent = 0 };
+    async_cons_ctx_t cons = { .n_rows = 200, .got = 0, .ok = 0 };
+
+    imgf_async_job_t *job = imgf_async_start(&o, async_simple_producer, &prod,
+                                             async_simple_consumer, &cons);
+    CHECK(job != NULL);
+    if (!job) return;
+    /* Poll to completion without blocking, then reclaim. */
+    while (!imgf_async_job_done(job)) { /* spin */ }
+    CHECK(imgf_async_job_join(job) == IMGF_OK);
+    CHECK(prod.sent == 200);
+    CHECK(cons.got  == 200);
+    CHECK(cons.ok   == 1);
+}
+
 static imgf_err_t async_aborting_producer(void *user, imgf_async_ring_t *ring) {
     (void)ring;
     *(int *)user = 1;
@@ -1381,6 +1403,86 @@ static void test_async_decoder_resize_chain(void) {
 
 /* ---- main ------------------------------------------------------------- */
 
+/* ---- recolor ---------------------------------------------------------- */
+
+static void test_recolor_gray_passthrough_srgb(void) {
+    /* sRGB in then sRGB out (default) is identity for a gray channel. */
+    imgf_recolor_t *rc = imgf_recolor_create(NULL, NULL);
+    CHECK(rc != NULL);
+    uint8_t src[3] = {0, 128, 255}, inten[3], out[3];
+    imgf_recolor_to_intensity(rc, src, 3, IMGF_PIX_GRAY8, inten);
+    imgf_recolor_finalize(rc, inten, 3, out);
+    CHECK(out[0] == 0);
+    CHECK(near_value(out[1], 128, 2));
+    CHECK(out[2] == 255);
+    imgf_recolor_destroy(rc);
+}
+
+static void test_recolor_luma_ordering(void) {
+    /* Rec709 weights green heaviest, blue lightest: G > R > B for equal levels. */
+    imgf_recolor_t *rc = imgf_recolor_create(NULL, NULL);
+    uint8_t red[3] = {200, 0, 0}, grn[3] = {0, 200, 0}, blu[3] = {0, 0, 200};
+    uint8_t ir, ig, ib, or_, og, ob;
+    imgf_recolor_to_intensity(rc, red, 1, IMGF_PIX_RGB888, &ir);
+    imgf_recolor_to_intensity(rc, grn, 1, IMGF_PIX_RGB888, &ig);
+    imgf_recolor_to_intensity(rc, blu, 1, IMGF_PIX_RGB888, &ib);
+    imgf_recolor_finalize(rc, &ir, 1, &or_);
+    imgf_recolor_finalize(rc, &ig, 1, &og);
+    imgf_recolor_finalize(rc, &ib, 1, &ob);
+    CHECK(og > or_ && or_ > ob);
+    imgf_recolor_destroy(rc);
+}
+
+static void test_recolor_linear_vs_perceptual(void) {
+    /* Averaging a black/white pair: in linear light the midpoint is brighter
+     * than the perceptual (sRGB-space) midpoint. */
+    uint8_t bw[2] = {0, 255};
+    imgf_recolor_opts_t lin = { .linear_downsample = true };
+    imgf_recolor_opts_t perc = { .linear_downsample = false };
+
+    imgf_recolor_t *rl = imgf_recolor_create(&lin, NULL);
+    imgf_recolor_t *rp = imgf_recolor_create(&perc, NULL);
+    uint8_t il[2], ip[2];
+    imgf_recolor_to_intensity(rl, bw, 2, IMGF_PIX_GRAY8, il);
+    imgf_recolor_to_intensity(rp, bw, 2, IMGF_PIX_GRAY8, ip);
+    /* average the pair (what a 2->1 box downscale would do). */
+    uint8_t al = (uint8_t)((il[0] + il[1]) / 2), ap = (uint8_t)((ip[0] + ip[1]) / 2);
+    uint8_t gl, gp;
+    imgf_recolor_finalize(rl, &al, 1, &gl);
+    imgf_recolor_finalize(rp, &ap, 1, &gp);
+    CHECK(gl > gp);
+    CHECK(gp >= 110 && gp <= 145);
+    CHECK(gl >= 170);
+    imgf_recolor_destroy(rl);
+    imgf_recolor_destroy(rp);
+}
+
+static void test_recolor_invert(void) {
+    imgf_recolor_opts_t o = { .invert = true };
+    imgf_recolor_t *rc = imgf_recolor_create(&o, NULL);
+    uint8_t src[2] = {0, 255}, inten[2], out[2];
+    imgf_recolor_to_intensity(rc, src, 2, IMGF_PIX_GRAY8, inten);
+    imgf_recolor_finalize(rc, inten, 2, out);
+    CHECK(out[0] == 255 && out[1] == 0);
+    imgf_recolor_destroy(rc);
+}
+
+static void test_recolor_epd_lut(void) {
+    /* A linear (identity) EPD LUT maps linear luminance straight to gray. */
+    uint8_t lut[16];
+    for (int i = 0; i < 16; i++) lut[i] = (uint8_t)(i * 255 / 15);
+    imgf_recolor_opts_t o = { .out_gamma = IMGF_GAMMA_OUT_EPDLUT, .epd_lut16 = lut,
+                              .in_gamma = IMGF_GAMMA_IN_LINEAR, .linear_downsample = true };
+    imgf_recolor_t *rc = imgf_recolor_create(&o, NULL);
+    uint8_t src[3] = {0, 128, 255}, inten[3], out[3];
+    imgf_recolor_to_intensity(rc, src, 3, IMGF_PIX_GRAY8, inten);
+    imgf_recolor_finalize(rc, inten, 3, out);
+    CHECK(out[0] == 0);
+    CHECK(near_value(out[1], 128, 4));
+    CHECK(out[2] == 255);
+    imgf_recolor_destroy(rc);
+}
+
 int main(void) {
     test_err_strings();
 
@@ -1430,6 +1532,7 @@ int main(void) {
     test_resizer_push_pop_drain();
 
     test_async_basic_throughput();
+    test_async_start_poll_join();
     test_async_producer_error_propagates();
     test_async_decoder_resize_chain();
 
@@ -1465,6 +1568,12 @@ int main(void) {
     test_jpege_subsample_roundtrip();
     test_jpege_subsample_padding();
     test_jpege_gray_ignores_subsample();
+
+    test_recolor_gray_passthrough_srgb();
+    test_recolor_luma_ordering();
+    test_recolor_linear_vs_perceptual();
+    test_recolor_invert();
+    test_recolor_epd_lut();
 
     if (g_failures) {
         fprintf(stderr, "\n%d failure(s)\n", g_failures);

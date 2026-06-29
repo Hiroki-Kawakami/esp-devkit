@@ -204,7 +204,7 @@ size_t imgf_async_ring_row_bytes(const imgf_async_ring_t *r) {
 
 /* ---- task plumbing ---------------------------------------------------- */
 
-typedef struct {
+struct imgf_async_job {
     imgf_async_ring_t ring;
     imgf_async_run_t  prod_fn;
     void             *prod_user;
@@ -214,15 +214,25 @@ typedef struct {
     imgf_err_t        cons_err;
 
 #ifdef ESP_PLATFORM
-    SemaphoreHandle_t done_sem;   /* counting, 2 takes after both finish */
+    SemaphoreHandle_t done_sem;   /* counting: each task gives once, count -> 2 */
 #else
-    pthread_t prod_th, cons_th;
+    pthread_t       prod_th, cons_th;
+    pthread_mutex_t done_mtx;
+    int             finished;     /* 0..2, guarded by done_mtx */
 #endif
-} async_ctx_t;
+};
+
+#ifndef ESP_PLATFORM
+static void mark_finished(imgf_async_job_t *c) {
+    pthread_mutex_lock(&c->done_mtx);
+    c->finished++;
+    pthread_mutex_unlock(&c->done_mtx);
+}
+#endif
 
 #ifdef ESP_PLATFORM
 static void prod_task(void *arg) {
-    async_ctx_t *c = (async_ctx_t *)arg;
+    imgf_async_job_t *c = (imgf_async_job_t *)arg;
     c->prod_err = c->prod_fn(c->prod_user, &c->ring);
     if (c->prod_err != IMGF_OK) imgf_async_ring_abort(&c->ring);
     ring_close(&c->ring);
@@ -231,7 +241,7 @@ static void prod_task(void *arg) {
 }
 
 static void cons_task(void *arg) {
-    async_ctx_t *c = (async_ctx_t *)arg;
+    imgf_async_job_t *c = (imgf_async_job_t *)arg;
     c->cons_err = c->cons_fn(c->cons_user, &c->ring);
     if (c->cons_err != IMGF_OK) imgf_async_ring_abort(&c->ring);
     xSemaphoreGive(c->done_sem);
@@ -239,31 +249,32 @@ static void cons_task(void *arg) {
 }
 #else
 static void *prod_thread(void *arg) {
-    async_ctx_t *c = (async_ctx_t *)arg;
+    imgf_async_job_t *c = (imgf_async_job_t *)arg;
     c->prod_err = c->prod_fn(c->prod_user, &c->ring);
     if (c->prod_err != IMGF_OK) imgf_async_ring_abort(&c->ring);
     ring_close(&c->ring);
+    mark_finished(c);
     return NULL;
 }
 
 static void *cons_thread(void *arg) {
-    async_ctx_t *c = (async_ctx_t *)arg;
+    imgf_async_job_t *c = (imgf_async_job_t *)arg;
     c->cons_err = c->cons_fn(c->cons_user, &c->ring);
     if (c->cons_err != IMGF_OK) imgf_async_ring_abort(&c->ring);
+    mark_finished(c);
     return NULL;
 }
 #endif
 
-imgf_err_t imgf_async_run(const imgf_async_opts_t *opts,
-                          imgf_async_run_t producer, void *producer_user,
-                          imgf_async_run_t consumer, void *consumer_user) {
-    if (!opts || !producer || !consumer) return IMGF_ERR_INVALID_ARG;
-    if (opts->row_bytes == 0) return IMGF_ERR_INVALID_ARG;
+imgf_async_job_t *imgf_async_start(const imgf_async_opts_t *opts,
+                                   imgf_async_run_t producer, void *producer_user,
+                                   imgf_async_run_t consumer, void *consumer_user) {
+    if (!opts || !producer || !consumer || opts->row_bytes == 0) return NULL;
 
     int slots = opts->ring_slots > 0 ? opts->ring_slots : IMGF_ASYNC_DEFAULT_SLOTS;
 
-    async_ctx_t *c = (async_ctx_t *)calloc(1, sizeof *c);
-    if (!c) return IMGF_ERR_OOM;
+    imgf_async_job_t *c = (imgf_async_job_t *)calloc(1, sizeof *c);
+    if (!c) return NULL;
     c->prod_fn   = producer;
     c->prod_user = producer_user;
     c->cons_fn   = consumer;
@@ -271,12 +282,14 @@ imgf_err_t imgf_async_run(const imgf_async_opts_t *opts,
     c->prod_err  = IMGF_OK;
     c->cons_err  = IMGF_OK;
 
-    imgf_err_t err = ring_init(&c->ring, opts->row_bytes, slots, opts->alloc_caps);
-    if (err != IMGF_OK) { free(c); return err; }
+    if (ring_init(&c->ring, opts->row_bytes, slots, opts->alloc_caps) != IMGF_OK) {
+        free(c);
+        return NULL;
+    }
 
 #ifdef ESP_PLATFORM
     c->done_sem = xSemaphoreCreateCounting(2, 0);
-    if (!c->done_sem) { ring_deinit(&c->ring); free(c); return IMGF_ERR_OOM; }
+    if (!c->done_sem) { ring_deinit(&c->ring); free(c); return NULL; }
 
     int      prod_prio  = opts->producer_prio  > 0 ? opts->producer_prio  : IMGF_ASYNC_DEFAULT_PRIO;
     int      cons_prio  = opts->consumer_prio  > 0 ? opts->consumer_prio  : IMGF_ASYNC_DEFAULT_PRIO;
@@ -294,7 +307,7 @@ imgf_err_t imgf_async_run(const imgf_async_opts_t *opts,
         vSemaphoreDelete(c->done_sem);
         ring_deinit(&c->ring);
         free(c);
-        return IMGF_ERR_OOM;
+        return NULL;
     }
     if (opts->consumer_core < 0) {
         ok = xTaskCreate(cons_task, "imgf_cons", cons_stack, c, cons_prio, NULL);
@@ -308,26 +321,62 @@ imgf_err_t imgf_async_run(const imgf_async_opts_t *opts,
         vSemaphoreDelete(c->done_sem);
         ring_deinit(&c->ring);
         free(c);
-        return IMGF_ERR_OOM;
+        return NULL;
     }
-    xSemaphoreTake(c->done_sem, portMAX_DELAY);
-    xSemaphoreTake(c->done_sem, portMAX_DELAY);
-    vSemaphoreDelete(c->done_sem);
 #else
+    pthread_mutex_init(&c->done_mtx, NULL);
+    c->finished = 0;
     if (pthread_create(&c->prod_th, NULL, prod_thread, c) != 0) {
-        ring_deinit(&c->ring); free(c); return IMGF_ERR_OOM;
+        pthread_mutex_destroy(&c->done_mtx);
+        ring_deinit(&c->ring); free(c); return NULL;
     }
     if (pthread_create(&c->cons_th, NULL, cons_thread, c) != 0) {
         imgf_async_ring_abort(&c->ring);
         pthread_join(c->prod_th, NULL);
-        ring_deinit(&c->ring); free(c); return IMGF_ERR_OOM;
+        pthread_mutex_destroy(&c->done_mtx);
+        ring_deinit(&c->ring); free(c); return NULL;
     }
+#endif
+    return c;
+}
+
+bool imgf_async_job_done(const imgf_async_job_t *job) {
+    if (!job) return true;
+#ifdef ESP_PLATFORM
+    return uxSemaphoreGetCount(job->done_sem) >= 2;
+#else
+    imgf_async_job_t *c = (imgf_async_job_t *)job;
+    pthread_mutex_lock(&c->done_mtx);
+    int n = c->finished;
+    pthread_mutex_unlock(&c->done_mtx);
+    return n >= 2;
+#endif
+}
+
+imgf_err_t imgf_async_job_join(imgf_async_job_t *c) {
+    if (!c) return IMGF_ERR_INVALID_ARG;
+#ifdef ESP_PLATFORM
+    xSemaphoreTake(c->done_sem, portMAX_DELAY);
+    xSemaphoreTake(c->done_sem, portMAX_DELAY);
+    vSemaphoreDelete(c->done_sem);
+#else
     pthread_join(c->prod_th, NULL);
     pthread_join(c->cons_th, NULL);
+    pthread_mutex_destroy(&c->done_mtx);
 #endif
-
-    err = c->prod_err != IMGF_OK ? c->prod_err : c->cons_err;
+    imgf_err_t err = c->prod_err != IMGF_OK ? c->prod_err : c->cons_err;
     ring_deinit(&c->ring);
     free(c);
     return err;
+}
+
+imgf_err_t imgf_async_run(const imgf_async_opts_t *opts,
+                          imgf_async_run_t producer, void *producer_user,
+                          imgf_async_run_t consumer, void *consumer_user) {
+    if (!opts || !producer || !consumer) return IMGF_ERR_INVALID_ARG;
+    if (opts->row_bytes == 0) return IMGF_ERR_INVALID_ARG;
+    imgf_async_job_t *job = imgf_async_start(opts, producer, producer_user,
+                                             consumer, consumer_user);
+    if (!job) return IMGF_ERR_OOM;
+    return imgf_async_job_join(job);
 }

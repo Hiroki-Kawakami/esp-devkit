@@ -20,6 +20,7 @@
 
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -30,6 +31,7 @@ extern "C" {
 #endif
 
 typedef struct imgf_async_ring imgf_async_ring_t;
+typedef struct imgf_async_job  imgf_async_job_t;
 
 /* Per-side callback. Drives the upstream/downstream sub-chain and exchanges
  * rows with the ring via imgf_async_ring_put / _get. Returns IMGF_OK on
@@ -56,10 +58,28 @@ typedef struct {
 
 /* Spawn producer + consumer on two tasks, wait for both to finish, return the
  * aggregated status (producer's error if non-OK, else consumer's). The ring
- * and tasks are torn down before return. */
+ * and tasks are torn down before return. (= imgf_async_start + _job_join.) */
 imgf_err_t imgf_async_run(const imgf_async_opts_t *opts,
                           imgf_async_run_t producer, void *producer_user,
                           imgf_async_run_t consumer, void *consumer_user);
+
+/* Non-blocking variant: spawn the two tasks and return immediately. The job runs
+ * in the background; poll imgf_async_job_done() and reclaim with
+ * imgf_async_job_join(). The callbacks' user pointers (and anything they touch)
+ * must outlive the job — i.e. until join() returns. Returns NULL if the tasks
+ * could not be started (ring OOM / task-create failure); nothing was spawned. */
+imgf_async_job_t *imgf_async_start(const imgf_async_opts_t *opts,
+                                   imgf_async_run_t producer, void *producer_user,
+                                   imgf_async_run_t consumer, void *consumer_user);
+
+/* True once both the producer and consumer have finished. Non-blocking; safe to
+ * poll repeatedly. */
+bool       imgf_async_job_done(const imgf_async_job_t *job);
+
+/* Wait for both tasks (if still running), tear the job down, and return the
+ * aggregated status (producer's error if non-OK, else consumer's). The job
+ * pointer is invalid after this returns. */
+imgf_err_t imgf_async_job_join(imgf_async_job_t *job);
 
 /* Producer-side: publish one row (opts->row_bytes long). Blocks while the
  * ring is full. Returns IMGF_OK or IMGF_ERR_INVALID_STATE if the consumer
