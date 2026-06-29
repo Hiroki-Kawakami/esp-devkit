@@ -18,7 +18,9 @@
 #include "imgf_dither.h"
 #include "imgf_encoder.h"
 #include "imgf_jpegd.h"
+#include "imgf_jpege.h"
 #include "imgf_pngd.h"
+#include "imgf_raw_encoder.h"
 #include "imgf_resize.h"
 #include "imgf_sniff.h"
 #include "imgf_stream.h"
@@ -807,61 +809,68 @@ static void test_dither_create_invalid(void) {
 
 /* ---- encoder ---------------------------------------------------------- */
 
+static imgf_err_t raw_encode_buffer(imgf_raw_format_t fmt,
+                                     const uint8_t *src, uint16_t w, uint16_t h,
+                                     size_t src_stride,
+                                     uint8_t *dst, size_t dst_cap, size_t *out_bytes) {
+    imgf_err_t err;
+    imgf_encoder_t *e = imgf_raw_encoder_create(fmt, w, h, NULL, &err);
+    if (!e) return err;
+    err = imgf_encoder_encode_buffer(e, src, src_stride, dst, dst_cap, out_bytes);
+    imgf_encoder_destroy(e);
+    return err;
+}
+
 static void test_encoder_format_stride(void) {
-    CHECK(imgf_encoder_format_stride(IMGF_ENC_L8,     10) == 10);
-    CHECK(imgf_encoder_format_stride(IMGF_ENC_I4,     10) == 5);
-    CHECK(imgf_encoder_format_stride(IMGF_ENC_I4,     11) == 6);
-    CHECK(imgf_encoder_format_stride(IMGF_ENC_I1,     10) == 2);
-    CHECK(imgf_encoder_format_stride(IMGF_ENC_I1,      7) == 1);
-    CHECK(imgf_encoder_format_stride(IMGF_ENC_I1,      8) == 1);
-    CHECK(imgf_encoder_format_stride(IMGF_ENC_I1,      9) == 2);
-    CHECK(imgf_encoder_format_stride(IMGF_ENC_RGB888,  4) == 12);
-    CHECK(imgf_encoder_format_stride(IMGF_ENC_RGB565,  4) == 8);
+    CHECK(imgf_raw_format_stride(IMGF_RAW_L8,     10) == 10);
+    CHECK(imgf_raw_format_stride(IMGF_RAW_I4,     10) == 5);
+    CHECK(imgf_raw_format_stride(IMGF_RAW_I4,     11) == 6);
+    CHECK(imgf_raw_format_stride(IMGF_RAW_I1,     10) == 2);
+    CHECK(imgf_raw_format_stride(IMGF_RAW_I1,      7) == 1);
+    CHECK(imgf_raw_format_stride(IMGF_RAW_I1,      8) == 1);
+    CHECK(imgf_raw_format_stride(IMGF_RAW_I1,      9) == 2);
+    CHECK(imgf_raw_format_stride(IMGF_RAW_RGB888,  4) == 12);
+    CHECK(imgf_raw_format_stride(IMGF_RAW_RGB565,  4) == 8);
 }
 
 static void test_encoder_input_pixfmt(void) {
-    CHECK(imgf_encoder_format_input_pixfmt(IMGF_ENC_L8)     == IMGF_PIX_GRAY8);
-    CHECK(imgf_encoder_format_input_pixfmt(IMGF_ENC_I4)     == IMGF_PIX_GRAY8);
-    CHECK(imgf_encoder_format_input_pixfmt(IMGF_ENC_I1)     == IMGF_PIX_GRAY8);
-    CHECK(imgf_encoder_format_input_pixfmt(IMGF_ENC_RGB888) == IMGF_PIX_RGB888);
-    CHECK(imgf_encoder_format_input_pixfmt(IMGF_ENC_RGB565) == IMGF_PIX_RGB565);
+    CHECK(imgf_raw_format_input_pixfmt(IMGF_RAW_L8)     == IMGF_PIX_GRAY8);
+    CHECK(imgf_raw_format_input_pixfmt(IMGF_RAW_I4)     == IMGF_PIX_GRAY8);
+    CHECK(imgf_raw_format_input_pixfmt(IMGF_RAW_I1)     == IMGF_PIX_GRAY8);
+    CHECK(imgf_raw_format_input_pixfmt(IMGF_RAW_RGB888) == IMGF_PIX_RGB888);
+    CHECK(imgf_raw_format_input_pixfmt(IMGF_RAW_RGB565) == IMGF_PIX_RGB565);
 }
 
 static void test_encoder_l8_passthrough(void) {
     const uint8_t src[6] = { 10, 20, 30, 40, 50, 60 };
     uint8_t dst[6] = {0};
     size_t written = 0;
-    CHECK(imgf_encode_buffer(IMGF_ENC_L8, src, 3, 2, 0, IMGF_PIX_INHERIT, dst, sizeof dst, &written, NULL) == IMGF_OK);
+    CHECK(raw_encode_buffer(IMGF_RAW_L8, src, 3, 2, 0, dst, sizeof dst, &written) == IMGF_OK);
     CHECK(written == 6);
     CHECK(memcmp(dst, src, 6) == 0);
 }
 
 static void test_encoder_i4_pack(void) {
-    /* width 5, indices: row 0 = {0xA,0xB,0xC,0xD,0xE}, row 1 = {1,2,3,4,5}.
-       Packed I4 (5 px -> 3 bytes, last pixel high nibble): */
     const uint8_t src[2 * 5] = {
         0xA, 0xB, 0xC, 0xD, 0xE,
         0x1, 0x2, 0x3, 0x4, 0x5,
     };
     uint8_t dst[6] = {0};
     size_t written = 0;
-    CHECK(imgf_encode_buffer(IMGF_ENC_I4, src, 5, 2, 0, IMGF_PIX_INHERIT, dst, sizeof dst, &written, NULL) == IMGF_OK);
+    CHECK(raw_encode_buffer(IMGF_RAW_I4, src, 5, 2, 0, dst, sizeof dst, &written) == IMGF_OK);
     CHECK(written == 6);
-    /* Row 0: AB, CD, E0 ; Row 1: 12, 34, 50 */
     CHECK(dst[0] == 0xAB && dst[1] == 0xCD && dst[2] == 0xE0);
     CHECK(dst[3] == 0x12 && dst[4] == 0x34 && dst[5] == 0x50);
 }
 
 static void test_encoder_i1_pack(void) {
-    /* width 11, two rows of {1,0,1,0,1,0,1,0, 1,1,0} → 2 bytes/row.
-       Packed: MSB first. Row 0 byte0 = 10101010 = 0xAA, byte1 = 11000000 = 0xC0. */
     const uint8_t src[2 * 11] = {
         1,0,1,0,1,0,1,0, 1,1,0,
         0,1,0,1,0,1,0,1, 0,0,1,
     };
     uint8_t dst[4] = {0};
     size_t written = 0;
-    CHECK(imgf_encode_buffer(IMGF_ENC_I1, src, 11, 2, 0, IMGF_PIX_INHERIT, dst, sizeof dst, &written, NULL) == IMGF_OK);
+    CHECK(raw_encode_buffer(IMGF_RAW_I1, src, 11, 2, 0, dst, sizeof dst, &written) == IMGF_OK);
     CHECK(written == 4);
     CHECK(dst[0] == 0xAA && dst[1] == 0xC0);
     CHECK(dst[2] == 0x55 && dst[3] == 0x20);
@@ -871,17 +880,17 @@ static void test_encoder_rgb888_passthrough(void) {
     const uint8_t src[2 * 3] = { 1, 2, 3, 4, 5, 6 };
     uint8_t dst[6] = {0};
     size_t written = 0;
-    CHECK(imgf_encode_buffer(IMGF_ENC_RGB888, src, 2, 1, 0, IMGF_PIX_INHERIT, dst, sizeof dst, &written, NULL) == IMGF_OK);
+    CHECK(raw_encode_buffer(IMGF_RAW_RGB888, src, 2, 1, 0, dst, sizeof dst, &written) == IMGF_OK);
     CHECK(written == 6);
     CHECK(memcmp(dst, src, 6) == 0);
 }
 
 static void test_encoder_rgb565_passthrough(void) {
-    const uint16_t src[2] = { 0xF800, 0x07E0 };  /* red, green */
+    const uint16_t src[2] = { 0xF800, 0x07E0 };
     uint8_t dst[4] = {0};
     size_t written = 0;
-    CHECK(imgf_encode_buffer(IMGF_ENC_RGB565, (const uint8_t *)src, 2, 1, 0, IMGF_PIX_INHERIT,
-                             dst, sizeof dst, &written, NULL) == IMGF_OK);
+    CHECK(raw_encode_buffer(IMGF_RAW_RGB565, (const uint8_t *)src, 2, 1, 0,
+                            dst, sizeof dst, &written) == IMGF_OK);
     CHECK(written == 4);
     CHECK(memcmp(dst, src, 4) == 0);
 }
@@ -889,14 +898,13 @@ static void test_encoder_rgb565_passthrough(void) {
 static void test_encoder_buffer_too_small(void) {
     const uint8_t src[4] = { 1, 2, 3, 4 };
     uint8_t dst[2] = {0};
-    CHECK(imgf_encode_buffer(IMGF_ENC_L8, src, 4, 1, 0, IMGF_PIX_INHERIT, dst, sizeof dst, NULL, NULL)
+    CHECK(raw_encode_buffer(IMGF_RAW_L8, src, 4, 1, 0, dst, sizeof dst, NULL)
           == IMGF_ERR_INVALID_ARG);
 }
 
 static void test_encoder_push_pop_drain(void) {
-    /* Layer 1 direct + verify intermediate accessors. */
     imgf_err_t err;
-    imgf_encoder_t *e = imgf_encoder_create(IMGF_ENC_I4, 4, 2, IMGF_PIX_INHERIT, NULL, &err);
+    imgf_encoder_t *e = imgf_raw_encoder_create(IMGF_RAW_I4, 4, 2, NULL, &err);
     CHECK(err == IMGF_OK);
     CHECK(imgf_encoder_row_stride(e) == 2);
     CHECK(imgf_encoder_buffer_size(e) == 4);
@@ -916,24 +924,19 @@ static void test_encoder_push_pop_drain(void) {
 }
 
 static void test_encoder_chain_dither_to_i4(void) {
-    /* End-to-end demo: gray gradient → dither (FS, N=16, INDEX) → encode I4. */
     uint8_t src[16];
-    for (int i = 0; i < 16; i++) src[i] = (uint8_t)(i * 17);  /* 0..255 */
+    for (int i = 0; i < 16; i++) src[i] = (uint8_t)(i * 17);
     uint8_t indices[16] = {0};
     imgf_dither_opts_t dopts = {0};
     dopts.algo = IMGF_DITHER_FLOYD_STEINBERG;
     dopts.levels = 16;
     dopts.out_mode = IMGF_DITHER_OUT_INDEX;
     CHECK(imgf_dither_buffer(src, 16, 1, 0, indices, 0, &dopts) == IMGF_OK);
-    /* Every input was an exact level boundary so the dither output is the
-       index of that gray. */
     for (int i = 0; i < 16; i++) CHECK(indices[i] == i);
     uint8_t i4[8] = {0};
     size_t written = 0;
-    CHECK(imgf_encode_buffer(IMGF_ENC_I4, indices, 16, 1, 0, IMGF_PIX_INHERIT,
-                             i4, sizeof i4, &written, NULL) == IMGF_OK);
+    CHECK(raw_encode_buffer(IMGF_RAW_I4, indices, 16, 1, 0, i4, sizeof i4, &written) == IMGF_OK);
     CHECK(written == 8);
-    /* Pairs: (0,1) (2,3) (4,5) ... (14,15) -> 0x01, 0x23, ... 0xEF */
     for (int i = 0; i < 8; i++) {
         CHECK(i4[i] == (uint8_t)((i * 2) << 4 | (i * 2 + 1)));
     }
@@ -950,12 +953,15 @@ static bool jpeg_roundtrip_full(const uint8_t *src, uint16_t w, uint16_t h,
     size_t jpeg_cap = (size_t)w * h * src_bpp * 4 + 2048;
     uint8_t *jpeg_buf = malloc(jpeg_cap);
     if (!jpeg_buf) return false;
-    imgf_encoder_opts_t eopts = {0};
-    eopts.jpeg_quality = quality;
-    eopts.jpeg_subsample = subsample;
+    imgf_jpege_opts_t eopts = {0};
+    eopts.quality = quality;
+    eopts.subsample = subsample;
+    imgf_err_t err;
+    imgf_encoder_t *e = imgf_jpege_create(w, h, pf, &eopts, &err);
+    if (!e) { free(jpeg_buf); return false; }
     size_t bytes = 0;
-    imgf_err_t err = imgf_encode_buffer(IMGF_ENC_JPEG, src, w, h, 0, pf,
-                                        jpeg_buf, jpeg_cap, &bytes, &eopts);
+    err = imgf_encoder_encode_buffer(e, src, 0, jpeg_buf, jpeg_cap, &bytes);
+    imgf_encoder_destroy(e);
     if (err != IMGF_OK || bytes < 4) { free(jpeg_buf); return false; }
     if (jpeg_buf[0] != 0xFF || jpeg_buf[1] != 0xD8) { free(jpeg_buf); return false; }
     if (jpeg_buf[bytes - 2] != 0xFF || jpeg_buf[bytes - 1] != 0xD9) {
@@ -1049,14 +1055,22 @@ static void test_jpege_low_quality_smaller(void) {
             src[(y * 32 + x) * 3 + 2] = (uint8_t)((x + y) * 4);
         }
     uint8_t buf[32 * 32 * 12 + 2048];
-    imgf_encoder_opts_t o = {0};
+    imgf_jpege_opts_t o = {0};
     size_t b_hi = 0, b_lo = 0;
-    o.jpeg_quality = 95;
-    CHECK(imgf_encode_buffer(IMGF_ENC_JPEG, src, 32, 32, 0, IMGF_PIX_RGB888,
-                             buf, sizeof buf, &b_hi, &o) == IMGF_OK);
-    o.jpeg_quality = 20;
-    CHECK(imgf_encode_buffer(IMGF_ENC_JPEG, src, 32, 32, 0, IMGF_PIX_RGB888,
-                             buf, sizeof buf, &b_lo, &o) == IMGF_OK);
+    imgf_err_t err;
+
+    o.quality = 95;
+    imgf_encoder_t *e1 = imgf_jpege_create(32, 32, IMGF_PIX_RGB888, &o, &err);
+    CHECK(e1 != NULL);
+    CHECK(imgf_encoder_encode_buffer(e1, src, 0, buf, sizeof buf, &b_hi) == IMGF_OK);
+    imgf_encoder_destroy(e1);
+
+    o.quality = 20;
+    imgf_encoder_t *e2 = imgf_jpege_create(32, 32, IMGF_PIX_RGB888, &o, &err);
+    CHECK(e2 != NULL);
+    CHECK(imgf_encoder_encode_buffer(e2, src, 0, buf, sizeof buf, &b_lo) == IMGF_OK);
+    imgf_encoder_destroy(e2);
+
     CHECK(b_lo < b_hi);
     CHECK(b_lo > 0 && b_hi > 0);
 }
@@ -1131,25 +1145,29 @@ static void test_jpege_gray_ignores_subsample(void) {
 }
 
 static void test_jpege_format_metadata(void) {
-    CHECK(imgf_encoder_format_stride(IMGF_ENC_JPEG, 100) == 0);
-    CHECK(imgf_encoder_format_input_pixfmt(IMGF_ENC_JPEG) == IMGF_PIX_INHERIT);
-
+    /* Variable-rate JPEG: 0 stride from row_stride accessor on an instance. */
     imgf_err_t err;
-    /* INHERIT input → defaults to RGB888 for JPEG. */
-    imgf_encoder_t *e = imgf_encoder_create(IMGF_ENC_JPEG, 8, 8, IMGF_PIX_INHERIT, NULL, &err);
+    imgf_encoder_t *e = imgf_jpege_create(8, 8, IMGF_PIX_RGB888, NULL, &err);
     CHECK(err == IMGF_OK);
+    CHECK(imgf_encoder_row_stride(e) == 0);
     CHECK(imgf_encoder_input_pixfmt(e) == IMGF_PIX_RGB888);
+    CHECK(imgf_encoder_buffer_size(e) > 0);
     imgf_encoder_destroy(e);
 
+    imgf_encoder_t *eg = imgf_jpege_create(8, 8, IMGF_PIX_GRAY8, NULL, &err);
+    CHECK(err == IMGF_OK);
+    CHECK(imgf_encoder_input_pixfmt(eg) == IMGF_PIX_GRAY8);
+    imgf_encoder_destroy(eg);
+
     /* RGB565 is not a valid JPEG input. */
-    imgf_encoder_t *e2 = imgf_encoder_create(IMGF_ENC_JPEG, 8, 8, IMGF_PIX_RGB565, NULL, &err);
+    imgf_encoder_t *e2 = imgf_jpege_create(8, 8, IMGF_PIX_RGB565, NULL, &err);
     CHECK(e2 == NULL);
     CHECK(err == IMGF_ERR_UNSUPPORTED);
 }
 
 static void test_encoder_finish_before_full_rejected(void) {
     imgf_err_t err;
-    imgf_encoder_t *e = imgf_encoder_create(IMGF_ENC_L8, 4, 2, IMGF_PIX_INHERIT, NULL, &err);
+    imgf_encoder_t *e = imgf_raw_encoder_create(IMGF_RAW_L8, 4, 2, NULL, &err);
     CHECK(err == IMGF_OK);
     uint8_t dst[8] = {0};
     CHECK(imgf_encoder_bind_buffer(e, dst, sizeof dst) == IMGF_OK);

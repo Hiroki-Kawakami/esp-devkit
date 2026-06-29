@@ -4,7 +4,7 @@
  *
  * Baseline JPEG encoder. 4:4:4 / 4:2:2 / 4:2:0 chroma subsampling for color
  * inputs; grayscale always single-component. Hot path is integer-only:
- *   - YCbCr conversion: integer fixed-point (BT.601, ×256).
+ *   - YCbCr conversion: integer fixed-point (BT.601, x256).
  *   - FDCT: integer AAN (Q12 constants), no float multiplies per sample.
  *   - Quantize: integer sign-aware round-divide by a per-coefficient table
  *     premultiplied with AAN factors at create time.
@@ -21,6 +21,7 @@
 
 #include "imgf_alloc.h"
 #include "imgf_encoder.h"
+#include "imgf_encoder_internal.h"
 
 /* ---- static tables ---------------------------------------------------- */
 
@@ -91,11 +92,9 @@ static const uint8_t kAC_C_vals[162] = {
 #define K_0_707  2896   /* 0.707106781 * 4096 */
 #define K_1_306  5352   /* 1.306562965 * 4096 */
 
-/* AAN per-frequency scale factors, exact: 0.5 / cos(k*pi/16). aan_scale[0] is
- * 1/sqrt(8) but we follow libjpeg's convention and use 1.0 there (the missing
- * factor of sqrt(8) cancels with another factor below). The encoder bakes
- * (aan_scale[u] * aan_scale[v] * 8) into the quantizer at create time so the
- * AAN FDCT output divides cleanly. */
+/* AAN per-frequency scale factors. Folded into the quantizer at create time:
+ * qaan[i] = std_q[i] * kAanScale[u] * kAanScale[v] * 8. The *8 absorbs the
+ * AAN FDCT's inherent factor so the output divides cleanly. */
 static const double kAanScale[8] = {
     1.0, 1.387039845322148, 1.306562964876377, 1.175875602419359,
     1.0, 0.785694958387102, 0.541196100146197, 0.275899379282943,
@@ -103,27 +102,23 @@ static const double kAanScale[8] = {
 
 /* ---- state ------------------------------------------------------------ */
 
-struct imgf_jpege {
+typedef struct {
+    imgf_encoder_t base;
+
     int width, height;
-    int n_comp;                 /* 1 (gray) or 3 (YCbCr) */
-    imgf_pixfmt_t input_pf;
+    int n_comp;
+    int sub_h, sub_v;
+    int mcu_w, mcu_h;
+    int width_pad, height_pad;
 
-    int sub_h, sub_v;           /* luma sampling: (1,1) / (2,1) / (2,2) */
-    int mcu_w, mcu_h;           /* 8*sub_h, 8*sub_v */
-    int width_pad, height_pad;  /* rounded up to MCU boundaries */
+    uint8_t qt_byte[2][64];
+    int     qt_aan [2][64];
 
-    /* quantization */
-    uint8_t qt_byte[2][64];     /* natural order, for DQT marker */
-    int     qt_aan [2][64];     /* natural order, * 8 * aan_scale[u]*aan_scale[v] */
-
-    /* Huffman encode tables: [DC/AC][table id][symbol] -> (code, length) */
     uint16_t hdc_code[2][16];
     uint8_t  hdc_len [2][16];
     uint16_t hac_code[2][256];
     uint8_t  hac_len [2][256];
 
-    /* MCU row buffer: mcu_h rows of width_pad samples per channel (YCbCr level
-     * shifted). Allocated once. */
     int16_t *block_buf;
     int      rows_in_buf;
     int      total_rows;
@@ -138,10 +133,9 @@ struct imgf_jpege {
     size_t   dst_cap;
     size_t   dst_pos;
     uint8_t  overflow;
-    uint8_t  bound;
-};
+} jpege_t;
 
-/* ---- helpers: Huffman code builder ----------------------------------- */
+/* ---- helpers ---------------------------------------------------------- */
 
 static void build_huff_codes(const uint8_t *bits, const uint8_t *vals,
                              uint16_t *codes, uint8_t *lens, int max_syms) {
@@ -171,33 +165,33 @@ static void scale_qtab(const uint8_t *std, uint8_t *out, int quality) {
 
 /* ---- bit writer ------------------------------------------------------- */
 
-static void put_byte(imgf_jpege_t *j, uint8_t b) {
+static void put_byte(jpege_t *j, uint8_t b) {
     if (j->dst_pos >= j->dst_cap) { j->overflow = 1; return; }
     j->dst[j->dst_pos++] = b;
 }
 
-static void put_word(imgf_jpege_t *j, uint16_t w) {
+static void put_word(jpege_t *j, uint16_t w) {
     put_byte(j, (uint8_t)(w >> 8));
     put_byte(j, (uint8_t)(w & 0xFF));
 }
 
-static void put_marker(imgf_jpege_t *j, uint8_t m) {
+static void put_marker(jpege_t *j, uint8_t m) {
     put_byte(j, 0xFF);
     put_byte(j, m);
 }
 
-static void put_bits(imgf_jpege_t *j, uint32_t value, int nbits) {
+static void put_bits(jpege_t *j, uint32_t value, int nbits) {
     j->bitbuf = (j->bitbuf << nbits) | (value & ((1u << nbits) - 1));
     j->bitcnt += nbits;
     while (j->bitcnt >= 8) {
         j->bitcnt -= 8;
         uint8_t b = (uint8_t)((j->bitbuf >> j->bitcnt) & 0xFF);
         put_byte(j, b);
-        if (b == 0xFF) put_byte(j, 0x00);   /* byte stuffing */
+        if (b == 0xFF) put_byte(j, 0x00);
     }
 }
 
-static void flush_bits(imgf_jpege_t *j) {
+static void flush_bits(jpege_t *j) {
     if (j->bitcnt > 0) {
         int pad = 8 - j->bitcnt;
         put_bits(j, (1u << pad) - 1, pad);
@@ -206,14 +200,14 @@ static void flush_bits(imgf_jpege_t *j) {
 
 /* ---- header writers --------------------------------------------------- */
 
-static void write_dqt(imgf_jpege_t *j, int table_id, const uint8_t *table) {
+static void write_dqt(jpege_t *j, int table_id, const uint8_t *table) {
     put_marker(j, 0xDB);
     put_word(j, 3 + 64);
     put_byte(j, (uint8_t)table_id);
     for (int i = 0; i < 64; i++) put_byte(j, table[kZigzag[i]]);
 }
 
-static void write_dht(imgf_jpege_t *j, int tc, int th, const uint8_t *bits, const uint8_t *vals) {
+static void write_dht(jpege_t *j, int tc, int th, const uint8_t *bits, const uint8_t *vals) {
     int total = 0;
     for (int i = 1; i <= 16; i++) total += bits[i];
     put_marker(j, 0xC4);
@@ -223,7 +217,7 @@ static void write_dht(imgf_jpege_t *j, int tc, int th, const uint8_t *bits, cons
     for (int i = 0; i < total; i++) put_byte(j, vals[i]);
 }
 
-static void write_sof0(imgf_jpege_t *j) {
+static void write_sof0(jpege_t *j) {
     put_marker(j, 0xC0);
     put_word(j, (uint16_t)(8 + 3 * j->n_comp));
     put_byte(j, 8);
@@ -233,14 +227,14 @@ static void write_sof0(imgf_jpege_t *j) {
     for (int c = 0; c < j->n_comp; c++) {
         put_byte(j, (uint8_t)(c + 1));
         if (c == 0)
-            put_byte(j, (uint8_t)((j->sub_h << 4) | j->sub_v));   /* Y sampling */
+            put_byte(j, (uint8_t)((j->sub_h << 4) | j->sub_v));
         else
-            put_byte(j, 0x11);                                    /* chroma 1:1 */
+            put_byte(j, 0x11);
         put_byte(j, (uint8_t)(c == 0 ? 0 : 1));
     }
 }
 
-static void write_sos(imgf_jpege_t *j) {
+static void write_sos(jpege_t *j) {
     put_marker(j, 0xDA);
     put_word(j, (uint16_t)(6 + 2 * j->n_comp));
     put_byte(j, (uint8_t)j->n_comp);
@@ -253,8 +247,8 @@ static void write_sos(imgf_jpege_t *j) {
     put_byte(j, 0);
 }
 
-static imgf_err_t write_headers(imgf_jpege_t *j) {
-    put_marker(j, 0xD8);   /* SOI */
+static imgf_err_t write_headers(jpege_t *j) {
+    put_marker(j, 0xD8);
     write_dqt(j, 0, j->qt_byte[0]);
     if (j->n_comp == 3) write_dqt(j, 1, j->qt_byte[1]);
     write_sof0(j);
@@ -270,7 +264,6 @@ static imgf_err_t write_headers(imgf_jpege_t *j) {
 
 /* ---- AAN integer FDCT ------------------------------------------------- */
 
-/* Q12 multiply: (v * c) >> 12, with c already pre-scaled by 4096. */
 #define AAN_MULT(v, c) (((v) * (c)) >> 12)
 
 static void fdct_1d(int *d) {
@@ -279,7 +272,6 @@ static void fdct_1d(int *d) {
     int tmp2 = d[2] + d[5], tmp5 = d[2] - d[5];
     int tmp3 = d[3] + d[4], tmp4 = d[3] - d[4];
 
-    /* Even part */
     int tmp10 = tmp0 + tmp3, tmp13 = tmp0 - tmp3;
     int tmp11 = tmp1 + tmp2, tmp12 = tmp1 - tmp2;
 
@@ -289,7 +281,6 @@ static void fdct_1d(int *d) {
     d[2] = tmp13 + z1;
     d[6] = tmp13 - z1;
 
-    /* Odd part */
     tmp10 = tmp4 + tmp5;
     tmp11 = tmp5 + tmp6;
     tmp12 = tmp6 + tmp7;
@@ -332,12 +323,11 @@ static int extend_encode(int v, int nbits) {
     return v & ((1 << nbits) - 1);
 }
 
-/* Sign-aware rounding integer divide: round(v / q) toward nearest. */
 static inline int sdiv(int v, int q) {
     return v >= 0 ? (v + q / 2) / q : -(((-v) + q / 2) / q);
 }
 
-static void encode_block(imgf_jpege_t *j, int *block, int comp) {
+static void encode_block(jpege_t *j, int *block, int comp) {
     int qid = comp == 0 ? 0 : 1;
     int hid = comp == 0 ? 0 : 1;
     const int *qaan = j->qt_aan[qid];
@@ -350,14 +340,12 @@ static void encode_block(imgf_jpege_t *j, int *block, int comp) {
         zz[k] = sdiv(block[nat], qaan[nat]);
     }
 
-    /* DC */
     int diff = zz[0] - j->dc_pred[comp];
     j->dc_pred[comp] = zz[0];
     int n = magnitude(diff);
     put_bits(j, j->hdc_code[hid][n], j->hdc_len[hid][n]);
     if (n) put_bits(j, (uint32_t)extend_encode(diff, n), n);
 
-    /* AC */
     int last_nz = 63;
     while (last_nz > 0 && zz[last_nz] == 0) last_nz--;
     int run = 0;
@@ -383,9 +371,7 @@ static void encode_block(imgf_jpege_t *j, int *block, int comp) {
 
 /* ---- MCU row encode --------------------------------------------------- */
 
-/* Extract a Y/luma 8x8 block at (x_in_mcu, y_in_mcu) within the current MCU
- * at horizontal offset x0 (in pixels). */
-static void extract_y_block(imgf_jpege_t *j, int x0, int by, int bx, int *out) {
+static void extract_y_block(jpege_t *j, int x0, int by, int bx, int *out) {
     int stride = j->width_pad * j->n_comp;
     for (int y = 0; y < 8; y++) {
         const int16_t *row = j->block_buf
@@ -394,13 +380,12 @@ static void extract_y_block(imgf_jpege_t *j, int x0, int by, int bx, int *out) {
         if (j->n_comp == 1) {
             for (int x = 0; x < 8; x++) out[y * 8 + x] = row[x];
         } else {
-            for (int x = 0; x < 8; x++) out[y * 8 + x] = row[x * 3 + 0];  /* Y is comp 0 */
+            for (int x = 0; x < 8; x++) out[y * 8 + x] = row[x * 3 + 0];
         }
     }
 }
 
-/* Extract a chroma 8x8 block by downsampling sub_h * sub_v cells per output. */
-static void extract_chroma_block(imgf_jpege_t *j, int x0, int comp, int *out) {
+static void extract_chroma_block(jpege_t *j, int x0, int comp, int *out) {
     int stride = j->width_pad * 3;
     int area = j->sub_h * j->sub_v;
     int half = area / 2;
@@ -419,11 +404,10 @@ static void extract_chroma_block(imgf_jpege_t *j, int x0, int comp, int *out) {
     }
 }
 
-static void encode_mcu_row(imgf_jpege_t *j) {
+static void encode_mcu_row(jpege_t *j) {
     int mcus = j->width_pad / j->mcu_w;
     for (int mx = 0; mx < mcus; mx++) {
         int x0 = mx * j->mcu_w;
-        /* Y blocks in raster order within the MCU. */
         for (int by = 0; by < j->sub_v; by++) {
             for (int bx = 0; bx < j->sub_h; bx++) {
                 int block[64];
@@ -441,10 +425,7 @@ static void encode_mcu_row(imgf_jpege_t *j) {
     }
 }
 
-/* Convert one input row to YCbCr (or Y for gray), level-shifted, stored into
- * the MCU buffer at row j->rows_in_buf. Horizontal padding replicates the
- * rightmost pixel. */
-static void absorb_row(imgf_jpege_t *j, const uint8_t *src) {
+static void absorb_row(jpege_t *j, const uint8_t *src) {
     int16_t *dst = j->block_buf
         + (size_t)j->rows_in_buf * j->width_pad * j->n_comp;
     int w = j->width;
@@ -472,7 +453,7 @@ static void absorb_row(imgf_jpege_t *j, const uint8_t *src) {
     j->rows_in_buf++;
 }
 
-static void pad_last_rows(imgf_jpege_t *j) {
+static void pad_last_rows(jpege_t *j) {
     if (j->rows_in_buf == 0 || j->rows_in_buf >= j->mcu_h) return;
     int16_t *last = j->block_buf
         + (size_t)(j->rows_in_buf - 1) * j->width_pad * j->n_comp;
@@ -484,6 +465,62 @@ static void pad_last_rows(imgf_jpege_t *j) {
         j->rows_in_buf++;
     }
 }
+
+/* ---- vtable ----------------------------------------------------------- */
+
+static imgf_err_t jpege_bind(imgf_encoder_t *base, uint8_t *dst, size_t cap) {
+    jpege_t *j = (jpege_t *)base;
+    j->dst = dst;
+    j->dst_cap = cap;
+    j->dst_pos = 0;
+    j->overflow = 0;
+    j->total_rows = 0;
+    j->rows_in_buf = 0;
+    j->mcu_rows_done = 0;
+    j->bitbuf = 0;
+    j->bitcnt = 0;
+    for (int i = 0; i < 3; i++) j->dc_pred[i] = 0;
+    return write_headers(j);
+}
+
+static int jpege_push(imgf_encoder_t *base, const uint8_t *row) {
+    jpege_t *j = (jpege_t *)base;
+    if (j->total_rows >= j->height) { base->last_error = IMGF_ERR_INVALID_STATE; return -1; }
+    absorb_row(j, row);
+    j->total_rows++;
+    if (j->rows_in_buf == j->mcu_h) {
+        encode_mcu_row(j);
+        j->rows_in_buf = 0;
+        j->mcu_rows_done++;
+    }
+    if (j->overflow) { base->last_error = IMGF_ERR_OOM; return -1; }
+    return 1;
+}
+
+static imgf_err_t jpege_finish(imgf_encoder_t *base, size_t *bytes_written) {
+    jpege_t *j = (jpege_t *)base;
+    if (j->total_rows != j->height) return IMGF_ERR_INVALID_STATE;
+    if (j->rows_in_buf > 0) {
+        pad_last_rows(j);
+        encode_mcu_row(j);
+        j->rows_in_buf = 0;
+        j->mcu_rows_done++;
+    }
+    flush_bits(j);
+    put_marker(j, 0xD9);
+    if (bytes_written) *bytes_written = j->dst_pos;
+    return j->overflow ? IMGF_ERR_OOM : IMGF_OK;
+}
+
+static void jpege_destroy(imgf_encoder_t *base) {
+    jpege_t *j = (jpege_t *)base;
+    if (j->block_buf) imgf_free(j->block_buf);
+    free(j);
+}
+
+static const imgf_encoder_vtable_t k_jpege_vt = {
+    jpege_bind, jpege_push, jpege_finish, jpege_destroy,
+};
 
 /* ---- public ----------------------------------------------------------- */
 
@@ -498,14 +535,17 @@ static void resolve_subsample(int n_comp, int sub_opt, int *sh, int *sv) {
         case IMGF_JPEG_SUBSAMPLE_444: *sh = 1; *sv = 1; break;
         case IMGF_JPEG_SUBSAMPLE_422: *sh = 2; *sv = 1; break;
         case IMGF_JPEG_SUBSAMPLE_420: *sh = 2; *sv = 2; break;
-        default:                       *sh = 2; *sv = 2; break;   /* default = 4:2:0 */
+        default:                       *sh = 2; *sv = 2; break;
     }
 }
 
-imgf_jpege_t *imgf_jpege_create(uint16_t width, uint16_t height,
-                                imgf_pixfmt_t input_pf,
-                                int quality, int subsample,
-                                uint32_t alloc_caps, imgf_err_t *out_err) {
+imgf_encoder_t *imgf_jpege_create(uint16_t width, uint16_t height,
+                                  imgf_pixfmt_t input_pf,
+                                  const imgf_jpege_opts_t *opts,
+                                  imgf_err_t *out_err) {
+    static const imgf_jpege_opts_t kZero = {0};
+    if (!opts) opts = &kZero;
+
     if (width == 0 || height == 0) {
         if (out_err) *out_err = IMGF_ERR_INVALID_ARG;
         return NULL;
@@ -514,17 +554,18 @@ imgf_jpege_t *imgf_jpege_create(uint16_t width, uint16_t height,
         if (out_err) *out_err = IMGF_ERR_UNSUPPORTED;
         return NULL;
     }
+    int quality = opts->quality;
     if (quality <= 0) quality = 75;
     if (quality > 100) quality = 100;
     if (quality < 1)   quality = 1;
 
-    imgf_jpege_t *j = (imgf_jpege_t *)calloc(1, sizeof *j);
+    jpege_t *j = (jpege_t *)calloc(1, sizeof *j);
     if (!j) { if (out_err) *out_err = IMGF_ERR_OOM; return NULL; }
+
     j->width    = width;
     j->height   = height;
-    j->input_pf = input_pf;
     j->n_comp   = (input_pf == IMGF_PIX_GRAY8) ? 1 : 3;
-    resolve_subsample(j->n_comp, subsample, &j->sub_h, &j->sub_v);
+    resolve_subsample(j->n_comp, opts->subsample, &j->sub_h, &j->sub_v);
     j->mcu_w = 8 * j->sub_h;
     j->mcu_h = 8 * j->sub_v;
     j->width_pad  = (width  + j->mcu_w - 1) & ~(j->mcu_w - 1);
@@ -532,8 +573,6 @@ imgf_jpege_t *imgf_jpege_create(uint16_t width, uint16_t height,
 
     scale_qtab(kStdQ_L, j->qt_byte[0], quality);
     scale_qtab(kStdQ_C, j->qt_byte[1], quality);
-    /* Premultiply: qaan[i] = std_q[i] * aan_scale[row] * aan_scale[col] * 8.
-     * The factor of 8 absorbs the AAN FDCT's inherent scaling. */
     for (int t = 0; t < 2; t++) {
         for (int i = 0; i < 64; i++) {
             int row = i >> 3, col = i & 7;
@@ -550,7 +589,7 @@ imgf_jpege_t *imgf_jpege_create(uint16_t width, uint16_t height,
     build_huff_codes(kAC_C_bits, kAC_C_vals, j->hac_code[1], j->hac_len[1], 256);
 
     size_t buf_bytes = (size_t)j->mcu_h * j->width_pad * j->n_comp * sizeof(int16_t);
-    j->block_buf = (int16_t *)imgf_alloc(buf_bytes, alloc_caps);
+    j->block_buf = (int16_t *)imgf_alloc(buf_bytes, opts->alloc_caps);
     if (!j->block_buf) {
         free(j);
         if (out_err) *out_err = IMGF_ERR_OOM;
@@ -558,56 +597,13 @@ imgf_jpege_t *imgf_jpege_create(uint16_t width, uint16_t height,
     }
     memset(j->block_buf, 0, buf_bytes);
 
+    j->base.vt = &k_jpege_vt;
+    j->base.width  = width;
+    j->base.height = height;
+    j->base.input_pf = input_pf;
+    j->base.row_stride = 0;
+    j->base.buffer_size_hint = imgf_jpege_buffer_upper_bound(width, height, input_pf);
+
     if (out_err) *out_err = IMGF_OK;
-    return j;
-}
-
-void imgf_jpege_destroy(imgf_jpege_t *j) {
-    if (!j) return;
-    if (j->block_buf) imgf_free(j->block_buf);
-    free(j);
-}
-
-imgf_err_t imgf_jpege_bind(imgf_jpege_t *j, uint8_t *dst, size_t cap) {
-    if (!j) return IMGF_ERR_INVALID_ARG;
-    j->dst = dst;
-    j->dst_cap = cap;
-    j->dst_pos = 0;
-    j->overflow = 0;
-    j->bound = 1;
-    j->total_rows = 0;
-    j->rows_in_buf = 0;
-    j->mcu_rows_done = 0;
-    j->bitbuf = 0;
-    j->bitcnt = 0;
-    for (int i = 0; i < 3; i++) j->dc_pred[i] = 0;
-    return write_headers(j);
-}
-
-imgf_err_t imgf_jpege_push(imgf_jpege_t *j, const uint8_t *row) {
-    if (!j || !j->bound) return IMGF_ERR_INVALID_STATE;
-    if (j->total_rows >= j->height) return IMGF_ERR_INVALID_STATE;
-    absorb_row(j, row);
-    j->total_rows++;
-    if (j->rows_in_buf == j->mcu_h) {
-        encode_mcu_row(j);
-        j->rows_in_buf = 0;
-        j->mcu_rows_done++;
-    }
-    return j->overflow ? IMGF_ERR_OOM : IMGF_OK;
-}
-
-imgf_err_t imgf_jpege_finish(imgf_jpege_t *j, size_t *bytes_written) {
-    if (!j || !j->bound) return IMGF_ERR_INVALID_STATE;
-    if (j->total_rows != j->height) return IMGF_ERR_INVALID_STATE;
-    if (j->rows_in_buf > 0) {
-        pad_last_rows(j);
-        encode_mcu_row(j);
-        j->rows_in_buf = 0;
-        j->mcu_rows_done++;
-    }
-    flush_bits(j);
-    put_marker(j, 0xD9);   /* EOI */
-    if (bytes_written) *bytes_written = j->dst_pos;
-    return j->overflow ? IMGF_ERR_OOM : IMGF_OK;
+    return &j->base;
 }
