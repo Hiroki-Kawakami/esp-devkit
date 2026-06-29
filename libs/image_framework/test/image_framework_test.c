@@ -15,6 +15,7 @@
 
 #include "imgf_alloc.h"
 #include "imgf_decoder.h"
+#include "imgf_dither.h"
 #include "imgf_jpegd.h"
 #include "imgf_pngd.h"
 #include "imgf_resize.h"
@@ -643,6 +644,166 @@ static void test_resize_decoder_jpeg(void) {
     imgf_decoder_destroy(d);
 }
 
+/* ---- dither ----------------------------------------------------------- */
+
+static void test_dither_none_index_n16(void) {
+    /* gray=128, N=16: level = round(128*15/255) = 8 */
+    const uint8_t src[1] = { 128 };
+    uint8_t dst[1] = { 0xFF };
+    imgf_dither_opts_t o = {0};
+    o.algo = IMGF_DITHER_NONE;
+    o.levels = 16;
+    o.out_mode = IMGF_DITHER_OUT_INDEX;
+    CHECK(imgf_dither_buffer(src, 1, 1, 0, dst, 0, &o) == IMGF_OK);
+    CHECK(dst[0] == 8);
+}
+
+static void test_dither_none_gray_n16(void) {
+    /* gray=128 -> level 8 -> reconstructed = (8*255 + 7) / 15 = 136 */
+    const uint8_t src[1] = { 128 };
+    uint8_t dst[1] = { 0xFF };
+    imgf_dither_opts_t o = {0};
+    o.algo = IMGF_DITHER_NONE;
+    o.levels = 16;
+    o.out_mode = IMGF_DITHER_OUT_GRAY;
+    CHECK(imgf_dither_buffer(src, 1, 1, 0, dst, 0, &o) == IMGF_OK);
+    CHECK(dst[0] == 136);
+}
+
+static void test_dither_none_n2_threshold(void) {
+    /* N=2: gray=127 -> level 0, gray=128 -> level 1 (rounded) */
+    const uint8_t src[2] = { 127, 128 };
+    uint8_t dst[2] = { 0xFF, 0xFF };
+    imgf_dither_opts_t o = {0};
+    o.algo = IMGF_DITHER_NONE;
+    o.levels = 2;
+    o.out_mode = IMGF_DITHER_OUT_INDEX;
+    CHECK(imgf_dither_buffer(src, 2, 1, 0, dst, 0, &o) == IMGF_OK);
+    CHECK(dst[0] == 0 && dst[1] == 1);
+}
+
+static void test_dither_bayer8_2level_mean(void) {
+    /* 8x8 flat 128: Bayer8 with N=2 must produce binary 0/1; mean ≈ half. */
+    uint8_t src[64];
+    memset(src, 128, sizeof src);
+    uint8_t dst[64] = {0};
+    imgf_dither_opts_t o = {0};
+    o.algo = IMGF_DITHER_BAYER8;
+    o.levels = 2;
+    o.out_mode = IMGF_DITHER_OUT_INDEX;
+    CHECK(imgf_dither_buffer(src, 8, 8, 0, dst, 0, &o) == IMGF_OK);
+    int ones = 0;
+    for (int i = 0; i < 64; i++) {
+        CHECK(dst[i] == 0 || dst[i] == 1);
+        if (dst[i]) ones++;
+    }
+    /* ~50% set; allow generous slack */
+    CHECK(ones >= 24 && ones <= 40);
+}
+
+static void test_dither_fs_n16_brackets(void) {
+    /* gray=128 + Floyd-Steinberg + N=16: only the bracketing levels 7 and 8
+     * survive (matches imgproc test_pipeline_error_diffusion_mean). */
+    uint8_t src[32 * 32];
+    memset(src, 128, sizeof src);
+    uint8_t dst[32 * 32] = {0};
+    imgf_dither_opts_t o = {0};
+    o.algo = IMGF_DITHER_FLOYD_STEINBERG;
+    o.levels = 16;
+    o.serpentine = true;
+    o.out_mode = IMGF_DITHER_OUT_INDEX;
+    CHECK(imgf_dither_buffer(src, 32, 32, 0, dst, 0, &o) == IMGF_OK);
+    bool only_7_8 = true;
+    int sum = 0;
+    for (int i = 0; i < 32 * 32; i++) {
+        if (dst[i] != 7 && dst[i] != 8) only_7_8 = false;
+        sum += dst[i];
+    }
+    CHECK(only_7_8);
+    /* mean ~ 128 * 15 / 255 ≈ 7.53; over 1024 pixels ≈ 7700 */
+    CHECK(sum >= 7400 && sum <= 8000);
+}
+
+static void test_dither_fs_n16_gray_brackets(void) {
+    /* Same setup as above but OUT_GRAY: only reconstructed 119 / 136 appear. */
+    uint8_t src[16 * 16];
+    memset(src, 128, sizeof src);
+    uint8_t dst[16 * 16] = {0};
+    imgf_dither_opts_t o = {0};
+    o.algo = IMGF_DITHER_FLOYD_STEINBERG;
+    o.levels = 16;
+    o.serpentine = true;
+    o.out_mode = IMGF_DITHER_OUT_GRAY;
+    CHECK(imgf_dither_buffer(src, 16, 16, 0, dst, 0, &o) == IMGF_OK);
+    bool only_two = true;
+    for (int i = 0; i < 16 * 16; i++) {
+        if (dst[i] != 119 && dst[i] != 136) only_two = false;
+    }
+    CHECK(only_two);
+}
+
+static void test_dither_buffer_inplace(void) {
+    /* In-place dither: dst == src. */
+    uint8_t buf[16];
+    for (int i = 0; i < 16; i++) buf[i] = (uint8_t)(i * 16);
+    imgf_dither_opts_t o = {0};
+    o.algo = IMGF_DITHER_NONE;
+    o.levels = 16;
+    o.out_mode = IMGF_DITHER_OUT_INDEX;
+    CHECK(imgf_dither_buffer(buf, 16, 1, 0, buf, 0, &o) == IMGF_OK);
+    /* buf[i] = round(i*16 * 15 / 255) for each gray-step i*16. */
+    for (int i = 0; i < 16; i++) {
+        int expected = ((i * 16) * 15 * 2 + 255) / 510;
+        if (expected > 15) expected = 15;
+        CHECK(buf[i] == expected);
+    }
+}
+
+static void test_dither_push_pop_drain(void) {
+    /* Layer 1 direct: feed all rows, drain pops. */
+    uint8_t src[2 * 4] = { 0, 50, 100, 200,  20, 70, 120, 220 };
+    uint8_t got[2 * 4] = { 0 };
+    imgf_dither_opts_t o = {0};
+    o.algo = IMGF_DITHER_NONE;
+    o.levels = 4;
+    o.out_mode = IMGF_DITHER_OUT_INDEX;
+    imgf_err_t err;
+    imgf_dither_t *d = imgf_dither_create(4, &o, &err);
+    CHECK(err == IMGF_OK);
+    CHECK(imgf_dither_levels(d) == 4);
+    CHECK(imgf_dither_out_mode(d) == IMGF_DITHER_OUT_INDEX);
+    for (int y = 0; y < 2; y++) {
+        CHECK(imgf_dither_push_row(d, src + y * 4) == 1);
+        CHECK(imgf_dither_pop_row(d, got + y * 4));
+    }
+    /* Quantize each by round(v*3/255): 0->0, 50->1, 100->1, 200->2,
+       20->0, 70->1, 120->1, 220->3 (round(220*3/255)=round(2.588)=3). */
+    CHECK(got[0] == 0 && got[1] == 1 && got[2] == 1 && got[3] == 2);
+    CHECK(got[4] == 0 && got[5] == 1 && got[6] == 1 && got[7] == 3);
+    imgf_dither_destroy(d);
+}
+
+static void test_dither_double_push_rejected(void) {
+    /* Two pushes without a pop in between must error. */
+    const uint8_t src[1] = { 100 };
+    imgf_dither_opts_t o = {0};
+    o.algo = IMGF_DITHER_NONE;
+    o.levels = 4;
+    imgf_err_t err;
+    imgf_dither_t *d = imgf_dither_create(1, &o, &err);
+    CHECK(err == IMGF_OK);
+    CHECK(imgf_dither_push_row(d, src) == 1);
+    CHECK(imgf_dither_push_row(d, src) == -1);
+    CHECK(imgf_dither_last_error(d) == IMGF_ERR_INVALID_STATE);
+    imgf_dither_destroy(d);
+}
+
+static void test_dither_create_invalid(void) {
+    imgf_err_t err;
+    CHECK(imgf_dither_create(0, NULL, &err) == NULL);
+    CHECK(err == IMGF_ERR_INVALID_ARG);
+}
+
 static void test_resizer_push_pop_drain(void) {
     /* Walk the Layer 1 API directly: feed all src rows, drain pops. */
     uint8_t src[16];
@@ -718,6 +879,17 @@ int main(void) {
     test_resize_decoder_png();
     test_resize_decoder_jpeg();
     test_resizer_push_pop_drain();
+
+    test_dither_none_index_n16();
+    test_dither_none_gray_n16();
+    test_dither_none_n2_threshold();
+    test_dither_bayer8_2level_mean();
+    test_dither_fs_n16_brackets();
+    test_dither_fs_n16_gray_brackets();
+    test_dither_buffer_inplace();
+    test_dither_push_pop_drain();
+    test_dither_double_push_rejected();
+    test_dither_create_invalid();
 
     if (g_failures) {
         fprintf(stderr, "\n%d failure(s)\n", g_failures);
