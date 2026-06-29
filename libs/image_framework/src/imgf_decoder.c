@@ -36,7 +36,7 @@ uint16_t imgf_decoder_height(const imgf_decoder_t *dec) {
 }
 
 imgf_pixfmt_t imgf_decoder_pixfmt(const imgf_decoder_t *dec) {
-    return dec ? dec->pixfmt : IMGF_PIX_GRAY8;
+    return dec ? dec->pixfmt : IMGF_PIX_INHERIT;
 }
 
 imgf_err_t imgf_decoder_last_error(const imgf_decoder_t *dec) {

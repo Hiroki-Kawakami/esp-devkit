@@ -13,12 +13,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "imgf_alloc.h"
 #include "imgf_decoder.h"
-#include "imgf_err.h"
 #include "imgf_jpegd.h"
 #include "imgf_pngd.h"
+#include "imgf_resize.h"
 #include "imgf_sniff.h"
 #include "imgf_stream.h"
+#include "imgf_types.h"
 
 #include "jpeg_fixtures.h"
 #include "png_fixtures.h"
@@ -402,6 +404,271 @@ static void test_png_signature_only(void) {
     imgf_decoder_destroy(d);
 }
 
+/* ---- resize ----------------------------------------------------------- */
+
+static void test_pixfmt_bpp(void) {
+    CHECK(imgf_pixfmt_bpp(IMGF_PIX_GRAY8) == 1);
+    CHECK(imgf_pixfmt_bpp(IMGF_PIX_RGB888) == 3);
+    CHECK(imgf_pixfmt_bpp(IMGF_PIX_RGB565) == 2);
+    CHECK(imgf_pixfmt_bpp(IMGF_PIX_INHERIT) == 0);
+}
+
+static void test_resize_compute_dst(void) {
+    imgf_resize_opts_t o = {0};
+    o.target_w = 100;
+    o.target_h = 50;
+    o.fit = IMGF_FIT_STRETCH;
+    uint16_t dw, dh;
+    CHECK(imgf_resize_compute_dst(200, 100, &o, &dw, &dh) == IMGF_OK);
+    CHECK(dw == 100 && dh == 50);
+
+    /* Contain: aspect preserved, fit inside */
+    o.fit = IMGF_FIT_CONTAIN;
+    o.target_w = 100; o.target_h = 100;
+    CHECK(imgf_resize_compute_dst(200, 100, &o, &dw, &dh) == IMGF_OK);
+    CHECK(dw == 100 && dh == 50);   /* width-bound */
+
+    o.target_w = 100; o.target_h = 25;
+    CHECK(imgf_resize_compute_dst(200, 100, &o, &dw, &dh) == IMGF_OK);
+    CHECK(dw == 50 && dh == 25);    /* height-bound */
+
+    /* Stretch with zero target → invalid */
+    o.fit = IMGF_FIT_STRETCH;
+    o.target_w = 0; o.target_h = 50;
+    CHECK(imgf_resize_compute_dst(200, 100, &o, &dw, &dh) == IMGF_ERR_INVALID_ARG);
+}
+
+static void test_resize_identity_gray(void) {
+    /* sw = dw, sh = dh, src_pf == dst_pf → identity pixels. */
+    const uint8_t src[4] = {10, 20, 30, 40};
+    uint8_t dst[4] = {0};
+    imgf_resize_opts_t o = {0};
+    o.target_w = 2; o.target_h = 2; o.fit = IMGF_FIT_STRETCH;
+    CHECK(imgf_resize_buffer(src, 2, 2, 2, IMGF_PIX_GRAY8,
+                             dst, 2, &o) == IMGF_OK);
+    CHECK(dst[0] == 10 && dst[1] == 20 && dst[2] == 30 && dst[3] == 40);
+}
+
+static void test_resize_downscale_gray_2x(void) {
+    /* 4x4 source, halved on both axes: each dst pixel is the mean of a 2x2
+     * source block. */
+    uint8_t src[16];
+    for (int i = 0; i < 16; i++) src[i] = (uint8_t)(i * 10);
+    uint8_t dst[4] = {0};
+    imgf_resize_opts_t o = {0};
+    o.target_w = 2; o.target_h = 2; o.fit = IMGF_FIT_STRETCH;
+    CHECK(imgf_resize_buffer(src, 4, 4, 4, IMGF_PIX_GRAY8, dst, 2, &o) == IMGF_OK);
+    /* dst[0] = mean(src[0,1,4,5]) = mean(0,10,40,50) = 25 */
+    CHECK(dst[0] == 25);
+    /* dst[1] = mean(src[2,3,6,7]) = mean(20,30,60,70) = 45 */
+    CHECK(dst[1] == 45);
+    /* dst[2] = mean(src[8,9,12,13]) = mean(80,90,120,130) = 105 */
+    CHECK(dst[2] == 105);
+    /* dst[3] = mean(src[10,11,14,15]) = mean(100,110,140,150) = 125 */
+    CHECK(dst[3] == 125);
+}
+
+static void test_resize_upscale_gray_2x(void) {
+    /* Endpoint-aligned bilinear: dst corners = src corners. */
+    const uint8_t src[4] = {0, 100, 200, 220};
+    uint8_t dst[16] = {0};
+    imgf_resize_opts_t o = {0};
+    o.target_w = 4; o.target_h = 4; o.fit = IMGF_FIT_STRETCH;
+    CHECK(imgf_resize_buffer(src, 2, 2, 2, IMGF_PIX_GRAY8, dst, 4, &o) == IMGF_OK);
+    /* Corners pinned */
+    CHECK(dst[0] == 0);
+    CHECK(dst[3] == 100);
+    CHECK(dst[12] == 200);
+    CHECK(dst[15] == 220);
+    /* Top edge: dst[0..3] interpolates 0..100; dst[1] ~ 33, dst[2] ~ 67 */
+    CHECK(dst[1] >= 30 && dst[1] <= 36);
+    CHECK(dst[2] >= 64 && dst[2] <= 70);
+}
+
+static void test_resize_rgb888_downscale(void) {
+    uint8_t src[2 * 2 * 3] = {
+        255,   0,   0,    0, 255,   0,   /* row 0: red,  green */
+          0,   0, 255,  100, 100, 100,   /* row 1: blue, gray */
+    };
+    uint8_t dst[3] = {0};
+    imgf_resize_opts_t o = {0};
+    o.target_w = 1; o.target_h = 1; o.fit = IMGF_FIT_STRETCH;
+    CHECK(imgf_resize_buffer(src, 2, 2, 6, IMGF_PIX_RGB888, dst, 0, &o) == IMGF_OK);
+    /* Each channel is the box-area mean of the 4 source pixels:
+       R = (255+0+0+100)/4 = 88, G = (0+255+0+100)/4 = 88, B = (0+0+255+100)/4 = 88 */
+    CHECK(dst[0] >= 87 && dst[0] <= 89);
+    CHECK(dst[1] >= 87 && dst[1] <= 89);
+    CHECK(dst[2] >= 87 && dst[2] <= 89);
+}
+
+static void test_resize_rgb565_roundtrip(void) {
+    /* RGB888 → RGB565 → RGB888 should preserve the 5/6/5 quantization. */
+    uint8_t src[3] = { 0xF8, 0xFC, 0xF8 };  /* high 5/6/5 bits, low bits cleared */
+    uint8_t mid[2] = {0};
+    imgf_resize_opts_t o = {0};
+    o.target_w = 1; o.target_h = 1; o.fit = IMGF_FIT_STRETCH;
+    o.dst_pixfmt = IMGF_PIX_RGB565;
+    CHECK(imgf_resize_buffer(src, 1, 1, 3, IMGF_PIX_RGB888, mid, 0, &o) == IMGF_OK);
+    /* RGB565 of (0xF8, 0xFC, 0xF8) = (0x1F << 11) | (0x3F << 5) | 0x1F = 0xFFFF */
+    const uint16_t *m = (const uint16_t *)mid;
+    CHECK(*m == 0xFFFF);
+
+    uint8_t back[3] = {0};
+    o.dst_pixfmt = IMGF_PIX_RGB888;
+    CHECK(imgf_resize_buffer(mid, 1, 1, 2, IMGF_PIX_RGB565, back, 0, &o) == IMGF_OK);
+    /* 0x1F -> 0xFF (replicate low bits), 0x3F -> 0xFF */
+    CHECK(back[0] == 0xFF && back[1] == 0xFF && back[2] == 0xFF);
+}
+
+static void test_resize_gray_to_rgb888(void) {
+    const uint8_t src[1] = { 200 };
+    uint8_t dst[3] = {0};
+    imgf_resize_opts_t o = {0};
+    o.target_w = 1; o.target_h = 1; o.fit = IMGF_FIT_STRETCH;
+    o.dst_pixfmt = IMGF_PIX_RGB888;
+    CHECK(imgf_resize_buffer(src, 1, 1, 1, IMGF_PIX_GRAY8, dst, 0, &o) == IMGF_OK);
+    CHECK(dst[0] == 200 && dst[1] == 200 && dst[2] == 200);
+}
+
+static void test_resize_rgb888_to_gray(void) {
+    const uint8_t src[3] = { 100, 200, 50 };
+    uint8_t dst[1] = {0};
+    imgf_resize_opts_t o = {0};
+    o.target_w = 1; o.target_h = 1; o.fit = IMGF_FIT_STRETCH;
+    o.dst_pixfmt = IMGF_PIX_GRAY8;
+    CHECK(imgf_resize_buffer(src, 1, 1, 3, IMGF_PIX_RGB888, dst, 0, &o) == IMGF_OK);
+    /* BT.709 luma: 100*54 + 200*183 + 50*19 + 128 = 5400 + 36600 + 950 + 128 = 43078
+       >> 8 = 168 */
+    CHECK(dst[0] >= 165 && dst[0] <= 171);
+}
+
+static void test_resize_inherit_pixfmt(void) {
+    /* dst_pixfmt = 0 (INHERIT) → keep src pixfmt. */
+    const uint8_t src[2] = { 50, 150 };
+    uint8_t dst[2] = {0};
+    imgf_resize_opts_t o = {0};
+    o.target_w = 2; o.target_h = 1; o.fit = IMGF_FIT_STRETCH;
+    /* o.dst_pixfmt left as 0 (IMGF_PIX_INHERIT) */
+    CHECK(imgf_resize_buffer(src, 2, 1, 0, IMGF_PIX_GRAY8, dst, 0, &o) == IMGF_OK);
+    CHECK(dst[0] == 50 && dst[1] == 150);
+}
+
+static void test_resize_mixed_axis(void) {
+    /* Horizontal downscale (4 → 2), vertical upscale (2 → 4). */
+    uint8_t src[8] = {
+        10, 30, 50, 70,
+        90, 110, 130, 150,
+    };
+    uint8_t dst[8] = {0};
+    imgf_resize_opts_t o = {0};
+    o.target_w = 2; o.target_h = 4; o.fit = IMGF_FIT_STRETCH;
+    CHECK(imgf_resize_buffer(src, 4, 2, 4, IMGF_PIX_GRAY8, dst, 2, &o) == IMGF_OK);
+    /* Top dst row should ≈ mean of src row 0 pairs: (10+30)/2=20, (50+70)/2=60 */
+    CHECK(dst[0] == 20);
+    CHECK(dst[1] == 60);
+    /* Bottom dst row ≈ mean of src row 1 pairs: (90+110)/2=100, (130+150)/2=140 */
+    CHECK(dst[6] == 100);
+    CHECK(dst[7] == 140);
+}
+
+static void test_resize_buffer_inplace_downscale(void) {
+    /* In-place 4x4 → 2x2 grayscale (dst == src). */
+    uint8_t buf[16];
+    for (int i = 0; i < 16; i++) buf[i] = (uint8_t)(i * 10);
+    imgf_resize_opts_t o = {0};
+    o.target_w = 2; o.target_h = 2; o.fit = IMGF_FIT_STRETCH;
+    CHECK(imgf_resize_buffer(buf, 4, 4, 4, IMGF_PIX_GRAY8, buf, 2, &o) == IMGF_OK);
+    CHECK(buf[0] == 25 && buf[1] == 45 && buf[2] == 105 && buf[3] == 125);
+}
+
+static void test_resize_buffer_overlap_upscale_rejected(void) {
+    uint8_t buf[16] = {0};
+    imgf_resize_opts_t o = {0};
+    o.target_w = 4; o.target_h = 4; o.fit = IMGF_FIT_STRETCH;
+    /* 2x2 → 4x4 with overlap → must reject */
+    CHECK(imgf_resize_buffer(buf, 2, 2, 2, IMGF_PIX_GRAY8, buf, 4, &o) == IMGF_ERR_INVALID_ARG);
+}
+
+static void test_resize_decoder_png(void) {
+    /* Run kPngGrad16 (16x16) through resize → 8x8 mean-blurred. */
+    imgf_buffer_source_t st;
+    imgf_err_t err;
+    imgf_decoder_t *d = open_png(kPngGrad16, sizeof kPngGrad16, &st, &err);
+    CHECK(err == IMGF_OK);
+    imgf_resize_opts_t o = {0};
+    o.target_w = 8; o.target_h = 8; o.fit = IMGF_FIT_STRETCH;
+    uint8_t *out = NULL;
+    uint16_t ow = 0, oh = 0;
+    CHECK(imgf_resize_decoder(d, &o, &out, &ow, &oh) == IMGF_OK);
+    CHECK(ow == 8 && oh == 8);
+    CHECK(out != NULL);
+    /* Each dst[(x,y)] = mean over 2x2 of grad(x*2..x*2+1, y*2..y*2+1)
+       where grad(X,Y) = (X*16 + Y*4) & 0xFF. */
+    bool ok = true;
+    for (int y = 0; y < 8 && ok; y++) {
+        for (int x = 0; x < 8 && ok; x++) {
+            int sum = 0;
+            for (int yy = 0; yy < 2; yy++)
+                for (int xx = 0; xx < 2; xx++)
+                    sum += ((x * 2 + xx) * 16 + (y * 2 + yy) * 4) & 0xFF;
+            int expected = sum / 4;
+            int got = out[y * 8 + x];
+            if (got < expected - 1 || got > expected + 1) ok = false;
+        }
+    }
+    CHECK(ok);
+    imgf_free(out);
+    imgf_decoder_destroy(d);
+}
+
+static void test_resize_decoder_jpeg(void) {
+    imgf_buffer_source_t st;
+    imgf_err_t err;
+    imgf_decoder_t *d = open_jpeg(kJpgGrayBig, sizeof kJpgGrayBig, &st, NULL, &err);
+    CHECK(err == IMGF_OK);
+    imgf_resize_opts_t o = {0};
+    o.target_w = 16; o.target_h = 16; o.fit = IMGF_FIT_STRETCH;
+    uint8_t *out = NULL;
+    uint16_t ow = 0, oh = 0;
+    CHECK(imgf_resize_decoder(d, &o, &out, &ow, &oh) == IMGF_OK);
+    CHECK(ow == 16 && oh == 16);
+    /* Source is flat 100; resized image should also be ~100. */
+    bool flat = true;
+    for (int i = 0; i < 16 * 16; i++) {
+        int v = out[i];
+        if (v < 90 || v > 110) flat = false;
+    }
+    CHECK(flat);
+    imgf_free(out);
+    imgf_decoder_destroy(d);
+}
+
+static void test_resizer_push_pop_drain(void) {
+    /* Walk the Layer 1 API directly: feed all src rows, drain pops. */
+    uint8_t src[16];
+    for (int i = 0; i < 16; i++) src[i] = (uint8_t)(i * 10);
+    imgf_resize_opts_t o = {0};
+    o.target_w = 2; o.target_h = 2; o.fit = IMGF_FIT_STRETCH;
+    imgf_err_t err;
+    imgf_resizer_t *r = imgf_resizer_create(4, 4, IMGF_PIX_GRAY8, &o, &err);
+    CHECK(err == IMGF_OK);
+    CHECK(imgf_resizer_dst_width(r) == 2 && imgf_resizer_dst_height(r) == 2);
+    uint8_t got[4];
+    int out_idx = 0;
+    for (int sy = 0; sy < 4; sy++) {
+        int ready = imgf_resizer_push_row(r, src + sy * 4);
+        for (int i = 0; i < ready; i++) {
+            CHECK(imgf_resizer_pop_row(r, got + out_idx * 2));
+            out_idx++;
+        }
+    }
+    imgf_resizer_finish(r);
+    while (out_idx < 2 && imgf_resizer_pop_row(r, got + out_idx * 2)) out_idx++;
+    CHECK(out_idx == 2);
+    CHECK(got[0] == 25 && got[1] == 45 && got[2] == 105 && got[3] == 125);
+    imgf_resizer_destroy(r);
+}
+
 /* ---- main ------------------------------------------------------------- */
 
 int main(void) {
@@ -434,6 +701,23 @@ int main(void) {
     test_png_gradient_inflate();
     test_png_truncated_idat();
     test_png_signature_only();
+
+    test_pixfmt_bpp();
+    test_resize_compute_dst();
+    test_resize_identity_gray();
+    test_resize_downscale_gray_2x();
+    test_resize_upscale_gray_2x();
+    test_resize_rgb888_downscale();
+    test_resize_rgb565_roundtrip();
+    test_resize_gray_to_rgb888();
+    test_resize_rgb888_to_gray();
+    test_resize_inherit_pixfmt();
+    test_resize_mixed_axis();
+    test_resize_buffer_inplace_downscale();
+    test_resize_buffer_overlap_upscale_rejected();
+    test_resize_decoder_png();
+    test_resize_decoder_jpeg();
+    test_resizer_push_pop_drain();
 
     if (g_failures) {
         fprintf(stderr, "\n%d failure(s)\n", g_failures);

@@ -3,7 +3,7 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
-#include "imgf_err.h"
+#include "imgf_types.h"
 
 const char *imgf_err_to_str(imgf_err_t err) {
     switch (err) {

@@ -8,17 +8,12 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "imgf_err.h"
 #include "imgf_stream.h"
+#include "imgf_types.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-typedef enum {
-    IMGF_PIX_GRAY8,
-    IMGF_PIX_RGB888,
-} imgf_pixfmt_t;
 
 /* Pure hints. The decoder may ignore any/all of them.
  * - target_w/h: decode-time downscale toward this size (JPEG picks a 1/N

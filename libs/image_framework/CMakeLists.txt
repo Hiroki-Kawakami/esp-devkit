@@ -7,6 +7,7 @@ idf_component_register(
         "src/imgf_inflate.c"
         "src/imgf_jpegd.c"
         "src/imgf_pngd.c"
+        "src/imgf_resize.c"
         "src/imgf_sniff.c"
         "src/imgf_stream.c"
     INCLUDE_DIRS "inc"

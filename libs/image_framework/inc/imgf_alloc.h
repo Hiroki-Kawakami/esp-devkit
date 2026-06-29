@@ -2,8 +2,10 @@
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 Hiroki Kawakami
  *
- * Allocation shim: on ESP-IDF prefers caller-supplied heap caps (falls back to
- * the SPIRAM default); on the host just wraps malloc/free.
+ * Allocation shim used by image_framework. On ESP-IDF prefers caller-supplied
+ * heap caps (falls back to the SPIRAM default); on the host just wraps
+ * malloc/free. Buffers returned by imgf_* APIs (e.g. imgf_resize_decoder) must
+ * be released with imgf_free().
  */
 
 #pragma once
