@@ -4,6 +4,7 @@ idf_component_register(
         "src/imgf_breader.c"
         "src/imgf_decoder.c"
         "src/imgf_dither.c"
+        "src/imgf_encoder.c"
         "src/imgf_err.c"
         "src/imgf_inflate.c"
         "src/imgf_jpegd.c"
