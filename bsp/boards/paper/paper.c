@@ -72,10 +72,8 @@ static esp_err_t enable_power(void) {
     vTaskDelay(pdMS_TO_TICKS(100));
 
     gpio_set_level(PAPER_PIN_MAIN_PWR, 1);
-    vTaskDelay(pdMS_TO_TICKS(100));
     gpio_set_level(PAPER_PIN_EXT_PWR_EN, 1);
     gpio_set_level(PAPER_PIN_EPD_PWR_EN, 1);
-    vTaskDelay(pdMS_TO_TICKS(1000));
     return ESP_OK;
 }
 
