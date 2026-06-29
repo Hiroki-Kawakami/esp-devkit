@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS
         "src/imgf_alloc.c"
+        "src/imgf_async.c"
         "src/imgf_breader.c"
         "src/imgf_decoder.c"
         "src/imgf_dither.c"
@@ -16,4 +17,4 @@ idf_component_register(
         "src/imgf_stream.c"
     INCLUDE_DIRS "inc"
     PRIV_INCLUDE_DIRS "src"
-    PRIV_REQUIRES heap)
+    PRIV_REQUIRES heap freertos)

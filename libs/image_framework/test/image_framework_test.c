@@ -14,6 +14,7 @@
 #include <string.h>
 
 #include "imgf_alloc.h"
+#include "imgf_async.h"
 #include "imgf_decoder.h"
 #include "imgf_dither.h"
 #include "imgf_encoder.h"
@@ -1203,6 +1204,181 @@ static void test_resizer_push_pop_drain(void) {
     imgf_resizer_destroy(r);
 }
 
+/* ---- async ------------------------------------------------------------ */
+
+typedef struct {
+    int n_rows;
+    int sent;
+} async_prod_ctx_t;
+
+static imgf_err_t async_simple_producer(void *user, imgf_async_ring_t *ring) {
+    async_prod_ctx_t *c = (async_prod_ctx_t *)user;
+    size_t row_bytes = imgf_async_ring_row_bytes(ring);
+    uint8_t buf[64];
+    for (int i = 0; i < c->n_rows; i++) {
+        for (size_t k = 0; k < row_bytes; k++) buf[k] = (uint8_t)((i * 7 + k) & 0xFF);
+        if (imgf_async_ring_put(ring, buf) != IMGF_OK) break;
+        c->sent++;
+    }
+    return IMGF_OK;
+}
+
+typedef struct {
+    int n_rows;
+    int got;
+    int ok;
+} async_cons_ctx_t;
+
+static imgf_err_t async_simple_consumer(void *user, imgf_async_ring_t *ring) {
+    async_cons_ctx_t *c = (async_cons_ctx_t *)user;
+    size_t row_bytes = imgf_async_ring_row_bytes(ring);
+    uint8_t buf[64];
+    int rc;
+    c->ok = 1;
+    while ((rc = imgf_async_ring_get(ring, buf)) > 0) {
+        for (size_t k = 0; k < row_bytes; k++) {
+            if (buf[k] != (uint8_t)((c->got * 7 + k) & 0xFF)) c->ok = 0;
+        }
+        c->got++;
+    }
+    return rc < 0 ? IMGF_ERR_DECODE : IMGF_OK;
+}
+
+static void test_async_basic_throughput(void) {
+    imgf_async_opts_t o = {0};
+    o.row_bytes = 16;
+    o.ring_slots = 3;          /* force backpressure: producer must wait */
+    o.producer_core = -1;      /* no pin on device; ignored on host */
+    o.consumer_core = -1;
+    async_prod_ctx_t prod = { .n_rows = 200, .sent = 0 };
+    async_cons_ctx_t cons = { .n_rows = 200, .got = 0, .ok = 0 };
+    CHECK(imgf_async_run(&o,
+                         async_simple_producer, &prod,
+                         async_simple_consumer, &cons) == IMGF_OK);
+    CHECK(prod.sent == 200);
+    CHECK(cons.got  == 200);
+    CHECK(cons.ok   == 1);
+}
+
+static imgf_err_t async_aborting_producer(void *user, imgf_async_ring_t *ring) {
+    (void)ring;
+    *(int *)user = 1;
+    return IMGF_ERR_TRUNCATED;
+}
+
+static imgf_err_t async_draining_consumer(void *user, imgf_async_ring_t *ring) {
+    int *got = (int *)user;
+    uint8_t buf[16];
+    int rc;
+    while ((rc = imgf_async_ring_get(ring, buf)) > 0) (*got)++;
+    return rc < 0 ? IMGF_ERR_DECODE : IMGF_OK;
+}
+
+static void test_async_producer_error_propagates(void) {
+    imgf_async_opts_t o = {0};
+    o.row_bytes = 16;
+    int prod_ran = 0, cons_got = 0;
+    imgf_err_t err = imgf_async_run(&o,
+                                    async_aborting_producer, &prod_ran,
+                                    async_draining_consumer, &cons_got);
+    CHECK(prod_ran == 1);
+    /* Producer's IMGF_ERR_TRUNCATED dominates; consumer may end with 0 or via
+     * abort (== IMGF_ERR_DECODE from our wrapper). The aggregate must be the
+     * producer's error. */
+    CHECK(err == IMGF_ERR_TRUNCATED);
+}
+
+/* End-to-end async pipeline: decoder + resize on producer; copy-through on
+ * consumer. Verifies the ring delivers all resized rows correctly. */
+typedef struct {
+    imgf_decoder_t *dec;
+    imgf_resizer_t *r;
+    int             dst_w;
+    int             dst_h;
+} chain_prod_ctx_t;
+
+static imgf_err_t chain_producer(void *user, imgf_async_ring_t *ring) {
+    chain_prod_ctx_t *c = (chain_prod_ctx_t *)user;
+    int src_w = imgf_decoder_width(c->dec);
+    int src_h = imgf_decoder_height(c->dec);
+    uint8_t *src_row = (uint8_t *)malloc(src_w);
+    uint8_t *dst_row = (uint8_t *)malloc(c->dst_w);
+    if (!src_row || !dst_row) { free(src_row); free(dst_row); return IMGF_ERR_OOM; }
+    for (int sy = 0; sy < src_h; sy++) {
+        if (!imgf_decoder_next_row(c->dec, src_row)) { free(src_row); free(dst_row); return IMGF_ERR_TRUNCATED; }
+        int ready = imgf_resizer_push_row(c->r, src_row);
+        for (int i = 0; i < ready; i++) {
+            imgf_resizer_pop_row(c->r, dst_row);
+            if (imgf_async_ring_put(ring, dst_row) != IMGF_OK) break;
+        }
+    }
+    if (imgf_resizer_finish(c->r) > 0) {
+        imgf_resizer_pop_row(c->r, dst_row);
+        imgf_async_ring_put(ring, dst_row);
+    }
+    free(src_row);
+    free(dst_row);
+    return IMGF_OK;
+}
+
+typedef struct {
+    uint8_t *out;
+    int      dst_w;
+    int      dst_h;
+    int      got;
+} chain_cons_ctx_t;
+
+static imgf_err_t chain_consumer(void *user, imgf_async_ring_t *ring) {
+    chain_cons_ctx_t *c = (chain_cons_ctx_t *)user;
+    int rc;
+    while ((rc = imgf_async_ring_get(ring, c->out + (size_t)c->got * c->dst_w)) > 0) {
+        c->got++;
+        if (c->got > c->dst_h) return IMGF_ERR_DECODE;
+    }
+    return rc < 0 ? IMGF_ERR_DECODE : IMGF_OK;
+}
+
+static void test_async_decoder_resize_chain(void) {
+    imgf_buffer_source_t st;
+    imgf_stream_t s = imgf_stream_from_buffer(&st, kPngGrad16, sizeof kPngGrad16);
+    imgf_decoder_t *d = imgf_pngd_create();
+    CHECK(imgf_decoder_open(d, s, NULL) == IMGF_OK);
+
+    imgf_resize_opts_t ropt = { .target_w = 8, .target_h = 8, .fit = IMGF_FIT_STRETCH };
+    imgf_err_t err;
+    imgf_resizer_t *r = imgf_resizer_create(16, 16, IMGF_PIX_GRAY8, &ropt, &err);
+    CHECK(err == IMGF_OK);
+
+    uint8_t out[8 * 8] = {0};
+    chain_prod_ctx_t prod = { d, r, 8, 8 };
+    chain_cons_ctx_t cons = { out, 8, 8, 0 };
+
+    imgf_async_opts_t aopt = {0};
+    aopt.row_bytes = 8;
+    aopt.ring_slots = 4;
+    CHECK(imgf_async_run(&aopt,
+                         chain_producer, &prod,
+                         chain_consumer, &cons) == IMGF_OK);
+    CHECK(cons.got == 8);
+    /* Compare against the synchronous resize. */
+    uint8_t expected[8 * 8] = {0};
+    {
+        uint8_t full[16 * 16] = {0};
+        imgf_buffer_source_t st2;
+        imgf_stream_t s2 = imgf_stream_from_buffer(&st2, kPngGrad16, sizeof kPngGrad16);
+        imgf_decoder_t *d2 = imgf_pngd_create();
+        CHECK(imgf_decoder_open(d2, s2, NULL) == IMGF_OK);
+        for (int y = 0; y < 16; y++) imgf_decoder_next_row(d2, full + y * 16);
+        imgf_decoder_destroy(d2);
+        CHECK(imgf_resize_buffer(full, 16, 16, 16, IMGF_PIX_GRAY8,
+                                  expected, 8, &ropt) == IMGF_OK);
+    }
+    CHECK(memcmp(out, expected, sizeof out) == 0);
+
+    imgf_resizer_destroy(r);
+    imgf_decoder_destroy(d);
+}
+
 /* ---- main ------------------------------------------------------------- */
 
 int main(void) {
@@ -1252,6 +1428,10 @@ int main(void) {
     test_resize_decoder_png();
     test_resize_decoder_jpeg();
     test_resizer_push_pop_drain();
+
+    test_async_basic_throughput();
+    test_async_producer_error_propagates();
+    test_async_decoder_resize_chain();
 
     test_dither_none_index_n16();
     test_dither_none_gray_n16();

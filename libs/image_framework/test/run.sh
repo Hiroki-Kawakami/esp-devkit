@@ -14,6 +14,6 @@ SRCS=$(find "$ROOT/src" -name '*.c')
 gcc -std=c11 -Wall -Wextra -Werror -O2 \
     -I "$ROOT/inc" -I "$ROOT/src" \
     "$DIR/image_framework_test.c" $SRCS \
-    -lm \
+    -lm -lpthread \
     -o "$OUT/imgf_test"
 "$OUT/imgf_test"
