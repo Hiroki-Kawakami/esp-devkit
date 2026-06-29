@@ -72,17 +72,7 @@ esp_err_t bsp_init(const bsp_config_t *config) {
     if (i2c_bus && (err = rtc_init(i2c_bus)) != ESP_OK) {
         ESP_LOGW(TAG, "rtc unavailable: %s", esp_err_to_name(err));
     }
-    return ESP_OK;
-}
 
-void bsp_restart(void) {
-    if (bsp_rtc_timer_start(200, false) == ESP_OK) {
-        bsp_power_off();
-    }
-    esp_restart();
-}
-
-esp_err_t bsp_power_off(void) {
     const gpio_config_t out = {
         .pin_bit_mask = 1ULL << PAPER_S3_PIN_PWROFF_PULSE,
         .mode         = GPIO_MODE_OUTPUT,
@@ -91,9 +81,25 @@ esp_err_t bsp_power_off(void) {
         .intr_type    = GPIO_INTR_DISABLE,
     };
     gpio_config(&out);
-
-    gpio_set_level(PAPER_S3_PIN_PWROFF_PULSE, 1);
-    vTaskDelay(pdMS_TO_TICKS(500));
     gpio_set_level(PAPER_S3_PIN_PWROFF_PULSE, 0);
+
+    return ESP_OK;
+}
+
+void bsp_restart(void) {
+    esp_restart();
+}
+
+esp_err_t bsp_hw_reset(void) {
+    esp_err_t err = bsp_rtc_timer_start(200, false);
+    if (err != ESP_OK) return err;
+    return bsp_power_off();
+}
+
+esp_err_t bsp_power_off(void) {
+    gpio_set_level(PAPER_S3_PIN_PWROFF_PULSE, 1);
+    vTaskDelay(pdMS_TO_TICKS(50));
+    gpio_set_level(PAPER_S3_PIN_PWROFF_PULSE, 0);
+    vTaskDelay(pdMS_TO_TICKS(500));
     return ESP_FAIL;
 }
