@@ -21,7 +21,17 @@ set(BSP_COMMON_SRCS
     "src/bsp_rtc.c")
 
 if(NOT DEFINED BSP_BOARD)
-    set(BSP_BOARD paper_s3)
+    # IDF's requirement-extraction phase runs this file in script mode where the
+    # build root's `set(BSP_BOARD ... CACHE STRING)` is not visible, so derive it
+    # from IDF_TARGET (which IDF does propagate). This also lets a single-board
+    # target build with no BSP_BOARD set in the build root.
+    if(IDF_TARGET STREQUAL "esp32p4")
+        set(BSP_BOARD tab5)
+    elseif(IDF_TARGET STREQUAL "esp32")
+        set(BSP_BOARD paper)
+    else()
+        set(BSP_BOARD paper_s3)
+    endif()
 endif()
 
 # board.cmake fills BOARD_DEVICE_SRCS / BOARD_DEVICE_PRIV_INCLUDE_DIRS /

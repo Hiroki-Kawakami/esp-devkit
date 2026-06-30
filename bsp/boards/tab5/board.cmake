@@ -1,0 +1,16 @@
+# M5Stack Tab5 — ESP32-P4 + ILI9881C MIPI-DSI LCD + GT911 I2C touch + PI4IOE5V6408 IO expanders.
+# Consumed by bsp/CMakeLists.txt when BSP_BOARD == tab5. Paths are relative to
+# the bsp component directory.
+
+set(BOARD_DEVICE_SRCS
+    "boards/tab5/tab5.c"
+    "boards/tab5/tab5_panel.c"
+    "devices/ili9881c/ili9881c.c"
+    "devices/gt911/gt911.c"
+    "devices/pi4io/pi4io.c")
+set(BOARD_DEVICE_PRIV_INCLUDE_DIRS
+    "devices" "devices/ili9881c" "devices/gt911" "devices/pi4io")
+set(BOARD_DEVICE_PRIV_REQUIRES
+    driver esp_lcd)
+
+set(BOARD_SIM_SRCS "boards/tab5/tab5_sim.c")
