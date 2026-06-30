@@ -176,11 +176,13 @@ esp_err_t ili9881c_lcd_create(const ili9881c_config_t *config, bsp_display_t **o
     ret = esp_lcd_new_panel_io_dbi(state->mipi_dsi_bus, &dbi_config, &state->io);
     if (ret != ESP_OK) goto err_dsi_bus;
 
+    lcd_color_format_t color_fmt = rgb888 ? LCD_COLOR_FMT_RGB888 : LCD_COLOR_FMT_RGB565;
     esp_lcd_dpi_panel_config_t dpi_config = {
         .virtual_channel    = 0,
         .dpi_clk_src        = MIPI_DSI_DPI_CLK_SRC_DEFAULT,
         .dpi_clock_freq_mhz = 75,
-        .pixel_format       = rgb888 ? LCD_COLOR_PIXEL_FORMAT_RGB888 : LCD_COLOR_PIXEL_FORMAT_RGB565,
+        .in_color_format    = color_fmt,
+        .out_color_format   = color_fmt,
         .num_fbs            = state->fb_num,
         .video_timing = {
             .h_size            = config->size.width,
@@ -192,10 +194,11 @@ esp_err_t ili9881c_lcd_create(const ili9881c_config_t *config, bsp_display_t **o
             .vsync_back_porch  = 20,
             .vsync_front_porch = 20,
         },
-        .flags = { .use_dma2d = 1 },
     };
     ret = esp_lcd_new_panel_dpi(state->mipi_dsi_bus, &dpi_config, &state->panel);
     if (ret != ESP_OK) goto err_io;
+    ret = esp_lcd_dpi_panel_enable_dma2d(state->panel);
+    if (ret != ESP_OK) goto err_panel;
 
     /* Chip-side init must run before the DPI video stream starts. */
     ret = send_init_sequence(state->io, rgb888);
