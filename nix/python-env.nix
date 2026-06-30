@@ -17,10 +17,10 @@ let
 
   esptool = mkPypiPkg {
     pname = "esptool";
-    version = "4.8.1";
-    url = "https://files.pythonhosted.org/packages/5c/6b/3ce9bb7f36bdef3d6ae71646a1d3b7d59826a478f3ed8a783a93a2f8f537/esptool-4.8.1.tar.gz";
-    hash = "sha256-3E7ya2WeGo3LAZFHwOptlJgLNN6Z++CRIceUHIslRTE=";
-    deps = with py; [ bitstring cryptography ecdsa pyserial reedsolo pyyaml intelhex argcomplete ];
+    version = "5.3.1";
+    url = "https://files.pythonhosted.org/packages/76/ac/d2016cf6b3709d0e0166f45f84bc6e2d717757b5f59020ccb34de08d1b9b/esptool-5.3.1.tar.gz";
+    hash = "sha256-EleB825qLQjEhFJKRfNAaUZ1Note7q2dDLIbIDSpHZg=";
+    deps = with py; [ bitstring cryptography pyserial reedsolo pyyaml intelhex rich-click click ];
   };
 
   esp-idf-panic-decoder = mkPypiPkg {
@@ -33,18 +33,18 @@ let
 
   esp-coredump = mkPypiPkg {
     pname = "esp-coredump";
-    version = "1.15.0";
-    url = "https://files.pythonhosted.org/packages/e2/4e/4ba12832cceda0ca8203f62d7c50b224c47ead4f50da0d48c4a421e52ac6/esp_coredump-1.15.0.tar.gz";
-    hash = "sha256-X/pAVmB9rMbVFL3oDTato3KTGiiyA+n1suVwOm7qAs4=";
+    version = "1.16.0";
+    url = "https://files.pythonhosted.org/packages/d0/9c/17e2134e8573837af47631d4dd27ba3001aa557dfe63a890df4aa2dad006/esp_coredump-1.16.0.tar.gz";
+    hash = "sha256-1Jog+q8+sXh4/7NRtYHrfjLUeTPU0KFIkAxck2HoNUs=";
     deps = with py; [ construct pygdbmi ] ++ [ esptool ];
   };
 
   esp-idf-kconfig = mkPypiPkg {
     pname = "esp-idf-kconfig";
-    version = "2.5.4";
-    url = "https://files.pythonhosted.org/packages/d5/67/65dea4c47a1c395b33558ddf6e175970a949b0278c9279494ef3c927d78c/esp_idf_kconfig-2.5.4.tar.gz";
-    hash = "sha256-3UH3QyqDiC3ppHc9PLOI+a7zGscXixYjL9FnyNz1VEY=";
-    deps = with py; [ ];
+    version = "3.11.1";
+    url = "https://files.pythonhosted.org/packages/ea/d2/d8916259ee827aeea9df1765d7b9de66c406032fceefb4701330717891e5/esp_idf_kconfig-3.11.1.tar.gz";
+    hash = "sha256-AYLN+ZSTSbRdLeDwhWtxtkq9I0S1E6JBq7KcFHyV7BA=";
+    deps = with py; [ rich pyparsing textual ];
   };
 
   esp-idf-monitor = mkPypiPkg {
@@ -55,14 +55,6 @@ let
     deps = with py; [ pyserial pyelftools ] ++ [ esp-coredump esp-idf-panic-decoder ];
   };
 
-  esp-idf-size = mkPypiPkg {
-    pname = "esp-idf-size";
-    version = "1.7.1";
-    url = "https://files.pythonhosted.org/packages/f7/a0/c8b13d7b27daec1e88a8d6c5f8f3cf6f4eae795c70f19fb70c4bc37ce943/esp_idf_size-1.7.1.tar.gz";
-    hash = "sha256-labUYKJukzADWq8eHCXM83FgVJdWIUMgzMqEBNl9zBs=";
-    deps = with py; [ pyyaml rich ];
-  };
-
   esp-idf-nvs-partition-gen = mkPypiPkg {
     pname = "esp-idf-nvs-partition-gen";
     version = "0.1.9";
@@ -71,13 +63,21 @@ let
     deps = with py; [ cryptography ];
   };
 
+  esp-idf-diag = mkPypiPkg {
+    pname = "esp-idf-diag";
+    version = "0.2.0";
+    url = "https://files.pythonhosted.org/packages/5d/e8/ebb81a1a297dfc2c1d94dce2a412b1e956049baed8ddcaf0d61cc26a2e7a/esp_idf_diag-0.2.0.tar.gz";
+    hash = "sha256-g6/6mSLnq56eEWg/NQc1b1kDhfc1pDUyRC0tkwGk6KA=";
+    deps = with py; [ pyyaml rich ];
+  };
+
   idf-component-manager = mkPypiPkg {
     pname = "idf-component-manager";
-    version = "2.2.2";
-    url = "https://files.pythonhosted.org/packages/0e/06/792f79a71a9302234870dc206e040bdfc73c4015310c74637354809d3402/idf_component_manager-2.2.2.tar.gz";
-    hash = "sha256-HKOJIThQ05khSBhDzVjX+cF2hWrBivNZXmQZWBpIGvc=";
+    version = "3.0.3";
+    url = "https://files.pythonhosted.org/packages/86/4b/4fd210417a4c16ec3da56d4143ffe3503fe77f6791ee299f02114d708340/idf_component_manager-3.0.3.tar.gz";
+    hash = "sha256-UU8T9fx/Ssl0+wtD0wQq7Y9zjxkhnaXUDPZ/ibrVX0c=";
     deps = with py; [
-      click colorama pyparsing ruamel-yaml requests requests-file requests-toolbelt
+      psutil click colorama pyparsing ruamel-yaml requests requests-file requests-toolbelt
       tqdm jsonref pydantic pydantic-core pydantic-settings typing-extensions truststore
     ];
   };
@@ -99,14 +99,14 @@ let
   };
 
   custom = {
-    inherit esptool esp-coredump esp-idf-kconfig esp-idf-monitor esp-idf-size
-            esp-idf-nvs-partition-gen idf-component-manager esp-idf-panic-decoder
-            pyclang tree-sitter-c;
+    inherit esptool esp-coredump esp-idf-kconfig esp-idf-monitor
+            esp-idf-nvs-partition-gen esp-idf-diag idf-component-manager
+            esp-idf-panic-decoder pyclang tree-sitter-c;
   };
 
   pythonEnv = python.withPackages (ps: with ps; [
     setuptools packaging click pyserial cryptography pyparsing pyelftools
-    construct rich psutil freertos-gdb
+    construct rich rich-click psutil freertos-gdb tree-sitter esp-idf-size
   ] ++ (builtins.attrValues custom));
 in {
   inherit pythonEnv;
