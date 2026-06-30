@@ -17,6 +17,6 @@ set(BOARD_DEVICE_SRCS
 set(BOARD_DEVICE_PRIV_INCLUDE_DIRS
     "devices" "devices/it8951e" "devices/gt911" "devices/bm8563")
 set(BOARD_DEVICE_PRIV_REQUIRES
-    driver esp_timer nvs_flash fatfs sdmmc esp_driver_sdmmc esp_driver_sdspi)
+    driver esp_driver_i2c esp_timer nvs_flash vfs fatfs sdmmc esp_driver_sdmmc esp_driver_sdspi)
 
 set(BOARD_SIM_SRCS "boards/paper/paper_sim.c")

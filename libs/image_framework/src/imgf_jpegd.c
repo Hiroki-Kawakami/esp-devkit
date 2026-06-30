@@ -441,7 +441,7 @@ static int getbit(jpegd_t *d) { return getbits(d, 1); }
 
 static int receive_extend(jpegd_t *d, int s) {
     int v = getbits(d, s);
-    if (v < (1 << (s - 1))) v += (-1 << s) + 1;
+    if (v < (1 << (s - 1))) v -= (1 << s) - 1;
     return v;
 }
 

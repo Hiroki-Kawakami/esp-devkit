@@ -16,6 +16,6 @@ set(BOARD_DEVICE_SRCS
 set(BOARD_DEVICE_PRIV_INCLUDE_DIRS
     "devices" "devices/ed047tc1" "devices/gt911" "devices/bm8563" "driver")
 set(BOARD_DEVICE_PRIV_REQUIRES
-    driver esp_lcd nvs_flash bt fatfs sdmmc esp_driver_sdmmc esp_driver_sdspi)
+    driver esp_lcd nvs_flash bt vfs fatfs sdmmc esp_driver_sdmmc esp_driver_sdspi)
 
 set(BOARD_SIM_SRCS "boards/paper_s3/paper_s3_sim.c")

@@ -18,6 +18,8 @@
 #include "bm8563.h"
 #include "paper_config.h"
 #include "paper_panel.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 static const char *TAG = "paper";
 

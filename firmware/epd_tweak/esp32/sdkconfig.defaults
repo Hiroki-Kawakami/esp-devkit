@@ -1,10 +1,10 @@
-# Mirrors NameCardKnot/esp32/sdkconfig.defaults; we drop the custom partition
-# table (no MyCard partition) and unused LVGL features (no fonts/QR/decoders).
+# This file was generated using idf.py save-defconfig or menuconfig [D] key. It can be edited manually.
+# Espressif IoT Development Framework (ESP-IDF) 6.0.2 Project Minimal Configuration
+#
 CONFIG_BOOTLOADER_SKIP_VALIDATE_ON_POWER_ON=y
 CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
 CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
-CONFIG_SPI_MASTER_IN_IRAM=y
 CONFIG_ESP32_REV_MIN_3=y
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_SPEED_80M=y
@@ -16,7 +16,6 @@ CONFIG_LV_USE_CLIB_MALLOC=y
 CONFIG_LV_USE_CLIB_STRING=y
 CONFIG_LV_USE_CLIB_SPRINTF=y
 CONFIG_LV_OS_FREERTOS=y
-# ui_framework's modal/navigation widgets reference these fonts unconditionally.
 CONFIG_LV_FONT_MONTSERRAT_24=y
 CONFIG_LV_FONT_MONTSERRAT_32=y
 CONFIG_LV_USE_THEME_DEFAULT=n
