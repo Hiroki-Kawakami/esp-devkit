@@ -34,6 +34,7 @@ static inline int bsp_rect_max_y(bsp_rect_t rect) { return rect.origin.y + rect.
 typedef enum {
     BSP_DISPLAY_TYPE_NONE,
     BSP_DISPLAY_TYPE_SPI,
+    BSP_DISPLAY_TYPE_RGB,          /* RGB parallel (esp_lcd_new_rgb_panel) */
     BSP_DISPLAY_TYPE_MIPI_DSI,
     BSP_DISPLAY_TYPE_SPI_EPD,
     BSP_DISPLAY_TYPE_DIRECT_EPD,

@@ -2,8 +2,8 @@
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 Hiroki Kawakami
  *
- * M5Stack Tab5 simulator board: the host-side counterpart of tab5.c. Brings up
- * the shared SDL backend in MIPI mode with the Tab5's native portrait geometry.
+ * ESP32-S31-Korvo simulator board: shared SDL backend in RGB mode with the
+ * Korvo's native 800x480 landscape geometry.
  */
 
 #include "bsp.h"
@@ -12,17 +12,17 @@
 #include "sdl_panel.h"
 #include <stdlib.h>
 
-#define TAB5_PANEL_W 720
-#define TAB5_PANEL_H 1280
+#define S31_LCD_W 800
+#define S31_LCD_H 480
 
 esp_err_t bsp_init(const bsp_config_t *config) {
     (void)config;
     sdl_panel_config_t sdl_config = {
-        .title     = "M5Stack Tab5",
-        .type      = BSP_DISPLAY_TYPE_MIPI_DSI,
-        .size      = { TAB5_PANEL_W, TAB5_PANEL_H },
-        .format    = BSP_PIXEL_FORMAT_RGB565,
-        .scale_div = 2,
+        .title       = "ESP32-S31-Korvo",
+        .type        = BSP_DISPLAY_TYPE_RGB,
+        .size        = { S31_LCD_W, S31_LCD_H },
+        .format      = BSP_PIXEL_FORMAT_RGB565,
+        .scale_div   = 1,
         .framebuffer = { .fb_num = 2 },
     };
     bsp_display_t *display = NULL;
@@ -34,6 +34,6 @@ esp_err_t bsp_init(const bsp_config_t *config) {
     return ESP_OK;
 }
 
-void bsp_restart(void)   { exit(0); }
+void bsp_restart(void)        { exit(0); }
 esp_err_t bsp_hw_reset(void)  { exit(0); }
 esp_err_t bsp_power_off(void) { exit(0); }

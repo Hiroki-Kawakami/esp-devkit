@@ -9,8 +9,9 @@
  *
  * One backend mimics three panel families through the same bsp_display vtable,
  * selected by sdl_panel_config_t::type:
- *   - MIPI_DSI: host framebuffers (get_framebuffers + flush); flush swaps the
- *     presented buffer with no copy, matching the SoC-framebuffer model.
+ *   - MIPI_DSI / RGB: host framebuffers (get_framebuffers + flush); flush swaps
+ *     the presented buffer with no copy, matching the SoC-framebuffer model.
+ *     Both share the .framebuffer config variant.
  *   - SPI:      no host framebuffers; draw_bitmap blits straight to the glass
  *     and the region appears immediately.
  *   - EPD:      draw_bitmap writes GRAM; the glass updates only when the
@@ -42,7 +43,7 @@ typedef struct {
     union {
         struct {
             uint8_t        fb_num;    /*!< number of host framebuffers (1 or 2) */
-        } mipi_dsi;                   /*!< type == BSP_DISPLAY_TYPE_MIPI_DSI */
+        } framebuffer;                /*!< type == MIPI_DSI or RGB */
         struct {
             bsp_epd_mode_t mode;      /*!< initial persistent EPD mode */
         } epd;                        /*!< type == BSP_DISPLAY_TYPE_*_EPD */

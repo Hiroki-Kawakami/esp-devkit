@@ -49,6 +49,7 @@
             pkgs.SDL2
             pkgs.libjpeg
             pkgs.zlib
+            pkgs.pkg-config
           ];
           shellHook = ''
             export IDF_PATH=${idfStore}

@@ -262,7 +262,8 @@ static esp_err_t display_set_brightness(bsp_display_t *self, int brightness) {
 static esp_err_t display_draw_bitmap(bsp_display_t *self, bsp_rect_t area, const void *pixels,
                                      bsp_rotation_t rotation) {
     (void)self;
-    uint8_t *target = (s_type == BSP_DISPLAY_TYPE_MIPI_DSI) ? s_fb[0] : s_glass;
+    const bool has_fb = (s_type == BSP_DISPLAY_TYPE_MIPI_DSI || s_type == BSP_DISPLAY_TYPE_RGB);
+    uint8_t *target = has_fb ? s_fb[0] : s_glass;
     if (!target) return ESP_ERR_INVALID_STATE;
     if (rotation == BSP_ROTATION_0) blit_rect(target, area, pixels);
     else bsp_blit_rotated(target, s_panel_w, s_bpp, area, pixels, rotation);
@@ -529,8 +530,9 @@ esp_err_t sdl_panel_create(const sdl_panel_config_t *config,
     s_display.refresh          = NULL;
 
     switch (config->type) {
+    case BSP_DISPLAY_TYPE_RGB:
     case BSP_DISPLAY_TYPE_MIPI_DSI: {
-        int fb_num = config->mipi_dsi.fb_num ? config->mipi_dsi.fb_num : 1;
+        int fb_num = config->framebuffer.fb_num ? config->framebuffer.fb_num : 1;
         if (fb_num > SDL_PANEL_MAX_FB) fb_num = SDL_PANEL_MAX_FB;
         s_fb_num = fb_num;
         for (int i = 0; i < fb_num; i++) {
