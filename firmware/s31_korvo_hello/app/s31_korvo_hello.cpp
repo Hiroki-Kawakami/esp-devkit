@@ -2,10 +2,12 @@
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 Hiroki Kawakami
  *
- * Minimal ESP32-S31-Korvo sample: brings up the BSP + LVGL, shows a title and
- * a button that counts taps. Touch is wired both ways so the same app works on
- * the device (GT1151 reader task pushes samples via bsp_touch_set_event_cb)
- * and in the simulator (mouse pull via bsp_touch_read).
+ * Minimal ESP32-S31-Korvo sample: brings up the BSP + LVGL, shows a title and a
+ * button that counts taps. Touch is delivered by the shared bsp_touch reader
+ * task (device: GT1151 INT-driven; simulator: sdl_panel + bsp_touch_notify), so
+ * one push callback drives LVGL on both targets. The indev runs in
+ * LV_INDEV_MODE_EVENT with no polling timer -- the push callback marshals a
+ * lv_indev_read onto the LVGL thread when a fresh sample arrives.
  */
 
 #include "s31_korvo_hello.hpp"
@@ -16,10 +18,8 @@
 
 static const char *TAG = "s31_korvo_hello";
 
-/* Latched touch state shared between the touch source (push callback on the
- * GT1151 reader task, or pull inside indev_read on the sim) and LVGL's read_cb.
- * Word-sized volatile reads/writes are atomic on ESP32/RISC-V; a single-finger
- * indev only cares about the most recent sample, so no lock is needed. */
+static lv_indev_t *s_indev = nullptr;
+
 static struct {
     volatile int  x;
     volatile int  y;
@@ -34,20 +34,10 @@ static void on_touch_push(const bsp_touch_point_t *pts, int count, void *) {
     } else {
         s_touch.pressed = false;
     }
+    if (s_indev) lv_async_call([]{ lv_indev_read(s_indev); });
 }
 
 static void indev_read(lv_indev_t *, lv_indev_data_t *data) {
-    /* Simulator uses pull; bsp_touch_read on device with a reader task returns
-     * 0, so the pressed state stays sourced from the push callback there. */
-    bsp_touch_point_t pt;
-    int n = bsp_touch_read(&pt, 1);
-    if (n > 0) {
-        s_touch.x = pt.x;
-        s_touch.y = pt.y;
-        s_touch.pressed = true;
-    } else if (n == 0 && !s_touch.pressed) {
-        /* pull-mode release keeps pressed = false; push-mode kept its own state above */
-    }
     data->point.x = s_touch.x;
     data->point.y = s_touch.y;
     data->state   = s_touch.pressed ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
@@ -85,10 +75,11 @@ static void lvgl_init() {
     });
     lv_display_set_default(disp);
 
-    lv_indev_t *indev = lv_indev_create();
-    lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
-    lv_indev_set_read_cb(indev, indev_read);
-    lv_indev_set_display(indev, disp);
+    s_indev = lv_indev_create();
+    lv_indev_set_type(s_indev, LV_INDEV_TYPE_POINTER);
+    lv_indev_set_read_cb(s_indev, indev_read);
+    lv_indev_set_display(s_indev, disp);
+    lv_indev_set_mode(s_indev, LV_INDEV_MODE_EVENT);
 }
 
 static void build_hello_screen() {
@@ -130,8 +121,6 @@ static void build_hello_screen() {
 
 void app_entry() {
     bsp_config_t bsp_config = {};
-    /* Spin up the GT1151 reader task so touches are pushed to on_touch_push
-     * (has_task -> bsp_touch_read returns 0 on device). Values match tab5. */
     bsp_config.touch.task_priority = 6;
     bsp_config.touch.task_affinity = 1;
     bsp_init(&bsp_config);

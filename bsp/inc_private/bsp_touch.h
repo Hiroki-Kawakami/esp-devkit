@@ -60,6 +60,11 @@ esp_err_t bsp_touch_start_reader(uint8_t priority, int8_t affinity,
  * this to gate its session state machine. */
 bool bsp_touch_reader_running(void);
 
+/* Simulate an INT edge: mark int_pending and wake the reader task. The device
+ * INT ISR does this; the simulator's SDL touch provider calls it from the
+ * input path so host + device share the same reader-task-driven flow. */
+void bsp_touch_notify(void);
+
 /* Provider upcall: dispatch display-space contacts to bsp_touch_set_event_cb and
  * cache them for bsp_touch_read. Called by the reader task, the simulator, and
  * chip drivers on a sync poll. count 0 = all released. */

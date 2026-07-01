@@ -78,12 +78,12 @@ static bool s_dirty;
 static bsp_display_t s_display;
 static bsp_touch_t   s_touch;
 
-/* Touch snapshot in PANEL coordinates. touch_read runs on a background task (not
- * the LVGL/main thread), so it must not call SDL (the event pump + mouse query
- * are main-thread-only on macOS). Instead the MAIN thread samples the source and
- * updates this snapshot under s_touch_mtx: sdl_panel_pump_input() reads the mouse
- * (interactive, id 0) and the harness writes it via sdl_panel_inject_* (any id).
- * touch_read just copies it. Multiple ids are held at once for multi-touch. */
+/* Touch snapshot in PANEL coordinates, with the SDL provider acting like a real
+ * touch chip: setters (main-thread mouse in pump_input, harness thread in
+ * inject_*) update s_touch_pts under s_touch_mtx and mark s_touch_dirty +
+ * bsp_touch_notify() -- the standin for the device INT. The common layer's
+ * reader task then calls touch_poll() to drain the snapshot on its next tick,
+ * so host + device share the exact same reader-task-driven flow. */
 #define SDL_PANEL_MAX_TOUCH 10
 static SDL_mutex *s_touch_mtx;
 static struct {
@@ -91,6 +91,7 @@ static struct {
     int  id;
     int  x, y;
 } s_touch_pts[SDL_PANEL_MAX_TOUCH];
+static bool s_touch_dirty;
 
 static Uint32 sdl_texture_format(bsp_pixel_format_t fmt) {
     switch (fmt) {
@@ -191,9 +192,11 @@ static void window_to_panel(int wx, int wy, int *px, int *py) {
 }
 
 /* Update the snapshot slot for one finger id under the lock (any setter, any
- * thread). pressed=true sets/updates the contact (allocating a free slot for a
- * new id); pressed=false releases the id's slot. */
+ * thread). Only real state changes mark s_touch_dirty + fire bsp_touch_notify()
+ * -- pump_input calls this every frame regardless of state, so an unchanged
+ * held press or an idle no-touch must not wake the reader task. */
 static void touch_set_point(int id, bool pressed, int x, int y) {
+    bool changed = false;
     if (s_touch_mtx) SDL_LockMutex(s_touch_mtx);
     int found = -1, free_slot = -1;
     for (int i = 0; i < SDL_PANEL_MAX_TOUCH; i++) {
@@ -203,26 +206,24 @@ static void touch_set_point(int id, bool pressed, int x, int y) {
     if (pressed) {
         int slot = found >= 0 ? found : free_slot;
         if (slot >= 0) {
-            s_touch_pts[slot].active = true;
-            s_touch_pts[slot].id = id;
-            s_touch_pts[slot].x = x;
-            s_touch_pts[slot].y = y;
+            if (!s_touch_pts[slot].active ||
+                s_touch_pts[slot].x != x || s_touch_pts[slot].y != y ||
+                s_touch_pts[slot].id != id) {
+                s_touch_pts[slot].active = true;
+                s_touch_pts[slot].id = id;
+                s_touch_pts[slot].x = x;
+                s_touch_pts[slot].y = y;
+                changed = true;
+            }
         }
     } else if (found >= 0) {
         s_touch_pts[found].active = false;
+        changed = true;
     }
-    bsp_touch_point_t pts[SDL_PANEL_MAX_TOUCH];
-    int n = 0;
-    for (int i = 0; i < SDL_PANEL_MAX_TOUCH; i++) {
-        if (!s_touch_pts[i].active) continue;
-        pts[n].x = s_touch_pts[i].x;
-        pts[n].y = s_touch_pts[i].y;
-        pts[n].id = s_touch_pts[i].id;
-        n++;
-    }
+    if (changed) s_touch_dirty = true;
     if (s_touch_mtx) SDL_UnlockMutex(s_touch_mtx);
 
-    bsp_touch_emit_event(pts, n);   /* mirror the device reader task's push path */
+    if (changed) bsp_touch_notify();
 }
 
 /* Blit a rectangle of source pixels into a panel-sized destination buffer at the
@@ -332,10 +333,37 @@ static esp_err_t display_refresh(bsp_display_t *self, bsp_rect_t area, bsp_epd_m
 
 /* MARK: bsp_touch vtable
  *
- * Host has no INT and no reader task — sdl_panel pushes each contact change
- * straight into the common layer's snapshot via bsp_touch_emit_event() (see
- * touch_set_point below). That leaves this vtable with just a deinit stub; the
- * common layer's bsp_touch_read serves reads out of that snapshot. */
+ * Behavior parity with a real chip: touch_set_point marks s_touch_dirty +
+ * fires bsp_touch_notify() (the sim's INT stand-in); the common layer's reader
+ * task calls touch_poll() to drain the snapshot on its next tick, taking the
+ * standard release-settle path. Panel coords are already in display space, so
+ * the base struct's orientation fields stay zeroed (identity transform). */
+
+static esp_err_t touch_poll(bsp_touch_t *self,
+                            bsp_touch_raw_point_t *out, uint8_t max,
+                            uint8_t *count, bool *fresh, bool *keep_polling) {
+    (void)self;
+    *count = 0;
+    *fresh = false;
+    *keep_polling = false;
+
+    if (s_touch_mtx) SDL_LockMutex(s_touch_mtx);
+    if (s_touch_dirty) {
+        s_touch_dirty = false;
+        uint8_t n = 0;
+        for (int i = 0; i < SDL_PANEL_MAX_TOUCH && n < max; i++) {
+            if (!s_touch_pts[i].active) continue;
+            out[n].x  = (uint16_t)s_touch_pts[i].x;
+            out[n].y  = (uint16_t)s_touch_pts[i].y;
+            out[n].id = (uint8_t)s_touch_pts[i].id;
+            n++;
+        }
+        *count = n;
+        *fresh = true;
+    }
+    if (s_touch_mtx) SDL_UnlockMutex(s_touch_mtx);
+    return ESP_OK;
+}
 
 static esp_err_t touch_deinit(bsp_touch_t *self) {
     (void)self;
@@ -556,9 +584,12 @@ esp_err_t sdl_panel_create(const sdl_panel_config_t *config,
         SDL_RenderPresent(s_renderer);
     }
 
-    s_touch.poll   = NULL;   /* push-only from touch_set_point */
-    s_touch.deinit = touch_deinit;
-    s_touch.int_io = -1;
+    s_touch.poll       = touch_poll;
+    s_touch.deinit     = touch_deinit;
+    s_touch.int_io     = -1;   /* no ISR; touch_set_point fires bsp_touch_notify() */
+    s_touch.width      = (uint16_t)s_panel_w;
+    s_touch.height     = (uint16_t)s_panel_h;
+    s_touch.max_points = SDL_PANEL_MAX_TOUCH;
 
     /* Self-register with the sim harness: it drives these without ever knowing
      * about sdl_panel (input injection + frame capture are this backend's job). */

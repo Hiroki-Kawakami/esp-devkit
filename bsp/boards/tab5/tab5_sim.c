@@ -16,7 +16,6 @@
 #define TAB5_PANEL_H 1280
 
 esp_err_t bsp_init(const bsp_config_t *config) {
-    (void)config;
     sdl_panel_config_t sdl_config = {
         .title     = "M5Stack Tab5",
         .type      = BSP_DISPLAY_TYPE_MIPI_DSI,
@@ -31,6 +30,8 @@ esp_err_t bsp_init(const bsp_config_t *config) {
     if (err != ESP_OK) return err;
     bsp_display_set_active(display);
     bsp_touch_set_active(touch);
+    bsp_touch_start_reader(config->touch.task_priority, config->touch.task_affinity,
+                           config->touch.poll_interval_ms, 0);
     return ESP_OK;
 }
 
