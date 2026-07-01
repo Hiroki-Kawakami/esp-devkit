@@ -33,11 +33,6 @@ static esp_err_t touch_init(const bsp_config_t *config, i2c_master_bus_handle_t 
         .mirror_y    = true,
         .width       = 960,
         .height      = 540,
-        .acquire = {
-            .task_priority    = config->touch.task_priority,
-            .task_affinity    = config->touch.task_affinity,
-            .poll_interval_ms = config->touch.poll_interval_ms,
-        },
         /* HotKnot SNR tuning for this battery board: lock the link to 150K and
          * raise the gains so SMPS noise doesn't eat the proximity margin. */
         .hotknot = {
@@ -55,8 +50,10 @@ static esp_err_t touch_init(const bsp_config_t *config, i2c_master_bus_handle_t 
         return err;
     }
     bsp_touch_set_active(touch);
+    bsp_touch_start_reader(config->touch.task_priority, config->touch.task_affinity,
+                           config->touch.poll_interval_ms, 0);
 
-    /* HotKnot needs the touch reader task; non-fatal if unavailable. */
+    /* HotKnot needs the shared touch reader task; non-fatal if unavailable. */
     bsp_hotknot_t *hk = NULL;
     if (gt911_hotknot_create(&hk) == ESP_OK) bsp_hotknot_set_active(hk);
     return ESP_OK;

@@ -3,15 +3,17 @@
  * Copyright (c) 2026 Hiroki Kawakami
  *
  * GT911 capacitive touch controller driver (I2C, polling). Produces a
- * bsp_touch_t provider for the common touch layer (src/bsp_touch.c).
+ * bsp_touch_t provider for the common touch layer (src/bsp_touch.c), which owns
+ * the reader task, INT ISR, orientation transform, and the release settle
+ * state machine -- start it with bsp_touch_start_reader() after set_active.
  *
- * The driver does NOT own the I2C bus — the board initializes the bus via
+ * The driver does NOT own the I2C bus -- the board initializes the bus via
  * i2c_new_master_bus() and passes the handle. The driver attaches itself with
  * i2c_master_bus_add_device(), so other devices on the same bus stay usable.
  *
- * Ported from the m5paper-bsp reference driver, trimmed to the touch path
- * (no HotKnot). Raw chip coordinates are mapped into display space via the
- * swap_xy / mirror_* config so bsp_touch_read() reports display pixels.
+ * Ported from the m5paper-bsp reference driver. Raw chip coordinates are
+ * reported through bsp_touch_raw_point_t; the common layer maps them into
+ * display space via swap_xy / mirror_* so bsp_touch_read() reports display pixels.
  */
 
 #pragma once
@@ -33,17 +35,6 @@ extern "C" {
 
 /* GT911 reports up to 5 simultaneous contacts. */
 #define GT911_MAX_TOUCH_POINTS    5
-
-/* Optional reader task. task_priority > 0 spawns a task that samples the chip and
- * pushes each sample to bsp_touch_set_event_cb() in display space; zeroed -> no
- * task (touch is read synchronously via bsp_touch_read). HotKnot also needs this
- * task — without it the session state machine has nothing to drive it. */
-typedef struct {
-    int      task_priority;     /* > 0 to spawn the reader task                   */
-    int      task_affinity;     /* core to pin to; < 0 -> no affinity             */
-    uint32_t task_stack;        /* 0 -> default                                   */
-    uint32_t poll_interval_ms;  /* INT-wait fallback period; 0 -> default         */
-} gt911_acquire_config_t;
 
 /* HotKnot SNR tuning applied to chip RAM at session start; each field -1 leaves
  * the chip default. Battery boards lock the frequency and raise gains for SMPS noise. */
@@ -72,12 +63,13 @@ typedef struct {
     uint16_t                width;       /* display width  (for mirror_x clamp)  */
     uint16_t                height;      /* display height (for mirror_y clamp)  */
 
-    gt911_acquire_config_t  acquire;     /* sampling/delivery policy (see above) */
     gt911_hotknot_tuning_t  hotknot;     /* HotKnot SNR tuning; all -1 to skip   */
 } gt911_config_t;
 
 /* Reset + probe the chip, attach to the bus, and return a bsp_touch_t provider.
- * Register it with bsp_touch_set_active(). */
+ * Register it with bsp_touch_set_active() and then call bsp_touch_start_reader()
+ * to spawn the shared reader task (HotKnot needs it -- without one its session
+ * state machine has nothing to drive it). */
 esp_err_t gt911_touch_create(const gt911_config_t *config, bsp_touch_t **out_touch);
 
 #ifdef __cplusplus

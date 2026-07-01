@@ -2,10 +2,14 @@
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 Hiroki Kawakami
  *
- * GT1151 touch driver -- see gt1151.h. Structurally the GT911 driver with
- * HotKnot stripped and the touch-point capacity raised to 10. Polling reads
- * over I2C with an optional INT fast path and an optional background reader
- * task that pushes samples to bsp_touch_emit_event().
+ * GT1151 touch driver -- see gt1151.h. Chip-specific parts only: I2C attach +
+ * HW reset (INT-level address latch) + one-shot chip poll. The reader task, INT
+ * ISR, orientation transform, and the INT->poll->INT state machine live in the
+ * common layer (src/bsp_touch.c); this file's bsp_touch_t::poll just fills raw
+ * (chip-space) coords + a fresh flag.
+ *
+ * Structurally the GT911 driver with HotKnot stripped and the touch-point
+ * capacity raised to 10.
  */
 
 #include "gt1151.h"
@@ -36,8 +40,6 @@ static const char *TAG = "gt1151";
 #define ADDR_HOLD_MS      5u      /* INT level held after RESET rising edge  */
 #define BOOT_MS           50u     /* let firmware come up before I2C         */
 #define I2C_TIMEOUT_MS    50
-#define POLL_INTERVAL_MS  10      /* reader-task poll fallback when INT idles  */
-#define TASK_STACK_DEFAULT 3072
 
 typedef struct {
     uint8_t  track_id;
@@ -47,22 +49,13 @@ typedef struct {
 } gt1151_point_t;
 
 struct gt1151_dev {
-    bsp_touch_t             base;     /* vtable; must be first                */
+    bsp_touch_t             base;     /* vtable + base fields; must be first  */
     gt1151_config_t         cfg;
     i2c_master_dev_handle_t i2c_dev;
     uint8_t                 i2c_address;
     bool                    int_is_input;
     SemaphoreHandle_t       lock;
-    SemaphoreHandle_t       irq;      /* given by the INT ISR; NULL if no INT */
 
-    /* Optional background reader task (pushes samples to bsp_touch_emit_event). */
-    TaskHandle_t            task;
-    SemaphoreHandle_t       task_done; /* task signals exit on deinit          */
-    volatile bool           task_stop;
-    bool                    has_task;  /* task owns acquisition when set       */
-
-    /* Last poll snapshot. `fresh` is set when a poll read a new frame
-     * (count may be 0 -- an all-released event). */
     gt1151_point_t          points[GT1151_MAX_TOUCH_POINTS];
     uint8_t                 count;
     bool                    fresh;
@@ -70,7 +63,6 @@ struct gt1151_dev {
 
 /* ========================================================================
  * I2C primitives -- GT1151 uses 16-bit big-endian register addresses.
- * Locked variants assume the caller already holds dev->lock.
  * ===================================================================== */
 
 static esp_err_t reg_read_locked(struct gt1151_dev *dev, uint16_t reg, uint8_t *buf, size_t len) {
@@ -95,7 +87,7 @@ static inline void dev_lock(struct gt1151_dev *dev)   { if (dev->lock) xSemaphor
 static inline void dev_unlock(struct gt1151_dev *dev) { if (dev->lock) xSemaphoreGive(dev->lock); }
 
 /* ========================================================================
- * GPIO / reset / INT
+ * GPIO / reset
  * ===================================================================== */
 
 static esp_err_t gpio_as_output(gpio_num_t pin, int level) {
@@ -112,8 +104,6 @@ static esp_err_t gpio_as_output(gpio_num_t pin, int level) {
 }
 
 static esp_err_t gpio_as_input(gpio_num_t pin, bool pullup) {
-    /* Input-only pads (e.g. ESP32 GPIO34..39) have no internal pull resistor;
-     * asking for one logs a "GPIO number error". Drop the request there. */
     if (pullup && !GPIO_IS_VALID_OUTPUT_GPIO(pin)) pullup = false;
     gpio_config_t cfg = {
         .pin_bit_mask = 1ULL << pin,
@@ -123,26 +113,6 @@ static esp_err_t gpio_as_input(gpio_num_t pin, bool pullup) {
         .intr_type    = GPIO_INTR_DISABLE,
     };
     return gpio_config(&cfg);
-}
-
-static void IRAM_ATTR int_isr(void *arg) {
-    struct gt1151_dev *dev = arg;
-    BaseType_t hp = pdFALSE;
-    if (dev->irq) xSemaphoreGiveFromISR(dev->irq, &hp);
-    if (hp) portYIELD_FROM_ISR();
-}
-
-static void int_enable_irq(struct gt1151_dev *dev) {
-    if (dev->cfg.int_io == GPIO_NUM_NC || !dev->int_is_input || !dev->irq) return;
-    esp_err_t err = gpio_install_isr_service(0);
-    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-        ESP_LOGW(TAG, "gpio_install_isr_service: %s", esp_err_to_name(err));
-        return;
-    }
-    gpio_set_intr_type(dev->cfg.int_io, GPIO_INTR_NEGEDGE);
-    if (gpio_isr_handler_add(dev->cfg.int_io, int_isr, dev) == ESP_OK) {
-        gpio_intr_enable(dev->cfg.int_io);
-    }
 }
 
 /* Latches its I2C address from INT level at the RESET rising edge:
@@ -270,88 +240,42 @@ static esp_err_t coord_poll_locked(struct gt1151_dev *dev) {
     return reg_write_byte_locked(dev, REG_STATUS, 0);
 }
 
-/* Map raw chip coordinates into display space per the orientation config. */
-static void transform(const struct gt1151_dev *dev, const gt1151_point_t *in, bsp_touch_point_t *out) {
-    int x = in->x, y = in->y;
-    if (dev->cfg.swap_xy) { int t = x; x = y; y = t; }
-    if (dev->cfg.mirror_x && dev->cfg.width)  x = dev->cfg.width  - 1 - x;
-    if (dev->cfg.mirror_y && dev->cfg.height) y = dev->cfg.height - 1 - y;
-    out->x  = x;
-    out->y  = y;
-    out->id = in->track_id;
-}
-
 /* ========================================================================
  * bsp_touch_t vtable
  * ===================================================================== */
 
-static void service_touch(struct gt1151_dev *dev) {
-    bsp_touch_point_t pts[GT1151_MAX_TOUCH_POINTS];
-    int n = -1;
+static esp_err_t gt1151_poll(bsp_touch_t *self,
+                             bsp_touch_raw_point_t *out, uint8_t max,
+                             uint8_t *count, bool *fresh, bool *keep_polling) {
+    struct gt1151_dev *dev = (struct gt1151_dev *)self;
+
     dev_lock(dev);
-    if (coord_poll_locked(dev) == ESP_OK && dev->fresh) {
+    esp_err_t err = coord_poll_locked(dev);
+    uint8_t n = 0;
+    bool have_fresh = false;
+    if (err == ESP_OK && dev->fresh) {
         n = dev->count;
-        for (int i = 0; i < n; i++) transform(dev, &dev->points[i], &pts[i]);
+        if (n > max) n = max;
+        for (uint8_t i = 0; i < n; i++) {
+            out[i].x  = dev->points[i].x;
+            out[i].y  = dev->points[i].y;
+            out[i].id = dev->points[i].track_id;
+        }
+        have_fresh = true;
         dev->fresh = false;
     }
     dev_unlock(dev);
-    if (n >= 0) bsp_touch_emit_event(pts, n);   /* outside the lock */
-}
 
-static void touch_task(void *arg) {
-    struct gt1151_dev *dev = arg;
-    uint32_t ms = dev->cfg.acquire.poll_interval_ms;
-    const TickType_t timeout = pdMS_TO_TICKS(ms ? ms : POLL_INTERVAL_MS);
-    while (!dev->task_stop) {
-        if (dev->irq) xSemaphoreTake(dev->irq, timeout);
-        else          vTaskDelay(timeout);
-        if (dev->task_stop) break;
-        service_touch(dev);
-    }
-    xSemaphoreGive(dev->task_done);
-    vTaskDelete(NULL);
-}
-
-static int gt1151_read(bsp_touch_t *self, bsp_touch_point_t *points, uint8_t max_points) {
-    struct gt1151_dev *dev = (struct gt1151_dev *)self;
-    if (dev->has_task) return 0;   /* task owns the chip; inline poll would race it */
-
-    int out = 0;
-    dev_lock(dev);
-    if (coord_poll_locked(dev) == ESP_OK && dev->fresh) {
-        uint8_t n = dev->count;
-        if (n > max_points) n = max_points;
-        for (uint8_t i = 0; i < n; i++) transform(dev, &dev->points[i], &points[i]);
-        out = n;
-    }
-    dev_unlock(dev);
-    return out;
-}
-
-static void gt1151_wait_interrupt(bsp_touch_t *self) {
-    struct gt1151_dev *dev = (struct gt1151_dev *)self;
-    /* Block until the INT ISR signals a fresh sample. No timeout -- the binary
-     * semaphore latches an edge that arrived before the wait, so a pending
-     * sample returns immediately and we never miss one. */
-    if (!dev->irq) { vTaskDelay(pdMS_TO_TICKS(10)); return; }
-    xSemaphoreTake(dev->irq, portMAX_DELAY);
+    *count = n;
+    *fresh = have_fresh;
+    *keep_polling = false;
+    return err;
 }
 
 static esp_err_t gt1151_deinit(bsp_touch_t *self) {
     struct gt1151_dev *dev = (struct gt1151_dev *)self;
     if (!dev) return ESP_OK;
-    if (dev->has_task) {
-        dev->task_stop = true;
-        if (dev->irq) xSemaphoreGive(dev->irq);   /* wake it out of the INT wait */
-        xSemaphoreTake(dev->task_done, portMAX_DELAY);
-        vSemaphoreDelete(dev->task_done);
-    }
-    if (dev->cfg.int_io != GPIO_NUM_NC && dev->int_is_input) {
-        gpio_intr_disable(dev->cfg.int_io);
-        gpio_isr_handler_remove(dev->cfg.int_io);
-    }
     if (dev->i2c_dev) i2c_master_bus_rm_device(dev->i2c_dev);
-    if (dev->irq)     vSemaphoreDelete(dev->irq);
     if (dev->lock)    vSemaphoreDelete(dev->lock);
     free(dev);
     return ESP_OK;
@@ -368,13 +292,22 @@ esp_err_t gt1151_touch_create(const gt1151_config_t *config, bsp_touch_t **out_t
     struct gt1151_dev *dev = calloc(1, sizeof(*dev));
     if (!dev) return ESP_ERR_NO_MEM;
     dev->cfg = *config;
-    dev->base.read           = gt1151_read;
-    dev->base.wait_interrupt = gt1151_wait_interrupt;
-    dev->base.deinit         = gt1151_deinit;
+
+    /* Chip vtable */
+    dev->base.poll   = gt1151_poll;
+    dev->base.deinit = gt1151_deinit;
+
+    /* Base fields */
+    dev->base.width      = config->width;
+    dev->base.height     = config->height;
+    dev->base.max_points = GT1151_MAX_TOUCH_POINTS;
+    dev->base.swap_xy    = config->swap_xy;
+    dev->base.mirror_x   = config->mirror_x;
+    dev->base.mirror_y   = config->mirror_y;
+    dev->base.int_io     = (int)config->int_io;
 
     dev->lock = xSemaphoreCreateMutex();
     if (!dev->lock) { free(dev); return ESP_ERR_NO_MEM; }
-    if (config->int_io != GPIO_NUM_NC) dev->irq = xSemaphoreCreateBinary();
 
     esp_err_t err = hw_reset(dev, config->i2c_address);
     if (err == ESP_OK) err = probe_and_attach(dev, config->i2c_address);
@@ -387,23 +320,6 @@ esp_err_t gt1151_touch_create(const gt1151_config_t *config, bsp_touch_t **out_t
     dev_lock(dev);
     log_info_locked(dev);
     dev_unlock(dev);
-
-    int_enable_irq(dev);
-
-    if (config->acquire.task_priority > 0) {
-        const gt1151_acquire_config_t *a = &config->acquire;
-        dev->task_done = xSemaphoreCreateBinary();
-        BaseType_t core = a->task_affinity < 0 ? tskNO_AFFINITY : a->task_affinity;
-        uint32_t stack = a->task_stack ? a->task_stack : TASK_STACK_DEFAULT;
-        if (dev->task_done &&
-            xTaskCreatePinnedToCore(touch_task, "gt1151", stack, dev,
-                                    a->task_priority, &dev->task, core) == pdPASS) {
-            dev->has_task = true;
-        } else {
-            ESP_LOGW(TAG, "reader task create failed; using on-demand polling");
-            if (dev->task_done) { vSemaphoreDelete(dev->task_done); dev->task_done = NULL; }
-        }
-    }
 
     *out_touch = &dev->base;
     return ESP_OK;

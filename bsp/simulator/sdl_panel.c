@@ -330,30 +330,12 @@ static esp_err_t display_refresh(bsp_display_t *self, bsp_rect_t area, bsp_epd_m
     return ESP_OK;
 }
 
-/* MARK: bsp_touch vtable */
-
-/* Copy the active contacts the main thread / harness maintains — no SDL calls
- * here, so this is safe from the background touch task. */
-static int touch_read(bsp_touch_t *self, bsp_touch_point_t *points, uint8_t max_points) {
-    (void)self;
-    if (max_points == 0) return 0;
-    int n = 0;
-    if (s_touch_mtx) SDL_LockMutex(s_touch_mtx);
-    for (int i = 0; i < SDL_PANEL_MAX_TOUCH && n < max_points; i++) {
-        if (!s_touch_pts[i].active) continue;
-        points[n].x = s_touch_pts[i].x;
-        points[n].y = s_touch_pts[i].y;
-        points[n].id = s_touch_pts[i].id;
-        n++;
-    }
-    if (s_touch_mtx) SDL_UnlockMutex(s_touch_mtx);
-    return n;
-}
-
-static void touch_wait_interrupt(bsp_touch_t *self) {
-    (void)self;
-    SDL_Delay(5);  /* host has no IRQ line — fall back to polling */
-}
+/* MARK: bsp_touch vtable
+ *
+ * Host has no INT and no reader task — sdl_panel pushes each contact change
+ * straight into the common layer's snapshot via bsp_touch_emit_event() (see
+ * touch_set_point below). That leaves this vtable with just a deinit stub; the
+ * common layer's bsp_touch_read serves reads out of that snapshot. */
 
 static esp_err_t touch_deinit(bsp_touch_t *self) {
     (void)self;
@@ -574,9 +556,9 @@ esp_err_t sdl_panel_create(const sdl_panel_config_t *config,
         SDL_RenderPresent(s_renderer);
     }
 
-    s_touch.read           = touch_read;
-    s_touch.wait_interrupt = touch_wait_interrupt;
-    s_touch.deinit         = touch_deinit;
+    s_touch.poll   = NULL;   /* push-only from touch_set_point */
+    s_touch.deinit = touch_deinit;
+    s_touch.int_io = -1;
 
     /* Self-register with the sim harness: it drives these without ever knowing
      * about sdl_panel (input injection + frame capture are this backend's job). */

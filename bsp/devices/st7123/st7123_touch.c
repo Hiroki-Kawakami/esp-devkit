@@ -2,10 +2,11 @@
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 Hiroki Kawakami
  *
- * ST7123 I2C touch driver — see st7123_touch.h. Polling reads over I2C with
- * an optional INT fast path and an optional background reader task that pushes
- * samples to bsp_touch_emit_event(). Trimmed version of the GT911 driver (no
- * HotKnot), with the ST7123's own 7-byte report layout.
+ * ST7123 I2C touch driver -- see st7123_touch.h. Chip-specific parts only: I2C
+ * attach + HW reset + one-shot chip poll (ST7123's own 7-byte report layout).
+ * The reader task, INT ISR, orientation transform, and the INT->poll->INT state
+ * machine live in the common layer (src/bsp_touch.c); this file's
+ * bsp_touch_t::poll just fills raw (chip-space) coords + a fresh flag.
  */
 
 #include "st7123_touch.h"
@@ -32,8 +33,6 @@ static const char *TAG = "st7123_tp";
 #define RESET_LOW_MS       10u
 #define BOOT_MS            10u
 #define I2C_TIMEOUT_MS     50
-#define POLL_INTERVAL_MS   10
-#define TASK_STACK_DEFAULT 3072
 
 typedef struct {
     uint16_t x, y;
@@ -46,12 +45,6 @@ struct st7123_dev {
     i2c_master_dev_handle_t i2c_dev;
     bool                    int_is_input;
     SemaphoreHandle_t       lock;
-    SemaphoreHandle_t       irq;       /* given by INT ISR; NULL if no INT */
-
-    TaskHandle_t      task;
-    SemaphoreHandle_t task_done;
-    volatile bool     task_stop;
-    bool              has_task;
 
     st7123_point_t          points[ST7123_MAX_TOUCH_POINTS];
     uint8_t                 count;
@@ -68,7 +61,7 @@ static esp_err_t reg_read_locked(struct st7123_dev *dev, uint16_t reg, uint8_t *
 static inline void dev_lock(struct st7123_dev *dev)   { if (dev->lock) xSemaphoreTake(dev->lock, portMAX_DELAY); }
 static inline void dev_unlock(struct st7123_dev *dev) { if (dev->lock) xSemaphoreGive(dev->lock); }
 
-/* --- GPIO / reset / INT --------------------------------------------------- */
+/* --- GPIO / reset --------------------------------------------------------- */
 
 static esp_err_t gpio_as_output(gpio_num_t pin, int level) {
     gpio_config_t cfg = {
@@ -93,26 +86,6 @@ static esp_err_t gpio_as_input(gpio_num_t pin, bool pullup) {
         .intr_type    = GPIO_INTR_DISABLE,
     };
     return gpio_config(&cfg);
-}
-
-static void IRAM_ATTR int_isr(void *arg) {
-    struct st7123_dev *dev = arg;
-    BaseType_t hp = pdFALSE;
-    if (dev->irq) xSemaphoreGiveFromISR(dev->irq, &hp);
-    if (hp) portYIELD_FROM_ISR();
-}
-
-static void int_enable_irq(struct st7123_dev *dev) {
-    if (dev->cfg.int_io == GPIO_NUM_NC || !dev->int_is_input || !dev->irq) return;
-    esp_err_t err = gpio_install_isr_service(0);
-    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-        ESP_LOGW(TAG, "gpio_install_isr_service: %s", esp_err_to_name(err));
-        return;
-    }
-    gpio_set_intr_type(dev->cfg.int_io, GPIO_INTR_NEGEDGE);
-    if (gpio_isr_handler_add(dev->cfg.int_io, int_isr, dev) == ESP_OK) {
-        gpio_intr_enable(dev->cfg.int_io);
-    }
 }
 
 static esp_err_t hw_reset(struct st7123_dev *dev) {
@@ -178,107 +151,41 @@ static esp_err_t coord_poll_locked(struct st7123_dev *dev) {
     return ESP_OK;
 }
 
-/* --- Orientation mapping (raw chip -> display space) ---------------------- */
+/* --- bsp_touch_t vtable --------------------------------------------------- */
 
-static void apply_orientation(const struct st7123_dev *dev,
-                              const st7123_point_t *in, bsp_touch_point_t *out, int n) {
-    const uint16_t w = dev->cfg.width  ? dev->cfg.width  : 1;
-    const uint16_t h = dev->cfg.height ? dev->cfg.height : 1;
-    for (int i = 0; i < n; i++) {
-        int x = in[i].x;
-        int y = in[i].y;
-        if (dev->cfg.swap_xy)   { int t = x; x = y; y = t; }
-        if (dev->cfg.mirror_x)  x = (int)w - 1 - x;
-        if (dev->cfg.mirror_y)  y = (int)h - 1 - y;
-        out[i].x  = x;
-        out[i].y  = y;
-        out[i].id = i;          /* ST7123 reports don't carry a track id */
-    }
-}
-
-/* --- Reader task ---------------------------------------------------------- */
-
-static void reader_task(void *arg) {
-    struct st7123_dev *dev = arg;
-    const uint32_t poll_ms = dev->cfg.acquire.poll_interval_ms
-        ? dev->cfg.acquire.poll_interval_ms : POLL_INTERVAL_MS;
-
-    bool was_down = false;
-    while (!dev->task_stop) {
-        if (dev->irq) {
-            xSemaphoreTake(dev->irq, pdMS_TO_TICKS(poll_ms));
-        } else {
-            vTaskDelay(pdMS_TO_TICKS(poll_ms));
-        }
-        if (dev->task_stop) break;
-
-        bsp_touch_point_t out[ST7123_MAX_TOUCH_POINTS];
-        int n = 0;
-
-        dev_lock(dev);
-        esp_err_t err = coord_poll_locked(dev);
-        if (err == ESP_OK && dev->fresh) {
-            n = dev->count;
-            if (n > 0) apply_orientation(dev, dev->points, out, n);
-        }
-        dev_unlock(dev);
-
-        if (err != ESP_OK) continue;
-        if (n > 0 || was_down) bsp_touch_emit_event(out, n);
-        was_down = (n > 0);
-    }
-    xSemaphoreGive(dev->task_done);
-    vTaskDelete(NULL);
-}
-
-/* --- bsp_touch vtable ----------------------------------------------------- */
-
-static int touch_read(bsp_touch_t *self, bsp_touch_point_t *points, uint8_t max_points) {
+static esp_err_t st7123_poll(bsp_touch_t *self,
+                             bsp_touch_raw_point_t *out, uint8_t max,
+                             uint8_t *count, bool *fresh, bool *keep_polling) {
     struct st7123_dev *dev = (struct st7123_dev *)self;
-    if (max_points == 0) return 0;
 
-    int n = 0;
     dev_lock(dev);
-    /* When a reader task owns the chip, return the cached snapshot to avoid
-     * racing it. Without a task, poll synchronously. */
-    if (!dev->has_task) {
-        if (coord_poll_locked(dev) != ESP_OK) {
-            dev_unlock(dev);
-            return 0;
+    esp_err_t err = coord_poll_locked(dev);
+    uint8_t n = 0;
+    bool have_fresh = false;
+    if (err == ESP_OK && dev->fresh) {
+        n = dev->count;
+        if (n > max) n = max;
+        for (uint8_t i = 0; i < n; i++) {
+            out[i].x  = dev->points[i].x;
+            out[i].y  = dev->points[i].y;
+            out[i].id = i;              /* ST7123 reports don't carry a track id */
         }
+        have_fresh = true;
+        dev->fresh = false;
     }
-    int avail = dev->count;
-    if (avail > max_points) avail = max_points;
-    if (avail > 0) apply_orientation(dev, dev->points, points, avail);
-    n = avail;
     dev_unlock(dev);
-    return n;
+
+    *count = n;
+    *fresh = have_fresh;
+    *keep_polling = false;
+    return err;
 }
 
-static void touch_wait_interrupt(bsp_touch_t *self) {
+static esp_err_t st7123_deinit(bsp_touch_t *self) {
     struct st7123_dev *dev = (struct st7123_dev *)self;
-    if (dev->irq) {
-        xSemaphoreTake(dev->irq, portMAX_DELAY);
-    } else {
-        vTaskDelay(pdMS_TO_TICKS(POLL_INTERVAL_MS));
-    }
-}
-
-static esp_err_t touch_deinit(bsp_touch_t *self) {
-    struct st7123_dev *dev = (struct st7123_dev *)self;
-    if (dev->task) {
-        dev->task_stop = true;
-        if (dev->irq) xSemaphoreGive(dev->irq);
-        if (dev->task_done) xSemaphoreTake(dev->task_done, pdMS_TO_TICKS(500));
-    }
-    if (dev->cfg.int_io != GPIO_NUM_NC && dev->int_is_input) {
-        gpio_intr_disable(dev->cfg.int_io);
-        gpio_isr_handler_remove(dev->cfg.int_io);
-    }
-    if (dev->i2c_dev)   i2c_master_bus_rm_device(dev->i2c_dev);
-    if (dev->task_done) vSemaphoreDelete(dev->task_done);
-    if (dev->irq)       vSemaphoreDelete(dev->irq);
-    if (dev->lock)      vSemaphoreDelete(dev->lock);
+    if (!dev) return ESP_OK;
+    if (dev->i2c_dev) i2c_master_bus_rm_device(dev->i2c_dev);
+    if (dev->lock)    vSemaphoreDelete(dev->lock);
     free(dev);
     return ESP_OK;
 }
@@ -291,9 +198,18 @@ esp_err_t st7123_touch_create(const st7123_touch_config_t *config, bsp_touch_t *
     struct st7123_dev *dev = calloc(1, sizeof(*dev));
     if (!dev) return ESP_ERR_NO_MEM;
     dev->cfg = *config;
-    dev->base.read           = touch_read;
-    dev->base.wait_interrupt = touch_wait_interrupt;
-    dev->base.deinit         = touch_deinit;
+
+    dev->base.poll   = st7123_poll;
+    dev->base.deinit = st7123_deinit;
+
+    dev->base.width      = config->width;
+    dev->base.height     = config->height;
+    dev->base.max_points = ST7123_MAX_TOUCH_POINTS;
+    dev->base.swap_xy    = config->swap_xy;
+    dev->base.mirror_x   = config->mirror_x;
+    dev->base.mirror_y   = config->mirror_y;
+    dev->base.int_io     = (int)config->int_io;
+
     dev->lock = xSemaphoreCreateMutex();
     if (!dev->lock) { free(dev); return ESP_ERR_NO_MEM; }
 
@@ -308,33 +224,10 @@ esp_err_t st7123_touch_create(const st7123_touch_config_t *config, bsp_touch_t *
     err = i2c_master_bus_add_device(dev->cfg.i2c_bus, &i2c_cfg, &dev->i2c_dev);
     if (err != ESP_OK) goto fail;
 
-    if (dev->cfg.int_io != GPIO_NUM_NC) {
-        dev->irq = xSemaphoreCreateBinary();
-        if (dev->irq) int_enable_irq(dev);
-    }
-
-    if (dev->cfg.acquire.task_priority > 0) {
-        dev->task_done = xSemaphoreCreateBinary();
-        if (!dev->task_done) { err = ESP_ERR_NO_MEM; goto fail; }
-        dev->has_task = true;
-        const uint32_t stack = dev->cfg.acquire.task_stack
-            ? dev->cfg.acquire.task_stack : TASK_STACK_DEFAULT;
-        BaseType_t r;
-        if (dev->cfg.acquire.task_affinity >= 0) {
-            r = xTaskCreatePinnedToCore(reader_task, "st7123", stack, dev,
-                                        dev->cfg.acquire.task_priority, &dev->task,
-                                        dev->cfg.acquire.task_affinity);
-        } else {
-            r = xTaskCreate(reader_task, "st7123", stack, dev,
-                            dev->cfg.acquire.task_priority, &dev->task);
-        }
-        if (r != pdPASS) { err = ESP_FAIL; goto fail; }
-    }
-
     *out_touch = &dev->base;
     return ESP_OK;
 
 fail:
-    touch_deinit(&dev->base);
+    st7123_deinit(&dev->base);
     return err;
 }

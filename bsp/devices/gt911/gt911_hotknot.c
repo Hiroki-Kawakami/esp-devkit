@@ -306,12 +306,12 @@ static void emit(gt911_hk_t *p, bsp_hotknot_event_type_t type,
     p->cb(&ev, p->arg);
 }
 
-static void hk_step(gt911_handle_t h, void *ctx) {
+/* Called by gt911's bsp_touch_t::poll after each touch read; the common layer
+ * has already dispatched touch events, so this only advances the session. */
+static void hk_step(gt911_handle_t h, void *ctx, bool paired) {
     gt911_hk_t *p = ctx;
     switch (p->phase) {
         case HK_APPROACH: {
-            bool paired = false;
-            gt911_internal_service_touch(h, &paired);   /* touch stays alive here */
             if (!paired) break;
             emit(p, BSP_HOTKNOT_EVENT_PAIRED, NULL, 0, ESP_OK);
             esp_err_t err = gt911_hotknot_load_subsystem(h);
@@ -341,7 +341,7 @@ static esp_err_t hk_begin(bsp_hotknot_t *self, bsp_hotknot_role_t role,
                           bsp_hotknot_event_cb_t cb, void *arg) {
     gt911_hk_t *p = (gt911_hk_t *)self;
     if (p->phase != HK_IDLE) return ESP_ERR_INVALID_STATE;
-    if (!gt911_internal_has_task(p->h)) return ESP_ERR_INVALID_STATE;
+    if (!bsp_touch_reader_running()) return ESP_ERR_INVALID_STATE;
 
     p->cb   = cb;
     p->arg  = arg;

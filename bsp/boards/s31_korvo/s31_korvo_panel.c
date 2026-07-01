@@ -69,11 +69,6 @@ esp_err_t s31_korvo_panel_init(const bsp_config_t *config, i2c_master_bus_handle
         .reset_io    = GPIO_NUM_NC,
         .width       = S31_LCD_W,
         .height      = S31_LCD_H,
-        .acquire = {
-            .task_priority    = config->touch.task_priority,
-            .task_affinity    = config->touch.task_affinity,
-            .poll_interval_ms = config->touch.poll_interval_ms,
-        },
     };
     bsp_touch_t *touch = NULL;
     err = gt1151_touch_create(&tp_cfg, &touch);
@@ -82,5 +77,7 @@ esp_err_t s31_korvo_panel_init(const bsp_config_t *config, i2c_master_bus_handle
         return ESP_OK;
     }
     bsp_touch_set_active(touch);
+    bsp_touch_start_reader(config->touch.task_priority, config->touch.task_affinity,
+                           config->touch.poll_interval_ms, 0);
     return ESP_OK;
 }
