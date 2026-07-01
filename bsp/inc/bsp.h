@@ -97,6 +97,14 @@ esp_err_t bsp_sd_mount(const char *mount_point, const bsp_sd_mount_config_t *con
 esp_err_t bsp_sd_unmount(void);
 bool bsp_sd_is_mounted(void);
 
+// MARK: RGB LED
+/* Board-provided addressable RGB LED(s); count == 0 when no provider is
+ * registered. set_rgb / clear return ESP_ERR_INVALID_STATE in that case and
+ * ESP_ERR_INVALID_ARG when index >= count. */
+uint8_t bsp_led_count(void);
+esp_err_t bsp_led_set_rgb(uint8_t index, uint8_t r, uint8_t g, uint8_t b);
+esp_err_t bsp_led_clear(void);
+
 #ifdef __cplusplus
 }
 #endif

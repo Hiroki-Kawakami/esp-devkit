@@ -18,7 +18,8 @@ set(BSP_COMMON_SRCS
     "src/bsp_display.c"
     "src/bsp_touch.c"
     "src/bsp_hotknot.c"
-    "src/bsp_rtc.c")
+    "src/bsp_rtc.c"
+    "src/bsp_led.c")
 
 if(NOT DEFINED BSP_BOARD)
     # IDF's requirement-extraction phase runs this file in script mode where the

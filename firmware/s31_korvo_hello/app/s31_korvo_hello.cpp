@@ -113,6 +113,12 @@ static void build_hello_screen() {
     lv_obj_add_event_fn(btn, LV_EVENT_CLICKED, [counter](lv_event_t *) {
         static int taps = 0;
         lv_label_set_text_fmt(counter, "Taps: %d", ++taps);
+        /* R -> G -> B -> off, then repeat. No-op on hosts without an LED provider. */
+        static const uint8_t palette[4][3] = {
+            {0x40, 0x00, 0x00}, {0x00, 0x40, 0x00}, {0x00, 0x00, 0x40}, {0, 0, 0},
+        };
+        const uint8_t *c = palette[taps % 4];
+        bsp_led_set_rgb(0, c[0], c[1], c[2]);
         ESP_LOGI(TAG, "tap %d", taps);
     });
 
