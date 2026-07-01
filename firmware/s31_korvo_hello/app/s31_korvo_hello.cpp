@@ -2,8 +2,10 @@
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 Hiroki Kawakami
  *
- * Minimal ESP32-S31-Korvo sample: brings up the BSP + LVGL and shows a
- * centered label. Touch is not wired yet.
+ * Minimal ESP32-S31-Korvo sample: brings up the BSP + LVGL, shows a title and
+ * a button that counts taps. Touch is wired both ways so the same app works on
+ * the device (GT1151 reader task pushes samples via bsp_touch_set_event_cb)
+ * and in the simulator (mouse pull via bsp_touch_read).
  */
 
 #include "s31_korvo_hello.hpp"
@@ -13,6 +15,43 @@
 #include <assert.h>
 
 static const char *TAG = "s31_korvo_hello";
+
+/* Latched touch state shared between the touch source (push callback on the
+ * GT1151 reader task, or pull inside indev_read on the sim) and LVGL's read_cb.
+ * Word-sized volatile reads/writes are atomic on ESP32/RISC-V; a single-finger
+ * indev only cares about the most recent sample, so no lock is needed. */
+static struct {
+    volatile int  x;
+    volatile int  y;
+    volatile bool pressed;
+} s_touch;
+
+static void on_touch_push(const bsp_touch_point_t *pts, int count, void *) {
+    if (count > 0) {
+        s_touch.x = pts[0].x;
+        s_touch.y = pts[0].y;
+        s_touch.pressed = true;
+    } else {
+        s_touch.pressed = false;
+    }
+}
+
+static void indev_read(lv_indev_t *, lv_indev_data_t *data) {
+    /* Simulator uses pull; bsp_touch_read on device with a reader task returns
+     * 0, so the pressed state stays sourced from the push callback there. */
+    bsp_touch_point_t pt;
+    int n = bsp_touch_read(&pt, 1);
+    if (n > 0) {
+        s_touch.x = pt.x;
+        s_touch.y = pt.y;
+        s_touch.pressed = true;
+    } else if (n == 0 && !s_touch.pressed) {
+        /* pull-mode release keeps pressed = false; push-mode kept its own state above */
+    }
+    data->point.x = s_touch.x;
+    data->point.y = s_touch.y;
+    data->state   = s_touch.pressed ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+}
 
 static void lvgl_init() {
     lvgl_port_cfg_t config = {
@@ -45,22 +84,52 @@ static void lvgl_init() {
         lv_display_flush_ready(d);
     });
     lv_display_set_default(disp);
+
+    lv_indev_t *indev = lv_indev_create();
+    lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
+    lv_indev_set_read_cb(indev, indev_read);
+    lv_indev_set_display(indev, disp);
 }
 
 static void build_hello_screen() {
     lv_obj_t *scr = lv_screen_active();
     lv_obj_set_style_bg_color(scr, lv_color_white(), 0);
+    lv_obj_set_flex_flow(scr, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(scr, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(scr, 24, 0);
 
-    lv_obj_t *label = lv_label_create(scr);
-    lv_label_set_text(label, "Hello, S31-Korvo!");
-    lv_obj_set_style_text_font(label, &lv_font_montserrat_48, 0);
-    lv_obj_set_style_text_color(label, lv_color_black(), 0);
-    lv_obj_center(label);
+    lv_obj_t *title = lv_label_create(scr);
+    lv_label_set_text(title, "Hello, S31-Korvo!");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_48, 0);
+    lv_obj_set_style_text_color(title, lv_color_black(), 0);
+
+    lv_obj_t *counter = lv_label_create(scr);
+    lv_label_set_text(counter, "Taps: 0");
+    lv_obj_set_style_text_font(counter, &lv_font_montserrat_32, 0);
+    lv_obj_set_style_text_color(counter, lv_color_black(), 0);
+
+    lv_obj_t *btn = lv_button_create(scr);
+    lv_obj_set_size(btn, 260, 90);
+    lv_obj_add_event_fn(btn, LV_EVENT_CLICKED, [counter](lv_event_t *) {
+        static int taps = 0;
+        lv_label_set_text_fmt(counter, "Taps: %d", ++taps);
+        ESP_LOGI(TAG, "tap %d", taps);
+    });
+
+    lv_obj_t *btn_label = lv_label_create(btn);
+    lv_label_set_text(btn_label, "Tap me");
+    lv_obj_set_style_text_font(btn_label, &lv_font_montserrat_32, 0);
+    lv_obj_center(btn_label);
 }
 
 void app_entry() {
     bsp_config_t bsp_config = {};
+    /* Spin up the GT1151 reader task so touches are pushed to on_touch_push
+     * (has_task -> bsp_touch_read returns 0 on device). Values match tab5. */
+    bsp_config.touch.task_priority = 6;
+    bsp_config.touch.task_affinity = 1;
     bsp_init(&bsp_config);
+    bsp_touch_set_event_cb(on_touch_push, nullptr);
     lvgl_init();
 
     lv_async_call([] {

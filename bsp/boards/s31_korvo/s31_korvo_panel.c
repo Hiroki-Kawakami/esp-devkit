@@ -11,6 +11,7 @@
 
 #include "s31_korvo_panel.h"
 #include "rgb_lcd.h"
+#include "gt1151.h"
 #include "esp_log.h"
 
 static const char *TAG = "s31_korvo_panel";
@@ -18,9 +19,7 @@ static const char *TAG = "s31_korvo_panel";
 #define S31_LCD_W   800
 #define S31_LCD_H   480
 
-esp_err_t s31_korvo_panel_init(const bsp_config_t *config) {
-    (void)config;
-
+esp_err_t s31_korvo_panel_init(const bsp_config_t *config, i2c_master_bus_handle_t i2c_bus) {
     const rgb_lcd_config_t lcd_cfg = {
         .size           = { S31_LCD_W, S31_LCD_H },
         .pixel_format   = BSP_PIXEL_FORMAT_RGB565,
@@ -59,5 +58,29 @@ esp_err_t s31_korvo_panel_init(const bsp_config_t *config) {
         return err;
     }
     bsp_display_set_active(display);
+
+    /* GT1151 touch. RST/INT are not wired on this board (both NC), so the
+     * driver only probes the chip on its power-on I2C address. */
+    const gt1151_config_t tp_cfg = {
+        .i2c_bus     = i2c_bus,
+        .i2c_address = GT1151_I2C_ADDR_PRIMARY,
+        .clock_hz    = GT1151_I2C_DEFAULT_HZ,
+        .int_io      = GPIO_NUM_NC,
+        .reset_io    = GPIO_NUM_NC,
+        .width       = S31_LCD_W,
+        .height      = S31_LCD_H,
+        .acquire = {
+            .task_priority    = config->touch.task_priority,
+            .task_affinity    = config->touch.task_affinity,
+            .poll_interval_ms = config->touch.poll_interval_ms,
+        },
+    };
+    bsp_touch_t *touch = NULL;
+    err = gt1151_touch_create(&tp_cfg, &touch);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "gt1151 touch unavailable: %s", esp_err_to_name(err));
+        return ESP_OK;
+    }
+    bsp_touch_set_active(touch);
     return ESP_OK;
 }

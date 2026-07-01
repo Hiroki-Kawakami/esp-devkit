@@ -9,12 +9,13 @@
 
 #pragma once
 #include "bsp.h"
+#include "driver/i2c_master.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-esp_err_t s31_korvo_panel_init(const bsp_config_t *config);
+esp_err_t s31_korvo_panel_init(const bsp_config_t *config, i2c_master_bus_handle_t i2c_bus);
 
 #ifdef __cplusplus
 }
