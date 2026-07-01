@@ -1,5 +1,24 @@
 {
   "nodes": {
+    "esp-idf-beta-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1782270947,
+        "narHash": "sha256-9sekwCKcwq4OsuuU0uvxwyGZEMihH1/FpCwQgewDgQY=",
+        "ref": "refs/tags/v6.1-beta1",
+        "rev": "b1d13e9fe441c4f75e240c98a26fd631b7b3232f",
+        "revCount": 52930,
+        "submodules": true,
+        "type": "git",
+        "url": "https://github.com/espressif/esp-idf"
+      },
+      "original": {
+        "ref": "refs/tags/v6.1-beta1",
+        "submodules": true,
+        "type": "git",
+        "url": "https://github.com/espressif/esp-idf"
+      }
+    },
     "esp-idf-src": {
       "flake": false,
       "locked": {
@@ -55,6 +74,7 @@
     },
     "root": {
       "inputs": {
+        "esp-idf-beta-src": "esp-idf-beta-src",
         "esp-idf-src": "esp-idf-src",
         "flake-utils": "flake-utils",
         "nixpkgs": "nixpkgs"

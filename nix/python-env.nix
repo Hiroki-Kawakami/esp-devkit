@@ -90,6 +90,32 @@ let
     deps = [];
   };
 
+  # Added in IDF 6.1: esp-idf-sbom + idf_drivers_gdb (see requirements.core.txt).
+  # esp-pylib is a transitive dep of esp-idf-sbom. Harmless on 6.0.2.
+  esp-pylib = mkPypiPkg {
+    pname = "esp-pylib";
+    version = "1.1.2";
+    url = "https://files.pythonhosted.org/packages/c2/07/9ac0f09cdb591d3daae5ae071c14c6cf7015e13ccc59f3f6e00f67dda641/esp_pylib-1.1.2.tar.gz";
+    hash = "sha256-sl8kjrnpIm0JCzOCyL5dGIQ1kHjD6UwaMExkd6NKESM=";
+    deps = with py; [ rich rich-click click ];
+  };
+
+  esp-idf-sbom = mkPypiPkg {
+    pname = "esp-idf-sbom";
+    version = "1.2.0";
+    url = "https://files.pythonhosted.org/packages/38/d3/de2eae11d47f52ebad8ee2fbf337793d0fbc3982c3129d10a7c0f758b3da/esp_idf_sbom-1.2.0.tar.gz";
+    hash = "sha256-qM73SbjtlWYVRByn7nhfy7KLb2b9JJFs8Zmw6c8CjSs=";
+    deps = with py; [ pyyaml schema license-expression rich pyparsing ] ++ [ esp-pylib ];
+  };
+
+  idf-drivers-gdb = mkPypiPkg {
+    pname = "idf-drivers-gdb";
+    version = "0.1.1";
+    url = "https://files.pythonhosted.org/packages/91/8f/a3010dad3fe0836a4187081a1481fbcc1619614cb949a00afe738f7c629c/idf_drivers_gdb-0.1.1.tar.gz";
+    hash = "sha256-3Jct+5sQawuIO0G7+MPtnL7oqXNnx17uq3csVzyEVcA=";
+    deps = [];
+  };
+
   tree-sitter-c = mkPypiPkg {
     pname = "tree-sitter-c";
     version = "0.24.2";
@@ -101,7 +127,8 @@ let
   custom = {
     inherit esptool esp-coredump esp-idf-kconfig esp-idf-monitor
             esp-idf-nvs-partition-gen esp-idf-diag idf-component-manager
-            esp-idf-panic-decoder pyclang tree-sitter-c;
+            esp-idf-panic-decoder pyclang tree-sitter-c
+            esp-pylib esp-idf-sbom idf-drivers-gdb;
   };
 
   pythonEnv = python.withPackages (ps: with ps; [
