@@ -3,11 +3,7 @@
  * Copyright (c) 2026 Hiroki Kawakami
  *
  * Minimal ESP32-S31-Korvo sample: brings up the BSP + LVGL, shows a title and a
- * button that counts taps. Touch is delivered by the shared bsp_touch reader
- * task (device: GT1151 INT-driven; simulator: sdl_panel + bsp_touch_notify), so
- * one push callback drives LVGL on both targets. The indev runs in
- * LV_INDEV_MODE_EVENT with no polling timer -- the push callback marshals a
- * lv_indev_read onto the LVGL thread when a fresh sample arrives.
+ * button that counts taps.
  */
 
 #include "s31_korvo_hello.hpp"
@@ -17,8 +13,6 @@
 #include <assert.h>
 
 static const char *TAG = "s31_korvo_hello";
-
-static lv_indev_t *s_indev = nullptr;
 
 static struct {
     volatile int  x;
@@ -34,13 +28,16 @@ static void on_touch_push(const bsp_touch_point_t *pts, int count, void *) {
     } else {
         s_touch.pressed = false;
     }
-    if (s_indev) lv_async_call([]{ lv_indev_read(s_indev); });
 }
 
 static void indev_read(lv_indev_t *, lv_indev_data_t *data) {
-    data->point.x = s_touch.x;
-    data->point.y = s_touch.y;
-    data->state   = s_touch.pressed ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+    if (s_touch.pressed) {
+        data->point.x = s_touch.x;
+        data->point.y = s_touch.y;
+        data->state   = LV_INDEV_STATE_PRESSED;
+    } else {
+        data->state   = LV_INDEV_STATE_RELEASED;
+    }
 }
 
 static void lvgl_init() {
@@ -75,11 +72,10 @@ static void lvgl_init() {
     });
     lv_display_set_default(disp);
 
-    s_indev = lv_indev_create();
-    lv_indev_set_type(s_indev, LV_INDEV_TYPE_POINTER);
-    lv_indev_set_read_cb(s_indev, indev_read);
-    lv_indev_set_display(s_indev, disp);
-    lv_indev_set_mode(s_indev, LV_INDEV_MODE_EVENT);
+    lv_indev_t *indev = lv_indev_create();
+    lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
+    lv_indev_set_read_cb(indev, indev_read);
+    lv_indev_set_display(indev, disp);
 }
 
 static void build_hello_screen() {

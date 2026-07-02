@@ -275,26 +275,21 @@ static esp_err_t coord_poll_locked(struct gt911_dev *dev) {
 
 static esp_err_t gt911_poll(bsp_touch_t *self,
                             bsp_touch_raw_point_t *out, uint8_t max,
-                            uint8_t *count, bool *fresh, bool *keep_polling) {
+                            uint8_t *count, bool *keep_polling) {
     struct gt911_dev *dev = (struct gt911_dev *)self;
 
     dev_lock(dev);
     esp_err_t err = coord_poll_locked(dev);
-    uint8_t n = 0;
-    bool have_fresh = false;
     bool paired = false;
+    uint8_t n = 0;
     if (err == ESP_OK) {
         if (dev->pair_event) { paired = true; dev->pair_event = false; }
-        if (dev->fresh) {
-            n = dev->count;
-            if (n > max) n = max;
-            for (uint8_t i = 0; i < n; i++) {
-                out[i].x  = dev->points[i].x;
-                out[i].y  = dev->points[i].y;
-                out[i].id = dev->points[i].track_id;
-            }
-            have_fresh = true;
-            dev->fresh = false;
+        n = dev->count;
+        if (n > max) n = max;
+        for (uint8_t i = 0; i < n; i++) {
+            out[i].x  = dev->points[i].x;
+            out[i].y  = dev->points[i].y;
+            out[i].id = dev->points[i].track_id;
         }
     }
     gt911_session_step_fn step = dev->session_step;
@@ -302,7 +297,6 @@ static esp_err_t gt911_poll(bsp_touch_t *self,
     dev_unlock(dev);
 
     *count = n;
-    *fresh = have_fresh;
     *keep_polling = (step != NULL);   /* sessions want ticks until they end */
 
     /* Run the HotKnot state machine (or whoever installed the step) outside the

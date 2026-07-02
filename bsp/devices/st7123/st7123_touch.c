@@ -155,14 +155,13 @@ static esp_err_t coord_poll_locked(struct st7123_dev *dev) {
 
 static esp_err_t st7123_poll(bsp_touch_t *self,
                              bsp_touch_raw_point_t *out, uint8_t max,
-                             uint8_t *count, bool *fresh, bool *keep_polling) {
+                             uint8_t *count, bool *keep_polling) {
     struct st7123_dev *dev = (struct st7123_dev *)self;
 
     dev_lock(dev);
     esp_err_t err = coord_poll_locked(dev);
     uint8_t n = 0;
-    bool have_fresh = false;
-    if (err == ESP_OK && dev->fresh) {
+    if (err == ESP_OK) {
         n = dev->count;
         if (n > max) n = max;
         for (uint8_t i = 0; i < n; i++) {
@@ -170,13 +169,10 @@ static esp_err_t st7123_poll(bsp_touch_t *self,
             out[i].y  = dev->points[i].y;
             out[i].id = i;              /* ST7123 reports don't carry a track id */
         }
-        have_fresh = true;
-        dev->fresh = false;
     }
     dev_unlock(dev);
 
     *count = n;
-    *fresh = have_fresh;
     *keep_polling = false;
     return err;
 }

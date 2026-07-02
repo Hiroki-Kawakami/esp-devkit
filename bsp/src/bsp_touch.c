@@ -2,23 +2,15 @@
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 Hiroki Kawakami
  *
- * Common touch layer. Dispatches the public bsp_touch_* API through the active
- * chip vtable, and owns everything shared across chips: INT ISR, reader task,
- * INT->poll->INT state machine (see touch_tick), orientation transform, and the
- * cached snapshot for bsp_touch_read. Chip drivers stay chip-specific -- just a
- * poll() that returns raw coords + a fresh flag.
+ * Common touch layer: dispatches the public bsp_touch_* API through the active
+ * chip vtable and owns the shared reader task, INT ISR, orientation transform,
+ * and cached snapshot. Chip drivers only implement poll()/deinit().
  *
- * State machine. The reader task alternates two states, driven by tick returns:
- *   - ACTIVE: wake on either INT or poll_interval, do one poll, tick returns true
- *             while any finger is down or we're within the release settle window
- *             (settle_count consecutive no-touch polls). This absorbs cross-chip
- *             differences in release-INT behavior.
- *   - IDLE:   tick returns false; the task blocks on the shared sem with no
- *             timeout. Only the ISR (or a chip signaling *keep_polling=true) can
- *             wake it, which flips it back to ACTIVE.
- *
- * The simulator uses the same task; its sdl_panel provider fires bsp_touch_notify()
- * from the input path in place of the ISR, so host and device share the tick.
+ * IDLE is a capability that needs an INT line: with one, the task sleeps on
+ * the shared sem after settle_count consecutive no-finger polls and the ISR
+ * wakes it. Boards that leave INT NC (e.g. s31_korvo) never idle -- the tick
+ * stays ACTIVE and the task just polls every poll_interval, matching the
+ * pre-refactor behaviour of the chip-owned reader tasks.
  */
 
 #include "bsp.h"
@@ -45,13 +37,12 @@ static bsp_touch_t         *s_touch;
 static bsp_touch_event_cb_t s_event_cb;
 static void                *s_event_arg;
 
-/* Snapshot cache -- read by bsp_touch_read, written by bsp_touch_emit_event. */
 static SemaphoreHandle_t s_snapshot_lock;
 static bsp_touch_point_t s_snapshot[BSP_TOUCH_MAX_POINTS];
 static uint8_t           s_snapshot_count;
 
-/* Reader task + wake plumbing. On device the INT ISR gives s_int_sem/s_wait_sem;
- * on the simulator sdl_panel calls bsp_touch_notify() from its input path. */
+/* s_int_sem: reader task; s_wait_sem: bsp_touch_wait_interrupt callers. Both
+ * given by the ISR (device) / bsp_touch_notify (simulator). */
 static SemaphoreHandle_t s_int_sem;
 static SemaphoreHandle_t s_wait_sem;
 
@@ -61,7 +52,6 @@ static volatile bool     s_task_stop;
 static bool              s_has_task;
 static TickType_t        s_poll_interval;
 
-/* Tick state (private to the reader task). */
 static uint8_t s_no_touch_count;
 static bool    s_was_down;
 
@@ -102,7 +92,6 @@ void bsp_touch_notify(void) {
     if (s_wait_sem) xSemaphoreGive(s_wait_sem);
 }
 
-/* Rotate/mirror raw chip coords into display space. */
 static void apply_orientation(const bsp_touch_t *t,
                               const bsp_touch_raw_point_t *in,
                               bsp_touch_point_t *out, int n) {
@@ -120,13 +109,13 @@ static void apply_orientation(const bsp_touch_t *t,
 int bsp_touch_read(bsp_touch_point_t *points, uint8_t max_points) {
     if (!s_touch || !points || max_points == 0) return 0;
 
-    /* No task, chip-backed: sync-poll once so the cached snapshot is current. */
+    /* No task: refresh the snapshot from the chip on demand. */
     if (!s_has_task && s_touch->poll) {
         bsp_touch_raw_point_t raw[BSP_TOUCH_MAX_POINTS];
         uint8_t max = s_touch->max_points ? s_touch->max_points : BSP_TOUCH_MAX_POINTS;
         if (max > BSP_TOUCH_MAX_POINTS) max = BSP_TOUCH_MAX_POINTS;
-        uint8_t n = 0; bool fresh = false, keep = false;
-        if (s_touch->poll(s_touch, raw, max, &n, &fresh, &keep) == ESP_OK && fresh) {
+        uint8_t n = 0; bool keep = false;
+        if (s_touch->poll(s_touch, raw, max, &n, &keep) == ESP_OK) {
             bsp_touch_point_t pts[BSP_TOUCH_MAX_POINTS];
             apply_orientation(s_touch, raw, pts, n);
             bsp_touch_emit_event(pts, n);
@@ -176,41 +165,38 @@ static void attach_isr(bsp_touch_t *t) {
 }
 #endif  /* ESP_PLATFORM */
 
-/* One tick of the reader task; returns true when the source wants to stay in
- * ACTIVE (be woken again after poll_interval or by INT), false to drop to IDLE
- * (block on the sem forever, INT-only wake). */
 static bool touch_tick(void) {
     bsp_touch_t *t = s_touch;
     if (!t || !t->poll) return false;
 
-    const uint8_t settle = t->settle_count ? t->settle_count : DEFAULT_SETTLE_COUNT;
+    const uint8_t settle  = t->settle_count ? t->settle_count : DEFAULT_SETTLE_COUNT;
+    const bool    has_int = (t->int_io >= 0);
 
-    /* Fully-idle gate: skip the poll unless the ISR nudged us or we're still
-     * in the release settle window (or fingers are down). */
-    if (!t->int_pending && s_no_touch_count >= settle && !s_was_down) return false;
+    if (has_int && !t->int_pending && s_no_touch_count >= settle && !s_was_down)
+        return false;
     t->int_pending = false;
 
     bsp_touch_raw_point_t raw[BSP_TOUCH_MAX_POINTS];
     uint8_t max = t->max_points ? t->max_points : BSP_TOUCH_MAX_POINTS;
     if (max > BSP_TOUCH_MAX_POINTS) max = BSP_TOUCH_MAX_POINTS;
     uint8_t n = 0;
-    bool fresh = false, keep_polling = false;
+    bool keep_polling = false;
 
-    if (t->poll(t, raw, max, &n, &fresh, &keep_polling) != ESP_OK) {
-        return true;   /* transient I/O -- try again next tick */
+    if (t->poll(t, raw, max, &n, &keep_polling) != ESP_OK) return true;
+
+    bsp_touch_point_t pts[BSP_TOUCH_MAX_POINTS];
+    apply_orientation(t, raw, pts, n);
+    if (n > 0) {
+        bsp_touch_emit_event(pts, n);
+        s_was_down = true;
+        s_no_touch_count = 0;
+    } else {
+        if (s_was_down) bsp_touch_emit_event(pts, 0);
+        s_was_down = false;
+        if (s_no_touch_count < 255) s_no_touch_count++;
     }
 
-    if (fresh) {
-        bsp_touch_point_t pts[BSP_TOUCH_MAX_POINTS];
-        apply_orientation(t, raw, pts, n);
-        /* Emit release-once: fingers down -> always emit; fingers up -> emit
-         * only if we were down (so upstream sees the release edge). */
-        if (n > 0 || s_was_down) bsp_touch_emit_event(pts, n);
-        s_was_down = (n > 0);
-        s_no_touch_count = (n == 0) ? (uint8_t)(s_no_touch_count + 1) : 0;
-    }
-
-    return keep_polling || s_was_down || s_no_touch_count < settle;
+    return keep_polling || s_was_down || s_no_touch_count < settle || !has_int;
 }
 
 static void touch_task(void *arg) {

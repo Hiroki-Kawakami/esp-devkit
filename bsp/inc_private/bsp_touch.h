@@ -23,16 +23,15 @@ typedef struct {
 typedef struct bsp_touch bsp_touch_t;
 
 struct bsp_touch {
-    /* Chip vtable ---------------------------------------------------------- */
-
-    /* Read one frame from the chip. Fill up to `max` raw (chip-space) points into
-     * `out`, set *count. Set *fresh = true if a new frame was actually read
-     * (count 0 with fresh = true is a release). Set *keep_polling = true to ask
-     * the common layer to keep ticking regardless of touch state (e.g. GT911
-     * HotKnot session). */
+    /* Return the current best-known touch state. Chips with a data-ready
+     * handshake cache the last authoritative frame and return it on polls
+     * where nothing new arrived -- callers only see counts, never "unknown",
+     * and press/release edges are derived from consecutive polls. Set
+     * *keep_polling to keep the task ticking irrespective of touch state
+     * (GT911 HotKnot uses this to run its session step). */
     esp_err_t (*poll)(bsp_touch_t *self,
                       bsp_touch_raw_point_t *out, uint8_t max,
-                      uint8_t *count, bool *fresh, bool *keep_polling);
+                      uint8_t *count, bool *keep_polling);
     esp_err_t (*deinit)(bsp_touch_t *self);
 
     /* Chip fills at create-time; common layer reads ------------------------- */
