@@ -7,18 +7,20 @@
  * file only supplies the panel-specific bits -- geometry, scanline format, the
  * waveform LUTs, and the board's GPIO map -- and hands them to epd_ll_create.
  *
- * Waveform LUT format: one T(...) row == one frame; each of the 16 grayscale
- * columns (0 = black .. 15 = white) gets a 2-bit action:
- *   0 = hold (no drive)   B = drive to black   W = drive to white
- * Refresh replays every row top-to-bottom; the frame count is the array length
- * (no terminator). The CLEAR waveform (uniform drive to white) is the bring-up
- * baseline, run as CLEAR_FULL.
+ * Waveform LUT format (epd_waveform_lut.h macros): one F(...)/T(...) row ==
+ * one frame; F selects the 2-bit action by the CURRENT (from) gray, T by the
+ * TARGET (to) gray (0 = hold, B = drive to black, W = drive to white).
+ * Refresh replays every frame top-to-bottom; the frame count is the array
+ * length (no terminator). SETTLE frames may be skipped by the engine to
+ * unblock a waiting draw; STOP frames always run (the CLEAR tail keeps them
+ * so a clear is never cut short).
  */
 
 #include "ed047tc1.h"
 #include "epd_ll.h"
 #include <stdint.h>
 #include <stddef.h>
+#include "epd_waveform_lut.h"
 
 /* Panel geometry + scanline format. ED047TC1 is driven at 2 bits/pixel on the
  * 8-bit source bus, so one scanline is width/4 bytes. */
@@ -28,17 +30,10 @@
 #define ED047TC1_LINE_BYTES   (ED047TC1_WIDTH / 4)   /* 240 */
 #define ED047TC1_LINE_PADDING 16
 
-/* Table-local shorthand: T() packs one frame; B/W name the drive directions
- * (0 = hold). All three are #undef'd after the tables so they don't leak. */
-#define T(d0,d1,d2,d3,d4,d5,d6,d7,d8,d9,da,db,dc,dd,de,df) \
-  (uint32_t)((d0<<0)|(d1<<2)|(d2<<4)|(d3<<6)|(d4<<8)|(d5<<10)|(d6<<12)|(d7<<14)| \
-             (d8<<16)|(d9<<18)|(da<<20)|(db<<22)|(dc<<24)|(dd<<26)|(de<<28)|(df<<30))
-#define B 1   /* drive to black */
-#define W 2   /* drive to white */
-#define STOP 0u   /* settle frame: every gray holds / column released (no drive) */
-
-/* 16-grayscale, flashing, highest quality (GC16-class). */
-static const uint32_t ed047tc1_lut_quality[] = {
+/* 16-grayscale, flashing, highest quality (GC16-class). The flash prelude is
+ * from-indexed (F): the drive alternates against the CURRENT gray, so already-
+ * white pixels flash in counter-phase instead of being slammed with the rest. */
+static const uint32_t ed047tc1_lut_quality[][16] = {
 /*         0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15   (gray column) */
 /*  1 */ T(B, B, B, B, B, B, B, B, B, B, B, B, B, B, B, W),
 /*  2 */ T(W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, B),
@@ -60,13 +55,13 @@ static const uint32_t ed047tc1_lut_quality[] = {
 /* 18 */ T(B, B, 0, B, B, B, W, W, W, B, B, B, 0, W, W, W),
 /* 19 */ T(B, B, W, W, 0, B, B, B, B, W, W, W, W, W, W, W),
 /* 20 */ T(B, B, B, B, W, W, W, W, W, W, W, W, W, W, W, W),
-    /* settle tail (16 frames, no drive) */
-    STOP, STOP, STOP, STOP, STOP, STOP, STOP, STOP,
-    STOP, STOP, STOP, STOP, STOP, STOP, STOP, STOP,
+    /* settle tail (16 frames, no drive, skippable) */
+    SETTLE, SETTLE, SETTLE, SETTLE, SETTLE, SETTLE, SETTLE, SETTLE,
+    SETTLE, SETTLE, SETTLE, SETTLE, SETTLE, SETTLE, SETTLE, SETTLE,
 };
 
-/* 2-level fast direct update: only black/white columns drive, mid-grays held. */
-static const uint32_t ed047tc1_lut_fast[] = {
+/* 2-level fast direct update: only black/white targets drive, mid-grays held. */
+static const uint32_t ed047tc1_lut_fast[][16] = {
 /*         0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15   (gray column) */
 /*  1 */ T(W, W, W, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, B, B, B),
 /*  2 */ T(W, W, W, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, B, B, B),
@@ -75,14 +70,15 @@ static const uint32_t ed047tc1_lut_fast[] = {
 /*  5 */ T(B, B, B, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, W, W, W),
 /*  6 */ T(B, B, B, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, W, W, W),
 /*  7 */ T(B, B, B, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, W, W, W),
-    /* settle tail (shorter: fast mode trades settle for speed) */
-    STOP, STOP, STOP, STOP,
+    /* settle tail (shorter: fast mode trades settle for speed; skippable) */
+    SETTLE, SETTLE, SETTLE, SETTLE,
 };
 
-/* Drive everything to white. Uniform frames, so (with FULL) refresh reuses one
- * prebuilt scanline for all rows -- a fast way to establish a known white
- * baseline. */
-static const uint32_t ed047tc1_lut_clear[] = {
+/* Drive everything to white. Uniform frames, so the engine reuses one prebuilt
+ * scanline for all rows -- a fast way to establish a known white baseline. The
+ * tail is STOP, not SETTLE: a clear must never be cut short or the following
+ * refresh starts from an unsettled glass. */
+static const uint32_t ed047tc1_lut_clear[][16] = {
 /*         0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15   (gray column) */
 /*  1 */ T(W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W),
 /*  2 */ T(B, B, B, B, B, B, B, B, B, B, B, B, B, B, B, B),
@@ -99,26 +95,26 @@ static const uint32_t ed047tc1_lut_clear[] = {
 /* 13 */ T(W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W),
 /* 14 */ T(W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W),
 /* 15 */ T(W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W),
-    /* settle tail (16 frames, no drive) */
+    /* settle tail (16 frames, no drive, NOT skippable) */
     STOP, STOP, STOP, STOP, STOP, STOP, STOP, STOP,
     STOP, STOP, STOP, STOP, STOP, STOP, STOP, STOP,
 };
 
-#undef T
-#undef B
-#undef W
-#undef STOP
+#define LUT_STEPS(lut) (sizeof(lut) / sizeof((lut)[0]))
+_Static_assert(LUT_STEPS(ed047tc1_lut_quality) <= EPD_WF_STEP_MAX, "quality LUT too long");
+_Static_assert(LUT_STEPS(ed047tc1_lut_fast)    <= EPD_WF_STEP_MAX, "fast LUT too long");
+_Static_assert(LUT_STEPS(ed047tc1_lut_clear)   <= EPD_WF_STEP_MAX, "clear LUT too long");
 
-static const uint32_t *get_waveform_lut(bsp_epd_mode_t mode, size_t *steps) {
-    switch (mode) {
-        case BSP_EPD_MODE_FAST:
-            *steps = sizeof(ed047tc1_lut_fast) / sizeof(uint32_t);
+static epd_ll_lut_t get_waveform_lut(epd_ll_waveform_t waveform, size_t *steps) {
+    switch (waveform) {
+        case EPD_LL_WAVEFORM_FAST:
+            *steps = LUT_STEPS(ed047tc1_lut_fast);
             return ed047tc1_lut_fast;
-        case BSP_EPD_MODE_QUALITY:
-            *steps = sizeof(ed047tc1_lut_quality) / sizeof(uint32_t);
+        case EPD_LL_WAVEFORM_QUALITY:
+            *steps = LUT_STEPS(ed047tc1_lut_quality);
             return ed047tc1_lut_quality;
-        case BSP_EPD_MODE_CLEAR:
-            *steps = sizeof(ed047tc1_lut_clear) / sizeof(uint32_t);
+        case EPD_LL_WAVEFORM_CLEAR:
+            *steps = LUT_STEPS(ed047tc1_lut_clear);
             return ed047tc1_lut_clear;
         default:
             *steps = 0;

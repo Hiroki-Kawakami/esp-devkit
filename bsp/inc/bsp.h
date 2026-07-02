@@ -40,9 +40,12 @@ void bsp_display_draw_bitmap(bsp_rect_t area, const void *pixels, bsp_rotation_t
 void *bsp_display_get_frame_buffer(int fb_index);
 void bsp_display_flush(int fb_index);
 
-// EPD-only: no-op on non-EPD panels.
+// EPD-only: no-op on non-EPD panels. refresh honors `area`; OR
+// BSP_EPD_MODE_ALL into the mode to drive every pixel of the area (ghost
+// clear). clear blanks the whole panel to white (the known-baseline reset).
 void bsp_display_set_epd_mode(bsp_epd_mode_t mode);
 void bsp_display_refresh(bsp_rect_t area, bsp_epd_mode_t mode);
+void bsp_display_clear(void);
 
 // MARK: Touch
 int bsp_touch_read(bsp_touch_point_t *points, uint8_t max_points);

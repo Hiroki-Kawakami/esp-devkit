@@ -326,6 +326,17 @@ static esp_err_t display_refresh(bsp_display_t *self, bsp_rect_t area, bsp_epd_m
     return ESP_OK;
 }
 
+/* Blank the panel to white: GRAM + glass, like the device's clear waveform. */
+static esp_err_t display_clear_epd(bsp_display_t *self) {
+    (void)self;
+    if (!s_glass || !s_gram) return ESP_ERR_INVALID_STATE;
+    size_t bytes = (size_t)s_panel_w * s_panel_h * s_bpp;
+    memset(s_gram, 0xFF, bytes);
+    memset(s_glass, 0xFF, bytes);
+    s_dirty = true;
+    return ESP_OK;
+}
+
 /* MARK: bsp_touch vtable */
 
 static esp_err_t touch_poll(bsp_touch_t *self,
@@ -522,6 +533,7 @@ esp_err_t sdl_panel_create(const sdl_panel_config_t *config,
     s_display.flush            = NULL;
     s_display.set_epd_mode     = NULL;
     s_display.refresh          = NULL;
+    s_display.clear            = NULL;
 
     switch (config->type) {
     case BSP_DISPLAY_TYPE_RGB:
@@ -550,6 +562,7 @@ esp_err_t sdl_panel_create(const sdl_panel_config_t *config,
         s_display.draw_bitmap  = display_draw_bitmap_epd;
         s_display.set_epd_mode = display_set_epd_mode;
         s_display.refresh      = display_refresh;
+        s_display.clear        = display_clear_epd;
         break;
     }
     case BSP_DISPLAY_TYPE_SPI:

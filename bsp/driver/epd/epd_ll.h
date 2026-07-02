@@ -35,11 +35,27 @@ extern "C" {
  * clocked out the same way as data; the panel ignores them once the latch fires,
  * but they keep CKV asserted long enough for the gate driver to settle.
  *
- * Waveform LUT: one uint32 per frame; each of the 16 gray columns gets a 2-bit
- * action (0 = hold, 1 = drive to black, 2 = drive to white). Replay length is the
- * step count. The scanline format is fixed at 2 bits/pixel (4 px/byte, leftmost
- * in the high pair), matching the action encoding.
+ * Waveform LUT: `const uint32_t lut[steps][16]` -- one 16-word row per frame
+ * indexed by the on-glass gray (`from`); each word packs a 2-bit action per
+ * target gray (`to`): action = (lut[step][from] >> (to*2)) & 3 (0 = hold,
+ * 1 = drive to black, 2 = drive to white). Author tables with the macros in
+ * epd_waveform_lut.h; at most EPD_WF_STEP_MAX (62) frames. The scanline format
+ * is fixed at 2 bits/pixel (4 px/byte, leftmost in the high pair), matching
+ * the action encoding.
  */
+
+/* Waveforms epd_ll asks the panel descriptor for (decoupled from
+ * bsp_epd_mode_t: CLEAR is not a refresh mode, it backs the clear op and the
+ * bring-up white baseline). */
+typedef enum {
+    EPD_LL_WAVEFORM_FAST    = 0,  /* 2-level direct update                    */
+    EPD_LL_WAVEFORM_QUALITY = 1,  /* 16 grayscales, flashing                  */
+    EPD_LL_WAVEFORM_CLEAR   = 2,  /* uniform drive to white (required)        */
+    EPD_LL_WAVEFORM_COUNT
+} epd_ll_waveform_t;
+
+typedef const uint32_t (*epd_ll_lut_t)[16];
+
 typedef struct {
     int data_pins[8];   /* DB0..DB7                                   */
     int sph_pin;        /* STH (horizontal start pulse, i80 CS)       */
@@ -58,13 +74,12 @@ typedef struct {
     int      height;        /* panel height, px                       */
     uint16_t line_bytes;    /* scanline data length, in bytes         */
     uint8_t  line_padding;  /* extra trailing bytes per scanline tx   */
-    /* Time-axis waveform LUT for a refresh mode (the FULL flag is stripped before
-     * the call): returns the LUT and writes its frame count to *steps, or returns
-     * NULL / *steps = 0 when the panel has no waveform for that mode. Adding a
-     * refresh mode is just another case here -- no config churn. Must include a
-     * BSP_EPD_MODE_CLEAR waveform: the bring-up white baseline runs it as
-     * CLEAR_FULL. Returned tables are caller-owned and must outlive the display. */
-    const uint32_t *(*get_waveform_lut)(bsp_epd_mode_t mode, size_t *steps);
+    /* Waveform LUT for `waveform`: returns the table and writes its frame count
+     * to *steps, or returns NULL / *steps = 0 when the panel has none (queried
+     * once at create; CLEAR is mandatory -- it backs the clear op and the
+     * bring-up white baseline). Returned tables are caller-owned and must
+     * outlive the display. */
+    epd_ll_lut_t (*get_waveform_lut)(epd_ll_waveform_t waveform, size_t *steps);
     uint8_t  task_priority;     /* async refresh-task priority             */
     int      task_affinity;     /* core to pin the refresh task to; <0 -> no affinity */
 } epd_ll_config_t;

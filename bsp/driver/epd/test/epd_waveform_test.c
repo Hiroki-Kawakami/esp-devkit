@@ -2,281 +2,365 @@
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 Hiroki Kawakami
  *
- * Host unit test for the pure transaction-index waveform core (epd_waveform.h).
- * The device path (i80 bus, async task, locking) is not exercised here -- only
- * the SoC-independent logic: diff-skip on draw, slot allocation, the per-frame
- * action table, scanline packing, and terminal generation reclaim (the one place
- * the design can corrupt -- a reused id leaking old pixels into a new waveform).
+ * Host unit test for the pure per-pixel waveform core (epd_waveform.h) and the
+ * LUT authoring macros (epd_waveform_lut.h). The device path (i80 bus, async
+ * task, locking) is not exercised here -- only the SoC-independent logic:
+ * diff-skip and conflict detection on draw, the per-frame b1 tables, scanline
+ * packing, settle-skip, and terminal retire (the one place the design can
+ * corrupt -- a stale start frame replaying the wrong step).
  *
  * Build + run:  ./run.sh   (in this directory; compiles + runs, no deps)
  */
 #include "../epd_waveform.h"
+#include "../epd_waveform_lut.h"
 #include <stdio.h>
 #include <string.h>
-#include <assert.h>
 
 static int g_checks;
 #define CHECK(cond) do { g_checks++; if (!(cond)) { \
     fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); return 1; } } while (0)
 
-/* Pack helpers for readable expectations: a frame word and a scanline byte. */
 #define A4(a,b,c,d) ((uint8_t)(((a)<<6)|((b)<<4)|((c)<<2)|(d)))
+#define PX(confirmed, target, b1) ((uint16_t)(((b1) << 8) | ((confirmed) << 4) | (target)))
 
-/* A 2-frame LUT: frame 0 drives gray 0 -> black and gray 15 -> white, frame 1
- * holds everything (settle). Mid-grays always hold. */
-static const uint32_t LUT2[] = {
-    /* gray 0 = B(1), gray 15 = W(2), rest hold */
-    (uint32_t)(1u << (0 * 2)) | (uint32_t)(2u << (15 * 2)),
-    0u,
+/* 4-frame quality-style LUT: one from-dependent flash frame, one to-dependent
+ * drive frame, then a 2-frame skippable settle tail. */
+static const uint32_t LUT_Q[][16] = {
+    F(B, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, W),
+    T(B, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, W),
+    SETTLE,
+    SETTLE,
 };
+#define LUT_Q_STEPS (sizeof(LUT_Q) / sizeof(LUT_Q[0]))
 
-static int test_draw_diffskip(void) {
-    bool nonidle;
-    /* idle pixel already showing gray 9, draw 9 again -> skip, stays idle. */
-    uint8_t b = (9 << 4) | 0;
-    CHECK(epd_draw_pixel(b, 9, 3, &nonidle) == b);
-    CHECK(nonidle == false);
+/* clear-style LUT: one uniform drive-to-white frame + a NON-skippable STOP. */
+static const uint32_t LUT_C[][16] = {
+    T(W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W),
+    STOP,
+};
+#define LUT_C_STEPS (sizeof(LUT_C) / sizeof(LUT_C[0]))
 
-    /* idle pixel showing 9, draw 4 -> stamp (4, id 3), counts as new non-idle. */
-    CHECK(epd_draw_pixel(b, 4, 3, &nonidle) == ((4 << 4) | 3));
-    CHECK(nonidle == true);
-
-    /* same open generation (id 3), redraw to 7 -> keep id 3, no recount. */
-    uint8_t s = (4 << 4) | 3;
-    CHECK(epd_draw_pixel(s, 7, 3, &nonidle) == ((7 << 4) | 3));
-    CHECK(nonidle == false);
-
-    /* in flight on a different generation (id 5), draw a DIFFERENT gray under open
-     * id 3 -> interrupt onto id 3, no recount (was already non-idle). */
-    uint8_t f = (2 << 4) | 5;
-    CHECK(epd_draw_pixel(f, 12, 3, &nonidle) == ((12 << 4) | 3));
-    CHECK(nonidle == false);
-
-    /* in flight on a different generation, redraw the SAME target gray -> skip,
-     * let that generation finish (no restart, no re-stamp). */
-    CHECK(epd_draw_pixel(f, 2, 3, &nonidle) == f);
-    CHECK(nonidle == false);
-    return 0;
-}
-
-static int test_alloc_exhaust(void) {
-    epd_tx_t tx[EPD_TX_SLOTS] = {0};
-    for (int i = 1; i < EPD_TX_SLOTS; i++) {
-        int id = epd_tx_alloc(tx);
-        CHECK(id == i);
-        CHECK(tx[id].state == EPD_TX_PENDING);
+static int test_lut_macros(void) {
+    /* I packs to-indexed 2-bit actions from bit 0 up. */
+    CHECK(I(B, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, W) ==
+          ((uint32_t)1 | ((uint32_t)2 << 30)));
+    /* One STOP / SETTLE is exactly one frame (the old scalar-flattening trap). */
+    CHECK(LUT_C_STEPS == 2);
+    CHECK(LUT_Q_STEPS == 4);
+    for (int i = 0; i < 16; i++) {
+        CHECK(LUT_Q[2][i] == EPD_SETTLE_WORD);   /* SETTLE = marker words */
+        CHECK(LUT_C[1][i] == 0);                 /* STOP = real all-hold words */
     }
-    CHECK(epd_tx_alloc(tx) == 0);             /* 15 used -> exhausted */
-    tx[7].state = EPD_TX_FREE;
-    CHECK(epd_tx_alloc(tx) == 7);             /* freed slot is reusable */
+    /* F: action selected by from; T: action selected by to. */
+    CHECK(((LUT_Q[0][0]  >> (15 * 2)) & 3) == B);   /* from 0, any to -> B */
+    CHECK(((LUT_Q[0][15] >> (0 * 2))  & 3) == W);   /* from 15, any to -> W */
+    CHECK(((LUT_Q[1][7]  >> (0 * 2))  & 3) == B);   /* any from, to 0 -> B */
+    CHECK(((LUT_Q[1][7]  >> (15 * 2)) & 3) == W);   /* any from, to 15 -> W */
+    CHECK(((LUT_Q[1][7]  >> (5 * 2))  & 3) == 0);
     return 0;
 }
 
-static int test_act_tab(void) {
-    epd_tx_t tx[EPD_TX_SLOTS] = {0};
-    tx[3] = (epd_tx_t){ .lut = LUT2, .steps = 2, .frame = 0, .state = EPD_TX_ACTIVE };
-    tx[4] = (epd_tx_t){ .lut = LUT2, .steps = 2, .frame = 0, .state = EPD_TX_PENDING };
+static int test_waveform_init(void) {
+    epd_waveform_t wf;
+    CHECK(epd_waveform_init(&wf, LUT_Q, LUT_Q_STEPS));
+    CHECK(wf.steps == 4 && wf.first_skippable == 2);
+    CHECK(epd_waveform_init(&wf, LUT_C, LUT_C_STEPS));
+    CHECK(wf.steps == 2 && wf.first_skippable == 2);   /* STOP tail: not skippable */
 
-    uint8_t act[256];
-    epd_build_act_tab(tx, act);
-    /* ACTIVE id 3, gray 0 -> black(1); gray 15 -> white(2); gray 5 -> hold(0). */
-    CHECK(act[(0 << 4) | 3] == 1);
-    CHECK(act[(15 << 4) | 3] == 2);
-    CHECK(act[(5 << 4) | 3] == 0);
-    /* PENDING id 4 and idle id 0 always hold, regardless of gray. */
-    CHECK(act[(0 << 4) | 4] == 0);
-    CHECK(act[(15 << 4) | 4] == 0);
-    CHECK(act[(0 << 4) | 0] == 0);
+    CHECK(!epd_waveform_init(&wf, LUT_Q, 0));
+    CHECK(!epd_waveform_init(&wf, LUT_Q, EPD_WF_STEP_MAX + 1));
+    CHECK(!epd_waveform_init(&wf, NULL, 1));
+
+    /* a frame mixing marker and real words is rejected */
+    static const uint32_t mixed[][16] = {
+        { EPD_SETTLE_WORD, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    };
+    CHECK(!epd_waveform_init(&wf, mixed, 1));
+    return 0;
+}
+
+static int test_draw_px(void) {
+    bool conflict, nonidle;
+    /* idle showing 9, draw 9 -> diff-skip. */
+    uint16_t idle9 = PX(9, 9, EPD_B1_IDLE);
+    CHECK(epd_draw_px(idle9, 9, &conflict, &nonidle) == idle9);
+    CHECK(!conflict && !nonidle);
+
+    /* idle showing 9, draw 4 -> PENDING(confirmed 9, target 4). */
+    CHECK(epd_draw_px(idle9, 4, &conflict, &nonidle) == PX(9, 4, EPD_B1_PENDING));
+    CHECK(!conflict && nonidle);
+
+    /* pending, retarget -> keep PENDING, no recount. */
+    uint16_t pend = PX(9, 4, EPD_B1_PENDING);
+    CHECK(epd_draw_px(pend, 7, &conflict, &nonidle) == PX(9, 7, EPD_B1_PENDING));
+    CHECK(!conflict && !nonidle);
+    CHECK(epd_draw_px(pend, 4, &conflict, &nonidle) == pend);   /* same target */
+    CHECK(!conflict && !nonidle);
+
+    /* active toward 4: redraw 4 -> unchanged (finish it); draw 12 -> CONFLICT,
+     * unchanged (never interrupt). */
+    uint16_t act = PX(9, 4, epd_b1_armed(0, 10));
+    CHECK(epd_px_is_active(act));
+    CHECK(epd_draw_px(act, 4, &conflict, &nonidle) == act);
+    CHECK(!conflict && !nonidle);
+    CHECK(epd_draw_px(act, 12, &conflict, &nonidle) == act);
+    CHECK(conflict && !nonidle);
+
+    CHECK(!epd_px_is_active(idle9));
+    CHECK(!epd_px_is_active(pend));
+    return 0;
+}
+
+static int test_frame_tab(void) {
+    epd_waveform_t wf[EPD_WF_SLOTS] = {0};
+    CHECK(epd_waveform_init(&wf[0], LUT_Q, LUT_Q_STEPS));
+    CHECK(epd_waveform_init(&wf[1], LUT_C, LUT_C_STEPS));
+
+    const uint32_t *rowset[256];
+    uint8_t retire[256];
+
+    /* engine at frame 10; pixels started at 10 are at step 0, at 9 -> step 1... */
+    epd_build_frame_tab(wf, 10, false, rowset, retire);
+
+    CHECK(rowset[EPD_B1_IDLE] == epd_hold_rowset && !retire[EPD_B1_IDLE]);
+    CHECK(rowset[EPD_B1_PENDING] == epd_hold_rowset && !retire[EPD_B1_PENDING]);
+
+    uint8_t armed = epd_b1_armed(0, 10);        /* start 11: step 63 this frame */
+    CHECK(rowset[armed] == epd_hold_rowset && !retire[armed]);
+
+    CHECK(rowset[(0 << 6) | 10] == LUT_Q[0]);   /* step 0: from-flash frame */
+    CHECK(!retire[(0 << 6) | 10]);
+    CHECK(rowset[(0 << 6) | 9] == LUT_Q[1]);    /* step 1 */
+    CHECK(!retire[(0 << 6) | 9]);
+    CHECK(rowset[(0 << 6) | 8] == epd_hold_rowset);   /* step 2: settle -> hold */
+    CHECK(!retire[(0 << 6) | 8]);               /* no skip: keeps settling */
+    CHECK(rowset[(0 << 6) | 7] == epd_hold_rowset);   /* step 3: last frame */
+    CHECK(retire[(0 << 6) | 7]);
+
+    /* skip_settle: everything at/entering the skippable tail retires. */
+    epd_build_frame_tab(wf, 10, true, rowset, retire);
+    CHECK(!retire[(0 << 6) | 10]);              /* step 0 still drives */
+    CHECK(retire[(0 << 6) | 9]);                /* step 1: remaining all settle */
+    CHECK(retire[(0 << 6) | 8]);
+    /* ...but the clear LUT's STOP tail is not skippable. */
+    CHECK(!retire[(1 << 6) | 10]);              /* clear step 0 */
+    CHECK(rowset[(1 << 6) | 9] == LUT_C[1]);    /* STOP renders as a real frame */
+    CHECK(retire[(1 << 6) | 9]);                /* last step retires normally */
+
+    /* unbound slot 2: self-heals to retire. */
+    CHECK(retire[(2 << 6) | 10] && rowset[(2 << 6) | 10] == epd_hold_rowset);
     return 0;
 }
 
 static int test_blit_line(void) {
-    epd_tx_t tx[EPD_TX_SLOTS] = {0};
-    tx[1] = (epd_tx_t){ .lut = LUT2, .steps = 2, .frame = 0, .state = EPD_TX_ACTIVE };
-    uint8_t act[256];
-    epd_build_act_tab(tx, act);
+    epd_waveform_t wf[EPD_WF_SLOTS] = {0};
+    CHECK(epd_waveform_init(&wf[0], LUT_Q, LUT_Q_STEPS));
+    const uint32_t *rowset[256];
+    uint8_t retire[256];
+    epd_build_frame_tab(wf, 0, false, rowset, retire);
 
-    /* 8 px: black-target/white-target/idle/mid all on id 1, then 4 idle. */
-    uint8_t row[8] = {
-        (0 << 4) | 1, (15 << 4) | 1, (9 << 4) | 0, (5 << 4) | 1,
-        (9 << 4) | 0, (9 << 4) | 0, (9 << 4) | 0, (9 << 4) | 0,
+    uint8_t s0 = (0 << 6) | 0;   /* step 0 (from-flash) */
+    uint8_t s1 = (0 << 6) | 63;  /* step 1 (to-drive)   */
+    uint16_t row[8] = {
+        PX(0, 15, s0),           /* step0 from 0 -> B (flash by from)      */
+        PX(15, 0, s0),           /* step0 from 15 -> W                     */
+        PX(15, 0, s1),           /* step1 to 0 -> B                        */
+        PX(0, 15, s1),           /* step1 to 15 -> W                       */
+        PX(5, 9, s0),            /* step0 from 5 -> hold                   */
+        PX(9, 4, EPD_B1_PENDING),/* pending -> hold                        */
+        PX(9, 9, EPD_B1_IDLE),   /* idle -> hold                           */
+        PX(0, 15, epd_b1_armed(0, 0)),   /* armed -> hold this frame       */
     };
     uint8_t dst[2] = {0xEE, 0xEE};
-    bool driven = epd_blit_line(8, row, act, dst);
-    CHECK(driven == true);
-    CHECK(dst[0] == A4(1, 2, 0, 0));   /* B, W, idle hold, mid hold */
-    CHECK(dst[1] == A4(0, 0, 0, 0));   /* all idle */
+    CHECK(epd_blit_line(8, row, rowset, dst));
+    CHECK(dst[0] == A4(B, W, B, W));
+    CHECK(dst[1] == A4(0, 0, 0, 0));
 
-    /* an all-idle row drives nothing. */
-    uint8_t idle[4] = { (9 << 4), (1 << 4), (15 << 4), (3 << 4) };
-    driven = epd_blit_line(4, idle, act, dst);
-    CHECK(driven == false);
+    uint16_t idle[4] = { PX(9,9,0xFF), PX(1,1,0xFF), PX(15,15,0xFF), PX(3,3,0xFF) };
+    CHECK(!epd_blit_line(4, idle, rowset, dst));
     CHECK(dst[0] == 0);
     return 0;
 }
 
-static int test_blit_full(void) {
-    /* FULL drives every pixel by gray, ignoring ids: frame 0 -> gray0=B, gray15=W. */
-    uint8_t row[4] = { (0 << 4) | 7, (15 << 4) | 0, (5 << 4) | 2, (9 << 4) | 0 };
-    uint8_t dst;
-    bool driven = epd_blit_line_full(4, row, LUT2[0], &dst);
-    CHECK(driven == true);
-    CHECK(dst == A4(1, 2, 0, 0));
+static int test_retire_row(void) {
+    epd_waveform_t wf[EPD_WF_SLOTS] = {0};
+    CHECK(epd_waveform_init(&wf[0], LUT_Q, LUT_Q_STEPS));
+    const uint32_t *rowset[256];
+    uint8_t retire[256];
+    /* frame 3: pixels started at 0 are at step 3 (last) -> retire. */
+    epd_build_frame_tab(wf, 3, false, rowset, retire);
+
+    uint8_t ending = (0 << 6) | 0, running = (0 << 6) | 2;
+    uint16_t row[4] = {
+        PX(9, 9, EPD_B1_IDLE), PX(15, 4, ending), PX(15, 2, running), PX(15, 7, ending),
+    };
+    CHECK(epd_retire_row(4, row, retire) == 2);
+    CHECK(row[1] == PX(4, 4, EPD_B1_IDLE));    /* confirmed = target, idle */
+    CHECK(row[3] == PX(7, 7, EPD_B1_IDLE));
+    CHECK(row[2] == PX(15, 2, running));       /* mid-flight untouched */
+    CHECK(row[0] == PX(9, 9, EPD_B1_IDLE));
     return 0;
 }
 
-static int test_reclaim(void) {
-    /* row with ids 0,3,5,3; reclaim only id 3 -> those go idle, gray kept. */
-    uint8_t row[4] = { (9 << 4) | 0, (4 << 4) | 3, (2 << 4) | 5, (7 << 4) | 3 };
-    int freed = epd_reclaim_row(4, row, (uint16_t)(1u << 3));
-    CHECK(freed == 2);
-    CHECK(row[1] == (4 << 4));          /* id cleared, gray 4 kept */
-    CHECK(row[3] == (7 << 4));
-    CHECK(row[2] == ((2 << 4) | 5));    /* id 5 untouched */
-    CHECK(row[0] == (9 << 4));          /* already idle */
-    return 0;
-}
+/* End-to-end: draw -> arm -> frame loop across the 6-bit frame-counter wrap,
+ * asserting the full waveform replays (no skipped first step, no stale-step
+ * corruption) and the terminal retire confirms the target. */
+static int test_lifecycle_wrap(void) {
+    enum { W_ = 8 };
+    epd_waveform_t wf[EPD_WF_SLOTS] = {0};
+    CHECK(epd_waveform_init(&wf[0], LUT_Q, LUT_Q_STEPS));
 
-/* End-to-end: drive one generation to completion through the frame loop the way
- * epd_ll.c will, and assert the terminal reclaim returns the pixel to idle with
- * the target gray confirmed -- so reusing the id later cannot leak old pixels. */
-static int test_generation_lifecycle(void) {
-    enum { W = 8 };
-    uint8_t state[W];
-    for (int i = 0; i < W; i++) state[i] = (15 << 4);   /* all white, idle */
+    uint16_t state[W_];
+    for (int i = 0; i < W_; i++) state[i] = PX(15, 15, EPD_B1_IDLE);
     int row_nonidle = 0;
 
-    /* draw: set the left 4 px to black (gray 0) under a freshly allocated gen. */
-    epd_tx_t tx[EPD_TX_SLOTS] = {0};
-    int id = epd_tx_alloc(tx);
-    CHECK(id == 1);
+    /* draw: left 4 px to black. */
+    bool conflict, ni;
     for (int x = 0; x < 4; x++) {
-        bool ni; state[x] = epd_draw_pixel(state[x], 0, id, &ni); if (ni) row_nonidle++;
+        state[x] = epd_draw_px(state[x], 0, &conflict, &ni);
+        CHECK(!conflict);
+        if (ni) row_nonidle++;
     }
     CHECK(row_nonidle == 4);
 
-    /* refresh: bind the LUT, activate. */
-    tx[id].lut = LUT2; tx[id].steps = 2; tx[id].frame = 0; tx[id].state = EPD_TX_ACTIVE;
+    /* refresh at engine frame 61 -> start 62, straddling the mod-64 wrap. */
+    unsigned frame = 61;
+    uint8_t b1 = epd_b1_armed(0, frame);
+    CHECK(b1 == ((0 << 6) | 62));
+    for (int x = 0; x < 4; x++) state[x] = (uint16_t)((state[x] & 0xFF) | (b1 << 8));
 
-    /* run the frame loop until no slot is ACTIVE. */
-    int frames = 0;
-    for (;;) {
-        uint16_t active_mask, ended;
-        if (!epd_frame_mark(tx, &active_mask, &ended)) break;
-        uint8_t act[256]; epd_build_act_tab(tx, act);
-        uint8_t dst[W / 4];
-        bool driven = epd_blit_line(W, state, act, dst);
-        if (frames == 0) { CHECK(driven); CHECK(dst[0] == A4(1, 1, 1, 1)); CHECK(dst[1] == 0); }
-        if (ended) row_nonidle -= epd_reclaim_row(W, state, ended);
-        epd_frame_advance(tx, active_mask);
-        frames++;
+    const uint32_t *rowset[256];
+    uint8_t retire[256];
+    uint8_t dst[W_ / 4];
+    int frames_driven = 0;
+    for (int f = 0; f < 10 && row_nonidle > 0; f++) {
+        frame = (frame + 1) & 63;
+        epd_build_frame_tab(wf, (uint8_t)frame, false, rowset, retire);
+        bool driven = epd_blit_line(W_, state, rowset, dst);
+        if (frame == 62) {   /* step 0: from 15 -> W flash */
+            CHECK(driven);
+            CHECK(dst[0] == A4(W, W, W, W) && dst[1] == 0);
+        }
+        if (frame == 63) {   /* step 1: to 0 -> B */
+            CHECK(driven);
+            CHECK(dst[0] == A4(B, B, B, B) && dst[1] == 0);
+        }
+        if (frame == 0 || frame == 1) CHECK(!driven);   /* settle */
+        if (driven) frames_driven++;
+        row_nonidle -= epd_retire_row(W_, state, retire);
     }
-    CHECK(frames == 2);                 /* LUT2 has 2 frames */
-    CHECK(row_nonidle == 0);            /* every pixel reclaimed to idle */
-    for (int x = 0; x < 4; x++) CHECK(state[x] == (0 << 4));   /* black confirmed, id 0 */
-    for (int x = 4; x < W; x++) CHECK(state[x] == (15 << 4));  /* untouched white */
+    CHECK(frames_driven == 2);
+    CHECK(row_nonidle == 0);                      /* retired on step 3, frame 1 */
+    for (int x = 0; x < 4; x++) CHECK(state[x] == PX(0, 0, EPD_B1_IDLE));
+    for (int x = 4; x < W_; x++) CHECK(state[x] == PX(15, 15, EPD_B1_IDLE));
 
-    /* slot 1 is FREE again and the next alloc reuses it -- a fresh draw over the
-     * now-black pixels must not inherit anything from the finished generation. */
-    CHECK(tx[1].state == EPD_TX_FREE);
-    int id2 = epd_tx_alloc(tx);
-    CHECK(id2 == 1);
-    bool ni;
-    /* the reclaimed pixel reads as idle gray 0; drawing white diffs and stamps. */
-    uint8_t b = epd_draw_pixel(state[0], 15, id2, &ni);
-    CHECK(b == ((15 << 4) | 1));
-    CHECK(ni == true);
-    /* drawing black again (its confirmed value) diff-skips. */
-    CHECK(epd_draw_pixel(state[0], 0, id2, &ni) == state[0]);
-    CHECK(ni == false);
+    /* redraw black -> diff-skip against the new confirmed value. */
+    CHECK(epd_draw_px(state[0], 0, &conflict, &ni) == state[0]);
+    CHECK(!ni);
     return 0;
 }
 
-/* Two non-overlapping generations of different lengths run concurrently and each
- * reclaims independently -- the pipelining Phase 6 exists for. */
+/* Two pixels armed on different frames progress independently -- the per-pixel
+ * replacement for the old 15-generation pipeline (no slot limit). */
 static int test_concurrent_generations(void) {
-    /* gen A: 1-frame LUT (drive gray0->B then done). gen B: LUT2 (2 frames). */
-    static const uint32_t LUT1[] = { (uint32_t)(1u << 0) };
-    enum { W = 8 };
-    uint8_t state[W];
-    for (int i = 0; i < W; i++) state[i] = (15 << 4);
+    epd_waveform_t wf[EPD_WF_SLOTS] = {0};
+    CHECK(epd_waveform_init(&wf[0], LUT_Q, LUT_Q_STEPS));
 
-    epd_tx_t tx[EPD_TX_SLOTS] = {0};
-    int a = epd_tx_alloc(tx), b = epd_tx_alloc(tx);
-    CHECK(a == 1 && b == 2);
-    bool ni;
-    state[0] = epd_draw_pixel(state[0], 0, a, &ni);   /* left pixel -> gen A */
-    state[4] = epd_draw_pixel(state[4], 0, b, &ni);   /* right pixel -> gen B */
-    tx[a] = (epd_tx_t){ .lut = LUT1, .steps = 1, .state = EPD_TX_ACTIVE };
-    tx[b] = (epd_tx_t){ .lut = LUT2, .steps = 2, .state = EPD_TX_ACTIVE };
+    uint16_t state[4] = {
+        PX(15, 0, (0 << 6) | 1),          /* armed at frame 0 -> step = f-1   */
+        PX(15, 15, EPD_B1_IDLE),
+        PX(15, 15, EPD_B1_IDLE),
+        PX(15, 15, EPD_B1_IDLE),
+    };
+    const uint32_t *rowset[256];
+    uint8_t retire[256];
+    uint8_t dst;
 
-    /* frame 0: both drive their pixel to black; A ends here, B continues. */
-    uint16_t am, ended; CHECK(epd_frame_mark(tx, &am, &ended));
-    CHECK(am == (uint16_t)((1u << a) | (1u << b)));
-    CHECK(ended == (uint16_t)(1u << a));          /* only A ends on frame 0 */
-    uint8_t act[256]; epd_build_act_tab(tx, act);
-    uint8_t dst[W / 4];
-    CHECK(epd_blit_line(W, state, act, dst));
-    CHECK(dst[0] == A4(1, 0, 0, 0));              /* state[0] (gen A) drives black */
-    CHECK(dst[1] == A4(1, 0, 0, 0));              /* state[4] (gen B) drives black */
-    epd_reclaim_row(W, state, ended);
-    CHECK(state[0] == (0 << 4));                  /* A reclaimed */
-    CHECK(state[4] == ((0 << 4) | b));            /* B still in flight */
-    epd_frame_advance(tx, am);
-    CHECK(tx[a].state == EPD_TX_FREE && tx[b].state == EPD_TX_ACTIVE);
+    /* frame 1: A at step 0. Arm B mid-scan (starts frame 2). */
+    epd_build_frame_tab(wf, 1, false, rowset, retire);
+    CHECK(epd_blit_line(4, state, rowset, &dst));
+    CHECK(dst == A4(W, 0, 0, 0));                 /* A: from 15 flash W */
+    state[2] = PX(15, 0, epd_b1_armed(0, 1));     /* B armed during frame 1 */
+    CHECK(epd_retire_row(4, state, retire) == 0); /* nobody retires, B safe */
 
-    /* frame 1: only B active, settle frame, then B ends. */
-    CHECK(epd_frame_mark(tx, &am, &ended));
-    CHECK(ended == (uint16_t)(1u << b));
-    epd_build_act_tab(tx, act);
-    epd_reclaim_row(W, state, ended);
-    epd_frame_advance(tx, am);
-    CHECK(state[4] == (0 << 4));
-    CHECK(tx[b].state == EPD_TX_FREE);
+    /* frame 2: A step 1 (to 0 -> B), B step 0 (from 15 -> W). */
+    epd_build_frame_tab(wf, 2, false, rowset, retire);
+    CHECK(epd_blit_line(4, state, rowset, &dst));
+    CHECK(dst == A4(B, 0, W, 0));
+    epd_retire_row(4, state, retire);
 
-    /* engine now idle. */
-    CHECK(!epd_frame_mark(tx, &am, &ended));
+    /* frames 3,4: A settles then retires; B follows one frame behind. */
+    epd_build_frame_tab(wf, 3, false, rowset, retire);
+    CHECK(!epd_blit_line(4, state, rowset, &dst) || dst == A4(0, 0, B, 0));
+    epd_retire_row(4, state, retire);
+    epd_build_frame_tab(wf, 4, false, rowset, retire);
+    epd_retire_row(4, state, retire);
+    CHECK(state[0] == PX(0, 0, EPD_B1_IDLE));     /* A done (step 3 at frame 4) */
+    CHECK(epd_px_is_active(state[2]));            /* B still settling */
+    epd_build_frame_tab(wf, 5, false, rowset, retire);
+    epd_retire_row(4, state, retire);
+    CHECK(state[2] == PX(0, 0, EPD_B1_IDLE));     /* B done one frame later */
     return 0;
 }
 
-/* A generation activated AFTER epd_frame_mark (i.e. during the lock-free scan)
- * must not be advanced before it has been rendered -- it stays at frame 0 so the
- * next frame replays its first frame, not its second. This is the mid-scan
- * activation race. */
-static int test_midscan_activation(void) {
-    epd_tx_t tx[EPD_TX_SLOTS] = {0};
-    tx[1] = (epd_tx_t){ .lut = LUT2, .steps = 2, .frame = 0, .state = EPD_TX_ACTIVE };
+/* settle-skip end-to-end: with a waiter, pixels retire as soon as only the
+ * skippable tail remains -- but a clear-style STOP tail runs to completion. */
+static int test_settle_skip(void) {
+    epd_waveform_t wf[EPD_WF_SLOTS] = {0};
+    CHECK(epd_waveform_init(&wf[0], LUT_Q, LUT_Q_STEPS));
+    CHECK(epd_waveform_init(&wf[1], LUT_C, LUT_C_STEPS));
 
-    /* frame for gen 1; gen 2 is not active yet at mark time. */
-    uint16_t am, ended;
-    CHECK(epd_frame_mark(tx, &am, &ended));
-    CHECK(am == (uint16_t)(1u << 1));             /* only gen 1 rendered this frame */
+    uint16_t state[4] = {
+        PX(15, 0, (0 << 6) | 1),   /* quality, starts frame 1 */
+        PX(15, 15, (1 << 6) | 1),  /* clear,   starts frame 1 */
+        PX(15, 15, EPD_B1_IDLE),
+        PX(15, 15, EPD_B1_IDLE),
+    };
+    const uint32_t *rowset[256];
+    uint8_t retire[256];
 
-    /* ...scan happens here... gen 2 activates mid-scan. */
-    tx[2] = (epd_tx_t){ .lut = LUT2, .steps = 2, .frame = 0, .state = EPD_TX_ACTIVE };
+    /* frame 1 (steps 0): drives, nothing retires even with skip. */
+    epd_build_frame_tab(wf, 1, true, rowset, retire);
+    CHECK(epd_retire_row(4, state, retire) == 0);
+    /* frame 2 (step 1): quality's remaining frames are all SETTLE -> retires
+     * under skip; clear's step 1 is its STOP (last step) -> retires normally,
+     * having run every frame. */
+    epd_build_frame_tab(wf, 2, true, rowset, retire);
+    CHECK(epd_retire_row(4, state, retire) == 2);
+    CHECK(state[0] == PX(0, 0, EPD_B1_IDLE));
+    CHECK(state[1] == PX(15, 15, EPD_B1_IDLE));
 
-    epd_frame_advance(tx, am);                    /* must advance only gen 1 */
-    CHECK(tx[1].frame == 1);                      /* gen 1 stepped */
-    CHECK(tx[2].frame == 0);                      /* gen 2 NOT skipped past frame 0 */
-    CHECK(tx[2].state == EPD_TX_ACTIVE);
+    /* without skip, quality at step 1 does NOT retire. */
+    uint16_t s2[1] = { PX(15, 0, (0 << 6) | 1) };
+    epd_build_frame_tab(wf, 2, false, rowset, retire);
+    CHECK(epd_retire_row(1, s2, retire) == 0);
+    return 0;
+}
 
-    /* next frame renders both, gen 2 from its frame 0. */
-    CHECK(epd_frame_mark(tx, &am, &ended));
-    CHECK(am == (uint16_t)((1u << 1) | (1u << 2)));
+static int test_rowset_uniform(void) {
+    uint8_t byte;
+    CHECK(epd_rowset_uniform(LUT_C[0], &byte));   /* uniform drive-to-white */
+    CHECK(byte == 0xAA);
+    CHECK(epd_rowset_uniform(LUT_C[1], &byte));   /* STOP: uniform hold */
+    CHECK(byte == 0x00);
+    CHECK(epd_rowset_uniform(epd_hold_rowset, &byte) && byte == 0x00);
+    CHECK(!epd_rowset_uniform(LUT_Q[0], &byte));  /* from-dependent flash */
+    CHECK(!epd_rowset_uniform(LUT_Q[1], &byte));  /* to-dependent drive */
     return 0;
 }
 
 int main(void) {
     struct { const char *name; int (*fn)(void); } tests[] = {
-        { "draw_diffskip",          test_draw_diffskip },
-        { "alloc_exhaust",          test_alloc_exhaust },
-        { "act_tab",                test_act_tab },
+        { "lut_macros",             test_lut_macros },
+        { "waveform_init",          test_waveform_init },
+        { "draw_px",                test_draw_px },
+        { "frame_tab",              test_frame_tab },
         { "blit_line",              test_blit_line },
-        { "blit_full",              test_blit_full },
-        { "reclaim",                test_reclaim },
-        { "generation_lifecycle",   test_generation_lifecycle },
+        { "retire_row",             test_retire_row },
+        { "lifecycle_wrap",         test_lifecycle_wrap },
         { "concurrent_generations", test_concurrent_generations },
-        { "midscan_activation",     test_midscan_activation },
+        { "settle_skip",            test_settle_skip },
+        { "rowset_uniform",         test_rowset_uniform },
     };
     int n = sizeof(tests) / sizeof(tests[0]), failed = 0;
     for (int i = 0; i < n; i++) {

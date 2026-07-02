@@ -70,14 +70,13 @@ typedef enum {
     BSP_EPD_MODE_NONE    = 0, /* draw() writes framebuffer only, no panel refresh */
     BSP_EPD_MODE_FAST    = 1, /* 2-level direct update, fast                      */
     BSP_EPD_MODE_QUALITY = 2, /* 16 grayscales, flashing, highest quality         */
-    BSP_EPD_MODE_CLEAR   = 3, /* blank the panel to white (use with FULL)         */
-    /* OR-able flag: drive every pixel, ignoring the diff against the displayed
-     * state (e.g. periodic full-screen flush to clear ghosting). The waveform is
-     * still selected by the low bits. */
-    BSP_EPD_MODE_FULL    = 0x80,
-    BSP_EPD_MODE_FAST_FULL    = BSP_EPD_MODE_FULL | BSP_EPD_MODE_FAST,
-    BSP_EPD_MODE_QUALITY_FULL = BSP_EPD_MODE_FULL | BSP_EPD_MODE_QUALITY,
-    BSP_EPD_MODE_CLEAR_FULL   = BSP_EPD_MODE_FULL | BSP_EPD_MODE_CLEAR,
+    /* OR-able flag for bsp_display_refresh: drive every pixel of the refreshed
+     * area, ignoring the diff against the displayed state (ghost clear). The
+     * waveform is still selected by the low bits. Blanking the whole panel is a
+     * separate op -- bsp_display_clear(). */
+    BSP_EPD_MODE_ALL     = 0x80,
+    BSP_EPD_MODE_FAST_ALL    = BSP_EPD_MODE_ALL | BSP_EPD_MODE_FAST,
+    BSP_EPD_MODE_QUALITY_ALL = BSP_EPD_MODE_ALL | BSP_EPD_MODE_QUALITY,
 } bsp_epd_mode_t;
 
 typedef struct {

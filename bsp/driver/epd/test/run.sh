@@ -1,5 +1,5 @@
 #!/bin/sh
-# Host unit test for the pure transaction-index waveform core (epd_waveform.h):
+# Host unit test for the pure per-pixel waveform core (epd_waveform.h):
 # the SoC-independent logic only -- no ESP-IDF, no hardware. Run from anywhere.
 set -e
 

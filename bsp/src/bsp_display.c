@@ -82,3 +82,7 @@ void bsp_display_set_epd_mode(bsp_epd_mode_t mode) {
 void bsp_display_refresh(bsp_rect_t area, bsp_epd_mode_t mode) {
     if (s_display && s_display->refresh) s_display->refresh(s_display, area, mode);
 }
+
+void bsp_display_clear(void) {
+    if (s_display && s_display->clear) s_display->clear(s_display);
+}

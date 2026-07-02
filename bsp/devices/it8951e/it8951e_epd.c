@@ -40,8 +40,10 @@ typedef struct {
     uint8_t         *packed;   /* 4bpp upload scratch, panel_w*panel_h/2    */
 } it8951e_epd_t;
 
+/* The TCON does its own differential drive, so BSP_EPD_MODE_ALL only picks the
+ * waveform here -- the whole area is uploaded and driven either way. */
 static it8951e_mode_t to_it8951e_mode(bsp_epd_mode_t m) {
-    switch (m & ~BSP_EPD_MODE_FULL) {
+    switch (m & ~BSP_EPD_MODE_ALL) {
         case BSP_EPD_MODE_FAST:    return IT8951E_MODE_DU;
         case BSP_EPD_MODE_QUALITY: return IT8951E_MODE_GC16;
         default:                   return IT8951E_MODE_GL16;
@@ -64,7 +66,7 @@ static esp_err_t op_draw_bitmap(bsp_display_t *self, bsp_rect_t area, const void
         bsp_blit_rotated(s->gram, W, 1, area, pixels, rotation);
     }
 
-    if ((s->mode & ~BSP_EPD_MODE_FULL) != BSP_EPD_MODE_NONE)
+    if ((s->mode & ~BSP_EPD_MODE_ALL) != BSP_EPD_MODE_NONE)
         return self->refresh(self, area, s->mode);
     return ESP_OK;
 }
@@ -74,20 +76,21 @@ static esp_err_t op_set_epd_mode(bsp_display_t *self, bsp_epd_mode_t mode) {
     return ESP_OK;
 }
 
+/* Blank the whole panel to white via the TCON's INIT flush. */
+static esp_err_t op_clear(bsp_display_t *self) {
+    it8951e_epd_t *s = (it8951e_epd_t *)self;
+    memset(s->gram, 0xF0, (size_t)s->panel_w * s->panel_h);   /* white */
+    esp_err_t err = it8951e_bus_acquire(s->epd);
+    if (err != ESP_OK) return err;
+    err = it8951e_clear(s->epd);
+    it8951e_bus_release(s->epd);
+    if (err == ESP_OK) err = it8951e_wait_idle(s->epd, REFRESH_TIMEOUT_MS);
+    return err;
+}
+
 static esp_err_t op_refresh(bsp_display_t *self, bsp_rect_t area, bsp_epd_mode_t mode) {
     it8951e_epd_t *s = (it8951e_epd_t *)self;
-    const bsp_epd_mode_t wf = mode & ~BSP_EPD_MODE_FULL;
-    if (wf == BSP_EPD_MODE_NONE) return ESP_OK;
-
-    if (wf == BSP_EPD_MODE_CLEAR) {
-        memset(s->gram, 0xF0, (size_t)s->panel_w * s->panel_h);   /* white */
-        esp_err_t err = it8951e_bus_acquire(s->epd);
-        if (err != ESP_OK) return err;
-        err = it8951e_clear(s->epd);
-        it8951e_bus_release(s->epd);
-        if (err == ESP_OK) err = it8951e_wait_idle(s->epd, REFRESH_TIMEOUT_MS);
-        return err;
-    }
+    if ((mode & ~BSP_EPD_MODE_ALL) == BSP_EPD_MODE_NONE) return ESP_OK;
 
     /* IT8951E 4bpp upload requires x and width aligned to 4 px. Snap the rect
      * outward; the padding columns are read back from GRAM, which draw_bitmap
@@ -169,6 +172,7 @@ esp_err_t it8951e_epd_create(const it8951e_config_t *cfg, bsp_display_t **out_di
     s->base.deinit       = op_deinit;
     s->base.set_epd_mode = op_set_epd_mode;
     s->base.refresh      = op_refresh;
+    s->base.clear        = op_clear;
     s->mode              = BSP_EPD_MODE_NONE;
 
     *out_display = &s->base;

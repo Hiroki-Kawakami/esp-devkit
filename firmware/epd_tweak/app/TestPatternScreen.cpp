@@ -10,8 +10,6 @@
 #include "esp_log.h"
 #include "imgf_dither.h"
 #include "imgf_types.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
 #include <cstring>
 
 static const char *TAG = "TestPattern";
@@ -109,18 +107,15 @@ void TestPatternScreen::build() {
         lv_obj_center(label);
     }
 
-    epd_set_next_refresh_mode(BSP_EPD_MODE_QUALITY_FULL);
+    epd_set_next_refresh_mode(BSP_EPD_MODE_QUALITY_ALL);
 
-    // CLEAR -> wait -> invalidate. The 1500 ms gap stops PaperS3's async engine
-    // from coalescing the two pending FULL refreshes by enum max (CLEAR wins).
-    // Invalidate makes LVGL re-render through flush_cb so both the image and
-    // the labels land back in BSP framebuffer (CLEAR's commit reset it to 0xF0),
-    // and the final flush issues QUALITY_FULL via epd_set_next_refresh_mode.
+    // Clear, then invalidate so LVGL re-renders through flush_cb (the redraw's
+    // draws block until the clear finishes, so no delay is needed) and the
+    // final flush issues QUALITY_ALL via epd_set_next_refresh_mode.
     lv_obj_add_flag(root_, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_fn(root_, LV_EVENT_CLICKED, [this](lv_event_t *) {
-        bsp_display_refresh({{0, 0}, bsp_display_get_size()}, BSP_EPD_MODE_CLEAR_FULL);
-        vTaskDelay(pdMS_TO_TICKS(1500));
-        epd_set_next_refresh_mode(BSP_EPD_MODE_QUALITY_FULL);
+        bsp_display_clear();
+        epd_set_next_refresh_mode(BSP_EPD_MODE_QUALITY_ALL);
         lv_obj_invalidate(root_);
     });
 }

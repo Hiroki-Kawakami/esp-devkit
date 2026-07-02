@@ -15,12 +15,14 @@
  * non-MIPI panels (SPI-with-GRAM, EPD) without baking the framebuffer-swap
  * model into the contract.
  *
- * EPD panels add two more optional ops (NULL on non-EPD): set_epd_mode sets the
- * persistent waveform mode that draw_bitmap consults — when it is
+ * EPD panels add three more optional ops (NULL on non-EPD): set_epd_mode sets
+ * the persistent waveform mode that draw_bitmap consults — when it is
  * BSP_EPD_MODE_NONE a draw only updates GRAM and leaves the glass unchanged;
  * otherwise the drawn region is pushed to the panel in that mode. refresh pushes
- * the latest GRAM contents to the panel with an explicit one-shot mode (it does
- * not change the persistent mode), e.g. a full GC16 repaint to clear ghosting.
+ * the latest GRAM contents of `area` to the panel with an explicit one-shot mode
+ * (it does not change the persistent mode); with BSP_EPD_MODE_ALL every pixel of
+ * the area is driven, diff or not (ghost clear). clear blanks the whole panel to
+ * white with the panel's clear waveform — the known-baseline reset.
  */
 
 #pragma once
@@ -49,6 +51,7 @@ struct bsp_display {
     /* EPD refresh control — NULL on non-EPD panels */
     esp_err_t (*set_epd_mode)(bsp_display_t *self, bsp_epd_mode_t mode);
     esp_err_t (*refresh)(bsp_display_t *self, bsp_rect_t area, bsp_epd_mode_t mode);
+    esp_err_t (*clear)(bsp_display_t *self);
 };
 
 /* Register the active display with the common layer (src/bsp_display.c), which
