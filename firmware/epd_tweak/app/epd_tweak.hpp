@@ -8,6 +8,9 @@
 
 void app_entry();
 
+// PC tuning link on the log console (SerialCmd.cpp; client = tool/index.html).
+void serial_cmd_start();
+
 // Standing mode for end-of-flush refresh; NONE = stage GRAM only.
 void epd_set_default_refresh_mode(bsp_epd_mode_t mode);
 // One-shot override consumed by the next flush.

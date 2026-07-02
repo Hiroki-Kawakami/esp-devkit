@@ -138,6 +138,7 @@ void app_entry() {
     bsp_init(&bsp_config);
     bsp_rtc_timer_stop();   // M5Paper hw_reset sets a wake timer; clear it on boot
     lvgl_init();
+    serial_cmd_start();
 
     epd_set_default_refresh_mode(BSP_EPD_MODE_NONE);
     lv_async_call([]() {

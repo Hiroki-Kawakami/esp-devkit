@@ -1,0 +1,515 @@
+<!doctype html>
+<!--
+  EPD waveform tuning tool for the epd_tweak firmware.
+  Open in Chrome/Edge (Web Serial), Connect to the board's serial port, and
+  edit / apply waveform LUTs live. See SerialCmd.cpp for the wire protocol.
+-->
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>EPD Waveform Tweak</title>
+<style>
+  :root {
+    --bg: #1e1f24; --panel: #2a2c33; --border: #44464f; --fg: #d8dade;
+    --dim: #8a8d97; --accent: #4c9ee8; --err: #e06060; --ok: #6ec06e;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 13px/1.4 "SF Mono", Menlo, Consolas, monospace;
+    display: flex; flex-direction: column; height: 100vh;
+  }
+  header {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 12px; background: var(--panel); border-bottom: 1px solid var(--border);
+    flex: none;
+  }
+  header h1 { font-size: 14px; margin: 0 8px 0 0; font-weight: 600; }
+  button, select, input[type=file] {
+    background: #3a3d46; color: var(--fg); border: 1px solid var(--border);
+    border-radius: 4px; padding: 4px 10px; font: inherit; cursor: pointer;
+  }
+  button:hover { background: #464a55; }
+  button:disabled { opacity: .4; cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  #status { color: var(--dim); }
+  #status.connected { color: var(--ok); }
+
+  main { flex: 1; display: flex; min-height: 0; }
+  #editor { flex: 1; overflow: auto; padding: 12px; }
+  #side {
+    width: 340px; flex: none; border-left: 1px solid var(--border);
+    display: flex; flex-direction: column; min-height: 0;
+  }
+  #actions { padding: 10px; display: flex; flex-direction: column; gap: 8px; flex: none; }
+  #actions .row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  #actions fieldset {
+    border: 1px solid var(--border); border-radius: 4px; margin: 0;
+    padding: 8px; display: flex; flex-direction: column; gap: 6px;
+  }
+  #actions legend { color: var(--dim); padding: 0 4px; }
+  #log {
+    flex: 1; margin: 0 10px 10px; padding: 6px; overflow-y: scroll;
+    background: #16171b; border: 1px solid var(--border); border-radius: 4px;
+    white-space: pre-wrap; word-break: break-all; font-size: 11px; color: #9fa3ad;
+  }
+  #log .resp { color: var(--accent); }
+  #log .err  { color: var(--err); }
+
+  .toolbar { display: flex; gap: 6px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
+  .toolbar .tab { padding: 4px 14px; }
+  .toolbar .tab.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .toolbar .sep { width: 1px; height: 20px; background: var(--border); margin: 0 4px; }
+  .paint { padding: 4px 12px; }
+  .paint.active { outline: 2px solid var(--accent); }
+
+  table { border-collapse: collapse; }
+  th, td { padding: 0; }
+  th { color: var(--dim); font-weight: normal; font-size: 11px; padding: 2px 4px; }
+  td.idx { color: var(--dim); text-align: right; padding-right: 6px; font-size: 11px; }
+  td.type select { padding: 2px 4px; margin-right: 6px; }
+  .cell {
+    width: 30px; height: 24px; border: 1px solid var(--border); cursor: pointer;
+    display: inline-block; vertical-align: middle; user-select: none;
+    text-align: center; line-height: 22px; font-size: 11px;
+  }
+  .cell.a0 { background: #6b6f7a; color: #3c3e46; }
+  .cell.a1 { background: #000;    color: #555; }
+  .cell.a2 { background: #fff;    color: #bbb; }
+  .cell.na { background: repeating-linear-gradient(45deg, #2a2c33, #2a2c33 4px, #34363e 4px, #34363e 8px); cursor: default; }
+  td.rowops { white-space: nowrap; padding-left: 6px; }
+  td.rowops button { padding: 1px 7px; margin-left: 2px; font-size: 11px; }
+  #rowadd { margin-top: 8px; }
+  #stepcount { color: var(--dim); margin-left: 8px; }
+
+  dialog {
+    background: var(--panel); color: var(--fg); border: 1px solid var(--border);
+    border-radius: 6px; max-width: 80vw;
+  }
+  dialog textarea {
+    width: 640px; height: 420px; background: #16171b; color: var(--fg);
+    border: 1px solid var(--border); font: 12px/1.4 "SF Mono", Menlo, monospace;
+  }
+  progress { width: 140px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>EPD Waveform Tweak</h1>
+  <button id="connect" class="primary">Connect</button>
+  <span id="status">disconnected</span>
+  <span id="devinfo" style="color:var(--dim)"></span>
+</header>
+
+<main>
+  <div id="editor">
+    <div class="toolbar">
+      <button class="tab" data-slot="0">FAST</button>
+      <button class="tab active" data-slot="1">QUALITY</button>
+      <button class="tab" data-slot="2">CLEAR</button>
+      <span class="sep"></span>
+      <span style="color:var(--dim)">paint:</span>
+      <button class="paint active" data-act="1" style="background:#000;color:#888">B</button>
+      <button class="paint" data-act="2" style="background:#fff;color:#666">W</button>
+      <button class="paint" data-act="0" style="background:#6b6f7a">hold</button>
+      <span class="sep"></span>
+      <span id="stepcount"></span>
+    </div>
+    <table id="grid"></table>
+    <button id="rowadd">+ add frame</button>
+  </div>
+
+  <div id="side">
+    <div id="actions">
+      <fieldset>
+        <legend>waveform</legend>
+        <div class="row">
+          <button id="read" disabled>Read from device</button>
+          <button id="apply" class="primary" disabled>Apply</button>
+        </div>
+        <div class="row">
+          <button id="exportc">Export C</button>
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>display</legend>
+        <div class="row">
+          <button id="pattern" disabled>Pattern</button>
+          <button id="clear" disabled>Clear</button>
+        </div>
+        <div class="row">
+          <button id="rq" disabled>Refresh quality</button>
+          <button id="rf" disabled>Refresh fast</button>
+          <label><input type="checkbox" id="rall" checked> ALL</label>
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>image</legend>
+        <div class="row">
+          <input type="file" id="imgfile" accept=".jpg,.jpeg,.png,image/jpeg,image/png">
+        </div>
+        <div class="row">
+          <button id="imgsend" disabled>Send &amp; show</button>
+          <progress id="imgprog" value="0" max="1" hidden></progress>
+        </div>
+      </fieldset>
+    </div>
+    <div id="log"></div>
+  </div>
+</main>
+
+<dialog id="cdialog">
+  <p>ed047tc1.c に貼り戻せる LUT テーブル:</p>
+  <textarea id="ctext" readonly></textarea>
+  <p style="text-align:right">
+    <button id="ccopy">Copy</button>
+    <button onclick="document.getElementById('cdialog').close()">Close</button>
+  </p>
+</dialog>
+
+<script>
+'use strict';
+
+// ---------- LUT model ----------
+// row = { type: 'T'|'F'|'SETTLE'|'STOP'|'RAW', acts: Uint8Array(16), raw: Uint32Array(16)|null }
+const SETTLE_WORD = 0xFFFFFFFF;
+const SLOT_NAMES = ['FAST', 'QUALITY', 'CLEAR'];
+let stepMax = 62;
+let luts = [[], [], []];
+let curSlot = 1;
+let paintAct = 1;
+
+function newRow(type = 'T') {
+  return { type, acts: new Uint8Array(16), raw: null };
+}
+
+function rowToWords(row) {
+  const w = new Uint32Array(16);
+  switch (row.type) {
+    case 'SETTLE': w.fill(SETTLE_WORD); break;
+    case 'STOP':   break;                       // all zero
+    case 'RAW':    w.set(row.raw); break;
+    case 'T': {
+      let word = 0;
+      for (let to = 0; to < 16; to++) word |= row.acts[to] << (to * 2);
+      w.fill(word >>> 0);
+      break;
+    }
+    case 'F':
+      for (let from = 0; from < 16; from++) w[from] = (row.acts[from] * 0x55555555) >>> 0;
+      break;
+  }
+  return w;
+}
+
+function wordsToRow(w) {
+  if (w.every(v => v === SETTLE_WORD)) return newRow('SETTLE');
+  if (w.every(v => v === 0)) return newRow('STOP');
+  if (w.every(v => v === w[0])) {
+    const row = newRow('T');
+    for (let to = 0; to < 16; to++) row.acts[to] = (w[0] >>> (to * 2)) & 3;
+    return row;
+  }
+  const f = newRow('F');
+  let isF = true;
+  for (let from = 0; from < 16; from++) {
+    const act = w[from] & 3;
+    if (w[from] !== ((act * 0x55555555) >>> 0)) { isF = false; break; }
+    f.acts[from] = act;
+  }
+  if (isF) return f;
+  const row = newRow('RAW');
+  row.raw = Uint32Array.from(w);
+  return row;
+}
+
+function lutToHex(rows) {
+  let hex = '';
+  for (const row of rows) {
+    for (const w of rowToWords(row)) hex += w.toString(16).padStart(8, '0');
+  }
+  return hex;
+}
+
+function hexToLut(hex, steps) {
+  const rows = [];
+  for (let f = 0; f < steps; f++) {
+    const w = new Uint32Array(16);
+    for (let i = 0; i < 16; i++) {
+      w[i] = parseInt(hex.substr((f * 16 + i) * 8, 8), 16) >>> 0;
+    }
+    rows.push(wordsToRow(w));
+  }
+  return rows;
+}
+
+// ---------- grid rendering ----------
+const grid = document.getElementById('grid');
+let dragging = false;
+document.addEventListener('mouseup', () => dragging = false);
+
+function render() {
+  const rows = luts[curSlot];
+  grid.innerHTML = '';
+  const head = grid.insertRow();
+  head.innerHTML = '<th></th><th></th>' +
+    Array.from({length: 16}, (_, i) => `<th>${i}</th>`).join('') + '<th></th>';
+
+  rows.forEach((row, ri) => {
+    const tr = grid.insertRow();
+    tr.insertCell().outerHTML = `<td class="idx">${ri + 1}</td>`;
+
+    const tdType = tr.insertCell();
+    tdType.className = 'type';
+    const sel = document.createElement('select');
+    for (const t of ['T', 'F', 'SETTLE', 'STOP', ...(row.type === 'RAW' ? ['RAW'] : [])]) {
+      const o = document.createElement('option');
+      o.value = o.textContent = t;
+      if (t === row.type) o.selected = true;
+      sel.appendChild(o);
+    }
+    sel.onchange = () => { row.type = sel.value; row.raw = null; render(); };
+    tdType.appendChild(sel);
+
+    const editable = row.type === 'T' || row.type === 'F';
+    for (let i = 0; i < 16; i++) {
+      const td = tr.insertCell();
+      const div = document.createElement('div');
+      if (!editable) {
+        div.className = 'cell na';
+        div.title = row.type === 'RAW' ? '0x' + row.raw[i].toString(16).padStart(8, '0') : row.type;
+      } else {
+        const a = row.acts[i];
+        div.className = 'cell a' + a;
+        div.textContent = a === 1 ? 'B' : a === 2 ? 'W' : '·';
+        const paint = () => {
+          row.acts[i] = paintAct;
+          div.className = 'cell a' + paintAct;
+          div.textContent = paintAct === 1 ? 'B' : paintAct === 2 ? 'W' : '·';
+        };
+        div.onmousedown = e => { e.preventDefault(); dragging = true; paint(); };
+        div.onmouseenter = () => { if (dragging) paint(); };
+      }
+      td.appendChild(div);
+    }
+
+    const ops = tr.insertCell();
+    ops.className = 'rowops';
+    const mk = (label, title, fn, dis) => {
+      const b = document.createElement('button');
+      b.textContent = label; b.title = title; b.onclick = fn; b.disabled = !!dis;
+      ops.appendChild(b);
+    };
+    mk('↑', 'move up',   () => { [rows[ri - 1], rows[ri]] = [rows[ri], rows[ri - 1]]; render(); }, ri === 0);
+    mk('↓', 'move down', () => { [rows[ri + 1], rows[ri]] = [rows[ri], rows[ri + 1]]; render(); }, ri === rows.length - 1);
+    mk('⧉', 'duplicate', () => {
+      rows.splice(ri, 0, { type: row.type, acts: Uint8Array.from(row.acts),
+                           raw: row.raw ? Uint32Array.from(row.raw) : null });
+      render();
+    }, rows.length >= stepMax);
+    mk('✕', 'delete',    () => { rows.splice(ri, 1); render(); }, rows.length <= 1);
+  });
+
+  document.getElementById('stepcount').textContent = `${rows.length} / ${stepMax} frames`;
+  document.getElementById('rowadd').disabled = rows.length >= stepMax;
+}
+
+document.getElementById('rowadd').onclick = () => { luts[curSlot].push(newRow('T')); render(); };
+for (const tab of document.querySelectorAll('.tab')) {
+  tab.onclick = () => {
+    curSlot = +tab.dataset.slot;
+    document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t === tab));
+    render();
+  };
+}
+for (const p of document.querySelectorAll('.paint')) {
+  p.onclick = () => {
+    paintAct = +p.dataset.act;
+    document.querySelectorAll('.paint').forEach(q => q.classList.toggle('active', q === p));
+  };
+}
+
+// ---------- serial ----------
+let port = null, writer = null, gReader = null;
+const pendingResp = [];
+
+const logEl = document.getElementById('log');
+function log(text, cls) {
+  const div = document.createElement('div');
+  if (cls) div.className = cls;
+  div.textContent = text;
+  logEl.appendChild(div);
+  while (logEl.childNodes.length > 2000) logEl.removeChild(logEl.firstChild);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function setConnected(on) {
+  document.getElementById('status').textContent = on ? 'connected' : 'disconnected';
+  document.getElementById('status').className = on ? 'connected' : '';
+  for (const id of ['read', 'apply', 'pattern', 'clear', 'rq', 'rf', 'imgsend']) {
+    document.getElementById(id).disabled = !on;
+  }
+}
+
+async function readLoop() {
+  const decoder = new TextDecoder();
+  let buf = '';
+  const reader = gReader = port.readable.getReader();
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let i;
+      while ((i = buf.search(/[\r\n]/)) >= 0) {
+        const line = buf.slice(0, i);
+        buf = buf.slice(i + 1);
+        if (!line) continue;
+        if (line.startsWith('#')) {
+          log(line, line.startsWith('#ERR') ? 'err' : 'resp');
+          const p = pendingResp.shift();
+          if (p) {
+            clearTimeout(p.timer);
+            line.startsWith('#OK') ? p.resolve(line) : p.reject(new Error(line));
+          }
+        } else {
+          log(line);
+        }
+      }
+    }
+  } catch (e) {
+    log('serial read error: ' + e.message, 'err');
+  } finally {
+    reader.releaseLock();
+    try { writer.releaseLock(); } catch (_) {}
+    try { await port.close(); } catch (_) {}
+    port = writer = gReader = null;
+    setConnected(false);
+    document.getElementById('connect').textContent = 'Connect';
+  }
+}
+
+function send(cmd, timeoutMs = 5000) {
+  if (!writer) return Promise.reject(new Error('not connected'));
+  return new Promise((resolve, reject) => {
+    const entry = { resolve, reject, timer: 0 };
+    entry.timer = setTimeout(() => {
+      const i = pendingResp.indexOf(entry);
+      if (i >= 0) pendingResp.splice(i, 1);
+      reject(new Error('timeout: ' + cmd.slice(0, 40)));
+    }, timeoutMs);
+    pendingResp.push(entry);
+    writer.write(new TextEncoder().encode(cmd + '\n')).catch(reject);
+  });
+}
+
+document.getElementById('connect').onclick = async () => {
+  if (port) { try { await gReader.cancel(); } catch (_) {} return; }   // readLoop cleans up
+  if (!navigator.serial) { alert('Web Serial 非対応ブラウザです。Chrome/Edge で開いてください。'); return; }
+  try {
+    port = await navigator.serial.requestPort();
+    await port.open({ baudRate: 115200 });
+    writer = port.writable.getWriter();
+    setConnected(true);
+    document.getElementById('connect').textContent = 'Disconnect';
+    readLoop();
+    const info = (await send('info')).split(' ');   // #OK info w h tweak stepmax
+    const tweak = info[4] === '1';
+    if (tweak) stepMax = +info[5] || 62;
+    document.getElementById('devinfo').textContent =
+      `${info[2]}x${info[3]}` + (tweak ? '' : ' (LUT 書き換え非対応ボード)');
+    document.getElementById('read').disabled = !tweak;
+    document.getElementById('apply').disabled = !tweak;
+    render();
+  } catch (e) {
+    log('connect failed: ' + e.message, 'err');
+    port = writer = null;
+    setConnected(false);
+  }
+};
+
+// ---------- actions ----------
+function guard(btn, fn) {
+  return async () => {
+    btn.disabled = true;
+    try { await fn(); } catch (e) { log(e.message, 'err'); }
+    btn.disabled = false;
+  };
+}
+
+const readBtn = document.getElementById('read');
+readBtn.onclick = guard(readBtn, async () => {
+  for (let slot = 0; slot < 3; slot++) {
+    const resp = (await send(`dump ${slot}`, 10000)).split(' ');  // #OK dump slot steps hex
+    const steps = +resp[3];
+    if (steps > 0) luts[slot] = hexToLut(resp[4], steps);
+  }
+  render();
+});
+
+const applyBtn = document.getElementById('apply');
+applyBtn.onclick = guard(applyBtn, async () => {
+  const rows = luts[curSlot];
+  if (!rows.length) throw new Error('empty LUT');
+  await send(`wf ${curSlot} ${rows.length} ${lutToHex(rows)}`, 30000);
+});
+
+document.getElementById('pattern').onclick = () => send('pattern').catch(e => log(e.message, 'err'));
+document.getElementById('clear').onclick   = () => send('clear', 30000).catch(e => log(e.message, 'err'));
+const refreshCmd = m => 'refresh ' + m + (document.getElementById('rall').checked ? ' all' : '');
+document.getElementById('rq').onclick = () => send(refreshCmd('quality'), 30000).catch(e => log(e.message, 'err'));
+document.getElementById('rf').onclick = () => send(refreshCmd('fast'), 30000).catch(e => log(e.message, 'err'));
+
+// ---------- image upload ----------
+const imgBtn = document.getElementById('imgsend');
+imgBtn.onclick = guard(imgBtn, async () => {
+  const file = document.getElementById('imgfile').files[0];
+  if (!file) throw new Error('画像ファイルを選択してください');
+  const data = new Uint8Array(await file.arrayBuffer());
+  const prog = document.getElementById('imgprog');
+  prog.hidden = false;
+  prog.value = 0;
+  try {
+    await send(`img begin ${data.length}`);
+    const CHUNK = 2304;                          // -> 3072 base64 chars per line
+    for (let o = 0; o < data.length; o += CHUNK) {
+      let bin = '';
+      for (const b of data.subarray(o, o + CHUNK)) bin += String.fromCharCode(b);
+      await send('img data ' + btoa(bin));
+      prog.value = Math.min(1, (o + CHUNK) / data.length);
+    }
+    await send('img end', 120000);               // decode + show takes a while
+  } finally {
+    prog.hidden = true;
+  }
+});
+
+// ---------- C export ----------
+document.getElementById('exportc').onclick = () => {
+  const rows = luts[curSlot];
+  const lines = ['/*         0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15   (gray column) */'];
+  const sym = a => a === 1 ? 'B' : a === 2 ? 'W' : '0';
+  rows.forEach((row, i) => {
+    const n = `/* ${String(i + 1).padStart(2)} */ `;
+    if (row.type === 'SETTLE')    lines.push(n + 'SETTLE,');
+    else if (row.type === 'STOP') lines.push(n + 'STOP,');
+    else if (row.type === 'RAW')
+      lines.push(n + '{ ' + Array.from(row.raw, w => '0x' + w.toString(16).padStart(8, '0')).join(', ') + ' },');
+    else
+      lines.push(n + `${row.type}(` + Array.from(row.acts, sym).join(', ') + '),');
+  });
+  document.getElementById('ctext').value =
+    `static const uint32_t lut_${SLOT_NAMES[curSlot].toLowerCase()}[][16] = {\n` +
+    lines.map(l => '    ' + l).join('\n') + '\n};\n';
+  document.getElementById('cdialog').showModal();
+};
+document.getElementById('ccopy').onclick = () =>
+  navigator.clipboard.writeText(document.getElementById('ctext').value);
+
+// initial content: an empty single T row per slot (Read from device to import)
+for (const l of luts) l.push(newRow('T'));
+render();
+</script>
+</body>
+</html>

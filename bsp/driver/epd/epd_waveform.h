@@ -45,6 +45,11 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+/* C11 header; `restrict` has no C++ spelling */
+#if defined(__cplusplus) && !defined(restrict)
+#define restrict __restrict
+#endif
+
 #define EPD_WF_SLOTS    3        /* lut_id 0..2; 3 reserved for IDLE/PENDING */
 #define EPD_WF_STEP_MAX 62       /* step 63 = armed-not-started */
 #define EPD_B1_IDLE     0xFF

@@ -536,8 +536,44 @@ static esp_err_t op_clear(bsp_display_t *self) {
     return ESP_OK;
 }
 
+#if EPD_LL_TWEAK
+#include "epd_ll_tweak.h"
+
+/* Most recently created instance (the tweak firmware only ever has one). */
+static epd_t *s_tweak_target;
+
+esp_err_t epd_ll_tweak_set_waveform_lut(epd_ll_waveform_t waveform,
+                                        const uint32_t (*lut)[16], size_t steps) {
+    epd_t *s = s_tweak_target;
+    if (!s) return ESP_ERR_INVALID_STATE;
+    if ((int)waveform < 0 || waveform >= EPD_LL_WAVEFORM_COUNT) return ESP_ERR_INVALID_ARG;
+    epd_waveform_t wf;
+    if (!epd_waveform_init(&wf, lut, steps)) return ESP_ERR_INVALID_ARG;
+    xSemaphoreTake(s->mtx, portMAX_DELAY);
+    while (s->active_px) wait_retire(s);   /* never swap under a live replay */
+    s->wf[waveform] = wf;
+    xSemaphoreGive(s->mtx);
+    return ESP_OK;
+}
+
+esp_err_t epd_ll_tweak_get_waveform_lut(epd_ll_waveform_t waveform,
+                                        epd_ll_lut_t *out_lut, size_t *out_steps) {
+    epd_t *s = s_tweak_target;
+    if (!s) return ESP_ERR_INVALID_STATE;
+    if ((int)waveform < 0 || waveform >= EPD_LL_WAVEFORM_COUNT) return ESP_ERR_INVALID_ARG;
+    xSemaphoreTake(s->mtx, portMAX_DELAY);
+    *out_lut   = s->wf[waveform].lut;
+    *out_steps = s->wf[waveform].steps;
+    xSemaphoreGive(s->mtx);
+    return ESP_OK;
+}
+#endif
+
 static esp_err_t op_deinit(bsp_display_t *self) {
     epd_t *s = (epd_t *)self;
+#if EPD_LL_TWEAK
+    if (s_tweak_target == s) s_tweak_target = NULL;
+#endif
     if (s->task) {                       /* stop and join the background task */
         xSemaphoreTake(s->mtx, portMAX_DELAY);
         s->stop = true;
@@ -676,6 +712,9 @@ esp_err_t epd_ll_create(const epd_ll_config_t *cfg, bsp_display_t **out_display)
         return ESP_ERR_NO_MEM;
     }
 
+#if EPD_LL_TWEAK
+    s_tweak_target = s;
+#endif
     *out_display = &s->base;
     return ESP_OK;
 }

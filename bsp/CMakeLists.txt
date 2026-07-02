@@ -55,6 +55,12 @@ if(ESP_PLATFORM)
     # Enable Link Time Optimization
     target_compile_options(${COMPONENT_LIB} PRIVATE -flto)
     target_link_libraries(${COMPONENT_LIB} PRIVATE -flto)
+
+    # Waveform-tuning backdoor (epd_ll_tweak.h), compiled only when a build root
+    # opts in (firmware/epd_tweak) -- production builds never carry the symbols.
+    if(EPD_LL_TWEAK)
+        target_compile_definitions(${COMPONENT_LIB} PRIVATE EPD_LL_TWEAK=1)
+    endif()
 else()
     # Simulator: SDL backend + the selected board's simulator bring-up. SDL2 is
     # already linked to the `simulator` executable (see simulator/CMakeLists.txt),
