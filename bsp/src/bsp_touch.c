@@ -3,18 +3,19 @@
  * Copyright (c) 2026 Hiroki Kawakami
  *
  * Common touch layer: dispatches the public bsp_touch_* API through the active
- * chip vtable and owns the shared reader task, INT ISR, orientation transform,
- * and cached snapshot. Chip drivers only implement poll()/deinit().
+ * chip vtable and owns the INT ISR, orientation transform, and cached snapshot.
+ * The reader task itself lives in bsp_input.c -- this layer just registers a
+ * tick source and forwards bsp_touch_start_reader to bsp_input_start.
  *
- * IDLE is a capability that needs an INT line: with one, the task sleeps on
- * the shared sem after settle_count consecutive no-finger polls and the ISR
- * wakes it. Boards that leave INT NC (e.g. s31_korvo) never idle -- the tick
- * stays ACTIVE and the task just polls every poll_interval, matching the
- * pre-refactor behaviour of the chip-owned reader tasks.
+ * IDLE is a capability that needs an INT line: with one, the tick returns false
+ * after settle_count consecutive no-finger polls and the ISR wakes the shared
+ * task. Boards that leave INT NC (e.g. s31_korvo) never idle -- the tick stays
+ * ACTIVE and the task just polls every poll_interval.
  */
 
 #include "bsp.h"
 #include "bsp_touch.h"
+#include "bsp_input.h"
 
 #include <string.h>
 
@@ -30,8 +31,6 @@ static const char *TAG = "bsp_touch";
 
 #define BSP_TOUCH_MAX_POINTS       10
 #define DEFAULT_SETTLE_COUNT       5   /* ~50ms at 10ms poll -> settle before idling */
-#define DEFAULT_POLL_INTERVAL_MS   10
-#define DEFAULT_TASK_STACK         3072
 
 static bsp_touch_t         *s_touch;
 static bsp_touch_event_cb_t s_event_cb;
@@ -41,19 +40,13 @@ static SemaphoreHandle_t s_snapshot_lock;
 static bsp_touch_point_t s_snapshot[BSP_TOUCH_MAX_POINTS];
 static uint8_t           s_snapshot_count;
 
-/* s_int_sem: reader task; s_wait_sem: bsp_touch_wait_interrupt callers. Both
- * given by the ISR (device) / bsp_touch_notify (simulator). */
-static SemaphoreHandle_t s_int_sem;
+/* Kept alongside bsp_input's shared wake sem so a wait_interrupt caller can be
+ * signalled independently of the reader task's own wake. */
 static SemaphoreHandle_t s_wait_sem;
-
-static TaskHandle_t      s_task;
-static SemaphoreHandle_t s_task_done;
-static volatile bool     s_task_stop;
-static bool              s_has_task;
-static TickType_t        s_poll_interval;
 
 static uint8_t s_no_touch_count;
 static bool    s_was_down;
+static bool    s_source_registered;
 
 #ifdef ESP_PLATFORM
 static bool s_int_isr_attached;
@@ -88,7 +81,7 @@ void bsp_touch_emit_event(const bsp_touch_point_t *points, int count) {
 
 void bsp_touch_notify(void) {
     if (s_touch) s_touch->int_pending = true;
-    if (s_int_sem)  xSemaphoreGive(s_int_sem);
+    bsp_input_notify();
     if (s_wait_sem) xSemaphoreGive(s_wait_sem);
 }
 
@@ -110,7 +103,7 @@ int bsp_touch_read(bsp_touch_point_t *points, uint8_t max_points) {
     if (!s_touch || !points || max_points == 0) return 0;
 
     /* No task: refresh the snapshot from the chip on demand. */
-    if (!s_has_task && s_touch->poll) {
+    if (!bsp_input_running() && s_touch->poll) {
         bsp_touch_raw_point_t raw[BSP_TOUCH_MAX_POINTS];
         uint8_t max = s_touch->max_points ? s_touch->max_points : BSP_TOUCH_MAX_POINTS;
         if (max > BSP_TOUCH_MAX_POINTS) max = BSP_TOUCH_MAX_POINTS;
@@ -146,7 +139,7 @@ static void IRAM_ATTR touch_int_isr(void *arg) {
     bsp_touch_t *t = arg;
     t->int_pending = true;
     BaseType_t hp = pdFALSE;
-    if (s_int_sem)  xSemaphoreGiveFromISR(s_int_sem,  &hp);
+    bsp_input_notify_from_isr(&hp);
     if (s_wait_sem) xSemaphoreGiveFromISR(s_wait_sem, &hp);
     if (hp) portYIELD_FROM_ISR();
 }
@@ -165,7 +158,8 @@ static void attach_isr(bsp_touch_t *t) {
 }
 #endif  /* ESP_PLATFORM */
 
-static bool touch_tick(void) {
+static bool touch_tick(void *ctx) {
+    (void)ctx;
     bsp_touch_t *t = s_touch;
     if (!t || !t->poll) return false;
 
@@ -199,16 +193,6 @@ static bool touch_tick(void) {
     return keep_polling || s_was_down || s_no_touch_count < settle || !has_int;
 }
 
-static void touch_task(void *arg) {
-    (void)arg;
-    while (!s_task_stop) {
-        bool active = touch_tick();
-        xSemaphoreTake(s_int_sem, active ? s_poll_interval : portMAX_DELAY);
-    }
-    if (s_task_done) xSemaphoreGive(s_task_done);
-    vTaskDelete(NULL);
-}
-
 /* ------------------------------------------------------------------------- */
 
 void bsp_touch_set_active(bsp_touch_t *touch) {
@@ -216,7 +200,6 @@ void bsp_touch_set_active(bsp_touch_t *touch) {
     ensure_snapshot_lock();
     if (!touch) return;
 
-    if (!s_int_sem)  s_int_sem  = xSemaphoreCreateBinary();
     if (!s_wait_sem) s_wait_sem = xSemaphoreCreateBinary();
 
 #ifdef ESP_PLATFORM
@@ -226,28 +209,18 @@ void bsp_touch_set_active(bsp_touch_t *touch) {
 
 esp_err_t bsp_touch_start_reader(uint8_t priority, int8_t affinity,
                                  uint32_t poll_interval_ms, uint32_t task_stack) {
-    if (priority == 0) return ESP_OK;                        /* opted out */
+    if (priority == 0) return ESP_OK;
     if (!s_touch)      return ESP_ERR_INVALID_STATE;
-    if (s_has_task)    return ESP_ERR_INVALID_STATE;
-    if (!s_int_sem)    s_int_sem = xSemaphoreCreateBinary();
-    if (!s_int_sem)    return ESP_ERR_NO_MEM;
 
-    s_task_done = xSemaphoreCreateBinary();
-    if (!s_task_done) return ESP_ERR_NO_MEM;
-
-    s_poll_interval = pdMS_TO_TICKS(poll_interval_ms ? poll_interval_ms : DEFAULT_POLL_INTERVAL_MS);
-    BaseType_t core = affinity < 0 ? tskNO_AFFINITY : (BaseType_t)affinity;
-    uint32_t stack = task_stack ? task_stack : DEFAULT_TASK_STACK;
-    if (xTaskCreatePinnedToCore(touch_task, "bsp_touch", stack, NULL,
-                                priority, &s_task, core) != pdPASS) {
-        vSemaphoreDelete(s_task_done);
-        s_task_done = NULL;
-        return ESP_FAIL;
+    if (!s_source_registered) {
+        bsp_input_source_t src = { .tick = touch_tick, .ctx = NULL };
+        esp_err_t err = bsp_input_add_source(&src);
+        if (err != ESP_OK) return err;
+        s_source_registered = true;
     }
-    s_has_task = true;
-    return ESP_OK;
+    return bsp_input_start(priority, affinity, poll_interval_ms, task_stack);
 }
 
 bool bsp_touch_reader_running(void) {
-    return s_has_task;
+    return bsp_input_running();
 }
