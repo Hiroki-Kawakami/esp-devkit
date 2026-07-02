@@ -97,6 +97,30 @@ esp_err_t bsp_sd_mount(const char *mount_point, const bsp_sd_mount_config_t *con
 esp_err_t bsp_sd_unmount(void);
 bool bsp_sd_is_mounted(void);
 
+// MARK: Buttons
+/* Board-provided physical buttons; count == 0 when no provider is registered.
+ * Callbacks fire on the input task -- marshal to your UI thread yourself.
+ *
+ * Click dispatch:
+ *   - Only click registered   -> fires on release edge, immediately.
+ *   - Double-click registered -> the single click is delayed by interval_ms;
+ *                                a second press within the window fires
+ *                                double_click and cancels the pending click.
+ *   - Long-press fired        -> click / double-click are suppressed.
+ * DOWN / UP fire on every debounced edge, unconditionally. */
+
+uint8_t bsp_button_count(void);
+
+typedef void (*bsp_button_cb_t)(uint8_t button_id, void *arg);
+
+void bsp_button_on_down(uint8_t id, bsp_button_cb_t cb, void *arg);
+void bsp_button_on_up  (uint8_t id, bsp_button_cb_t cb, void *arg);
+void bsp_button_on_click(uint8_t id, bsp_button_cb_t cb, void *arg);
+void bsp_button_on_double_click(uint8_t id, uint16_t interval_ms,
+                                bsp_button_cb_t cb, void *arg);
+void bsp_button_on_long_press(uint8_t id, uint16_t duration_ms,
+                              bsp_button_cb_t cb, void *arg);
+
 // MARK: RGB LED
 /* Board-provided addressable RGB LED(s); count == 0 when no provider is
  * registered. set_rgb / clear return ESP_ERR_INVALID_STATE in that case and

@@ -3,7 +3,8 @@
  * Copyright (c) 2026 Hiroki Kawakami
  *
  * Minimal ESP32-S31-Korvo sample: brings up the BSP + LVGL, shows a title and a
- * button that counts taps.
+ * button that counts taps. Also wires bsp_button callbacks for the ADC ladder
+ * (VOL-UP / VOL-DOWN / MODE / SET) so button events get printed to the log.
  */
 
 #include "s31_korvo_hello.hpp"
@@ -115,6 +116,42 @@ static void build_hello_screen() {
     lv_obj_center(btn_label);
 }
 
+/* Physical buttons on the ADC ladder. Labels match the S31-Korvo silkscreen. */
+enum { BTN_VOLUP = 0, BTN_VOLDOWN = 1, BTN_MODE = 2, BTN_SET = 3 };
+
+static void wire_button_test() {
+    static const char *label[] = { "VOL-UP", "VOL-DOWN", "MODE", "SET" };
+
+    /* VOL-UP: exercise click / double-click / long-press together. Registering
+     * on_double_click delays the single click by 300 ms so a fast second press
+     * fires DOUBLE instead. */
+    bsp_button_on_click(BTN_VOLUP, [](uint8_t id, void *) {
+        ESP_LOGI(TAG, "%s: click", label[id]);
+    }, nullptr);
+    bsp_button_on_double_click(BTN_VOLUP, 300, [](uint8_t id, void *) {
+        ESP_LOGI(TAG, "%s: DOUBLE-click", label[id]);
+    }, nullptr);
+    bsp_button_on_long_press(BTN_VOLUP, 800, [](uint8_t id, void *) {
+        ESP_LOGI(TAG, "%s: LONG-press", label[id]);
+    }, nullptr);
+
+    /* VOL-DOWN: raw down/up edges only. */
+    bsp_button_on_down(BTN_VOLDOWN, [](uint8_t id, void *) {
+        ESP_LOGI(TAG, "%s: down", label[id]);
+    }, nullptr);
+    bsp_button_on_up(BTN_VOLDOWN, [](uint8_t id, void *) {
+        ESP_LOGI(TAG, "%s: up", label[id]);
+    }, nullptr);
+
+    /* MODE / SET: simple click. */
+    bsp_button_on_click(BTN_MODE, [](uint8_t id, void *) {
+        ESP_LOGI(TAG, "%s: click", label[id]);
+    }, nullptr);
+    bsp_button_on_click(BTN_SET, [](uint8_t id, void *) {
+        ESP_LOGI(TAG, "%s: click", label[id]);
+    }, nullptr);
+}
+
 void app_entry() {
     bsp_config_t bsp_config = {};
     bsp_config.touch.task_priority = 6;
@@ -122,6 +159,7 @@ void app_entry() {
     bsp_init(&bsp_config);
     bsp_touch_set_event_cb(on_touch_push, nullptr);
     lvgl_init();
+    wire_button_test();
 
     lv_async_call([] {
         build_hello_screen();
