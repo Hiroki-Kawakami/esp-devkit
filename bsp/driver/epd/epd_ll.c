@@ -67,7 +67,7 @@
 
 /* Diagnostic: per-frame blit/bus timing split (scan / blit / dma-wait / tx_color).
  * Off by default; set to 1 to re-enable while tuning the refresh path. */
-#define EPD_PROFILE 1
+#define EPD_PROFILE 0
 #if EPD_PROFILE
 #include "esp_timer.h"
 #include "esp_log.h"
@@ -196,6 +196,10 @@ static void bus_frame_end(void) {
 
 // MARK: - refresh engine
 
+/* Byte-table pool depth = max distinct driving (lut, step) pairs per frame;
+ * beyond it the frame falls back to the word/shift blit (epd_blit_line). */
+#define EPD_ACT_POOL 16
+
 typedef struct {
     bsp_display_t  base;
     int            width, height;
@@ -212,6 +216,12 @@ typedef struct {
 
     const uint32_t *rowset_tab[256];  /* per-frame b1 tables (engine-owned)    */
     uint8_t         retire_tab[256];
+    /* Per-frame flat byte tables for the hot blit (epd_build_act256): one pool
+     * slot per live driving b1, everything else the shared all-hold table. All
+     * internal RAM, so the scan never touches the flash-resident LUTs. */
+    const uint8_t  *act_tabs[256];
+    uint8_t         act_pool[EPD_ACT_POOL][256];
+    uint8_t         act_hold[256];    /* stays zero (calloc)                   */
     uint32_t        group[256]; /* live pixel count per b1 (IDLE untracked)    */
     uint32_t        active_px;  /* pixels currently replaying a waveform       */
     uint8_t         frame;      /* engine frame counter, mod 64                */
@@ -276,6 +286,17 @@ static void run_one_frame(epd_t *s) {
     bool uniform = only && !multiple && s->group[EPD_B1_PENDING] == 0 &&
                    epd_rowset_uniform(only, &uni_byte);
     if (uniform) memset(s->uni_line, uni_byte, s->line_bytes);
+
+    /* Expand each live driving rowset into an internal-RAM byte table. */
+    bool tab_ok = true;
+    for (int i = 0; i < 256; i++) s->act_tabs[i] = s->act_hold;
+    int used = 0;
+    for (int b1 = 0; b1 < (EPD_WF_SLOTS << 6); b1++) {
+        if (!s->group[b1] || s->rowset_tab[b1] == epd_hold_rowset) continue;
+        if (used == EPD_ACT_POOL) { tab_ok = false; break; }
+        epd_build_act256(s->rowset_tab[b1], s->act_pool[used]);
+        s->act_tabs[b1] = s->act_pool[used++];
+    }
     xSemaphoreGive(s->mtx);
 
 #if EPD_PROFILE
@@ -296,7 +317,8 @@ static void run_one_frame(epd_t *s) {
 #if EPD_PROFILE
             int64_t a = esp_timer_get_time();
 #endif
-            epd_blit_line(W, s->state + (size_t)y * W, s->rowset_tab, buf);
+            if (tab_ok) epd_blit_line_tab(W, s->state + (size_t)y * W, s->act_tabs, buf);
+            else        epd_blit_line(W, s->state + (size_t)y * W, s->rowset_tab, buf);
 #if EPD_PROFILE
             blit_us += esp_timer_get_time() - a; rows_blit++;
 #endif

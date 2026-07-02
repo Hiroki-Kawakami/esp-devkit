@@ -168,6 +168,50 @@ static inline bool epd_blit_line(int width, const uint16_t *restrict state_row,
     return acc != 0;
 }
 
+/* Expand one from-row block into a flat 256-entry action table keyed by the
+ * pixel's low byte (confirmed<<4 | target). Lets the scan replace the pointer +
+ * LUT-word load + variable shift with one byte load -- and since the caller
+ * builds these in internal RAM, the per-pixel reads stop hitting the
+ * flash-resident LUTs (which thrash the data cache against the PSRAM state
+ * stream). */
+static inline void epd_build_act256(const uint32_t *rowset, uint8_t act256[256]) {
+    for (int from = 0; from < 16; from++) {
+        uint32_t w = rowset[from];
+        for (int to = 0; to < 16; to++) {
+            act256[(from << 4) | to] = (uint8_t)((w >> (to * 2)) & 3u);
+        }
+    }
+}
+
+/* epd_blit_line variant driven by per-b1 256-byte action tables (built with
+ * epd_build_act256; non-driving b1 values point at a shared all-zero table):
+ * per pixel, two dependent internal-RAM byte-table loads instead of the
+ * word/shift chain. Same packing contract as epd_blit_line. */
+static inline bool epd_blit_line_tab(int width, const uint16_t *restrict state_row,
+                                     const uint8_t *const *restrict tabs,
+                                     uint8_t *restrict dst) {
+#define EPD_ACT(v) ((uint32_t)tabs[(v) >> 8][(v) & 0xFF])
+    uint32_t acc = 0;
+    int x = 0;
+    for (; x + 8 <= width; x += 8) {
+        uint32_t a0 = EPD_ACT(state_row[x + 0]), a1 = EPD_ACT(state_row[x + 1]);
+        uint32_t a2 = EPD_ACT(state_row[x + 2]), a3 = EPD_ACT(state_row[x + 3]);
+        uint32_t a4 = EPD_ACT(state_row[x + 4]), a5 = EPD_ACT(state_row[x + 5]);
+        uint32_t a6 = EPD_ACT(state_row[x + 6]), a7 = EPD_ACT(state_row[x + 7]);
+        dst[(x >> 2) + 0] = (uint8_t)((a0 << 6) | (a1 << 4) | (a2 << 2) | a3);
+        dst[(x >> 2) + 1] = (uint8_t)((a4 << 6) | (a5 << 4) | (a6 << 2) | a7);
+        acc |= a0 | a1 | a2 | a3 | a4 | a5 | a6 | a7;
+    }
+    for (; x < width; x += 4) {   /* tail when width % 8 == 4 */
+        uint32_t a0 = EPD_ACT(state_row[x + 0]), a1 = EPD_ACT(state_row[x + 1]);
+        uint32_t a2 = EPD_ACT(state_row[x + 2]), a3 = EPD_ACT(state_row[x + 3]);
+        dst[x >> 2] = (uint8_t)((a0 << 6) | (a1 << 4) | (a2 << 2) | a3);
+        acc |= a0 | a1 | a2 | a3;
+    }
+#undef EPD_ACT
+    return acc != 0;
+}
+
 /* Reclaim retiring pixels in one state row: every pixel whose b1 is flagged in
  * retire_tab goes IDLE with confirmed = target. Returns the count reclaimed,
  * to decrement the per-row non-idle count. */

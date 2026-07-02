@@ -182,6 +182,62 @@ static int test_blit_line(void) {
     return 0;
 }
 
+/* The byte-table blit must be bit-identical to the word/shift blit: same
+ * lookup, precomputed by epd_build_act256. Fuzz across frames and pixel words. */
+static int test_blit_line_tab(void) {
+    epd_waveform_t wf[EPD_WF_SLOTS] = {0};
+    CHECK(epd_waveform_init(&wf[0], LUT_Q, LUT_Q_STEPS));
+    CHECK(epd_waveform_init(&wf[1], LUT_C, LUT_C_STEPS));
+
+    uint8_t t[256];
+    epd_build_act256(LUT_Q[0], t);              /* from-flash frame */
+    CHECK(t[(0 << 4) | 15] == B);               /* from 0, any to -> B */
+    CHECK(t[(15 << 4) | 0] == W);
+    CHECK(t[(5 << 4) | 9] == 0);
+    epd_build_act256(LUT_Q[1], t);              /* to-drive frame */
+    CHECK(t[(7 << 4) | 0] == B && t[(7 << 4) | 15] == W);
+
+    const uint32_t *rowset[256];
+    uint8_t retire[256];
+    static uint8_t hold256[256];                /* all zero */
+    static uint8_t pool[16][256];
+    const uint8_t *tabs[256];
+
+    uint32_t seed = 12345;
+    for (uint8_t frame = 0; frame < 12; frame++) {
+        epd_build_frame_tab(wf, frame, false, rowset, retire);
+        const uint32_t *seen[16];
+        int used = 0;
+        for (int b1 = 0; b1 < 256; b1++) {
+            if (rowset[b1] == epd_hold_rowset) { tabs[b1] = hold256; continue; }
+            int j;
+            for (j = 0; j < used; j++) {
+                if (seen[j] == rowset[b1]) break;
+            }
+            if (j == used) {
+                CHECK(used < 16);
+                seen[used] = rowset[b1];
+                epd_build_act256(rowset[b1], pool[used]);
+                used++;
+            }
+            tabs[b1] = pool[j];
+        }
+
+        enum { W_ = 64 };
+        uint16_t row[W_];
+        for (int i = 0; i < W_; i++) {
+            seed = seed * 1103515245u + 12345u;
+            row[i] = (uint16_t)(seed >> 8);
+        }
+        uint8_t d1[W_ / 4], d2[W_ / 4];
+        bool r1 = epd_blit_line(W_, row, rowset, d1);
+        bool r2 = epd_blit_line_tab(W_, row, tabs, d2);
+        CHECK(r1 == r2);
+        CHECK(memcmp(d1, d2, sizeof(d1)) == 0);
+    }
+    return 0;
+}
+
 static int test_retire_row(void) {
     epd_waveform_t wf[EPD_WF_SLOTS] = {0};
     CHECK(epd_waveform_init(&wf[0], LUT_Q, LUT_Q_STEPS));
@@ -356,6 +412,7 @@ int main(void) {
         { "draw_px",                test_draw_px },
         { "frame_tab",              test_frame_tab },
         { "blit_line",              test_blit_line },
+        { "blit_line_tab",          test_blit_line_tab },
         { "retire_row",             test_retire_row },
         { "lifecycle_wrap",         test_lifecycle_wrap },
         { "concurrent_generations", test_concurrent_generations },
