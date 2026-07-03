@@ -382,15 +382,18 @@ static esp_err_t hk_end(bsp_hotknot_t *self) {
      * recover_touch's reset will block on it until that step returns. */
     gt911_internal_set_session_step(p->h, NULL, NULL);
 
-    /* In approach the chip's own firmware is alive — issue the matching exit. In
-     * xfer the SRAM subsystem is running and only reset+int_sync recovers. */
+    /* Approach: the chip's own firmware is alive, so the exit command alone
+     * restores touch. Only a loaded SRAM subsystem (xfer / failed load) needs
+     * reset+int_sync — resetting after approach would needlessly kill touch INT. */
+    esp_err_t err = ESP_OK;
     if (was == HK_APPROACH) {
         gt911_hotknot_mode_t exit_mode = (p->role == BSP_HOTKNOT_ROLE_MASTER)
                                              ? GT911_HOTKNOT_MODE_MASTER
                                              : GT911_HOTKNOT_MODE_SLAVE;
         (void)gt911_hotknot_exit(p->h, exit_mode);
+    } else if (was == HK_XFER || was == HK_FAILED) {
+        err = gt911_hotknot_recover_touch(p->h);
     }
-    esp_err_t err = (was == HK_IDLE) ? ESP_OK : gt911_hotknot_recover_touch(p->h);
     p->phase = HK_IDLE;
     p->cb    = NULL;
     return err;
