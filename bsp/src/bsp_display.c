@@ -86,3 +86,7 @@ void bsp_display_refresh(bsp_rect_t area, bsp_epd_mode_t mode) {
 void bsp_display_clear(void) {
     if (s_display && s_display->clear) s_display->clear(s_display);
 }
+
+void bsp_display_wait_idle(void) {
+    if (s_display && s_display->wait_idle) s_display->wait_idle(s_display);
+}

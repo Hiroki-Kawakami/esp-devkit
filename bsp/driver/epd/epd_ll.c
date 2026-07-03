@@ -30,11 +30,14 @@
  *                to their confirmed gray -- the from==to LUT diagonal is the
  *                ghost clear), so the whole area replays uniformly.
  *   clear        (vtable op) waits for every in-flight pixel, then arms the
- *                whole panel to white with the CLEAR waveform. Also run
- *                synchronously at create for the bring-up white baseline. A
- *                draw issued while the clear replays blocks on the conflict --
- *                and the CLEAR settle tail is non-skippable -- so a
- *                clear-then-draw sequence can never cut the clear short.
+ *                whole panel to white with the CLEAR waveform. A draw issued
+ *                while the clear replays blocks on the conflict -- and the
+ *                CLEAR settle tail is non-skippable -- so a clear-then-draw
+ *                sequence can never cut the clear short.
+ *   SEED mode    a draw adopts the pixels as the on-glass content (confirmed =
+ *                target, IDLE, no drive). Create does not clear the panel, so
+ *                the caller clears or seeds before trusting diff refreshes.
+ *   wait_idle    blocks until every in-flight waveform retires.
  *
  * The task runs a continuous frame loop while any pixel is in flight: each frame
  * it bumps the mod-64 frame counter, builds the 256-entry b1 tables, packs every
@@ -379,6 +382,53 @@ static void refresh_task(void *arg) {
 
 // MARK: - vtable
 
+/* Is any pixel in the rect still replaying a waveform? (early-out; rows with no
+ * non-idle pixels are skipped) */
+static bool area_has_active(const epd_t *s, int x0, int y0, int x1, int y1) {
+    for (int y = y0; y < y1; y++) {
+        if (!s->row_nonidle[y]) continue;
+        const uint16_t *row = s->state + (size_t)y * s->width;
+        for (int x = x0; x < x1; x++) {
+            if (epd_px_is_active(row[x])) return true;
+        }
+    }
+    return false;
+}
+
+/* SEED: adopt the pixels as on-glass (confirmed = target, IDLE, no drive).
+ * Waits out in-flight pixels; subsumes PENDING ones. */
+static esp_err_t seed_bitmap(epd_t *s, bsp_rect_t area, const uint8_t *src,
+                             bsp_rotation_t rotation) {
+    const int W = s->width;
+    const int x0 = area.origin.x, y0 = area.origin.y;
+    const int w = area.size.width, h = area.size.height;
+
+    xSemaphoreTake(s->mtx, portMAX_DELAY);
+    while (area_has_active(s, x0, y0, x0 + w, y0 + h)) wait_retire(s);
+    for (int dr = 0; dr < h; dr++) {
+        const int py = y0 + dr;
+        uint16_t *drow = s->state + (size_t)py * W;
+        uint16_t subsumed = 0;
+        for (int dc = 0; dc < w; dc++) {
+            size_t si;
+            switch (rotation) {
+                case BSP_ROTATION_90:  si = (size_t)dc * h + (h - 1 - dr); break;
+                case BSP_ROTATION_270: si = (size_t)(w - 1 - dc) * h + dr; break;
+                case BSP_ROTATION_180: si = (size_t)(h - 1 - dr) * w + (w - 1 - dc); break;
+                default:               si = (size_t)dr * w + dc; break;
+            }
+            uint16_t *cell = &drow[x0 + dc];
+            if ((*cell >> 8) == EPD_B1_PENDING) subsumed++;
+            const uint16_t g = src[si] >> 4;
+            *cell = (uint16_t)(0xFF00 | (g << 4) | g);
+        }
+        s->row_nonidle[py] -= subsumed;
+        s->group[EPD_B1_PENDING] -= subsumed;
+    }
+    xSemaphoreGive(s->mtx);
+    return ESP_OK;
+}
+
 /* Stamp the drawn rect PENDING, diff-skipping per pixel. Mirrors
  * bsp_blit_rotated's source<->panel mapping, but folds compare+stamp into the
  * walk instead of a plain copy (so it can't reuse that helper). A conflict (a
@@ -393,6 +443,9 @@ static esp_err_t op_draw_bitmap(bsp_display_t *self, bsp_rect_t area, const void
     const int w = area.size.width, h = area.size.height;
     if (x0 < 0 || y0 < 0 || x0 + w > W || y0 + h > s->height) {
         return ESP_ERR_INVALID_ARG;
+    }
+    if ((s->mode & ~BSP_EPD_MODE_ALL) == BSP_EPD_MODE_SEED) {
+        return seed_bitmap(s, area, src, rotation);
     }
 
     xSemaphoreTake(s->mtx, portMAX_DELAY);
@@ -441,19 +494,6 @@ static int mode_to_wf(bsp_epd_mode_t mode) {
         case BSP_EPD_MODE_QUALITY: return EPD_LL_WAVEFORM_QUALITY;
         default:                   return -1;
     }
-}
-
-/* Is any pixel in the rect still replaying a waveform? (early-out; rows with no
- * non-idle pixels are skipped) */
-static bool area_has_active(const epd_t *s, int x0, int y0, int x1, int y1) {
-    for (int y = y0; y < y1; y++) {
-        if (!s->row_nonidle[y]) continue;
-        const uint16_t *row = s->state + (size_t)y * s->width;
-        for (int x = x0; x < x1; x++) {
-            if (epd_px_is_active(row[x])) return true;
-        }
-    }
-    return false;
 }
 
 /* Arm PENDING pixels inside `area` with the mode's waveform and return; the
@@ -510,10 +550,17 @@ static esp_err_t op_refresh(bsp_display_t *self, bsp_rect_t area, bsp_epd_mode_t
     return ESP_OK;
 }
 
+static esp_err_t op_wait_idle(bsp_display_t *self) {
+    epd_t *s = (epd_t *)self;
+    xSemaphoreTake(s->mtx, portMAX_DELAY);
+    while (s->active_px) wait_retire(s);
+    xSemaphoreGive(s->mtx);
+    return ESP_OK;
+}
+
 /* Arm the whole panel to white with the CLEAR waveform. Blocks until every
  * in-flight pixel retires first (a clear is a quiescent reset point; the
- * never-interrupt rule applies to it too); PENDING draws are subsumed. Also run
- * synchronously at create (task == NULL) for the bring-up white baseline. */
+ * never-interrupt rule applies to it too); PENDING draws are subsumed. */
 static esp_err_t op_clear(bsp_display_t *self) {
     epd_t *s = (epd_t *)self;
     const int W = s->width, H = s->height;
@@ -640,6 +687,7 @@ esp_err_t epd_ll_create(const epd_ll_config_t *cfg, bsp_display_t **out_display)
     s->base.set_epd_mode = op_set_epd_mode;
     s->base.refresh      = op_refresh;
     s->base.clear        = op_clear;
+    s->base.wait_idle    = op_wait_idle;
     s->mode              = BSP_EPD_MODE_NONE;
     s->oe_pin            = cfg->oe_pin;
     s->pwr_pin           = cfg->pwr_pin;
@@ -694,14 +742,6 @@ esp_err_t epd_ll_create(const epd_ll_config_t *cfg, bsp_display_t **out_display)
     s->done       = xSemaphoreCreateBinary();
     s->retire_evt = xSemaphoreCreateBinary();
     if (!s->mtx || !s->done || !s->retire_evt) { op_deinit(&s->base); return ESP_ERR_NO_MEM; }
-
-    /* Establish a known white screen so later refreshes start from a clean
-     * state. Synchronous -- the task doesn't exist yet, so pump the frame loop
-     * here (the clear waveform's uniform frames take the prebuilt-line path). */
-    op_clear(&s->base);
-    power_on(s);
-    while (s->active_px) run_one_frame(s);
-    power_off(s);
 
     /* Bring up the async waveform engine. Caller picks the priority/core
      * (default core 0 keeps its DMA busy-waits off the UI/LVGL core). */

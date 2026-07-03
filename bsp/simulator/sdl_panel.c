@@ -534,6 +534,7 @@ esp_err_t sdl_panel_create(const sdl_panel_config_t *config,
     s_display.set_epd_mode     = NULL;
     s_display.refresh          = NULL;
     s_display.clear            = NULL;
+    s_display.wait_idle        = NULL;
 
     switch (config->type) {
     case BSP_DISPLAY_TYPE_RGB:

@@ -70,6 +70,7 @@ typedef enum {
     BSP_EPD_MODE_NONE    = 0, /* draw() writes framebuffer only, no panel refresh */
     BSP_EPD_MODE_FAST    = 1, /* 2-level direct update, fast                      */
     BSP_EPD_MODE_QUALITY = 2, /* 16 grayscales, flashing, highest quality         */
+    BSP_EPD_MODE_SEED    = 3, /* draw() adopts pixels as already on glass: no drive */
     /* OR-able flag for bsp_display_refresh: drive every pixel of the refreshed
      * area, ignoring the diff against the displayed state (ghost clear). The
      * waveform is still selected by the low bits. Blanking the whole panel is a

@@ -66,9 +66,16 @@ static esp_err_t op_draw_bitmap(bsp_display_t *self, bsp_rect_t area, const void
         bsp_blit_rotated(s->gram, W, 1, area, pixels, rotation);
     }
 
-    if ((s->mode & ~BSP_EPD_MODE_ALL) != BSP_EPD_MODE_NONE)
+    /* SEED updates GRAM only — the TCON's own on-glass tracking can't be seeded. */
+    const bsp_epd_mode_t mode = s->mode & ~BSP_EPD_MODE_ALL;
+    if (mode != BSP_EPD_MODE_NONE && mode != BSP_EPD_MODE_SEED)
         return self->refresh(self, area, s->mode);
     return ESP_OK;
+}
+
+static esp_err_t op_wait_idle(bsp_display_t *self) {
+    it8951e_epd_t *s = (it8951e_epd_t *)self;
+    return it8951e_wait_idle(s->epd, REFRESH_TIMEOUT_MS);
 }
 
 static esp_err_t op_set_epd_mode(bsp_display_t *self, bsp_epd_mode_t mode) {
@@ -90,7 +97,8 @@ static esp_err_t op_clear(bsp_display_t *self) {
 
 static esp_err_t op_refresh(bsp_display_t *self, bsp_rect_t area, bsp_epd_mode_t mode) {
     it8951e_epd_t *s = (it8951e_epd_t *)self;
-    if ((mode & ~BSP_EPD_MODE_ALL) == BSP_EPD_MODE_NONE) return ESP_OK;
+    const bsp_epd_mode_t m = mode & ~BSP_EPD_MODE_ALL;
+    if (m == BSP_EPD_MODE_NONE || m == BSP_EPD_MODE_SEED) return ESP_OK;
 
     /* IT8951E 4bpp upload requires x and width aligned to 4 px. Snap the rect
      * outward; the padding columns are read back from GRAM, which draw_bitmap
@@ -173,6 +181,7 @@ esp_err_t it8951e_epd_create(const it8951e_config_t *cfg, bsp_display_t **out_di
     s->base.set_epd_mode = op_set_epd_mode;
     s->base.refresh      = op_refresh;
     s->base.clear        = op_clear;
+    s->base.wait_idle    = op_wait_idle;
     s->mode              = BSP_EPD_MODE_NONE;
 
     *out_display = &s->base;
