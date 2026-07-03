@@ -25,8 +25,8 @@ lv_event_dsc_t *lv_obj_add_event_fn(lv_obj_t *obj, lv_event_code_t filter,
     }, LV_EVENT_DELETE, fn_ptr);
 
     return lv_obj_add_event_cb(obj, [](lv_event_t *e) {
-        auto *fn = static_cast<std::function<void(lv_event_t*)>*>(lv_event_get_user_data(e));
-        (*fn)(e);
+        auto fn = *static_cast<std::function<void(lv_event_t*)>*>(lv_event_get_user_data(e));
+        fn(e);
     }, filter, fn_ptr);
 }
 
