@@ -83,6 +83,10 @@ void ScreenManager::top() {
     for (auto &s : leaving) retire(std::move(s));
 }
 
+Screen *ScreenManager::current_screen() {
+    return stack_.empty() ? nullptr : stack_.back().get();
+}
+
 void ScreenManager::switch_theme(lv_theme_t *theme) {
     if (theme == current_theme_) return;
     lv_display_set_theme(lv_display_get_default(), theme);
