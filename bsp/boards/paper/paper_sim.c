@@ -13,6 +13,7 @@
 #include "bsp_rtc.h"
 #include "sdl_panel.h"
 #include "rtc_sim.h"
+#include <stdio.h>
 
 esp_err_t bsp_init(const bsp_config_t *config) {
     sdl_panel_config_t sdl_config = {
@@ -46,6 +47,8 @@ esp_err_t bsp_hw_reset(void) {
     exit(0);
 }
 
+/* No PMIC on the host: behave like a USB-powered device that stays alive. */
 esp_err_t bsp_power_off(void) {
-    exit(0);
+    fprintf(stderr, "[sim] bsp_power_off: staying on\n");
+    return ESP_FAIL;
 }
