@@ -2,16 +2,30 @@
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 Hiroki Kawakami
  *
- * Host-side bsp_rtc: get_time reads the host clock; set_time is a no-op and the
- * countdown timer ops are absent (NULL -> ESP_ERR_NOT_SUPPORTED).
+ * Host-side bsp_rtc: get_time reads the host clock offset by the last
+ * set_time; `SIMULATOR_RTC_INVALID` (unset/"0" excluded) starts it invalid.
  */
 
 #include "rtc_sim.h"
+#include <stdlib.h>
+#include <string.h>
 #include <time.h>
+
+static bool s_init_done = false;
+static bool s_valid = false;
+static time_t s_offset = 0;
+
+static void ensure_init(void) {
+    if (s_init_done) return;
+    s_init_done = true;
+    const char *env = getenv("SIMULATOR_RTC_INVALID");
+    s_valid = !(env && strcmp(env, "0") != 0);
+}
 
 static esp_err_t sim_get_time(bsp_rtc_t *self, bsp_rtc_datetime_t *out) {
     (void)self;
-    time_t now = time(NULL);
+    ensure_init();
+    time_t now = time(NULL) + s_offset;
     struct tm tm;
     localtime_r(&now, &tm);
     out->year    = (uint16_t)(tm.tm_year + 1900);
@@ -25,13 +39,25 @@ static esp_err_t sim_get_time(bsp_rtc_t *self, bsp_rtc_datetime_t *out) {
 }
 
 static esp_err_t sim_set_time(bsp_rtc_t *self, const bsp_rtc_datetime_t *dt) {
-    (void)self; (void)dt;
+    (void)self;
+    ensure_init();
+    struct tm tm = {0};
+    tm.tm_year  = dt->year - 1900;
+    tm.tm_mon   = dt->month - 1;
+    tm.tm_mday  = dt->day;
+    tm.tm_hour  = dt->hour;
+    tm.tm_min   = dt->minute;
+    tm.tm_sec   = dt->second;
+    tm.tm_isdst = -1;
+    s_offset = mktime(&tm) - time(NULL);
+    s_valid = true;
     return ESP_OK;
 }
 
 static esp_err_t sim_time_is_valid(bsp_rtc_t *self, bool *out_valid) {
     (void)self;
-    *out_valid = true;
+    ensure_init();
+    *out_valid = s_valid;
     return ESP_OK;
 }
 
