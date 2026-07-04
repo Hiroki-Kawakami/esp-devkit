@@ -492,6 +492,7 @@ static int mode_to_wf(bsp_epd_mode_t mode) {
     switch (mode & ~BSP_EPD_MODE_ALL) {
         case BSP_EPD_MODE_FAST:    return EPD_LL_WAVEFORM_FAST;
         case BSP_EPD_MODE_QUALITY: return EPD_LL_WAVEFORM_QUALITY;
+        case BSP_EPD_MODE_TEXT:    return EPD_LL_WAVEFORM_TEXT;
         default:                   return -1;
     }
 }
@@ -568,6 +569,10 @@ static esp_err_t op_clear(bsp_display_t *self) {
 
     xSemaphoreTake(s->mtx, portMAX_DELAY);
     while (s->active_px) wait_retire(s);
+    /* CLEAR is lut_id=3, so start_frame 62/63 would produce b1==0xFE/0xFF
+     * (the PENDING/IDLE magics). No pixel is in flight after the wait above,
+     * so bumping s->frame past the danger zone is a free-variable move. */
+    if (s->frame == 61 || s->frame == 62) s->frame = 63;
     const uint8_t b1 = epd_b1_armed(EPD_LL_WAVEFORM_CLEAR, s->frame);
     for (size_t p = 0; p < fb; p++) {
         s->state[p] = (uint16_t)((b1 << 8) | (s->state[p] & 0x00F0) | 15);

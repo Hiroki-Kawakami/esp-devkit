@@ -195,7 +195,8 @@ static void cmd_refresh(char **cur) {
     bsp_epd_mode_t mode;
     if (mode_s && !strcmp(mode_s, "fast"))         mode = BSP_EPD_MODE_FAST;
     else if (mode_s && !strcmp(mode_s, "quality")) mode = BSP_EPD_MODE_QUALITY;
-    else { reply("#ERR refresh: usage: refresh <fast|quality> [all]"); return; }
+    else if (mode_s && !strcmp(mode_s, "text"))    mode = BSP_EPD_MODE_TEXT;
+    else { reply("#ERR refresh: usage: refresh <fast|quality|text> [all]"); return; }
     if (all_s && !strcmp(all_s, "all")) mode = (bsp_epd_mode_t)(mode | BSP_EPD_MODE_ALL);
 
     bsp_rect_t full = { { 0, 0 }, bsp_display_get_size() };

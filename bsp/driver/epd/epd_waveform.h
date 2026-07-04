@@ -8,7 +8,7 @@
  * task, and the locking; this header is just the per-pixel / per-scanline logic.
  *
  * Pixel state (uint16, the only framebuffer):
- *   [15:14] lut_id     waveform slot 0..2; 3 is reserved for the magics below
+ *   [15:14] lut_id     waveform slot 0..3
  *   [13:8]  start      engine frame (mod 64) on which the waveform begins
  *   [7:4]   confirmed  on-glass gray (the waveform's `from`)
  *   [3:0]   target     goal gray (the waveform's `to`)
@@ -16,6 +16,9 @@
  *   0xFF        IDLE     holding; confirmed == target == on-glass value
  *   0xFE        PENDING  target stamped by draw, waveform not yet bound
  *   otherwise   ACTIVE   replaying wf[lut_id] at step = (frame - start) & 63
+ * lut_id 3 shares its top-2-bit range with the magics: only b1==0xFE/0xFF are
+ * reserved, so slot 3 is a real waveform slot whose caller must skip arming
+ * at start_frame 62/63 (epd_ll.c enforces this on the one call site).
  * `step == 63` means "armed": activation always sets start = frame + 1, so a
  * pixel armed mid-scan renders one frame of hold and starts uniformly on the
  * next frame (hence EPD_WF_STEP_MAX = 62, and no per-frame step writeback --
@@ -50,7 +53,7 @@
 #define restrict __restrict
 #endif
 
-#define EPD_WF_SLOTS    3        /* lut_id 0..2; 3 reserved for IDLE/PENDING */
+#define EPD_WF_SLOTS    4        /* lut_id 0..3; only b1==0xFE/0xFF reserved  */
 #define EPD_WF_STEP_MAX 62       /* step 63 = armed-not-started */
 #define EPD_B1_IDLE     0xFF
 #define EPD_B1_PENDING  0xFE
@@ -82,9 +85,11 @@ static inline bool epd_waveform_init(epd_waveform_t *wf, const uint32_t (*lut)[1
     return true;
 }
 
-static inline bool epd_px_is_active(uint16_t px) { return (px >> 14) != 3; }
+static inline bool epd_px_is_active(uint16_t px) { return (px >> 8) < EPD_B1_PENDING; }
 
-/* b1 for a pixel activated while the engine is at `frame`: starts next frame. */
+/* b1 for a pixel activated while the engine is at `frame`: starts next frame.
+ * For lut_id==3 the caller must ensure (frame+1)&63 is not 62 or 63 -- those
+ * two b1 values collide with EPD_B1_PENDING / EPD_B1_IDLE. */
 static inline uint8_t epd_b1_armed(int lut_id, unsigned frame) {
     return (uint8_t)((lut_id << 6) | ((frame + 1) & 63));
 }
@@ -122,10 +127,12 @@ static inline void epd_build_frame_tab(const epd_waveform_t wf[EPD_WF_SLOTS],
                                        const uint32_t *rowset_tab[256],
                                        uint8_t retire_tab[256]) {
     for (int b1 = 0; b1 < 256; b1++) {
-        int id = b1 >> 6;
         const uint32_t *rowset = epd_hold_rowset;
         uint8_t retire = 0;
-        if (id < EPD_WF_SLOTS) {
+        /* b1 < EPD_B1_PENDING excludes the 0xFE/0xFF magics; slot 3 uses the
+         * rest of that top-2-bit range as a real waveform. */
+        if (b1 < EPD_B1_PENDING) {
+            int id = b1 >> 6;
             unsigned step = (unsigned)(frame - b1) & 63;
             if (wf[id].lut && step < wf[id].steps) {
                 const uint32_t *row = wf[id].lut[step];

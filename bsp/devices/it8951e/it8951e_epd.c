@@ -46,6 +46,7 @@ static it8951e_mode_t to_it8951e_mode(bsp_epd_mode_t m) {
     switch (m & ~BSP_EPD_MODE_ALL) {
         case BSP_EPD_MODE_FAST:    return IT8951E_MODE_DU;
         case BSP_EPD_MODE_QUALITY: return IT8951E_MODE_GC16;
+        case BSP_EPD_MODE_TEXT:    return IT8951E_MODE_GL16;
         default:                   return IT8951E_MODE_GL16;
     }
 }

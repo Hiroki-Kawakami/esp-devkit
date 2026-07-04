@@ -46,11 +46,14 @@ extern "C" {
 
 /* Waveforms epd_ll asks the panel descriptor for (decoupled from
  * bsp_epd_mode_t: CLEAR is not a refresh mode, it backs the clear op and the
- * bring-up white baseline). */
+ * bring-up white baseline). Order = pixel-word slot ids; CLEAR sits in slot 3
+ * because that slot collides with the 0xFE/0xFF magics at start_frame 62/63
+ * and CLEAR is the one waveform whose arm can afford to skip those frames. */
 typedef enum {
     EPD_LL_WAVEFORM_FAST    = 0,  /* 2-level direct update                    */
     EPD_LL_WAVEFORM_QUALITY = 1,  /* 16 grayscales, flashing                  */
-    EPD_LL_WAVEFORM_CLEAR   = 2,  /* uniform drive to white (required)        */
+    EPD_LL_WAVEFORM_TEXT    = 2,  /* grayscale, tuned for text/UI updates     */
+    EPD_LL_WAVEFORM_CLEAR   = 3,  /* uniform drive to white (required)        */
     EPD_LL_WAVEFORM_COUNT
 } epd_ll_waveform_t;
 

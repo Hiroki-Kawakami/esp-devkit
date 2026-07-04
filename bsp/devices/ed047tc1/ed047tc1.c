@@ -58,6 +58,24 @@ static const uint32_t ed047tc1_lut_quality[][16] = {
     SETTLE, SETTLE, SETTLE, SETTLE, SETTLE, SETTLE, SETTLE, SETTLE,
 };
 
+static const uint32_t ed047tc1_lut_text[][16] = {
+/*         0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15   (gray column) */
+/*  1 */ F(W, B, B, B, B, B, B, B, W, W, W, W, W, W, W, B),
+/*  2 */ F(W, W, 0, B, B, B, B, B, W, W, W, W, 0, 0, B, B),
+/*  3 */ F(W, W, W, W, W, W, W, W, B, B, B, B, B, B, B, B),
+/*  4 */ F(W, W, W, W, W, W, W, W, B, B, B, B, B, B, B, B),
+/*  6 */ T(W, W, W, W, W, W, W, W, B, B, B, B, B, B, B, B),
+/*  7 */ T(W, W, W, W, W, W, W, W, B, B, B, B, B, B, B, B),
+/*  8 */ T(B, W, W, W, W, W, W, W, B, B, B, B, B, B, B, W),
+/*  9 */ T(B, B, 0, W, W, W, W, W, B, B, B, B, 0, 0, W, W),
+/* 10 */ T(B, B, B, B, B, B, B, B, W, W, W, W, W, W, W, W),
+/* 11 */ T(B, B, B, B, B, B, B, B, W, W, W, W, W, W, W, W),
+/* 12 */ T(B, B, B, B, B, B, B, B, W, W, W, W, W, W, W, W),
+/* 13 */ T(B, B, B, B, B, B, B, B, W, W, W, W, W, W, W, W),
+    /* settle tail (16 frames, no drive, skippable) */
+    SETTLE, SETTLE, SETTLE, SETTLE, SETTLE, SETTLE, SETTLE, SETTLE,
+};
+
 /* 2-level fast direct update: only black/white targets drive, mid-grays held. */
 static const uint32_t ed047tc1_lut_fast[][16] = {
 /*         0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15   (gray column) */
@@ -109,6 +127,9 @@ static epd_ll_lut_t get_waveform_lut(epd_ll_waveform_t waveform, size_t *steps) 
         case EPD_LL_WAVEFORM_QUALITY:
             *steps = LUT_STEPS(ed047tc1_lut_quality);
             return ed047tc1_lut_quality;
+        case EPD_LL_WAVEFORM_TEXT:
+            *steps = LUT_STEPS(ed047tc1_lut_text);
+            return ed047tc1_lut_text;
         case EPD_LL_WAVEFORM_CLEAR:
             *steps = LUT_STEPS(ed047tc1_lut_clear);
             return ed047tc1_lut_clear;

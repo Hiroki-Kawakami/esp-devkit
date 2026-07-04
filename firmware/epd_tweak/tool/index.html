@@ -107,7 +107,8 @@
     <div class="toolbar">
       <button class="tab" data-slot="0">FAST</button>
       <button class="tab active" data-slot="1">QUALITY</button>
-      <button class="tab" data-slot="2">CLEAR</button>
+      <button class="tab" data-slot="2">TEXT</button>
+      <button class="tab" data-slot="3">CLEAR</button>
       <span class="sep"></span>
       <span style="color:var(--dim)">paint:</span>
       <button class="paint active" data-act="1" style="background:#000;color:#888">B</button>
@@ -140,6 +141,7 @@
         </div>
         <div class="row">
           <button id="rq" disabled>Refresh quality</button>
+          <button id="rt" disabled>Refresh text</button>
           <button id="rf" disabled>Refresh fast</button>
           <label><input type="checkbox" id="rall" checked> ALL</label>
         </div>
@@ -174,9 +176,9 @@
 // ---------- LUT model ----------
 // row = { type: 'T'|'F'|'SETTLE'|'STOP'|'RAW', acts: Uint8Array(16), raw: Uint32Array(16)|null }
 const SETTLE_WORD = 0xFFFFFFFF;
-const SLOT_NAMES = ['FAST', 'QUALITY', 'CLEAR'];
+const SLOT_NAMES = ['FAST', 'QUALITY', 'TEXT', 'CLEAR'];
 let stepMax = 62;
-let luts = [[], [], []];
+let luts = SLOT_NAMES.map(() => []);
 let curSlot = 1;
 let paintAct = 1;
 
@@ -347,7 +349,7 @@ function log(text, cls) {
 function setConnected(on) {
   document.getElementById('status').textContent = on ? 'connected' : 'disconnected';
   document.getElementById('status').className = on ? 'connected' : '';
-  for (const id of ['read', 'apply', 'pattern', 'clear', 'rq', 'rf', 'imgsend']) {
+  for (const id of ['read', 'apply', 'pattern', 'clear', 'rq', 'rt', 'rf', 'imgsend']) {
     document.getElementById(id).disabled = !on;
   }
 }
@@ -440,7 +442,7 @@ function guard(btn, fn) {
 
 const readBtn = document.getElementById('read');
 readBtn.onclick = guard(readBtn, async () => {
-  for (let slot = 0; slot < 3; slot++) {
+  for (let slot = 0; slot < SLOT_NAMES.length; slot++) {
     const resp = (await send(`dump ${slot}`, 10000)).split(' ');  // #OK dump slot steps hex
     const steps = +resp[3];
     if (steps > 0) luts[slot] = hexToLut(resp[4], steps);
@@ -459,7 +461,8 @@ document.getElementById('pattern').onclick = () => send('pattern').catch(e => lo
 document.getElementById('clear').onclick   = () => send('clear', 30000).catch(e => log(e.message, 'err'));
 const refreshCmd = m => 'refresh ' + m + (document.getElementById('rall').checked ? ' all' : '');
 document.getElementById('rq').onclick = () => send(refreshCmd('quality'), 30000).catch(e => log(e.message, 'err'));
-document.getElementById('rf').onclick = () => send(refreshCmd('fast'), 30000).catch(e => log(e.message, 'err'));
+document.getElementById('rt').onclick = () => send(refreshCmd('text'),    30000).catch(e => log(e.message, 'err'));
+document.getElementById('rf').onclick = () => send(refreshCmd('fast'),    30000).catch(e => log(e.message, 'err'));
 
 // ---------- image upload ----------
 const imgBtn = document.getElementById('imgsend');
