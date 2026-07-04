@@ -121,6 +121,26 @@ typedef struct {
     uint8_t  weekday;  /*!< 0-6, 0 = Sunday */
 } bsp_rtc_datetime_t;
 
+typedef enum {
+    BSP_AUDIO_CAP_PCM       = 1 << 0,  /*!< PCM playback path */
+    BSP_AUDIO_CAP_TONE      = 1 << 1,  /*!< tone-only buzzer */
+    BSP_AUDIO_CAP_SPEAKER   = 1 << 2,  /*!< speaker route */
+    BSP_AUDIO_CAP_HEADPHONE = 1 << 3,  /*!< headphone route with insert detect */
+} bsp_audio_caps_t;
+
+typedef enum {
+    BSP_AUDIO_SPEAKER_MODE_ON   = 0,  /*!< always on (default) */
+    BSP_AUDIO_SPEAKER_MODE_AUTO = 1,  /*!< on only while HP is unplugged (needs CAP_HEADPHONE) */
+    BSP_AUDIO_SPEAKER_MODE_OFF  = 2,
+} bsp_audio_speaker_mode_t;
+
+/* Who drives the DSP chain (audio_dsp.h) that voices the board's output path. */
+typedef enum {
+    BSP_AUDIO_DSP_MODE_AUTO    = 0,  /*!< board tuning, re-applied on route changes (default) */
+    BSP_AUDIO_DSP_MODE_MANUAL  = 1,  /*!< initialised flat; the app drives bsp_audio_dsp() */
+    BSP_AUDIO_DSP_MODE_DISABLE = 2,  /*!< no DSP; volume falls back to the codec (clicky) */
+} bsp_audio_dsp_mode_t;
+
 #ifdef __cplusplus
 }
 #endif

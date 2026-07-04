@@ -7,6 +7,7 @@
 
 #pragma once
 #include "bsp_types.h"
+#include "audio_dsp.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -24,6 +25,10 @@ typedef struct {
         int8_t   task_affinity;     /*!< core to pin to (0/1); <0 -> no affinity */
         uint16_t poll_interval_ms;  /*!< reader-task INT-wait fallback; 0 -> default */
     } touch;
+    struct {
+        bsp_audio_dsp_mode_t dsp_mode;          /*!< who voices the DSP chain */
+        bsp_audio_speaker_mode_t speaker_mode;  /*!< speaker route policy */
+    } audio;
 } bsp_config_t;
 
 esp_err_t bsp_init(const bsp_config_t *config);
@@ -135,6 +140,52 @@ void bsp_button_on_long_press(uint8_t id, uint16_t duration_ms,
 uint8_t bsp_led_count(void);
 esp_err_t bsp_led_set_rgb(uint8_t index, uint8_t r, uint8_t g, uint8_t b);
 esp_err_t bsp_led_clear(void);
+
+// MARK: Audio
+/* Capability-based: calls outside the active provider's caps return
+ * ESP_ERR_NOT_SUPPORTED; 0 = this model has no audio. */
+uint32_t bsp_audio_get_caps(void);
+
+/* Tone (CAP_TONE or CAP_PCM): the hardware buzzer when the model has one,
+ * otherwise synthesized on the PCM path (ESP_ERR_INVALID_STATE while a PCM
+ * stream is open — no mixing). duration_ms=0 plays until tone_stop. */
+esp_err_t bsp_audio_tone(uint32_t freq_hz, uint32_t duration_ms);
+esp_err_t bsp_audio_tone_stop(void);
+
+/* PCM playback (CAP_PCM). Idempotent: open starts the stream, reconfigures a
+ * running one when the format differs, and no-ops when it matches; close on a
+ * closed stream is a no-op. Streams fade in from silence (click-free);
+ * write before open returns ESP_ERR_INVALID_STATE. */
+esp_err_t bsp_audio_open(uint32_t sample_rate, uint8_t bits_per_sample, uint8_t channels);
+esp_err_t bsp_audio_close(void);
+/* `data` is filtered in-place by the DSP chain — caller must own the buffer.
+ * Blocks while the output is full (the device's natural pacing). */
+esp_err_t bsp_audio_write(void *data, size_t len);
+
+/* 0..150, linear-in-dB: 0 = true silence, 100 = unity, >100 = digital boost
+ * (SW-gain path only — the HW-codec fallback caps at 100). Click-free via the
+ * gain fade. Starts at 0 until first set; callable before open. */
+esp_err_t bsp_audio_set_volume(int volume);
+int       bsp_audio_get_volume(void);
+esp_err_t bsp_audio_set_mute(bool mute);
+bool      bsp_audio_get_mute(void);
+
+/* DSP chain handle (NULL in DSP_MODE_DISABLE / no PCM path). set_gain is owned
+ * by the volume plumbing, and in AUTO mode route changes overwrite direct
+ * edits — set_eq_enabled is the EQ toggle that survives re-voicing. */
+audio_dsp_t bsp_audio_dsp(void);
+esp_err_t bsp_audio_set_eq_enabled(bool enabled);
+bool      bsp_audio_get_eq_enabled(void);
+
+/* Speaker route policy (CAP_SPEAKER; AUTO additionally needs CAP_HEADPHONE). */
+esp_err_t bsp_audio_set_speaker_mode(bsp_audio_speaker_mode_t mode);
+bsp_audio_speaker_mode_t bsp_audio_get_speaker_mode(void);
+
+/* Headphone detect (CAP_HEADPHONE); the callback fires from an internal
+ * poller task (~200 ms), NULL unregisters. */
+bool bsp_audio_headphone_inserted(void);
+typedef void (*bsp_audio_headphone_cb_t)(bool inserted, void *user);
+esp_err_t bsp_audio_set_headphone_callback(bsp_audio_headphone_cb_t cb, void *user);
 
 #ifdef __cplusplus
 }

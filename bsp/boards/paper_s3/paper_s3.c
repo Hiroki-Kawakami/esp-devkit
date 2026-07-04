@@ -17,6 +17,7 @@
 #include "driver/i2c_master.h"
 #include "bm8563.h"
 #include "paper_s3_panel.h"
+#include "pwm_buzzer.h"
 
 static const char *TAG = "paper_s3";
 
@@ -26,6 +27,7 @@ static const char *TAG = "paper_s3";
 #define PAPER_S3_I2C_PIN_SCL  GPIO_NUM_42
 
 #define PAPER_S3_PIN_PWROFF_PULSE  GPIO_NUM_44
+#define PAPER_S3_PIN_BUZZER        GPIO_NUM_21
 
 static esp_err_t i2c_bus_init(i2c_master_bus_handle_t *out_bus) {
     const i2c_master_bus_config_t i2c_cfg = {
@@ -57,6 +59,22 @@ static esp_err_t rtc_init(i2c_master_bus_handle_t bus) {
     return ESP_OK;
 }
 
+static esp_err_t audio_init(const bsp_config_t *config) {
+    const pwm_buzzer_config_t cfg = {
+        .pwm_io  = PAPER_S3_PIN_BUZZER,
+        .timer   = LEDC_TIMER_0,
+        .channel = LEDC_CHANNEL_0,
+    };
+    bsp_audio_t *audio = NULL;
+    esp_err_t err = pwm_buzzer_create(&cfg, &audio);
+    if (err != ESP_OK) return err;
+    bsp_audio_set_active(audio, &(bsp_audio_init_t){
+        .dsp_mode = config->audio.dsp_mode,
+        .speaker_mode = config->audio.speaker_mode,
+    });
+    return ESP_OK;
+}
+
 esp_err_t bsp_init(const bsp_config_t *config) {
     bsp_config_t defaults = {0};   /* NULL/zeroed config -> EPD priority 5, core 0 */
     if (!config) config = &defaults;
@@ -73,6 +91,10 @@ esp_err_t bsp_init(const bsp_config_t *config) {
         ESP_LOGW(TAG, "rtc unavailable: %s", esp_err_to_name(err));
     }
 
+    if ((err = audio_init(config)) != ESP_OK) {
+        ESP_LOGW(TAG, "audio unavailable: %s", esp_err_to_name(err));
+    }
+
     const gpio_config_t out = {
         .pin_bit_mask = 1ULL << PAPER_S3_PIN_PWROFF_PULSE,
         .mode         = GPIO_MODE_OUTPUT,
@@ -87,6 +109,7 @@ esp_err_t bsp_init(const bsp_config_t *config) {
 }
 
 void bsp_restart(void) {
+    bsp_audio_quiesce();
     esp_restart();
 }
 
@@ -97,6 +120,7 @@ esp_err_t bsp_hw_reset(void) {
 }
 
 esp_err_t bsp_power_off(void) {
+    bsp_audio_quiesce();
     gpio_set_level(PAPER_S3_PIN_PWROFF_PULSE, 1);
     vTaskDelay(pdMS_TO_TICKS(50));
     gpio_set_level(PAPER_S3_PIN_PWROFF_PULSE, 0);

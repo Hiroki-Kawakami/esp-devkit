@@ -9,8 +9,10 @@
 #include "bsp_display.h"
 #include "bsp_touch.h"
 #include "bsp_rtc.h"
+#include "bsp_audio.h"
 #include "sdl_panel.h"
 #include "rtc_sim.h"
+#include "sdl_audio.h"
 #include <stdio.h>
 
 esp_err_t bsp_init(const bsp_config_t *config) {
@@ -34,6 +36,17 @@ esp_err_t bsp_init(const bsp_config_t *config) {
 
     bsp_rtc_t *rtc = NULL;
     if (rtc_sim_create(&rtc) == ESP_OK) bsp_rtc_set_active(rtc);
+
+    bsp_audio_t *audio = NULL;
+    esp_err_t audio_err = sdl_audio_create(&(sdl_audio_config_t){ .tone_only = true }, &audio);
+    if (audio_err == ESP_OK) {
+        bsp_audio_set_active(audio, &(bsp_audio_init_t){
+            .dsp_mode = config->audio.dsp_mode,
+            .speaker_mode = config->audio.speaker_mode,
+        });
+    } else {
+        fprintf(stderr, "[sim] sdl_audio_create failed: %d\n", audio_err);
+    }
     return ESP_OK;
 }
 
