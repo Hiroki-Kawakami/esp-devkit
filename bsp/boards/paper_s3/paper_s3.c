@@ -16,6 +16,7 @@
 #include "driver/gpio.h"
 #include "driver/i2c_master.h"
 #include "bm8563.h"
+#include "adc_battery.h"
 #include "paper_s3_panel.h"
 #include "pwm_buzzer.h"
 
@@ -75,6 +76,23 @@ static esp_err_t audio_init(const bsp_config_t *config) {
     return ESP_OK;
 }
 
+/* ADC_VBAT on GPIO3 (ADC1_CH2): MPWR_EN through a 22K/22K 1:1 divider (×2), 1S
+ * Li-ion endpoints. VBUS from USB_DET on GPIO5 (USB_5V halved -> high present). */
+static void battery_init(void) {
+    const adc_battery_config_t cfg = {
+        .adc_unit    = ADC_UNIT_1,
+        .adc_channel = ADC_CHANNEL_2,
+        .adc_atten   = ADC_ATTEN_DB_12,
+        .divider_mul = 2, .divider_div = 1,
+        .empty_mv    = 3300, .full_mv = 4200,
+        .vbus_gpio   = GPIO_NUM_5,
+        .vbus_active_high = true,
+    };
+    bsp_power_t *power = NULL;
+    if (adc_battery_create(&cfg, &power) == ESP_OK) bsp_power_set_active(power);
+    else ESP_LOGW(TAG, "battery sense unavailable");
+}
+
 esp_err_t bsp_init(const bsp_config_t *config) {
     bsp_config_t defaults = {0};   /* NULL/zeroed config -> EPD priority 5, core 0 */
     if (!config) config = &defaults;
@@ -105,6 +123,7 @@ esp_err_t bsp_init(const bsp_config_t *config) {
     gpio_config(&out);
     gpio_set_level(PAPER_S3_PIN_PWROFF_PULSE, 0);
 
+    battery_init();
     return ESP_OK;
 }
 

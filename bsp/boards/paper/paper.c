@@ -17,6 +17,7 @@
 #include "driver/i2c_master.h"
 #include "bm8563.h"
 #include "gpio_button.h"
+#include "adc_battery.h"
 #include "paper_config.h"
 #include "paper_panel.h"
 #include "freertos/FreeRTOS.h"
@@ -72,6 +73,22 @@ static void buttons_init(void) {
         return;
     }
     bsp_button_set_active(btn);
+}
+
+/* Battery on GPIO35 (ADC1_CH7) via a 1:1 divider (read the pin ×2); 1S Li-ion
+ * empty/full endpoints. No VBUS-sense GPIO. */
+static void battery_init(void) {
+    const adc_battery_config_t cfg = {
+        .adc_unit    = ADC_UNIT_1,
+        .adc_channel = ADC_CHANNEL_7,
+        .adc_atten   = ADC_ATTEN_DB_12,
+        .divider_mul = 2, .divider_div = 1,
+        .empty_mv    = 3300, .full_mv = 4200,
+        .vbus_gpio   = GPIO_NUM_NC,
+    };
+    bsp_power_t *power = NULL;
+    if (adc_battery_create(&cfg, &power) == ESP_OK) bsp_power_set_active(power);
+    else ESP_LOGW(TAG, "battery sense unavailable");
 }
 
 /* Raise the power rails in order; the IT8951E needs ~1 s to boot before it will
@@ -137,6 +154,7 @@ esp_err_t bsp_init(const bsp_config_t *config) {
     }
 
     buttons_init();
+    battery_init();
     return ESP_OK;
 }
 

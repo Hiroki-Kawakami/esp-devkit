@@ -13,11 +13,13 @@ set(BOARD_DEVICE_SRCS
     "devices/bm8563/bm8563.c"
     "devices/ed047tc1/ed047tc1.c"
     "driver/epd/epd_ll.c"
-    "driver/pwm_buzzer/pwm_buzzer.c")
+    "driver/pwm_buzzer/pwm_buzzer.c"
+    "driver/adc_battery/adc_battery.c")
 set(BOARD_DEVICE_PRIV_INCLUDE_DIRS
-    "devices" "devices/ed047tc1" "devices/gt911" "devices/bm8563" "driver/epd" "driver/pwm_buzzer")
+    "devices" "devices/ed047tc1" "devices/gt911" "devices/bm8563" "driver/epd" "driver/pwm_buzzer"
+    "driver/adc_battery")
 set(BOARD_DEVICE_PRIV_REQUIRES
-    driver esp_lcd nvs_flash bt vfs fatfs sdmmc esp_driver_sdmmc esp_driver_sdspi esp_timer
+    driver esp_lcd esp_adc nvs_flash bt vfs fatfs sdmmc esp_driver_sdmmc esp_driver_sdspi esp_timer
     esp_driver_ledc)
 
 set(BOARD_SIM_SRCS "boards/paper_s3/paper_s3_sim.c")
