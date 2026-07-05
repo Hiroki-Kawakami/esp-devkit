@@ -13,9 +13,11 @@ set(BOARD_DEVICE_SRCS
     "devices/gt911/gt911_hotknot_fw_blob.c"
     "devices/bm8563/bm8563.c"
     "devices/it8951e/it8951e.c"
-    "devices/it8951e/it8951e_epd.c")
+    "devices/it8951e/it8951e_epd.c"
+    "driver/gpio_button/gpio_button.c")
 set(BOARD_DEVICE_PRIV_INCLUDE_DIRS
-    "devices" "devices/it8951e" "devices/gt911" "devices/bm8563")
+    "devices" "devices/it8951e" "devices/gt911" "devices/bm8563"
+    "driver/gpio_button")
 set(BOARD_DEVICE_PRIV_REQUIRES
     driver esp_driver_i2c esp_timer nvs_flash vfs fatfs sdmmc esp_driver_sdmmc esp_driver_sdspi)
 

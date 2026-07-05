@@ -146,11 +146,7 @@ static void IRAM_ATTR touch_int_isr(void *arg) {
 
 static void attach_isr(bsp_touch_t *t) {
     if (!t || t->int_io < 0 || s_int_isr_attached) return;
-    esp_err_t err = gpio_install_isr_service(0);
-    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-        ESP_LOGW(TAG, "gpio_install_isr_service: %s", esp_err_to_name(err));
-        return;
-    }
+    if (bsp_input_install_gpio_isr() != ESP_OK) return;
     gpio_set_intr_type((gpio_num_t)t->int_io, GPIO_INTR_NEGEDGE);
     if (gpio_isr_handler_add((gpio_num_t)t->int_io, touch_int_isr, t) != ESP_OK) return;
     gpio_intr_enable((gpio_num_t)t->int_io);

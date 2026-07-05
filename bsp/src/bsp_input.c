@@ -8,6 +8,10 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "esp_log.h"
+#ifdef ESP_PLATFORM
+#include "driver/gpio.h"
+#endif
 
 #define BSP_INPUT_MAX_SOURCES     4
 #define DEFAULT_POLL_INTERVAL_MS  10
@@ -40,6 +44,17 @@ void bsp_input_notify(void) {
 
 void bsp_input_notify_from_isr(BaseType_t *hp) {
     if (s_wake_sem) xSemaphoreGiveFromISR(s_wake_sem, hp);
+}
+
+esp_err_t bsp_input_install_gpio_isr(void) {
+#ifdef ESP_PLATFORM
+    static bool installed;
+    if (installed) return ESP_OK;
+    esp_err_t err = gpio_install_isr_service(0);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return err;
+    installed = true;
+#endif
+    return ESP_OK;
 }
 
 static void input_task(void *arg) {

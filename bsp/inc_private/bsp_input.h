@@ -27,6 +27,10 @@ esp_err_t bsp_input_add_source(const bsp_input_source_t *source);
 void bsp_input_notify(void);
 void bsp_input_notify_from_isr(BaseType_t *hp);
 
+/* Idempotent install of the shared GPIO ISR service, so several INT-driven
+ * providers can require it without the double-install error. */
+esp_err_t bsp_input_install_gpio_isr(void);
+
 /* Idempotent. priority == 0 -> no task is spawned (sources are dormant but
  * registration still works -- useful when only the sync-poll paths are wanted). */
 esp_err_t bsp_input_start(uint8_t priority, int8_t affinity,

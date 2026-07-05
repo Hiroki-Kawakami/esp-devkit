@@ -137,8 +137,13 @@ static void advance_one(uint8_t id, bool raw) {
     }
 }
 
-/* Providers with no INT (e.g. an ADC ladder) can't wake a dormant task, so
- * this source always requests another tick while a provider is active. */
+/* Not settled -> still needs polling for a pending debounce or long/double timer. */
+static inline bool button_settled(const button_state_t *b) {
+    return b->state == BTN_IDLE && !b->raw_differs;
+}
+
+/* Without an INT to wake the task, keep requesting ticks; with one, idle once
+ * every button has settled. */
 static bool button_tick(void *ctx) {
     (void)ctx;
     if (!s_button || !s_button->sample) return false;
@@ -150,7 +155,12 @@ static bool button_tick(void *ctx) {
     if (s_button->sample(s_button, pressed, n) == ESP_OK) {
         for (uint8_t i = 0; i < n; i++) advance_one(i, pressed[i]);
     }
-    return true;
+
+    if (!s_button->has_int) return true;
+    for (uint8_t i = 0; i < n; i++) {
+        if (!button_settled(&s_state[i])) return true;
+    }
+    return false;
 }
 
 void bsp_button_set_active(bsp_button_t *button) {

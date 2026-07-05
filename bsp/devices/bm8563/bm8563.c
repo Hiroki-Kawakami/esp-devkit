@@ -12,6 +12,7 @@
 
 #include "bm8563.h"
 #include "bsp_rtc.h"
+#include "bsp_input.h"
 #include <stdlib.h>
 #include <string.h>
 #include "esp_check.h"
@@ -279,8 +280,7 @@ static esp_err_t int_setup(bm8563_dev_t *dev) {
         return ESP_ERR_NO_MEM;
     }
 
-    esp_err_t err = gpio_install_isr_service(0);
-    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return err;
+    ESP_RETURN_ON_ERROR(bsp_input_install_gpio_isr(), TAG, "isr service");
     ESP_RETURN_ON_ERROR(gpio_isr_handler_add(dev->cfg.int_io, int_isr, dev), TAG, "isr add");
     return ESP_OK;
 }

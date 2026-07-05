@@ -17,6 +17,9 @@ typedef struct bsp_button bsp_button_t;
 
 struct bsp_button {
     uint8_t   count;
+    /* Provider wakes the input task on an edge -> the common layer may idle
+     * between presses instead of polling continuously. */
+    bool      has_int;
     /* Fill up to `max` slots with the current pressed state per button. */
     esp_err_t (*sample)(bsp_button_t *self, bool *pressed, uint8_t max);
     esp_err_t (*deinit)(bsp_button_t *self);

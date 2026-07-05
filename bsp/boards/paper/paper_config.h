@@ -40,3 +40,8 @@
 
 /* microSD chip-select on the shared SPI bus. */
 #define PAPER_SD_PIN_CS       GPIO_NUM_4
+
+/* Physical push buttons (input-only pins, active-low with external pull-ups). */
+#define PAPER_BTN_PIN_UP      GPIO_NUM_37
+#define PAPER_BTN_PIN_PUSH    GPIO_NUM_38
+#define PAPER_BTN_PIN_DOWN    GPIO_NUM_39

@@ -16,6 +16,7 @@
 #include "driver/spi_master.h"
 #include "driver/i2c_master.h"
 #include "bm8563.h"
+#include "gpio_button.h"
 #include "paper_config.h"
 #include "paper_panel.h"
 #include "freertos/FreeRTOS.h"
@@ -51,6 +52,26 @@ static esp_err_t rtc_init(i2c_master_bus_handle_t bus) {
     if (err != ESP_OK) return err;
     bsp_rtc_set_active(rtc);
     return ESP_OK;
+}
+
+/* Three side keys on input-only pins with external pull-ups (active-low). */
+static void buttons_init(void) {
+    static const gpio_button_pin_t pins[] = {
+        { PAPER_BTN_PIN_PUSH, true },
+        { PAPER_BTN_PIN_UP  , true },
+        { PAPER_BTN_PIN_DOWN, true },
+    };
+    const gpio_button_config_t cfg = {
+        .pins  = pins,
+        .count = sizeof(pins) / sizeof(pins[0]),
+    };
+    bsp_button_t *btn = NULL;
+    esp_err_t err = gpio_button_create(&cfg, &btn);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "gpio_button_create: %s", esp_err_to_name(err));
+        return;
+    }
+    bsp_button_set_active(btn);
 }
 
 /* Raise the power rails in order; the IT8951E needs ~1 s to boot before it will
@@ -114,6 +135,8 @@ esp_err_t bsp_init(const bsp_config_t *config) {
     if (i2c_bus && (err = rtc_init(i2c_bus)) != ESP_OK) {
         ESP_LOGW(TAG, "rtc unavailable: %s", esp_err_to_name(err));
     }
+
+    buttons_init();
     return ESP_OK;
 }
 
