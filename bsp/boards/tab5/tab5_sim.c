@@ -35,6 +35,4 @@ esp_err_t bsp_init(const bsp_config_t *config) {
     return ESP_OK;
 }
 
-void bsp_restart(void)   { exit(0); }
-esp_err_t bsp_hw_reset(void)  { exit(0); }
 esp_err_t bsp_power_off(void) { exit(0); }

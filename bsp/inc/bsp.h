@@ -32,9 +32,23 @@ typedef struct {
 } bsp_config_t;
 
 esp_err_t bsp_init(const bsp_config_t *config);
-void bsp_restart(void);
-esp_err_t bsp_hw_reset(void);
+
+// MARK: Power
+/* Power controls (always available). off cuts VSYS and returns ESP_FAIL when
+ * external power holds the rail up; restart is a soft reboot (esp_restart);
+ * reset is a hardware power-cycle (e.g. via the RTC countdown). */
 esp_err_t bsp_power_off(void);
+void      bsp_power_restart(void);
+esp_err_t bsp_power_hw_reset(void);
+
+/* Battery / external-supply sensing (board-provided provider). caps == 0 when
+ * no provider is registered; calls outside the caps -> ESP_ERR_NOT_SUPPORTED.
+ * level is a linear 0..100 map of the terminal voltage between the board's
+ * empty/full endpoints -- a coarse gauge, not a true state-of-charge. */
+uint32_t  bsp_power_get_caps(void);
+esp_err_t bsp_power_get_battery_voltage(uint32_t *out_mv) BSP_NONNULL(1);
+esp_err_t bsp_power_get_battery_level(uint8_t *out_percent) BSP_NONNULL(1);
+bool      bsp_power_vbus_present(void);
 
 // MARK: Display
 bsp_display_type_t bsp_display_get_type(void);

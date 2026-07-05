@@ -72,5 +72,5 @@ typedef struct {
 void bsp_audio_set_active(bsp_audio_t *audio, const bsp_audio_init_t *init);
 
 /* Silence the audio path for a power transition (hw mute + amp off + tone
- * stop) — called by bsp_restart() / bsp_power_off(). Safe with no provider. */
+ * stop) — called by bsp_power_restart() / bsp_power_off(). Safe with no provider. */
 void bsp_audio_quiesce(void);

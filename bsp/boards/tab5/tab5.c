@@ -111,11 +111,7 @@ esp_err_t bsp_init(const bsp_config_t *config) {
     return tab5_panel_init(config, i2c_bus);
 }
 
-void bsp_restart(void) {
-    esp_restart();
-}
-
-esp_err_t bsp_hw_reset(void) {
+esp_err_t bsp_power_hw_reset(void) {
     return bsp_power_off();
 }
 

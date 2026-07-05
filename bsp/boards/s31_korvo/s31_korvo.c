@@ -112,16 +112,3 @@ esp_err_t bsp_init(const bsp_config_t *config) {
 
     return panel_err;
 }
-
-void bsp_restart(void) {
-    esp_restart();
-}
-
-esp_err_t bsp_hw_reset(void) {
-    esp_restart();
-    return ESP_FAIL;
-}
-
-esp_err_t bsp_power_off(void) {
-    return ESP_ERR_NOT_SUPPORTED;
-}

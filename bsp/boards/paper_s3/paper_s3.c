@@ -108,12 +108,12 @@ esp_err_t bsp_init(const bsp_config_t *config) {
     return ESP_OK;
 }
 
-void bsp_restart(void) {
+void bsp_power_restart(void) {
     bsp_audio_quiesce();
     esp_restart();
 }
 
-esp_err_t bsp_hw_reset(void) {
+esp_err_t bsp_power_hw_reset(void) {
     esp_err_t err = bsp_rtc_timer_start(200, false);
     if (err != ESP_OK) return err;
     return bsp_power_off();

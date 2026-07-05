@@ -11,8 +11,10 @@
 #include "bsp_display.h"
 #include "bsp_touch.h"
 #include "bsp_rtc.h"
+#include "bsp_power.h"
 #include "sdl_panel.h"
 #include "rtc_sim.h"
+#include "power_sim.h"
 #include <stdio.h>
 
 esp_err_t bsp_init(const bsp_config_t *config) {
@@ -36,15 +38,10 @@ esp_err_t bsp_init(const bsp_config_t *config) {
 
     bsp_rtc_t *rtc = NULL;
     if (rtc_sim_create(&rtc) == ESP_OK) bsp_rtc_set_active(rtc);
+
+    bsp_power_t *power = NULL;
+    if (power_sim_create(&power) == ESP_OK) bsp_power_set_active(power);
     return ESP_OK;
-}
-
-void bsp_restart(void) {
-    exit(0);
-}
-
-esp_err_t bsp_hw_reset(void) {
-    exit(0);
 }
 
 /* No PMIC on the host: behave like a USB-powered device that stays alive. */

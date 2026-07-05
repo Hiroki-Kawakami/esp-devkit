@@ -10,10 +10,13 @@
 #include "bsp_touch.h"
 #include "bsp_rtc.h"
 #include "bsp_audio.h"
+#include "bsp_power.h"
 #include "sdl_panel.h"
 #include "rtc_sim.h"
+#include "power_sim.h"
 #include "sdl_audio.h"
 #include <stdio.h>
+#include <stdlib.h>
 
 esp_err_t bsp_init(const bsp_config_t *config) {
     sdl_panel_config_t sdl_config = {
@@ -37,6 +40,9 @@ esp_err_t bsp_init(const bsp_config_t *config) {
     bsp_rtc_t *rtc = NULL;
     if (rtc_sim_create(&rtc) == ESP_OK) bsp_rtc_set_active(rtc);
 
+    bsp_power_t *power = NULL;
+    if (power_sim_create(&power) == ESP_OK) bsp_power_set_active(power);
+
     bsp_audio_t *audio = NULL;
     esp_err_t audio_err = sdl_audio_create(&(sdl_audio_config_t){ .tone_only = true }, &audio);
     if (audio_err == ESP_OK) {
@@ -50,16 +56,4 @@ esp_err_t bsp_init(const bsp_config_t *config) {
     return ESP_OK;
 }
 
-void bsp_restart(void) {
-    exit(0);
-}
-
-esp_err_t bsp_hw_reset(void) {
-    exit(0);
-}
-
-/* No PMIC on the host: behave like a USB-powered device that stays alive. */
-esp_err_t bsp_power_off(void) {
-    fprintf(stderr, "[sim] bsp_power_off: staying on\n");
-    return ESP_FAIL;
-}
+esp_err_t bsp_power_off(void) { exit(0); }

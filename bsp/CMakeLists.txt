@@ -21,6 +21,7 @@ set(BSP_COMMON_SRCS
     "src/bsp_button.c"
     "src/bsp_hotknot.c"
     "src/bsp_rtc.c"
+    "src/bsp_power.c"
     "src/bsp_led.c"
     "src/bsp_audio.c"
     "src/audio_dsp.c")
@@ -74,6 +75,7 @@ else()
             "simulator/sdl_panel.c"
             "simulator/sd_redirect.c"
             "simulator/rtc_sim.c"
+            "simulator/power_sim.c"
             "simulator/sdl_audio.c"
         INCLUDE_DIRS "inc"
         PRIV_INCLUDE_DIRS "inc_private" "simulator")

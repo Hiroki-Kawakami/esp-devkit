@@ -122,6 +122,11 @@ typedef struct {
 } bsp_rtc_datetime_t;
 
 typedef enum {
+    BSP_POWER_CAP_BATTERY = 1 << 0,  /*!< battery voltage / level readable */
+    BSP_POWER_CAP_VBUS    = 1 << 1,  /*!< external supply (VBUS) presence readable */
+} bsp_power_caps_t;
+
+typedef enum {
     BSP_AUDIO_CAP_PCM       = 1 << 0,  /*!< PCM playback path */
     BSP_AUDIO_CAP_TONE      = 1 << 1,  /*!< tone-only buzzer */
     BSP_AUDIO_CAP_SPEAKER   = 1 << 2,  /*!< speaker route */
