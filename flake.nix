@@ -38,6 +38,8 @@
             pythonEnv
             toolchains.xtensa
             toolchains.riscv32
+            toolchains.xtensaGdb
+            toolchains.riscv32Gdb
             pkgs.cmake
             pkgs.ninja
             pkgs.gperf
@@ -59,8 +61,9 @@
             export IDF_PYTHON_CHECK_CONSTRAINTS=no
             export IDF_COMPONENT_MANAGER=1
             export ESP_IDF_VERSION="${idfVersion}"
+            export ESP_ROM_ELF_DIR="${toolchains.romElfs}/"  # trailing slash required
             export HOST_GCC="${pkgs.gcc}"
-            export PATH=$IDF_PATH/tools:${toolchains.xtensa}/bin:${toolchains.riscv32}/bin:$PATH
+            export PATH=$IDF_PATH/tools:${toolchains.xtensa}/bin:${toolchains.riscv32}/bin:${toolchains.xtensaGdb}/bin:${toolchains.riscv32Gdb}/bin:$PATH
           '';
         };
       in {
