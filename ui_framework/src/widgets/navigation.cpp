@@ -34,11 +34,11 @@ lv_obj_t *lv_navigation_back_create(lv_obj_t *parent, const char *title, std::fu
 
     auto icon = lv_label_create(button);
     lv_label_set_text(icon, LV_SYMBOL_LEFT);
-    lv_obj_set_style_text_font(icon, &lv_font_montserrat_32, 0);
+    lv_obj_set_style_text_font(icon, lv_widgets_title_font(), 0);
     lv_obj_set_style_pad_all(icon, 8, 0);
     auto label = lv_label_create(button);
     lv_label_set_text(label, title);
-    lv_obj_set_style_text_font(label, &lv_font_montserrat_32, 0);
+    lv_obj_set_style_text_font(label, lv_widgets_title_font(), 0);
     lv_obj_set_user_data(button, label);
 
     return button;

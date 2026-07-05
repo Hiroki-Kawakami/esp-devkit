@@ -34,7 +34,7 @@ void lv_modal_close(lv_obj_t *card) {
 lv_obj_t *lv_modal_title_create(lv_obj_t *parent, const char *text) {
     auto label = lv_label_create(parent);
     lv_label_set_text(label, text);
-    lv_obj_set_style_text_font(label, &lv_font_montserrat_32, 0);
+    lv_obj_set_style_text_font(label, lv_widgets_title_font(), 0);
     lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_LEFT, 0);
 
     if (lv_obj_get_style_flex_flow(parent, LV_PART_MAIN) == LV_FLEX_FLOW_ROW) {
@@ -49,7 +49,6 @@ lv_obj_t *lv_modal_title_create(lv_obj_t *parent, const char *text) {
 lv_obj_t *lv_modal_message_create(lv_obj_t *parent, const char *text) {
     auto label = lv_label_create(parent);
     lv_label_set_text(label, text);
-    lv_obj_set_style_text_font(label, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_LEFT, 0);
 
     if (lv_obj_get_style_flex_flow(parent, LV_PART_MAIN) == LV_FLEX_FLOW_ROW) {
@@ -76,7 +75,7 @@ lv_obj_t *lv_modal_button_create(lv_obj_t *parent, const char *text, lv_modal_bu
     auto label = lv_label_create(button);
     lv_obj_center(label);
     lv_label_set_text(label, text);
-    lv_obj_set_style_text_font(label, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_font(label, lv_widgets_body_font(), 0);
 
     return button;
 }
