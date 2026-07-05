@@ -153,5 +153,6 @@ esp_err_t bsp_hw_reset(void) {
 esp_err_t bsp_power_off(void) {
     gpio_set_level(PAPER_PIN_MAIN_PWR, 0);
     vTaskDelay(pdMS_TO_TICKS(500));
+    gpio_set_level(PAPER_PIN_MAIN_PWR, 1);
     return ESP_FAIL;
 }
