@@ -127,6 +127,10 @@ typedef enum {
 } bsp_power_caps_t;
 
 typedef enum {
+    BSP_POWER_SWITCH_USB5V,  /*!< USB host 5V bus power */
+} bsp_power_switch_t;
+
+typedef enum {
     BSP_AUDIO_CAP_PCM       = 1 << 0,  /*!< PCM playback path */
     BSP_AUDIO_CAP_TONE      = 1 << 1,  /*!< tone-only buzzer */
     BSP_AUDIO_CAP_SPEAKER   = 1 << 2,  /*!< speaker route */

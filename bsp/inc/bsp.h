@@ -41,6 +41,9 @@ esp_err_t bsp_power_off(void);
 void      bsp_power_restart(void);
 esp_err_t bsp_power_hw_reset(void);
 
+/* Toggle a board power switch; unsupported switches return ESP_ERR_NOT_SUPPORTED. */
+esp_err_t bsp_power_set_switch(bsp_power_switch_t sw, bool on);
+
 /* Battery / external-supply sensing (board-provided provider). caps == 0 when
  * no provider is registered; calls outside the caps -> ESP_ERR_NOT_SUPPORTED.
  * level is a linear 0..100 map of the terminal voltage between the board's

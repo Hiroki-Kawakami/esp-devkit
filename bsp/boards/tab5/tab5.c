@@ -122,3 +122,13 @@ esp_err_t bsp_power_off(void) {
     pi4io_set_output(s_pi4ioe2, 4, false);
     return ESP_FAIL;
 }
+
+esp_err_t bsp_power_set_switch(bsp_power_switch_t sw, bool on) {
+    if (!s_pi4ioe2) return ESP_ERR_INVALID_STATE;
+    switch (sw) {
+    case BSP_POWER_SWITCH_USB5V:
+        return pi4io_set_output(s_pi4ioe2, 3, on);  // USB5V_EN
+    default:
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+}

@@ -39,6 +39,12 @@ __attribute__((weak)) esp_err_t bsp_power_off(void) {
     return ESP_ERR_NOT_SUPPORTED;
 }
 
+__attribute__((weak)) esp_err_t bsp_power_set_switch(bsp_power_switch_t sw, bool on) {
+    (void)sw;
+    (void)on;
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
 #ifdef ESP_PLATFORM
 #include "esp_system.h"
 
