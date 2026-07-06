@@ -20,9 +20,10 @@ esp_err_t bsp_init(const bsp_config_t *config) {
         .title     = "M5Stack Tab5",
         .type      = BSP_DISPLAY_TYPE_MIPI_DSI,
         .size      = { TAB5_PANEL_W, TAB5_PANEL_H },
-        .format    = BSP_PIXEL_FORMAT_RGB565,
+        .format    = config->display.pixel_format == BSP_PIXEL_FORMAT_RGB888
+                     ? BSP_PIXEL_FORMAT_RGB888 : BSP_PIXEL_FORMAT_RGB565,
         .scale_div = 2,
-        .framebuffer = { .fb_num = 2 },
+        .framebuffer = { .fb_num = config->display.fb_num ? config->display.fb_num : 2 },
     };
     bsp_display_t *display = NULL;
     bsp_touch_t   *touch   = NULL;

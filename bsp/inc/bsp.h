@@ -15,6 +15,10 @@ extern "C" {
 
 typedef struct {
     struct {
+        uint8_t            fb_num;        /*!< framebuffer count; 0 -> board default */
+        bsp_pixel_format_t pixel_format;  /*!< 0 -> board default */
+    } display;
+    struct {
         uint8_t task_priority;  /*!< refresh-task priority; 0 -> default (5) */
         int8_t  task_affinity;  /*!< core to pin to (0/1); <0 -> no affinity */
     } epd;

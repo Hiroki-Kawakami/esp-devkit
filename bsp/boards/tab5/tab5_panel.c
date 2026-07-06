@@ -28,11 +28,20 @@ static const char *TAG = "tab5_panel";
 #define ST7123_TP_I2C_ADDR  0x55
 #define GT911_TP_I2C_ADDR   0x14
 
+static uint8_t resolve_fb_num(const bsp_config_t *config) {
+    return config->display.fb_num ? config->display.fb_num : 2;
+}
+
+static bsp_pixel_format_t resolve_pixel_format(const bsp_config_t *config) {
+    return config->display.pixel_format == BSP_PIXEL_FORMAT_RGB888
+           ? BSP_PIXEL_FORMAT_RGB888 : BSP_PIXEL_FORMAT_RGB565;
+}
+
 static esp_err_t setup_st7123(const bsp_config_t *config, i2c_master_bus_handle_t bus) {
     const st7123_config_t lcd_cfg = {
         .size           = { TAB5_PANEL_W, TAB5_PANEL_H },
-        .pixel_format   = BSP_PIXEL_FORMAT_RGB565,
-        .fb_num         = 2,
+        .pixel_format   = resolve_pixel_format(config),
+        .fb_num         = resolve_fb_num(config),
         .backlight_gpio = TAB5_LCD_PIN_BL,
     };
     bsp_display_t *display = NULL;
@@ -63,8 +72,8 @@ static esp_err_t setup_st7123(const bsp_config_t *config, i2c_master_bus_handle_
 static esp_err_t setup_ili9881c(const bsp_config_t *config, i2c_master_bus_handle_t bus) {
     const ili9881c_config_t lcd_cfg = {
         .size           = { TAB5_PANEL_W, TAB5_PANEL_H },
-        .pixel_format   = BSP_PIXEL_FORMAT_RGB565,
-        .fb_num         = 2,
+        .pixel_format   = resolve_pixel_format(config),
+        .fb_num         = resolve_fb_num(config),
         .backlight_gpio = TAB5_LCD_PIN_BL,
     };
     bsp_display_t *display = NULL;
