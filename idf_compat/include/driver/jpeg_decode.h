@@ -9,8 +9,9 @@
 // build just delegates to jpeg_decoder_process() here.
 //
 // Only the decoder surface is shimmed (no encoder). Enum *values* are
-// shim-local (the device uses IDF's COLOR_TYPE_ID-derived ids); app code uses
-// the constant *names*, which match IDF, so it stays source-portable.
+// shim-local (v6.0.2 gives the device jpeg_dec_output_format_t FourCC ids); app
+// code uses the constant *names*, which match IDF, so it stays source-portable.
+// Synced to ESP-IDF v6.0.2.
 #pragma once
 
 #include <stddef.h>
@@ -64,6 +65,9 @@ typedef struct {
 typedef struct {
     int intr_priority;
     int timeout_ms;
+    struct {
+        uint32_t allow_pd: 1;   /*!< Back up/restore JPEG registers across sleep (power-down). No-op on host. */
+    } flags;
 } jpeg_decode_engine_cfg_t;
 
 typedef struct {

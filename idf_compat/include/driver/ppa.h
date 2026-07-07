@@ -7,7 +7,7 @@
 //
 // Per the idf_compat rule this is an Espressif-defined API, so the host
 // implements the IDF API *itself* rather than re-abstracting it. The struct /
-// enum surface is kept in sync with ESP-IDF v5.4.3; software limitations of the
+// enum surface is kept in sync with ESP-IDF v6.0.2; software limitations of the
 // host implementation are documented at the top of src/ppa.c.
 #pragma once
 
@@ -88,6 +88,7 @@ typedef struct {
     uint32_t block_offset_x;                /*!< Target block offset in x direction in the picture (unit: pixel) */
     uint32_t block_offset_y;                /*!< Target block offset in y direction in the picture (unit: pixel) */
     union {
+        esp_color_fourcc_t cm;              /*!< Four Character Code of the color mode */
         ppa_srm_color_mode_t srm_cm;        /*!< Color mode of the picture in a PPA SRM operation */
         ppa_blend_color_mode_t blend_cm;    /*!< Color mode of the picture in a PPA blend operation */
         ppa_fill_color_mode_t fill_cm;      /*!< Color mode of the picture in a PPA fill operation */
@@ -107,6 +108,7 @@ typedef struct {
     uint32_t block_offset_x;                /*!< Target block offset in x direction in the picture (unit: pixel) */
     uint32_t block_offset_y;                /*!< Target block offset in y direction in the picture (unit: pixel) */
     union {
+        esp_color_fourcc_t cm;              /*!< Four Character Code of the color mode */
         ppa_srm_color_mode_t srm_cm;        /*!< Color mode of the picture in a PPA SRM operation */
         ppa_blend_color_mode_t blend_cm;    /*!< Color mode of the picture in a PPA blend operation */
         ppa_fill_color_mode_t fill_cm;      /*!< Color mode of the picture in a PPA fill operation */
@@ -207,7 +209,12 @@ typedef struct {
 
     uint32_t fill_block_w;                         /*!< The width of the block to be filled (unit: pixel) */
     uint32_t fill_block_h;                         /*!< The height of the block to be filled (unit: pixel) */
-    color_pixel_argb8888_data_t fill_argb_color;   /*!< The color to be filled, in ARGB8888 format */
+    union {
+        color_pixel_argb8888_data_t fill_argb_color;   /*!< For any ARGB/RGB fill color, fill A (if applicable)/R/G/B here */
+        color_pixel_gray8_data_t fill_gray8_color;     /*!< For GRAY8 fill color */
+        color_macroblock_yuv_data_t fill_yuv_color;    /*!< For any YUV fill color, fill Y/U/V here */
+        uint32_t fill_color_val;                       /*!< Raw 32-bit fill value, interpreted per the selected fill_cm */
+    };
 
     ppa_trans_mode_t mode;                         /*!< Determines whether to block inside the operation function */
     void *user_data;                               /*!< User data passed into the on_trans_done callback */
@@ -217,6 +224,15 @@ typedef struct {
  * @brief Perform a filling operation to a picture
  */
 esp_err_t ppa_do_fill(ppa_client_handle_t ppa_client, const ppa_fill_oper_config_t *config);
+
+/**
+ * @brief Configure the RGB888 to GRAY8 color conversion coefficients
+ *
+ * gray = (r_weight * R + g_weight * G + b_weight * B) >> 8; the three weights
+ * must sum to 256. The host implementation stores them but does not (yet) run
+ * GRAY8 conversion, so this is accept-and-store on the simulator.
+ */
+esp_err_t ppa_set_rgb2gray_formula(uint8_t r_weight, uint8_t g_weight, uint8_t b_weight);
 
 #ifdef __cplusplus
 }

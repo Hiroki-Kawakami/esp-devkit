@@ -31,6 +31,7 @@ typedef uint32_t nvs_handle_t;
 typedef enum {
     NVS_READONLY,
     NVS_READWRITE,
+    NVS_READWRITE_PURGE,   /*!< v6.0: read/write handle that purges (not just tombstones) erased entries */
 } nvs_open_mode_t;
 
 esp_err_t nvs_open(const char *name, nvs_open_mode_t open_mode, nvs_handle_t *out_handle);
@@ -38,6 +39,7 @@ void      nvs_close(nvs_handle_t handle);
 esp_err_t nvs_commit(nvs_handle_t handle);
 esp_err_t nvs_erase_key(nvs_handle_t handle, const char *key);
 esp_err_t nvs_erase_all(nvs_handle_t handle);
+esp_err_t nvs_purge_all(nvs_handle_t handle);
 esp_err_t nvs_get_used_entry_count(nvs_handle_t handle, size_t *used_entries);
 
 esp_err_t nvs_set_i8(nvs_handle_t handle, const char *key, int8_t value);

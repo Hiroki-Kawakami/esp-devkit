@@ -2,9 +2,10 @@
 // an Espressif-defined API, so the host mirrors the IDF header *itself* (pure
 // type definitions, no I/O) rather than re-abstracting it. Pulled in transitively
 // by driver/ppa.h via hal/ppa_types.h — the PPA op configs reference the
-// color_pixel_* pixel structs and the COLOR_TYPE_ID-derived color-mode ids
-// directly, so the values must match IDF for source portability. Kept in sync
-// with ESP-IDF v5.4.3 hal/color_types.h.
+// color_pixel_* pixel structs directly and the color-mode ids are derived from
+// the Four Character Codes below, so the values must match IDF for source
+// portability. Kept in sync with ESP-IDF v6.0.2 hal/color_types.h — v6.0 replaced
+// the old COLOR_TYPE_ID(color_space, pixel_format) scheme with these FourCC ids.
 #pragma once
 
 #include <stdint.h>
@@ -14,75 +15,30 @@ extern "C" {
 #endif
 
 /**
- * @brief Color Space
- *
- * @note Save enum 0 for special purpose
+ * @brief Four Character Code type definition
  */
-typedef enum {
-    COLOR_SPACE_RAW = 1,     ///< Color space raw
-    COLOR_SPACE_RGB,         ///< Color space rgb
-    COLOR_SPACE_YUV,         ///< Color space yuv
-    COLOR_SPACE_GRAY,        ///< Color space gray
-    COLOR_SPACE_ARGB,        ///< Color space argb
-    COLOR_SPACE_ALPHA,       ///< Color space alpha (A)
-    COLOR_SPACE_CLUT,        ///< Color look-up table (L)
-} color_space_t;
+typedef uint32_t esp_color_fourcc_t;
 
-/**
- * @brief RGB Format
- */
-typedef enum {
-    COLOR_PIXEL_RGB888,      ///< 24 bits, 8 bits per R/G/B value
-    COLOR_PIXEL_RGB666,      ///< 18 bits, 6 bits per R/G/B value
-    COLOR_PIXEL_RGB565,      ///< 16 bits, 5 bits per R/B value, 6 bits for G value
-} color_pixel_rgb_format_t;
+#define ESP_COLOR_FOURCC(a, b, c, d) ((uint32_t)(a) | ((uint32_t)(b) << 8) | ((uint32_t)(c) << 16) | ((uint32_t)(d) << 24))
 
-/**
- * @brief YUV Format
- */
-typedef enum {
-    COLOR_PIXEL_YUV444,    ///< 24 bits, 8 bits per Y/U/V value
-    COLOR_PIXEL_YUV422,    ///< 16 bits, 8-bit Y per pixel, 8-bit U and V per two pixels
-    COLOR_PIXEL_YUV420,    ///< 12 bits, 8-bit Y per pixel, 8-bit U and V per four pixels
-    COLOR_PIXEL_YUV411,    ///< 12 bits, 8-bit Y per pixel, 8-bit U and V per four pixels
-} color_pixel_yuv_format_t;
-
-/**
- * @brief ARGB Format
- */
-typedef enum {
-    COLOR_PIXEL_ARGB8888,   ///< 32 bits, 8 bits per A(alpha)/R/G/B value
-} color_pixel_argb_format_t;
-
-/**
- * @brief Alpha(A) Format
- */
-typedef enum {
-    COLOR_PIXEL_A4,   ///< 4 bits, opacity only
-    COLOR_PIXEL_A8,   ///< 8 bits, opacity only
-} color_pixel_alpha_format_t;
-
-///< Bitwidth of the `color_space_pixel_format_t::color_space` field
-#define COLOR_SPACE_BITWIDTH                 8
-///< Bitwidth of the `color_space_pixel_format_t::pixel_format` field
-#define COLOR_PIXEL_FORMAT_BITWIDTH          24
-///< Helper to get the color_space from a unique color type ID
-#define COLOR_SPACE_TYPE(color_type_id)      (((color_type_id) >> COLOR_PIXEL_FORMAT_BITWIDTH) & ((1 << COLOR_SPACE_BITWIDTH) - 1))
-///< Helper to get the pixel_format from a unique color type ID
-#define COLOR_PIXEL_FORMAT(color_type_id)    ((color_type_id) & ((1 << COLOR_PIXEL_FORMAT_BITWIDTH) - 1))
-///< Make a unique ID of a color based on the value of color space and pixel format
-#define COLOR_TYPE_ID(color_space, pixel_format) (((color_space) << COLOR_PIXEL_FORMAT_BITWIDTH) | (pixel_format))
-
-/**
- * @brief Color Space Info Structure
- */
-typedef union {
-    struct {
-        uint32_t pixel_format: COLOR_PIXEL_FORMAT_BITWIDTH;    ///< Format of a certain color space type
-        uint32_t color_space: COLOR_SPACE_BITWIDTH;            ///< Color space type
-    };
-    uint32_t color_type_id;                                    ///< Unique type of a certain color pixel format
-} color_space_pixel_format_t;
+#define ESP_COLOR_FOURCC_BGRA32         ESP_COLOR_FOURCC('B', 'A', '2', '4') /* 32 bpp BGRA-8-8-8-8 */
+#define ESP_COLOR_FOURCC_BGR24          ESP_COLOR_FOURCC('B', 'G', 'R', '3') /* 24 bpp BGR-8-8-8 */
+#define ESP_COLOR_FOURCC_RGB24          ESP_COLOR_FOURCC('R', 'G', 'B', '3') /* 24 bpp RGB-8-8-8 */
+#define ESP_COLOR_FOURCC_RGB16          ESP_COLOR_FOURCC('R', 'G', 'B', 'L') /* 16 bpp RGB-5-6-5, little endian */
+#define ESP_COLOR_FOURCC_RGB16_BE       ESP_COLOR_FOURCC('R', 'G', 'B', 'E') /* 16 bpp RGB-5-6-5, big endian */
+#define ESP_COLOR_FOURCC_GREY           ESP_COLOR_FOURCC('G', 'R', 'E', 'Y') /* 8 bpp Greyscale */
+#define ESP_COLOR_FOURCC_ALPHA4         ESP_COLOR_FOURCC('A', 'L', 'P', '4') /* 4 bpp, alpha-only */
+#define ESP_COLOR_FOURCC_ALPHA8         ESP_COLOR_FOURCC('A', 'L', 'P', '8') /* 8 bpp, alpha-only */
+#define ESP_COLOR_FOURCC_YUV            ESP_COLOR_FOURCC('V', '3', '0', '8') /* 24 bpp, Y-U-V 4:4:4 */
+#define ESP_COLOR_FOURCC_YUYV           ESP_COLOR_FOURCC('Y', 'U', 'Y', 'V') /* 16 bpp, YUYV 4:2:2 */
+#define ESP_COLOR_FOURCC_YVYU           ESP_COLOR_FOURCC('Y', 'V', 'Y', 'U') /* 16 bpp, YVYU 4:2:2 */
+#define ESP_COLOR_FOURCC_UYVY           ESP_COLOR_FOURCC('U', 'Y', 'V', 'Y') /* 16 bpp, UYVY 4:2:2 */
+#define ESP_COLOR_FOURCC_VYUY           ESP_COLOR_FOURCC('V', 'Y', 'U', 'Y') /* 16 bpp, VYUY 4:2:2 */
+#define ESP_COLOR_FOURCC_OUYY_EVYY      ESP_COLOR_FOURCC('O', 'U', 'E', 'V') /* 12 bpp, Espressif Y-U-V 4:2:0 */
+#define ESP_COLOR_FOURCC_RAW8           ESP_COLOR_FOURCC('R', 'A', 'W', '8') /* 8 bpp, raw8 */
+#define ESP_COLOR_FOURCC_RAW10          ESP_COLOR_FOURCC('R', 'A', 'W', 'A') /* 10 bpp, raw10 */
+#define ESP_COLOR_FOURCC_RAW12          ESP_COLOR_FOURCC('R', 'A', 'W', 'C') /* 12 bpp, raw12 */
+#define ESP_COLOR_FOURCC_RAW16          ESP_COLOR_FOURCC('R', 'A', 'W', 'G') /* 16 bpp, raw16 */
 
 /**
  * @brief Color range
@@ -124,10 +80,13 @@ typedef union {
 /**
  * @brief Data structure for RGB888 pixel unit
  */
-typedef struct {
-    uint8_t b;      /*!< B component [0, 255] */
-    uint8_t g;      /*!< G component [0, 255] */
-    uint8_t r;      /*!< R component [0, 255] */
+typedef union {
+    struct {
+        uint8_t b;          /*!< B component [0, 255] */
+        uint8_t g;          /*!< G component [0, 255] */
+        uint8_t r;          /*!< R component [0, 255] */
+    };
+    uint32_t val;           /*!< 32-bit RGB888 value */
 } color_pixel_rgb888_data_t;
 
 /**
@@ -141,6 +100,25 @@ typedef union {
     };
     uint16_t val;           /*!< 16-bit RGB565 value */
 } color_pixel_rgb565_data_t;
+
+/**
+ * @brief Data structure for GRAY8 pixel unit
+ */
+typedef union {
+    struct {
+        uint8_t gray;      /*!< Gray component [0, 255] */
+    };
+    uint8_t val;           /*!< 8-bit GRAY8 value */
+} color_pixel_gray8_data_t;
+
+/**
+ * @brief Data structure for YUV macroblock unit
+ */
+typedef struct {
+    uint8_t y;      /*!< Y component [0, 255] */
+    uint8_t u;      /*!< U component [0, 255] */
+    uint8_t v;      /*!< V component [0, 255] */
+} color_macroblock_yuv_data_t;
 
 #ifdef __cplusplus
 }

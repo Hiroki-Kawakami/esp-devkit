@@ -46,7 +46,7 @@ typedef enum {
     FMT_A4,
 } pix_fmt_t;
 
-// SRM / blend / fill color-mode enums all share the COLOR_TYPE_ID values, so one
+// SRM / blend / fill color-mode enums all share the same FourCC values, so one
 // mapping serves every operation.
 static pix_fmt_t fmt_of(uint32_t color_mode)
 {
@@ -440,5 +440,17 @@ esp_err_t ppa_do_fill(ppa_client_handle_t ppa_client, const ppa_fill_oper_config
     }
 
     invoke_done(ppa_client, cfg->user_data);
+    return ESP_OK;
+}
+
+// RGB888->GRAY8 weights. Stored for parity with the device; the host does not
+// implement GRAY8 output yet, so nothing reads them back.
+static uint8_t s_rgb2gray_w[3] = {77, 150, 29};  // BT.601 luma, sums to 256
+
+esp_err_t ppa_set_rgb2gray_formula(uint8_t r_weight, uint8_t g_weight, uint8_t b_weight) {
+    if ((uint32_t)r_weight + g_weight + b_weight != 256) return ESP_ERR_INVALID_ARG;
+    s_rgb2gray_w[0] = r_weight;
+    s_rgb2gray_w[1] = g_weight;
+    s_rgb2gray_w[2] = b_weight;
     return ESP_OK;
 }

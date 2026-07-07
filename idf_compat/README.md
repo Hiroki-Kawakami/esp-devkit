@@ -16,7 +16,7 @@ idf_compat/
   include/            shim headers (what shared code #includes)
     esp_err.h esp_log.h esp_check.h esp_timer.h esp_heap_caps.h nvs.h nvs_flash.h
     driver/           jpeg_decode.h ppa.h
-    hal/              ppa_types.h color_types.h dma2d_types.h  (PPA type headers)
+    hal/              ppa_types.h color_types.h  (PPA type headers)
     freertos/         host FreeRTOS API: FreeRTOS.h task.h queue.h semphr.h
                       event_groups.h timers.h portmacro.h
   src/                shim implementations
@@ -60,13 +60,13 @@ wrapper. Fidelity notes are at the top of `src/nvs.c`.
 
 ## PPA (Pixel-Processing Accelerator)
 
-`driver/ppa.h` + `hal/ppa_types.h` + `hal/color_types.h` (+ a minimal
-`hal/dma2d_types.h`) mirror the ESP-IDF PPA API; `src/ppa.c` runs the operations
-in plain C on the CPU so app code that offloads scale/rotate/mirror, blend and
-fill to the P4 PPA HW can be developed on the desktop and previewed in the
-simulator. The header struct/enum surface is kept in sync with the device (the
-color-mode ids are the same `COLOR_TYPE_ID`-derived values), so app code is
-source-portable across both targets.
+`driver/ppa.h` + `hal/ppa_types.h` + `hal/color_types.h` mirror the ESP-IDF PPA
+API; `src/ppa.c` runs the operations in plain C on the CPU so app code that
+offloads scale/rotate/mirror, blend and fill to the P4 PPA HW can be developed on
+the desktop and previewed in the simulator. The header struct/enum surface is
+kept in sync with the device (the color-mode ids are the same Four Character Code
+values — v6.0 replaced the old `COLOR_TYPE_ID` scheme with `esp_color_fourcc_t`),
+so app code is source-portable across both targets.
 
 Supported: ARGB8888 / RGB888 / RGB565 (the RGB display formats) for SRM in/out,
 blend bg/fg/out and fill out, plus A8 / A4 blend foreground. **Not** implemented

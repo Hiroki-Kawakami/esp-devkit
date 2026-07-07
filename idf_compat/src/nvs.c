@@ -323,6 +323,10 @@ esp_err_t nvs_flash_erase(void) {
     return ESP_OK;
 }
 
+void nvs_flash_deregister_security_scheme(void) {
+    // Host store is plaintext JSON; no security scheme is ever registered.
+}
+
 esp_err_t nvs_open(const char *name, nvs_open_mode_t open_mode, nvs_handle_t *out_handle) {
     esp_err_t ret;
     open_handle_t *slot = NULL;
@@ -411,6 +415,22 @@ esp_err_t nvs_erase_all(nvs_handle_t handle) {
     ns = find_ns(oh->ns);
     if (ns) ns_clear(ns);
     save_unlocked();
+    ret = ESP_OK;
+done:
+    UNLOCK();
+    return ret;
+}
+
+// Purge erased key-value pairs. The JSON store deletes entries outright (no
+// tombstones), so there is nothing to reclaim; just validate the handle.
+esp_err_t nvs_purge_all(nvs_handle_t handle) {
+    esp_err_t ret;
+    open_handle_t *oh;
+    LOCK();
+    ensure_loaded();
+    oh = find_handle(handle);
+    if (!oh) { ret = ESP_ERR_NVS_INVALID_HANDLE; goto done; }
+    if (oh->readonly) { ret = ESP_ERR_NVS_READ_ONLY; goto done; }
     ret = ESP_OK;
 done:
     UNLOCK();

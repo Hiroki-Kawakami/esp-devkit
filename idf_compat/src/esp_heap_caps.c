@@ -1,5 +1,10 @@
 #include "esp_heap_caps.h"
 #include <stdlib.h>
+#if defined(__APPLE__)
+#include <malloc/malloc.h>
+#elif defined(__GLIBC__)
+#include <malloc.h>
+#endif
 
 void *heap_caps_malloc(size_t size, uint32_t caps) {
     (void)caps;
@@ -34,4 +39,16 @@ void heap_caps_free(void *ptr) {
 size_t heap_caps_get_largest_free_block(uint32_t caps) {
     (void)caps;
     return (size_t)256 * 1024 * 1024;  // host heap always fits
+}
+
+size_t heap_caps_get_containing_block_size(void *ptr) {
+    if (!ptr) return 0;
+#if defined(__APPLE__)
+    return malloc_size(ptr);
+#elif defined(__GLIBC__)
+    return malloc_usable_size(ptr);
+#else
+    (void)ptr;
+    return 0;
+#endif
 }

@@ -20,7 +20,8 @@ extern "C" {
 #define MALLOC_CAP_IRAM_8BIT   (1 << 13)
 #define MALLOC_CAP_RETENTION   (1 << 14)
 #define MALLOC_CAP_RTCRAM      (1 << 15)
-#define MALLOC_CAP_TCM         (1 << 16)
+#define MALLOC_CAP_SPM         (1 << 16)
+#define MALLOC_CAP_TCM         MALLOC_CAP_SPM  // v6.0 renamed TCM->SPM; TCM kept as a deprecated alias
 #define MALLOC_CAP_CACHE_ALIGNED (1 << 19)
 #define MALLOC_CAP_INVALID     (1 << 31)
 
@@ -33,6 +34,10 @@ void  heap_caps_free(void *ptr);
 // Largest allocatable contiguous block for the given caps. On the host there is
 // no fragmentation model, so report a large value (the host heap always fits).
 size_t heap_caps_get_largest_free_block(uint32_t caps);
+
+// Size of the block that contains ptr. Backed by the platform allocator's
+// usable-size query; returns 0 if that is unavailable.
+size_t heap_caps_get_containing_block_size(void *ptr);
 
 #ifdef __cplusplus
 }
