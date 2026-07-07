@@ -3,6 +3,8 @@
 # bsp/CMakeLists.txt when BSP_BOARD == paper. Paths are relative to the bsp
 # component directory.
 
+set(BOARD_TARGET esp32)
+
 set(BOARD_DEVICE_SRCS
     "boards/paper/paper.c"
     "boards/paper/paper_panel.c"

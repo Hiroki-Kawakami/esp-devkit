@@ -2,6 +2,8 @@
 # Consumed by bsp/CMakeLists.txt when BSP_BOARD == paper_s3. Paths are relative
 # to the bsp component directory.
 
+set(BOARD_TARGET esp32s3)
+
 set(BOARD_DEVICE_SRCS
     "boards/paper_s3/paper_s3.c"
     "boards/paper_s3/paper_s3_panel.c"

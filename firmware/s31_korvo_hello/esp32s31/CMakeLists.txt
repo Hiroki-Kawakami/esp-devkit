@@ -5,6 +5,5 @@ set(EXTRA_COMPONENT_DIRS
     ${CMAKE_CURRENT_SOURCE_DIR}/../../../bsp
     ${CMAKE_CURRENT_SOURCE_DIR}/../../../ui_framework
     ${CMAKE_CURRENT_SOURCE_DIR}/../app)
-set(BSP_BOARD s31_korvo CACHE STRING "esp-devkit BSP board")
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(s31_korvo_hello)

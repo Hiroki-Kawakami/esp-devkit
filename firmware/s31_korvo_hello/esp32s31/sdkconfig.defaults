@@ -1,6 +1,7 @@
 # esp32s31 is still a preview target in IDF 6.1; the experimental-features flag
 # is what unlocks it without --preview on every idf.py invocation.
 CONFIG_IDF_TARGET="esp32s31"
+CONFIG_BSP_BOARD_S31_KORVO=y
 CONFIG_IDF_EXPERIMENTAL_FEATURES=y
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_ESPTOOLPY_FLASHMODE_QIO=y

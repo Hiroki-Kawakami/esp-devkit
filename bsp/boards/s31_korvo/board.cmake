@@ -3,6 +3,8 @@
 # to the bsp component directory. Touch (GT1151) is not wired yet; this is the
 # minimum bring-up to light the panel.
 
+set(BOARD_TARGET esp32s31)
+
 set(BOARD_DEVICE_SRCS
     "boards/s31_korvo/s31_korvo.c"
     "boards/s31_korvo/s31_korvo_panel.c"

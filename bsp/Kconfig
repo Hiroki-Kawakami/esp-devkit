@@ -1,0 +1,33 @@
+# Board selection for the shared bsp component (device / ESP-IDF builds only).
+# The simulator does not run Kconfig; it selects the board with set(BSP_BOARD)
+# in its CMakeLists.txt. Each board is gated by its target so menuconfig only
+# offers the boards valid for CONFIG_IDF_TARGET, and multiple boards can share
+# one target.
+
+menu "Board Support Package"
+
+choice BSP_BOARD
+    prompt "Target board"
+    default BSP_BOARD_PAPER     if IDF_TARGET_ESP32
+    default BSP_BOARD_PAPER_S3  if IDF_TARGET_ESP32S3
+    default BSP_BOARD_TAB5      if IDF_TARGET_ESP32P4
+    default BSP_BOARD_S31_KORVO if IDF_TARGET_ESP32S31
+
+    config BSP_BOARD_PAPER
+        bool "M5Paper (ESP32)"
+        depends on IDF_TARGET_ESP32
+
+    config BSP_BOARD_PAPER_S3
+        bool "M5PaperS3 (ESP32-S3)"
+        depends on IDF_TARGET_ESP32S3
+
+    config BSP_BOARD_TAB5
+        bool "M5Stack Tab5 (ESP32-P4)"
+        depends on IDF_TARGET_ESP32P4
+
+    config BSP_BOARD_S31_KORVO
+        bool "ESP32-S31-Korvo"
+        depends on IDF_TARGET_ESP32S31
+endchoice
+
+endmenu

@@ -2,6 +2,8 @@
 # Consumed by bsp/CMakeLists.txt when BSP_BOARD == tab5. Paths are relative to
 # the bsp component directory.
 
+set(BOARD_TARGET esp32p4)
+
 set(BOARD_DEVICE_SRCS
     "boards/tab5/tab5.c"
     "boards/tab5/tab5_panel.c"
