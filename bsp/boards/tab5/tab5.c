@@ -6,7 +6,8 @@
  * the I2C bus shared by the touch chip and the two PI4IOE5V6408 I/O expanders,
  * runs the GT911 INT-pulse reset sequence required across LCD/TP_RST (both
  * routed through PI4IOE1), then hands off to tab5_panel_init for display +
- * touch. Audio, USB host, SD, and RTC are not wired here — add them when needed.
+ * touch and brings up the ES8388 audio. USB host, SD, and RTC are not wired
+ * here — add them when needed.
  */
 
 #include "bsp.h"
@@ -18,6 +19,7 @@
 #include "driver/i2c_master.h"
 #include "pi4io.h"
 #include "tab5_panel.h"
+#include "tab5_audio.h"
 
 static const char *TAG = "tab5";
 
@@ -92,6 +94,22 @@ static void reset_panel_and_touch(void) {
     vTaskDelay(pdMS_TO_TICKS(50));
 }
 
+/* ES8388 output + SPK_EN/HP_DET (both on PI4IOE1). Non-fatal: a codec failure
+ * leaves the bsp_audio_* API a no-op rather than blocking display bring-up. */
+static esp_err_t audio_init(const bsp_config_t *config, i2c_master_bus_handle_t bus) {
+    bsp_audio_t *audio = NULL;
+    esp_err_t err = tab5_audio_create(&(tab5_audio_config_t){
+        .i2c_bus     = bus,
+        .io_expander = s_pi4ioe1,
+    }, &audio);
+    if (err != ESP_OK) return err;
+    bsp_audio_set_active(audio, &(bsp_audio_init_t){
+        .dsp_mode     = config->audio.dsp_mode,
+        .speaker_mode = config->audio.speaker_mode,
+    });
+    return ESP_OK;
+}
+
 esp_err_t bsp_init(const bsp_config_t *config) {
     bsp_config_t defaults = {0};
     if (!config) config = &defaults;
@@ -108,7 +126,13 @@ esp_err_t bsp_init(const bsp_config_t *config) {
 
     reset_panel_and_touch();
 
-    return tab5_panel_init(config, i2c_bus);
+    err = tab5_panel_init(config, i2c_bus);
+    if (err != ESP_OK) return err;
+
+    if ((err = audio_init(config, i2c_bus)) != ESP_OK) {
+        ESP_LOGW(TAG, "audio unavailable: %s", esp_err_to_name(err));
+    }
+    return ESP_OK;
 }
 
 esp_err_t bsp_power_hw_reset(void) {
@@ -117,6 +141,7 @@ esp_err_t bsp_power_hw_reset(void) {
 
 esp_err_t bsp_power_off(void) {
     if (!s_pi4ioe2) return ESP_ERR_INVALID_STATE;
+    bsp_audio_quiesce();
     pi4io_set_output(s_pi4ioe2, 4, true);   // PWROFF_PLUSE
     vTaskDelay(pdMS_TO_TICKS(500));
     pi4io_set_output(s_pi4ioe2, 4, false);

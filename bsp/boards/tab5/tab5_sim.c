@@ -9,7 +9,10 @@
 #include "bsp.h"
 #include "bsp_display.h"
 #include "bsp_touch.h"
+#include "bsp_audio.h"
 #include "sdl_panel.h"
+#include "sdl_audio.h"
+#include <stdio.h>
 #include <stdlib.h>
 
 #define TAB5_PANEL_W 720
@@ -33,6 +36,17 @@ esp_err_t bsp_init(const bsp_config_t *config) {
     bsp_touch_set_active(touch);
     bsp_touch_start_reader(config->touch.task_priority, config->touch.task_affinity,
                            config->touch.poll_interval_ms, 0);
+
+    bsp_audio_t *audio = NULL;
+    esp_err_t audio_err = sdl_audio_create(NULL, &audio);  /* PCM | SPEAKER */
+    if (audio_err == ESP_OK) {
+        bsp_audio_set_active(audio, &(bsp_audio_init_t){
+            .dsp_mode     = config->audio.dsp_mode,
+            .speaker_mode = config->audio.speaker_mode,
+        });
+    } else {
+        fprintf(stderr, "[sim] sdl_audio_create failed: %d\n", audio_err);
+    }
     return ESP_OK;
 }
 

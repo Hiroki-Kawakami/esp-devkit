@@ -5,14 +5,17 @@
 set(BOARD_DEVICE_SRCS
     "boards/tab5/tab5.c"
     "boards/tab5/tab5_panel.c"
+    "boards/tab5/tab5_audio.c"
     "devices/ili9881c/ili9881c.c"
     "devices/st7123/st7123_lcd.c"
     "devices/st7123/st7123_touch.c"
     "devices/gt911/gt911.c"
-    "devices/pi4io/pi4io.c")
+    "devices/pi4io/pi4io.c"
+    "devices/es8388/es8388.c")
 set(BOARD_DEVICE_PRIV_INCLUDE_DIRS
-    "devices" "devices/ili9881c" "devices/st7123" "devices/gt911" "devices/pi4io")
+    "devices" "devices/ili9881c" "devices/st7123" "devices/gt911" "devices/pi4io"
+    "devices/es8388")
 set(BOARD_DEVICE_PRIV_REQUIRES
-    driver esp_driver_ledc esp_lcd)
+    driver esp_driver_ledc esp_driver_i2s esp_lcd)
 
 set(BOARD_SIM_SRCS "boards/tab5/tab5_sim.c")
