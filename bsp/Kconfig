@@ -17,8 +17,16 @@ choice BSP_BOARD
         bool "M5Paper (ESP32)"
         depends on IDF_TARGET_ESP32
 
+    config BSP_BOARD_ATOM_LITE
+        bool "M5Stack ATOM Lite (ESP32)"
+        depends on IDF_TARGET_ESP32
+
     config BSP_BOARD_PAPER_S3
         bool "M5PaperS3 (ESP32-S3)"
+        depends on IDF_TARGET_ESP32S3
+
+    config BSP_BOARD_ATOM_S3_LITE
+        bool "M5Stack AtomS3 Lite (ESP32-S3)"
         depends on IDF_TARGET_ESP32S3
 
     config BSP_BOARD_TAB5
