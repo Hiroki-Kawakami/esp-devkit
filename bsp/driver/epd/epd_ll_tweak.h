@@ -4,14 +4,15 @@
  *
  * Waveform-tuning backdoor for the epd_tweak firmware: swap a live panel's
  * waveform LUT without a rebuild/reflash. Compiled (and includable) only when
- * the build sets EPD_LL_TWEAK=1 -- production firmware has neither the symbol
- * nor the header on its include path.
+ * CONFIG_BSP_EPD_LL_TWEAK=y -- production firmware has neither the symbol nor
+ * the header on its include path.
  */
 #pragma once
+#include "sdkconfig.h"
 #include "epd_ll.h"
 
-#if !defined(EPD_LL_TWEAK) || !EPD_LL_TWEAK
-#error "epd_ll_tweak.h is only available in EPD_LL_TWEAK=1 builds (epd_tweak firmware)"
+#if !CONFIG_BSP_EPD_LL_TWEAK
+#error "epd_ll_tweak.h is only available in CONFIG_BSP_EPD_LL_TWEAK=y builds (epd_tweak firmware)"
 #endif
 
 #ifdef __cplusplus

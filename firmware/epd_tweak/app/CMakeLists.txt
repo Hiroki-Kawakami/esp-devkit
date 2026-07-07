@@ -14,8 +14,7 @@ idf_component_register(
 # paper_s3 only: reach into the bsp's private epd_ll headers for the
 # waveform-tuning backdoor (see epd_ll_tweak.h). The esp32/paper build has no
 # epd_ll, so SerialCmd.cpp compiles the wf/dump commands out.
-if(EPD_LL_TWEAK)
-    target_compile_definitions(${COMPONENT_LIB} PRIVATE EPD_LL_TWEAK=1)
+if(CONFIG_BSP_EPD_LL_TWEAK)
     target_include_directories(${COMPONENT_LIB} PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/../../../bsp/driver/epd"
         "${CMAKE_CURRENT_SOURCE_DIR}/../../../bsp/inc_private")

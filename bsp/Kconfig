@@ -30,4 +30,13 @@ choice BSP_BOARD
         depends on IDF_TARGET_ESP32S31
 endchoice
 
+config BSP_EPD_LL_TWEAK
+    bool "epd_ll waveform-tuning backdoor"
+    depends on BSP_BOARD_PAPER_S3
+    default n
+    help
+        Compile the epd_ll waveform-tuning backdoor (epd_ll_tweak.h): swap a
+        live panel's waveform LUT over the serial console without a reflash.
+        For the epd_tweak development firmware only -- leave off in production.
+
 endmenu

@@ -54,6 +54,7 @@
  * `retire_evt`, which the engine posts every frame while `waiters` > 0.
  */
 
+#include "sdkconfig.h"
 #include "epd_ll.h"
 #include "epd_waveform.h"
 #include <string.h>
@@ -588,7 +589,7 @@ static esp_err_t op_clear(bsp_display_t *self) {
     return ESP_OK;
 }
 
-#if EPD_LL_TWEAK
+#if CONFIG_BSP_EPD_LL_TWEAK
 #include "epd_ll_tweak.h"
 
 /* Most recently created instance (the tweak firmware only ever has one). */
@@ -623,7 +624,7 @@ esp_err_t epd_ll_tweak_get_waveform_lut(epd_ll_waveform_t waveform,
 
 static esp_err_t op_deinit(bsp_display_t *self) {
     epd_t *s = (epd_t *)self;
-#if EPD_LL_TWEAK
+#if CONFIG_BSP_EPD_LL_TWEAK
     if (s_tweak_target == s) s_tweak_target = NULL;
 #endif
     if (s->task) {                       /* stop and join the background task */
@@ -757,7 +758,7 @@ esp_err_t epd_ll_create(const epd_ll_config_t *cfg, bsp_display_t **out_display)
         return ESP_ERR_NO_MEM;
     }
 
-#if EPD_LL_TWEAK
+#if CONFIG_BSP_EPD_LL_TWEAK
     s_tweak_target = s;
 #endif
     *out_display = &s->base;

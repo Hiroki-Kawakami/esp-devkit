@@ -42,7 +42,7 @@
 #include "imgf_resize.h"
 #include "imgf_sniff.h"
 
-#if EPD_LL_TWEAK
+#if CONFIG_BSP_EPD_LL_TWEAK
 #include "epd_ll_tweak.h"
 #include "epd_waveform.h"
 #endif
@@ -106,7 +106,7 @@ static char *next_tok(char **cursor) {
 
 // MARK: - waveform LUT swap (paper_s3 / epd_ll only)
 
-#if EPD_LL_TWEAK
+#if CONFIG_BSP_EPD_LL_TWEAK
 
 /* Double-buffered per slot: the bound table must stay untouched until the
  * engine has switched to its replacement. */
@@ -181,7 +181,7 @@ static void cmd_dump(char **cur) {
     fflush(stdout);
 }
 
-#else  /* !EPD_LL_TWEAK (paper / IT8951E build) */
+#else  /* !CONFIG_BSP_EPD_LL_TWEAK (paper / IT8951E build) */
 
 static void cmd_wf(char **cur)   { (void)cur; reply("#ERR wf: unsupported on this board"); }
 static void cmd_dump(char **cur) { (void)cur; reply("#ERR dump: unsupported on this board"); }
@@ -366,7 +366,7 @@ static void handle_line(char *line) {
         reply("#OK ping");
     } else if (!strcmp(cmd, "info")) {
         bsp_size_t size = bsp_display_get_size();
-#if EPD_LL_TWEAK
+#if CONFIG_BSP_EPD_LL_TWEAK
         reply("#OK info %d %d 1 %d", size.width, size.height, EPD_WF_STEP_MAX);
 #else
         reply("#OK info %d %d 0 0", size.width, size.height);
