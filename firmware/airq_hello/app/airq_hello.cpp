@@ -3,13 +3,14 @@
  * Copyright (c) 2026 Hiroki Kawakami
  *
  * Minimal M5 Air Quality Kit sample: brings up the BSP + LVGL and shows a
- * centered label on the GDEY0154D67 EPD. The EPD has no host framebuffer, so
+ * centered counter on the GDEY0154D67 EPD. The EPD has no host framebuffer, so
  * LVGL renders into its own L8 buffer and flush blits each region into the panel
  * buffer; the last flush of a render drives the whole panel with s_refresh_mode.
  *
  * Partial-refresh test: the first frame is a full refresh (seeds the panel base
- * image), then a timer changes the label text 5 times at a few-second interval,
- * each driven as a fast direct-update (BSP_EPD_MODE_FAST) partial refresh.
+ * image), then the two front buttons drive the counter -- A (top) increments,
+ * B decrements -- each as a fast direct-update (BSP_EPD_MODE_FAST) partial
+ * refresh.
  */
 
 #include "airq_hello.hpp"
@@ -70,24 +71,25 @@ static void build_hello_screen() {
     lv_obj_set_style_bg_color(scr, lv_color_white(), 0);
 
     s_label = lv_label_create(scr);
-    lv_label_set_text(s_label, "Hello, AirQ!");
+    lv_label_set_text(s_label, "Count: 0");
     lv_obj_set_style_text_font(s_label, &lv_font_montserrat_24, 0);
     lv_obj_set_style_text_color(s_label, lv_color_black(), 0);
     lv_obj_center(s_label);
 }
 
-/* Change the text and drive a partial refresh, 5 times, then stop. */
-static void partial_test_cb(lv_timer_t *timer) {
-    static int n = 0;
-    n++;
+/* Buttons fire on the input task; marshal the LVGL/refresh work onto the LVGL
+ * context. Each press drives a fast partial refresh of the counter. */
+static void bump_counter(int delta) {
+    lv_async_call([delta] {
+        static int n = 0;
+        n += delta;
 
-    char text[24];
-    snprintf(text, sizeof(text), "Partial #%d", n);
-    lv_label_set_text(s_label, text);
-    s_refresh_mode = BSP_EPD_MODE_FAST;
-    ESP_LOGI(TAG, "partial refresh %d/5", n);
-
-    if (n >= 5) lv_timer_delete(timer);
+        char text[24];
+        snprintf(text, sizeof(text), "Count: %d", n);
+        lv_label_set_text(s_label, text);
+        s_refresh_mode = BSP_EPD_MODE_FAST;
+        ESP_LOGI(TAG, "partial refresh -> %d", n);
+    });
 }
 
 void app_entry() {
@@ -97,8 +99,10 @@ void app_entry() {
     bsp_init(&bsp_config);
     lvgl_init();
 
+    bsp_button_on_click(0, [](uint8_t, void *) { bump_counter(+1); }, nullptr);   /* A: top */
+    bsp_button_on_click(1, [](uint8_t, void *) { bump_counter(-1); }, nullptr);   /* B */
+
     lv_async_call([] {
         build_hello_screen();                       /* first frame: full refresh */
-        lv_timer_create(partial_test_cb, 3000, nullptr);
     });
 }

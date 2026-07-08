@@ -4,7 +4,8 @@
  *
  * M5Stack Air Quality Kit simulator board: host-side counterpart of airq.c. The
  * SDL backend mimics the 200x200 B/W EPD so the shared app renders identically.
- * Display-only (no touch); power controls fall back to the shared defaults.
+ * Display-only: the front buttons are physical-only, so they stay unwired here;
+ * power controls fall back to the shared defaults.
  * Build with -DBSP_BOARD=airq.
  */
 
