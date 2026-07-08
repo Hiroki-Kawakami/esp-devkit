@@ -3,10 +3,11 @@
  * Copyright (c) 2026 Hiroki Kawakami
  *
  * GDEY0154D67 1.54" 200x200 B/W e-paper (SSD1681 controller), SPI mode.
- * Full-refresh only: the driver uploads GoodDisplay's full-refresh waveform LUT
- * (via 0x32) and drives with 0x22 = 0xC7 -- fewer flashes than the SSD1681 OTP
- * full waveform. Partial refresh (a separate manufacturer LUT) is not
- * implemented here.
+ * The driver uploads GoodDisplay's waveform LUTs (via 0x32) rather than the
+ * SSD1681 OTP waveform (fewer flashes): update_full drives the flashing full
+ * waveform, update_partial the direct-update (no-flash) waveform. Both take a
+ * whole-frame 1bpp buffer; there is no windowed area update. The caller decides
+ * the full/partial cadence (e.g. a periodic full to clear ghosting).
  *
  * The driver does NOT own the SPI bus: the caller initializes it via
  * spi_bus_initialize() and passes the host; the driver only attaches with
@@ -49,10 +50,13 @@ esp_err_t gdey0154d67_destroy(gdey0154d67_handle_t handle);
 /* Hardware reset + re-run the init sequence. */
 esp_err_t gdey0154d67_reset(gdey0154d67_handle_t handle);
 
-/* Push a full-frame 1bpp image (packed MSB-first, bit 1 = white) into RAM and
- * drive the OTP full-refresh waveform. `packed` is width/8 * height bytes.
- * Blocks until the panel refresh completes. */
+/* Push a full-frame 1bpp image (packed MSB-first, bit 1 = white) and drive it.
+ * `packed` is width/8 * height bytes; both block until the refresh completes.
+ * update_full: flashing full waveform, re-seeds the partial base.
+ * update_partial: direct-update waveform (diffs against the previous frame);
+ * needs a prior update_full to establish the baseline. */
 esp_err_t gdey0154d67_update_full(gdey0154d67_handle_t handle, const uint8_t *packed);
+esp_err_t gdey0154d67_update_partial(gdey0154d67_handle_t handle, const uint8_t *packed);
 
 /* Deep sleep (lowest power; a create/reset is needed to wake). */
 esp_err_t gdey0154d67_sleep(gdey0154d67_handle_t handle);

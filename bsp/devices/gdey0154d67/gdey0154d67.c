@@ -81,7 +81,7 @@ static void hw_reset(gdey0154d67_dev_t *d) {
 
 /* GoodDisplay vendor full-refresh waveform (fewer flashes than the SSD1681 OTP
  * waveform). Bytes 0..152 are the LUT; 153..158 the paired EOPT/gate/source/VCOM
- * register values -- see load_full_lut(). */
+ * register values -- see load_lut(). */
 static const uint8_t LUT_FULL[159] = {
     0x80, 0x48, 0x40, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
     0x40, 0x48, 0x80, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
@@ -104,21 +104,45 @@ static const uint8_t LUT_FULL[159] = {
     0x22, 0x17, 0x41, 0x0, 0x32, 0x20,
 };
 
-static void load_full_lut(gdey0154d67_dev_t *d) {
+/* Direct-update (partial) waveform: transitions changed pixels old->new without
+ * the full black/white flashing. Same byte layout as LUT_FULL. */
+static const uint8_t LUT_PARTIAL[159] = {
+    0x0, 0x40, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x80, 0x80, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x40, 0x40, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x80, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0xF, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x1, 0x1, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x0, 0x0, 0x0,
+    0x02, 0x17, 0x41, 0xB0, 0x32, 0x28,
+};
+
+static void load_lut(gdey0154d67_dev_t *d, const uint8_t *lut) {
     cmd(d, 0x32);
-    data_bulk(d, LUT_FULL, 153);
+    data_bulk(d, lut, 153);
     wait_busy(d, BUSY_TIMEOUT_MS);
 
     cmd(d, 0x3F);                       /* end option (EOPT) */
-    data1(d, LUT_FULL[153]);
+    data1(d, lut[153]);
     cmd(d, 0x03);                       /* gate driving voltage */
-    data1(d, LUT_FULL[154]);
+    data1(d, lut[154]);
     cmd(d, 0x04);                       /* source driving voltage */
-    data1(d, LUT_FULL[155]);
-    data1(d, LUT_FULL[156]);
-    data1(d, LUT_FULL[157]);
+    data1(d, lut[155]);
+    data1(d, lut[156]);
+    data1(d, lut[157]);
     cmd(d, 0x2C);                       /* VCOM */
-    data1(d, LUT_FULL[158]);
+    data1(d, lut[158]);
 }
 
 /* Data entry 0x01 (X increment, Y decrement) + cursor at the last gate line
@@ -173,7 +197,7 @@ static esp_err_t panel_init(gdey0154d67_dev_t *d) {
     err = wait_busy(d, BUSY_TIMEOUT_MS);
     if (err != ESP_OK) return err;
 
-    load_full_lut(d);
+    load_lut(d, LUT_FULL);
     return ESP_OK;
 }
 
@@ -186,17 +210,46 @@ esp_err_t gdey0154d67_update_full(gdey0154d67_handle_t d, const uint8_t *packed)
     if (!d || !packed) return ESP_ERR_INVALID_ARG;
     const size_t len = (size_t)(d->width / 8) * d->height;
 
-    /* The vendor full LUT drives on the old(0x26) vs new(0x24) pair; for a
-     * full redraw both hold the target image (a clean flash to the new frame). */
+    load_lut(d, LUT_FULL);              /* a prior partial leaves LUT_PARTIAL loaded */
+
+    /* Both RAMs = target: a clean flash to it, and 0x26 seeds a later partial. */
     cmd(d, 0x24);                       /* new image RAM */
     data_bulk(d, packed, len);
     cmd(d, 0x26);                       /* base image RAM */
     data_bulk(d, packed, len);
 
     cmd(d, 0x22);                       /* display update control 2 */
-    data1(d, 0xC7);                     /* clk+analog, display (uploaded LUT, no OTP) */
+    data1(d, 0xC7);                     /* clk+analog, display (uploaded LUT) */
     cmd(d, 0x20);                       /* master activation */
     return wait_busy(d, BUSY_TIMEOUT_MS);
+}
+
+esp_err_t gdey0154d67_update_partial(gdey0154d67_handle_t d, const uint8_t *packed) {
+    if (!d || !packed) return ESP_ERR_INVALID_ARG;
+    const size_t len = (size_t)(d->width / 8) * d->height;
+
+    load_lut(d, LUT_PARTIAL);
+
+    cmd(d, 0x37);                       /* display option: B/W RAM only */
+    static const uint8_t opt[10] = { 0, 0, 0, 0, 0, 0x40, 0, 0, 0, 0 };
+    data_bulk(d, opt, sizeof(opt));
+
+    cmd(d, 0x3C);                       /* border: keep at level (no flash) */
+    data1(d, 0x80);
+
+    cmd(d, 0x24);                       /* new image; 0x26 holds the old frame */
+    data_bulk(d, packed, len);
+
+    cmd(d, 0x22);                       /* display update control 2 */
+    data1(d, 0xCF);                     /* clk+analog, display mode 2 (partial) */
+    cmd(d, 0x20);                       /* master activation */
+    esp_err_t err = wait_busy(d, BUSY_TIMEOUT_MS);
+    if (err != ESP_OK) return err;
+
+    /* 0x26 := the on-glass frame, so the next partial diffs against it. */
+    cmd(d, 0x26);
+    data_bulk(d, packed, len);
+    return ESP_OK;
 }
 
 esp_err_t gdey0154d67_sleep(gdey0154d67_handle_t d) {

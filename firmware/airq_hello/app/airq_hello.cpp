@@ -4,10 +4,12 @@
  *
  * Minimal M5 Air Quality Kit sample: brings up the BSP + LVGL and shows a
  * centered label on the GDEY0154D67 EPD. The EPD has no host framebuffer, so
- * LVGL renders into its own L8 buffer and flush blits each region into panel
- * GRAM; the last flush of a render drives one full-panel refresh (the provider
- * is full-refresh only, so the whole 200x200 frame is pushed regardless of the
- * dirty area).
+ * LVGL renders into its own L8 buffer and flush blits each region into the panel
+ * buffer; the last flush of a render drives the whole panel with s_refresh_mode.
+ *
+ * Partial-refresh test: the first frame is a full refresh (seeds the panel base
+ * image), then a timer changes the label text 5 times at a few-second interval,
+ * each driven as a fast direct-update (BSP_EPD_MODE_FAST) partial refresh.
  */
 
 #include "airq_hello.hpp"
@@ -15,11 +17,14 @@
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include <assert.h>
+#include <cstdio>
 
 static const char *TAG = "airq_hello";
 
-static lv_display_t *s_disp;
-static uint8_t      *s_buf;
+static lv_display_t  *s_disp;
+static uint8_t       *s_buf;
+static lv_obj_t      *s_label;
+static bsp_epd_mode_t s_refresh_mode = BSP_EPD_MODE_QUALITY;
 
 static void lvgl_init() {
     lvgl_port_cfg_t config = {
@@ -50,13 +55,13 @@ static void lvgl_init() {
         bsp_rect_t rect = { { rot.x1, rot.y1 }, { rot.x2 - rot.x1 + 1, rot.y2 - rot.y1 + 1 } };
         bsp_display_draw_bitmap(rect, px_map, BSP_ROTATION_0);
         if (lv_display_flush_is_last(disp)) {
-            bsp_display_refresh({ { 0, 0 }, bsp_display_get_size() }, BSP_EPD_MODE_QUALITY);
+            bsp_display_refresh({ { 0, 0 }, bsp_display_get_size() }, s_refresh_mode);
         }
         lv_display_flush_ready(disp);
     });
     lv_display_set_default(s_disp);
 
-    /* Draws update GRAM only; the flush drives the panel explicitly. */
+    /* Draws update the buffer only; the flush drives the panel explicitly. */
     bsp_display_set_epd_mode(BSP_EPD_MODE_NONE);
 }
 
@@ -64,11 +69,25 @@ static void build_hello_screen() {
     lv_obj_t *scr = lv_screen_active();
     lv_obj_set_style_bg_color(scr, lv_color_white(), 0);
 
-    lv_obj_t *label = lv_label_create(scr);
-    lv_label_set_text(label, "Hello, AirQ!");
-    lv_obj_set_style_text_font(label, &lv_font_montserrat_24, 0);
-    lv_obj_set_style_text_color(label, lv_color_black(), 0);
-    lv_obj_center(label);
+    s_label = lv_label_create(scr);
+    lv_label_set_text(s_label, "Hello, AirQ!");
+    lv_obj_set_style_text_font(s_label, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_color(s_label, lv_color_black(), 0);
+    lv_obj_center(s_label);
+}
+
+/* Change the text and drive a partial refresh, 5 times, then stop. */
+static void partial_test_cb(lv_timer_t *timer) {
+    static int n = 0;
+    n++;
+
+    char text[24];
+    snprintf(text, sizeof(text), "Partial #%d", n);
+    lv_label_set_text(s_label, text);
+    s_refresh_mode = BSP_EPD_MODE_FAST;
+    ESP_LOGI(TAG, "partial refresh %d/5", n);
+
+    if (n >= 5) lv_timer_delete(timer);
 }
 
 void app_entry() {
@@ -78,5 +97,8 @@ void app_entry() {
     bsp_init(&bsp_config);
     lvgl_init();
 
-    lv_async_call([] { build_hello_screen(); });
+    lv_async_call([] {
+        build_hello_screen();                       /* first frame: full refresh */
+        lv_timer_create(partial_test_cb, 3000, nullptr);
+    });
 }
