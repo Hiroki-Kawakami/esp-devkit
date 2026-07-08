@@ -29,6 +29,10 @@ choice BSP_BOARD
         bool "M5Stack AtomS3 Lite (ESP32-S3)"
         depends on IDF_TARGET_ESP32S3
 
+    config BSP_BOARD_AIRQ
+        bool "M5Stack Air Quality Kit (ESP32-S3)"
+        depends on IDF_TARGET_ESP32S3
+
     config BSP_BOARD_TAB5
         bool "M5Stack Tab5 (ESP32-P4)"
         depends on IDF_TARGET_ESP32P4
