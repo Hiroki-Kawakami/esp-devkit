@@ -9,8 +9,8 @@
  *
  * Partial-refresh test: the first frame is a full refresh (seeds the panel base
  * image), then the two front buttons drive the counter -- A (top) increments,
- * B decrements -- each as a fast direct-update (BSP_EPD_MODE_FAST) partial
- * refresh.
+ * B decrements -- and the power button (GPIO42) resets it to 0, each as a fast
+ * direct-update (BSP_EPD_MODE_FAST) partial refresh.
  */
 
 #include "airq_hello.hpp"
@@ -77,20 +77,32 @@ static void build_hello_screen() {
     lv_obj_center(s_label);
 }
 
+static int s_count = 0;
+
+static void render_count() {
+    char text[24];
+    snprintf(text, sizeof(text), "Count: %d", s_count);
+    lv_label_set_text(s_label, text);
+    s_refresh_mode = BSP_EPD_MODE_FAST;
+    ESP_LOGI(TAG, "partial refresh -> %d", s_count);
+}
+
 /* Buttons fire on the shared BSP dispatch task; marshal the LVGL/refresh work
  * onto the LVGL context. Each press drives a fast partial refresh of the
  * counter. */
 static void bump_counter(int delta) {
     bsp_audio_tone(delta > 0 ? 2000 : 1000, 60);
     lv_async_call([delta] {
-        static int n = 0;
-        n += delta;
+        s_count += delta;
+        render_count();
+    });
+}
 
-        char text[24];
-        snprintf(text, sizeof(text), "Count: %d", n);
-        lv_label_set_text(s_label, text);
-        s_refresh_mode = BSP_EPD_MODE_FAST;
-        ESP_LOGI(TAG, "partial refresh -> %d", n);
+static void reset_counter() {
+    bsp_audio_tone(1500, 60);
+    lv_async_call([] {
+        s_count = 0;
+        render_count();
     });
 }
 
@@ -103,6 +115,7 @@ void app_entry() {
 
     bsp_button_on_click(0, [](uint8_t, void *) { bump_counter(+1); }, nullptr);   /* A: top */
     bsp_button_on_click(1, [](uint8_t, void *) { bump_counter(-1); }, nullptr);   /* B */
+    bsp_button_on_click(2, [](uint8_t, void *) { reset_counter(); }, nullptr);    /* power: reset */
 
     lv_async_call([] {
         build_hello_screen();                       /* first frame: full refresh */

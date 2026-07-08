@@ -1,5 +1,6 @@
 # M5Stack Air Quality Kit — ESP32-S3 + GDEY0154D67 (SSD1681) 200x200 B/W SPI
-# EPD + two front buttons (A=GPIO0, B=GPIO8) + passive buzzer (GPIO9). Consumed
+# EPD + two front buttons (A=GPIO0, B=GPIO8) + power button (GPIO42) + passive
+# buzzer (GPIO9). Consumed
 # by bsp/CMakeLists.txt when BSP_BOARD == airq. Paths are relative to the bsp
 # component directory. (Air-quality sensors are not wired yet.)
 
