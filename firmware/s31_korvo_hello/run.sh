@@ -25,9 +25,11 @@ case "$TARGET" in
         exec nix develop "path:$FLAKE_ROOT#beta" -c "$0" esp32s31 "$@"
     fi
     if [ $# -eq 0 ]; then
-        set -- flash monitor
+        idf.py -C "$HERE/$TARGET" -b 3000000 flash
+        idf.py -C "$HERE/$TARGET" monitor
+    else
+        idf.py -C "$HERE/$TARGET" "$@"
     fi
-    idf.py -C "$HERE/$TARGET" "$@"
     ;;
   *)
     echo "Usage: $0 [simulator|esp32s31] [args...]" >&2
