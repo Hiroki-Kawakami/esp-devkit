@@ -15,9 +15,9 @@ TARGET=${1:-simulator}
 
 case "$TARGET" in
   simulator)
-    [ -d "$HERE/build" ] || cmake --fresh -S "$HERE/simulator" -B "$HERE/build" -G Ninja
-    cmake --build "$HERE/build"
-    "$HERE/build/simulator"
+    [ -d "$HERE/simulator/build" ] || cmake --fresh -S "$HERE/simulator" -B "$HERE/simulator/build" -G Ninja
+    cmake --build "$HERE/simulator/build"
+    "$HERE/simulator/build/simulator"
     ;;
   esp32s31)
     if [ "$ESP_IDF_VERSION" != "6.1" ]; then

@@ -1,3 +1,14 @@
+# Device build only supports esp32p4/esp32s31 (esp_driver_jpeg/esp_driver_ppa
+# are limited to those targets). devkit.cmake registers this component for
+# every device build via EXTRA_COMPONENT_DIRS, so it still gets evaluated in
+# CMAKE_BUILD_EARLY_EXPANSION for requirement extraction on targets that lack
+# esp_driver_jpeg even when COMPONENTS trimming keeps it out of the actual
+# build -- register empty and bail rather than reference it.
+if(ESP_PLATFORM AND NOT IDF_TARGET STREQUAL "esp32p4" AND NOT IDF_TARGET STREQUAL "esp32s31")
+    idf_component_register()
+    return()
+endif()
+
 # jpeg_decode_enhanced — strip-pipelined HW JPEG decode + PPA (device) with a
 # host (simulator) backend so the same public API compiles for both targets.
 #
