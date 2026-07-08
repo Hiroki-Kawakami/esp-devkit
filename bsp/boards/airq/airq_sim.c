@@ -4,9 +4,9 @@
  *
  * M5Stack Air Quality Kit simulator board: host-side counterpart of airq.c. The
  * SDL backend mimics the 200x200 B/W EPD so the shared app renders identically,
- * and the tone-only SDL audio stands in for the GPIO9 passive buzzer. The front
- * buttons are physical-only, so they stay unwired here; power controls fall back
- * to the shared defaults.
+ * and the tone-only SDL audio stands in for the GPIO9 passive buzzer, while the
+ * host RTC stands in for the BM8563. The front buttons are physical-only, so
+ * they stay unwired here; power controls fall back to the shared defaults.
  * Build with -DBSP_BOARD=airq.
  */
 
@@ -14,8 +14,10 @@
 #include "bsp_audio.h"
 #include "bsp_display.h"
 #include "bsp_dispatch.h"
+#include "bsp_rtc.h"
 #include "sdl_audio.h"
 #include "sdl_panel.h"
+#include "rtc_sim.h"
 #include <stdio.h>
 
 esp_err_t bsp_init(const bsp_config_t *config) {
@@ -45,5 +47,8 @@ esp_err_t bsp_init(const bsp_config_t *config) {
     } else {
         fprintf(stderr, "[sim] sdl_audio_create failed: %d\n", audio_err);
     }
+
+    bsp_rtc_t *rtc = NULL;
+    if (rtc_sim_create(&rtc) == ESP_OK) bsp_rtc_set_active(rtc);
     return ESP_OK;
 }
