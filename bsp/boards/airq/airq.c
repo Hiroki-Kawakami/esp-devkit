@@ -6,8 +6,9 @@
  * SPI bus for the GDEY0154D67 EPD and registers it as the active display, the
  * two front buttons (A=GPIO0, B=GPIO8) plus the power button (GPIO42, usable as
  * a normal button after boot), the passive buzzer on GPIO9, and the BM8563 RTC
- * on I2C (SCL=GPIO12, SDA=GPIO11). Power controls fall back to the shared
- * defaults (USB-powered, esp_restart). The host-side counterpart is airq_sim.c.
+ * on I2C (SCL=GPIO12, SDA=GPIO11). Power latches on GPIO46 (held high to stay on
+ * when VBUS is absent) with battery sense on GPIO14. The host-side counterpart
+ * is airq_sim.c.
  */
 
 #include "bsp.h"
@@ -15,9 +16,14 @@
 #include "bsp_button.h"
 #include "bsp_dispatch.h"
 #include "esp_log.h"
+#include "esp_system.h"
+#include "driver/gpio.h"
 #include "driver/spi_master.h"
 #include "driver/i2c_master.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "bm8563.h"
+#include "adc_battery.h"
 #include "gdey0154d67_epd.h"
 #include "gpio_button.h"
 #include "pwm_buzzer.h"
@@ -38,6 +44,10 @@ static const char *TAG = "airq";
 #define AIRQ_BUTTON_PWR_GPIO GPIO_NUM_42
 
 #define AIRQ_PIN_BUZZER     GPIO_NUM_9
+
+/* Power latch: high holds the rail on when VBUS is absent (like M5Paper's MAIN_PWR).
+ * Battery is 1/2 VBAT on GPIO14 (ADC2_CH3). */
+#define AIRQ_PIN_MAIN_PWR   GPIO_NUM_46
 
 #define AIRQ_I2C_PORT       I2C_NUM_0
 #define AIRQ_I2C_PIN_SDA    GPIO_NUM_11
@@ -88,9 +98,41 @@ static esp_err_t audio_init(const bsp_config_t *config) {
     return ESP_OK;
 }
 
+/* Hold the power latch on: VBUS keeps the rail alive on its own, but on battery
+ * the board stays up only while GPIO46 is high. */
+static void power_hold_init(void) {
+    const gpio_config_t out = {
+        .pin_bit_mask = 1ULL << AIRQ_PIN_MAIN_PWR,
+        .mode         = GPIO_MODE_OUTPUT,
+        .pull_up_en   = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type    = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&out);
+    gpio_set_level(AIRQ_PIN_MAIN_PWR, 1);
+}
+
+/* Battery on GPIO14 (ADC2_CH3) via a 1:2 divider (read the pin ×2); 1S Li-ion
+ * empty/full endpoints. No VBUS-sense GPIO. */
+static void battery_init(void) {
+    const adc_battery_config_t cfg = {
+        .adc_unit    = ADC_UNIT_2,
+        .adc_channel = ADC_CHANNEL_3,
+        .adc_atten   = ADC_ATTEN_DB_12,
+        .divider_mul = 2, .divider_div = 1,
+        .empty_mv    = 3300, .full_mv = 4200,
+        .vbus_gpio   = GPIO_NUM_NC,
+    };
+    bsp_power_t *power = NULL;
+    if (adc_battery_create(&cfg, &power) == ESP_OK) bsp_power_set_active(power);
+    else ESP_LOGW(TAG, "battery sense unavailable");
+}
+
 esp_err_t bsp_init(const bsp_config_t *config) {
     bsp_dispatch_configure(config ? config->dispatch.task_priority : 0,
                            config ? config->dispatch.task_affinity : -1);
+
+    power_hold_init();
 
     const spi_bus_config_t bus_cfg = {
         .mosi_io_num     = AIRQ_EPD_PIN_MOSI,
@@ -148,5 +190,25 @@ esp_err_t bsp_init(const bsp_config_t *config) {
         ESP_LOGW(TAG, "rtc unavailable: %s", esp_err_to_name(err));
     }
 
+    battery_init();
     return ESP_OK;
+}
+
+void bsp_power_restart(void) {
+    bsp_audio_quiesce();
+    esp_restart();
+}
+
+esp_err_t bsp_power_hw_reset(void) {
+    esp_err_t err = bsp_rtc_timer_start(200, false);
+    if (err != ESP_OK) return err;
+    return bsp_power_off();
+}
+
+esp_err_t bsp_power_off(void) {
+    bsp_audio_quiesce();
+    gpio_set_level(AIRQ_PIN_MAIN_PWR, 0);
+    vTaskDelay(pdMS_TO_TICKS(500));
+    gpio_set_level(AIRQ_PIN_MAIN_PWR, 1);
+    return ESP_FAIL;
 }

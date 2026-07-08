@@ -10,13 +10,14 @@ set(BOARD_DEVICE_SRCS
     "boards/airq/airq.c"
     "driver/gpio_button/gpio_button.c"
     "driver/pwm_buzzer/pwm_buzzer.c"
+    "driver/adc_battery/adc_battery.c"
     "devices/gdey0154d67/gdey0154d67.c"
     "devices/gdey0154d67/gdey0154d67_epd.c"
     "devices/bm8563/bm8563.c")
 set(BOARD_DEVICE_PRIV_INCLUDE_DIRS
-    "driver/gpio_button" "driver/pwm_buzzer" "devices" "devices/gdey0154d67"
-    "devices/bm8563")
+    "driver/gpio_button" "driver/pwm_buzzer" "driver/adc_battery" "devices"
+    "devices/gdey0154d67" "devices/bm8563")
 set(BOARD_DEVICE_PRIV_REQUIRES
-    driver esp_driver_spi esp_driver_gpio esp_driver_ledc esp_driver_i2c)
+    driver esp_driver_spi esp_driver_gpio esp_driver_ledc esp_driver_i2c esp_adc)
 
 set(BOARD_SIM_SRCS "boards/airq/airq_sim.c")
