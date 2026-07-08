@@ -12,13 +12,14 @@
 
 #pragma once
 #include "bsp_types.h"
+#include "freertos/FreeRTOS.h"
 
 typedef struct bsp_button bsp_button_t;
 
 struct bsp_button {
     uint8_t   count;
-    /* Provider wakes the input task on an edge -> the common layer may idle
-     * between presses instead of polling continuously. */
+    /* Provider wakes the dispatch source on an edge -> the common layer may
+     * idle between presses instead of polling continuously. */
     bool      has_int;
     /* Fill up to `max` slots with the current pressed state per button. */
     esp_err_t (*sample)(bsp_button_t *self, bool *pressed, uint8_t max);
@@ -26,3 +27,7 @@ struct bsp_button {
 };
 
 void bsp_button_set_active(bsp_button_t *button);
+
+/* Wake the button dispatch source from a provider's GPIO ISR, without the
+ * driver reaching into dispatch internals. */
+void bsp_button_notify_from_isr(BaseType_t *hp);

@@ -4,8 +4,8 @@
  *
  * GT911 capacitive touch controller driver (I2C, polling). Produces a
  * bsp_touch_t provider for the common touch layer (src/bsp_touch.c), which owns
- * the reader task, INT ISR, orientation transform, and the release settle
- * state machine -- start it with bsp_touch_start_reader() after set_active.
+ * the INT ISR, orientation transform, and the release settle state machine, and
+ * registers a bsp_dispatch source to drive polling on bsp_touch_set_active().
  *
  * The driver does NOT own the I2C bus -- the board initializes the bus via
  * i2c_new_master_bus() and passes the handle. The driver attaches itself with
@@ -67,9 +67,8 @@ typedef struct {
 } gt911_config_t;
 
 /* Reset + probe the chip, attach to the bus, and return a bsp_touch_t provider.
- * Register it with bsp_touch_set_active() and then call bsp_touch_start_reader()
- * to spawn the shared reader task (HotKnot needs it -- without one its session
- * state machine has nothing to drive it). */
+ * Register it with bsp_touch_set_active(), which starts the shared dispatch
+ * task if needed -- HotKnot's session state machine rides on that same task. */
 esp_err_t gt911_touch_create(const gt911_config_t *config, bsp_touch_t **out_touch);
 
 #ifdef __cplusplus

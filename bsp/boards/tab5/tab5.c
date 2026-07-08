@@ -18,6 +18,7 @@
 #include "driver/gpio.h"
 #include "driver/i2c_master.h"
 #include "pi4io.h"
+#include "bsp_dispatch.h"
 #include "tab5_panel.h"
 #include "tab5_audio.h"
 
@@ -111,6 +112,9 @@ static esp_err_t audio_init(const bsp_config_t *config, i2c_master_bus_handle_t 
 }
 
 esp_err_t bsp_init(const bsp_config_t *config) {
+    bsp_dispatch_configure(config ? config->dispatch.task_priority : 0,
+                           config ? config->dispatch.task_affinity : -1);
+
     bsp_config_t defaults = {0};
     if (!config) config = &defaults;
 

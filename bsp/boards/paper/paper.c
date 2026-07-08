@@ -16,6 +16,7 @@
 #include "driver/spi_master.h"
 #include "driver/i2c_master.h"
 #include "bm8563.h"
+#include "bsp_dispatch.h"
 #include "gpio_button.h"
 #include "adc_battery.h"
 #include "paper_config.h"
@@ -118,6 +119,9 @@ static esp_err_t enable_power(void) {
 }
 
 esp_err_t bsp_init(const bsp_config_t *config) {
+    bsp_dispatch_configure(config ? config->dispatch.task_priority : 0,
+                           config ? config->dispatch.task_affinity : -1);
+
     bsp_config_t defaults = {0};   /* IT8951E refreshes synchronously: no EPD task */
     if (!config) config = &defaults;
 

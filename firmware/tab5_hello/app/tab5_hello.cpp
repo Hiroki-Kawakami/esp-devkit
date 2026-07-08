@@ -59,8 +59,8 @@ static void build_hello_screen() {
 
 void app_entry() {
     bsp_config_t bsp_config = {};
-    bsp_config.touch.task_priority = 6;
-    bsp_config.touch.task_affinity = 1;
+    bsp_config.dispatch.task_priority = 6;
+    bsp_config.dispatch.task_affinity = 1;
     bsp_init(&bsp_config);
     lvgl_init();
 

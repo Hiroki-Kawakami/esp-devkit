@@ -4,9 +4,10 @@
  *
  * Internal touch-driver interface. A chip driver embeds bsp_touch_t as its first
  * member and fills the poll/deinit vtable plus the base geometry/INT fields; the
- * common layer (src/bsp_touch.c) owns the reader task, INT ISR, INT->poll->INT
- * state machine, orientation transform, and the cached snapshot behind the public
- * bsp_touch_* API. Chips do not touch task/ISR/orientation code.
+ * common layer (src/bsp_touch.c) owns the INT ISR, INT->poll->INT state machine,
+ * orientation transform, and the cached snapshot behind the public bsp_touch_*
+ * API, and registers a bsp_dispatch source to drive polling. Chips do not touch
+ * dispatch/ISR/orientation code.
  */
 
 #pragma once
@@ -40,31 +41,23 @@ struct bsp_touch {
     bool     swap_xy, mirror_x, mirror_y;
     int      int_io;           /* INT pin (gpio_num_t compatible; < 0 -> none) */
     uint8_t  settle_count;     /* consecutive no-touch polls before idling; 0 -> default */
+    uint16_t poll_interval_ms; /* dispatch re-tick interval while active; 0 -> default (10ms) */
 
     /* Common layer owns. Set by the INT ISR the common layer attaches. */
     volatile bool int_pending;
 };
 
-/* Register the active touch panel with the common layer. Attaches the shared INT
- * ISR to touch->int_io if it is >= 0. */
+/* Register the active touch panel with the common layer: attaches the shared
+ * INT ISR to touch->int_io if it is >= 0 and registers a bsp_dispatch source
+ * that drives polling -- no separate start call needed. */
 void bsp_touch_set_active(bsp_touch_t *touch);
 
-/* Start the shared reader task on the active touch. priority == 0 -> no task
- * (bsp_touch_read sync-polls the chip on demand). Idempotent: subsequent starts
- * return ESP_ERR_INVALID_STATE without disturbing the running task. */
-esp_err_t bsp_touch_start_reader(uint8_t priority, int8_t affinity,
-                                 uint32_t poll_interval_ms, uint32_t task_stack);
-
-/* True once bsp_touch_start_reader has spawned the reader task. HotKnot uses
- * this to gate its session state machine. */
-bool bsp_touch_reader_running(void);
-
-/* Simulate an INT edge: mark int_pending and wake the reader task. The device
- * INT ISR does this; the simulator's SDL touch provider calls it from the
- * input path so host + device share the same reader-task-driven flow. */
+/* Simulate an INT edge: mark int_pending and wake the dispatch source. The
+ * device INT ISR does this; the simulator's SDL touch provider calls it from
+ * the input path so host + device share the same dispatch-driven flow. */
 void bsp_touch_notify(void);
 
 /* Provider upcall: dispatch display-space contacts to bsp_touch_set_event_cb and
- * cache them for bsp_touch_read. Called by the reader task, the simulator, and
- * chip drivers on a sync poll. count 0 = all released. */
+ * cache them for bsp_touch_read. Called by the dispatch source, the simulator,
+ * and chip drivers on a sync poll. count 0 = all released. */
 void bsp_touch_emit_event(const bsp_touch_point_t *points, int count);

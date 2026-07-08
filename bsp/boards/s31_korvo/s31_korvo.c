@@ -10,6 +10,7 @@
 #include "bsp.h"
 #include "bsp_led.h"
 #include "bsp_button.h"
+#include "bsp_dispatch.h"
 #include "esp_system.h"
 #include "esp_log.h"
 #include "esp_adc/adc_oneshot.h"
@@ -53,6 +54,9 @@ static esp_err_t i2c_bus_init(i2c_master_bus_handle_t *out_bus) {
 }
 
 esp_err_t bsp_init(const bsp_config_t *config) {
+    bsp_dispatch_configure(config ? config->dispatch.task_priority : 0,
+                           config ? config->dispatch.task_affinity : -1);
+
     bsp_config_t defaults = {0};
     if (!config) config = &defaults;
 

@@ -77,8 +77,9 @@ static void build_hello_screen() {
     lv_obj_center(s_label);
 }
 
-/* Buttons fire on the input task; marshal the LVGL/refresh work onto the LVGL
- * context. Each press drives a fast partial refresh of the counter. */
+/* Buttons fire on the shared BSP dispatch task; marshal the LVGL/refresh work
+ * onto the LVGL context. Each press drives a fast partial refresh of the
+ * counter. */
 static void bump_counter(int delta) {
     lv_async_call([delta] {
         static int n = 0;

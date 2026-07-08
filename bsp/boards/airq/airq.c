@@ -5,14 +5,13 @@
  * M5Stack Air Quality Kit (ESP32-S3) board: device-side bsp_init. Brings up the
  * SPI bus for the GDEY0154D67 EPD and registers it as the active display, plus
  * the two front buttons (A=GPIO0, B=GPIO8). Power controls fall back to the
- * shared defaults (USB-powered, esp_restart). There is no touch reader, so
- * bsp_init starts the shared input task itself. The host-side counterpart is
+ * shared defaults (USB-powered, esp_restart). The host-side counterpart is
  * airq_sim.c.
  */
 
 #include "bsp.h"
 #include "bsp_button.h"
-#include "bsp_input.h"
+#include "bsp_dispatch.h"
 #include "esp_log.h"
 #include "driver/spi_master.h"
 #include "gdey0154d67_epd.h"
@@ -32,10 +31,9 @@ static const char *TAG = "airq";
 #define AIRQ_BUTTON_A_GPIO  GPIO_NUM_0
 #define AIRQ_BUTTON_B_GPIO  GPIO_NUM_8
 
-#define AIRQ_INPUT_TASK_PRIO   5
-
 esp_err_t bsp_init(const bsp_config_t *config) {
-    (void)config;
+    bsp_dispatch_configure(config ? config->dispatch.task_priority : 0,
+                           config ? config->dispatch.task_affinity : -1);
 
     const spi_bus_config_t bus_cfg = {
         .mosi_io_num     = AIRQ_EPD_PIN_MOSI,
@@ -78,7 +76,6 @@ esp_err_t bsp_init(const bsp_config_t *config) {
     bsp_button_t *btn = NULL;
     if (gpio_button_create(&btn_cfg, &btn) == ESP_OK) {
         bsp_button_set_active(btn);
-        bsp_input_start(AIRQ_INPUT_TASK_PRIO, -1, 0, 0);
     } else {
         ESP_LOGW(TAG, "gpio_button unavailable");
     }

@@ -3,10 +3,10 @@
  * Copyright (c) 2026 Hiroki Kawakami
  *
  * GT1151 touch driver -- see gt1151.h. Chip-specific parts only: I2C attach +
- * HW reset (INT-level address latch) + one-shot chip poll. The reader task, INT
- * ISR, orientation transform, and the INT->poll->INT state machine live in the
- * common layer (src/bsp_touch.c); this file's bsp_touch_t::poll just fills raw
- * (chip-space) coords + a fresh flag.
+ * HW reset (INT-level address latch) + one-shot chip poll. The dispatch source,
+ * INT ISR, orientation transform, and the INT->poll->INT state machine live in
+ * the common layer (src/bsp_touch.c); this file's bsp_touch_t::poll just fills
+ * raw (chip-space) coords + a fresh flag.
  *
  * Structurally the GT911 driver with HotKnot stripped and the touch-point
  * capacity raised to 10.

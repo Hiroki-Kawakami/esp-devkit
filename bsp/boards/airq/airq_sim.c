@@ -11,10 +11,12 @@
 
 #include "bsp.h"
 #include "bsp_display.h"
+#include "bsp_dispatch.h"
 #include "sdl_panel.h"
 
 esp_err_t bsp_init(const bsp_config_t *config) {
-    (void)config;
+    bsp_dispatch_configure(config ? config->dispatch.task_priority : 0,
+                           config ? config->dispatch.task_affinity : -1);
     sdl_panel_config_t sdl_config = {
         .title     = "M5 AirQ",
         .type      = BSP_DISPLAY_TYPE_SPI_EPD,

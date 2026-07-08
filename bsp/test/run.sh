@@ -47,7 +47,8 @@ test_sdl_audio)
     gcc -std=c11 \
         -I"$comp/inc" -I"$comp/inc_private" -I"$comp/simulator" -I"$cc/include" \
         "$test_src" \
-        "$comp/src/audio_dsp.c" "$comp/src/bsp_audio.c" "$comp/simulator/sdl_audio.c" \
+        "$comp/src/audio_dsp.c" "$comp/src/bsp_audio.c" "$comp/src/bsp_dispatch.c" \
+        "$comp/simulator/sdl_audio.c" \
         $objs \
         $(pkg-config --cflags --libs sdl2) -lm -lpthread \
         -o "$bin"
@@ -56,7 +57,7 @@ test_bsp_audio)
     gcc -std=c11 \
         -I"$comp/inc" -I"$comp/inc_private" -I"$cc/include" \
         "$test_src" \
-        "$comp/src/audio_dsp.c" "$comp/src/bsp_audio.c" \
+        "$comp/src/audio_dsp.c" "$comp/src/bsp_audio.c" "$comp/src/bsp_dispatch.c" \
         $objs \
         -lm -lpthread \
         -o "$bin"

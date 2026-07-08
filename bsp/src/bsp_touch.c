@@ -4,18 +4,18 @@
  *
  * Common touch layer: dispatches the public bsp_touch_* API through the active
  * chip vtable and owns the INT ISR, orientation transform, and cached snapshot.
- * The reader task itself lives in bsp_input.c -- this layer just registers a
- * tick source and forwards bsp_touch_start_reader to bsp_input_start.
+ * bsp_touch_set_active registers a bsp_dispatch source that drives polling --
+ * boards no longer start anything themselves.
  *
- * IDLE is a capability that needs an INT line: with one, the tick returns false
- * after settle_count consecutive no-finger polls and the ISR wakes the shared
- * task. Boards that leave INT NC (e.g. s31_korvo) never idle -- the tick stays
- * ACTIVE and the task just polls every poll_interval.
+ * IDLE is a capability that needs an INT line: with one, the tick returns
+ * BSP_DISPATCH_IDLE after settle_count consecutive no-finger polls and the ISR
+ * notifies the source to wake it again. Boards that leave INT NC (e.g.
+ * s31_korvo) never idle -- the tick keeps requesting poll_interval_ms.
  */
 
 #include "bsp.h"
 #include "bsp_touch.h"
-#include "bsp_input.h"
+#include "bsp_dispatch.h"
 
 #include <string.h>
 
@@ -40,13 +40,15 @@ static SemaphoreHandle_t s_snapshot_lock;
 static bsp_touch_point_t s_snapshot[BSP_TOUCH_MAX_POINTS];
 static uint8_t           s_snapshot_count;
 
-/* Kept alongside bsp_input's shared wake sem so a wait_interrupt caller can be
- * signalled independently of the reader task's own wake. */
+/* Kept alongside the dispatch source so a wait_interrupt caller can be
+ * signalled independently of the dispatch task's own wake. */
 static SemaphoreHandle_t s_wait_sem;
 
 static uint8_t s_no_touch_count;
 static bool    s_was_down;
-static bool    s_source_registered;
+
+static uint32_t touch_tick(void *ctx);
+static bsp_dispatch_source_t s_touch_source = { .tick = touch_tick };
 
 #ifdef ESP_PLATFORM
 static bool s_int_isr_attached;
@@ -81,7 +83,7 @@ void bsp_touch_emit_event(const bsp_touch_point_t *points, int count) {
 
 void bsp_touch_notify(void) {
     if (s_touch) s_touch->int_pending = true;
-    bsp_input_notify();
+    bsp_dispatch_notify(&s_touch_source);
     if (s_wait_sem) xSemaphoreGive(s_wait_sem);
 }
 
@@ -101,19 +103,6 @@ static void apply_orientation(const bsp_touch_t *t,
 
 int bsp_touch_read(bsp_touch_point_t *points, uint8_t max_points) {
     if (!s_touch || !points || max_points == 0) return 0;
-
-    /* No task: refresh the snapshot from the chip on demand. */
-    if (!bsp_input_running() && s_touch->poll) {
-        bsp_touch_raw_point_t raw[BSP_TOUCH_MAX_POINTS];
-        uint8_t max = s_touch->max_points ? s_touch->max_points : BSP_TOUCH_MAX_POINTS;
-        if (max > BSP_TOUCH_MAX_POINTS) max = BSP_TOUCH_MAX_POINTS;
-        uint8_t n = 0; bool keep = false;
-        if (s_touch->poll(s_touch, raw, max, &n, &keep) == ESP_OK) {
-            bsp_touch_point_t pts[BSP_TOUCH_MAX_POINTS];
-            apply_orientation(s_touch, raw, pts, n);
-            bsp_touch_emit_event(pts, n);
-        }
-    }
 
     snapshot_lock();
     uint8_t n = s_snapshot_count;
@@ -139,14 +128,14 @@ static void IRAM_ATTR touch_int_isr(void *arg) {
     bsp_touch_t *t = arg;
     t->int_pending = true;
     BaseType_t hp = pdFALSE;
-    bsp_input_notify_from_isr(&hp);
+    bsp_dispatch_notify_from_isr(&s_touch_source, &hp);
     if (s_wait_sem) xSemaphoreGiveFromISR(s_wait_sem, &hp);
     if (hp) portYIELD_FROM_ISR();
 }
 
 static void attach_isr(bsp_touch_t *t) {
     if (!t || t->int_io < 0 || s_int_isr_attached) return;
-    if (bsp_input_install_gpio_isr() != ESP_OK) return;
+    if (bsp_dispatch_install_gpio_isr() != ESP_OK) return;
     gpio_set_intr_type((gpio_num_t)t->int_io, GPIO_INTR_NEGEDGE);
     if (gpio_isr_handler_add((gpio_num_t)t->int_io, touch_int_isr, t) != ESP_OK) return;
     gpio_intr_enable((gpio_num_t)t->int_io);
@@ -154,16 +143,17 @@ static void attach_isr(bsp_touch_t *t) {
 }
 #endif  /* ESP_PLATFORM */
 
-static bool touch_tick(void *ctx) {
+static uint32_t touch_tick(void *ctx) {
     (void)ctx;
     bsp_touch_t *t = s_touch;
-    if (!t || !t->poll) return false;
+    if (!t || !t->poll) return BSP_DISPATCH_IDLE;
 
     const uint8_t settle  = t->settle_count ? t->settle_count : DEFAULT_SETTLE_COUNT;
     const bool    has_int = (t->int_io >= 0);
+    const uint32_t interval = t->poll_interval_ms ? t->poll_interval_ms : 10;
 
     if (has_int && !t->int_pending && s_no_touch_count >= settle && !s_was_down)
-        return false;
+        return BSP_DISPATCH_IDLE;
     t->int_pending = false;
 
     bsp_touch_raw_point_t raw[BSP_TOUCH_MAX_POINTS];
@@ -172,7 +162,7 @@ static bool touch_tick(void *ctx) {
     uint8_t n = 0;
     bool keep_polling = false;
 
-    if (t->poll(t, raw, max, &n, &keep_polling) != ESP_OK) return true;
+    if (t->poll(t, raw, max, &n, &keep_polling) != ESP_OK) return interval;
 
     bsp_touch_point_t pts[BSP_TOUCH_MAX_POINTS];
     apply_orientation(t, raw, pts, n);
@@ -186,7 +176,8 @@ static bool touch_tick(void *ctx) {
         if (s_no_touch_count < 255) s_no_touch_count++;
     }
 
-    return keep_polling || s_was_down || s_no_touch_count < settle || !has_int;
+    return (keep_polling || s_was_down || s_no_touch_count < settle || !has_int)
+               ? interval : BSP_DISPATCH_IDLE;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -201,22 +192,6 @@ void bsp_touch_set_active(bsp_touch_t *touch) {
 #ifdef ESP_PLATFORM
     attach_isr(touch);
 #endif
-}
 
-esp_err_t bsp_touch_start_reader(uint8_t priority, int8_t affinity,
-                                 uint32_t poll_interval_ms, uint32_t task_stack) {
-    if (priority == 0) return ESP_OK;
-    if (!s_touch)      return ESP_ERR_INVALID_STATE;
-
-    if (!s_source_registered) {
-        bsp_input_source_t src = { .tick = touch_tick, .ctx = NULL };
-        esp_err_t err = bsp_input_add_source(&src);
-        if (err != ESP_OK) return err;
-        s_source_registered = true;
-    }
-    return bsp_input_start(priority, affinity, poll_interval_ms, task_stack);
-}
-
-bool bsp_touch_reader_running(void) {
-    return bsp_input_running();
+    bsp_dispatch_add_source(&s_touch_source);
 }

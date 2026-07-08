@@ -4,8 +4,8 @@
  *
  * ST7123 I2C touch driver -- see st7123_touch.h. Chip-specific parts only: I2C
  * attach + HW reset + one-shot chip poll (ST7123's own 7-byte report layout).
- * The reader task, INT ISR, orientation transform, and the INT->poll->INT state
- * machine live in the common layer (src/bsp_touch.c); this file's
+ * The dispatch source, INT ISR, orientation transform, and the INT->poll->INT
+ * state machine live in the common layer (src/bsp_touch.c); this file's
  * bsp_touch_t::poll just fills raw (chip-space) coords + a fresh flag.
  */
 

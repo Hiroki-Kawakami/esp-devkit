@@ -10,6 +10,7 @@
 #include "bsp.h"
 #include "bsp_display.h"
 #include "bsp_touch.h"
+#include "bsp_dispatch.h"
 #include "bsp_rtc.h"
 #include "bsp_power.h"
 #include "sdl_panel.h"
@@ -18,6 +19,8 @@
 #include <stdio.h>
 
 esp_err_t bsp_init(const bsp_config_t *config) {
+    bsp_dispatch_configure(config ? config->dispatch.task_priority : 0,
+                           config ? config->dispatch.task_affinity : -1);
     sdl_panel_config_t sdl_config = {
         .title     = "M5Paper",
         .type      = BSP_DISPLAY_TYPE_SPI_EPD,
@@ -33,8 +36,6 @@ esp_err_t bsp_init(const bsp_config_t *config) {
 
     bsp_display_set_active(display);
     bsp_touch_set_active(touch);
-    bsp_touch_start_reader(config->touch.task_priority, config->touch.task_affinity,
-                           config->touch.poll_interval_ms, 0);
 
     bsp_rtc_t *rtc = NULL;
     if (rtc_sim_create(&rtc) == ESP_OK) bsp_rtc_set_active(rtc);

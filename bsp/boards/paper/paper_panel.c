@@ -15,7 +15,7 @@
 
 static const char *TAG = "paper_panel";
 
-static esp_err_t touch_init(const bsp_config_t *config, i2c_master_bus_handle_t bus) {
+static esp_err_t touch_init(i2c_master_bus_handle_t bus) {
     /* Same display geometry (960x540 landscape) as M5PaperS3, so the GT911 raw
      * portrait coordinates map to display space the same way: transpose, then
      * mirror the Y axis. Verify on hardware — the M5Paper digitizer mounting may
@@ -49,16 +49,15 @@ static esp_err_t touch_init(const bsp_config_t *config, i2c_master_bus_handle_t 
         return err;
     }
     bsp_touch_set_active(touch);
-    bsp_touch_start_reader(config->touch.task_priority, config->touch.task_affinity,
-                           config->touch.poll_interval_ms, 0);
 
-    /* HotKnot needs the shared touch reader task; non-fatal if unavailable. */
+    /* HotKnot needs the dispatch-driven touch panel; non-fatal if unavailable. */
     bsp_hotknot_t *hk = NULL;
     if (gt911_hotknot_create(&hk) == ESP_OK) bsp_hotknot_set_active(hk);
     return ESP_OK;
 }
 
 esp_err_t paper_panel_init(const bsp_config_t *config, i2c_master_bus_handle_t i2c_bus) {
+    (void)config;
     const it8951e_config_t epd_cfg = {
         .spi_host = PAPER_SPI_HOST,
         .cs_io    = PAPER_EPD_PIN_CS,
@@ -76,7 +75,7 @@ esp_err_t paper_panel_init(const bsp_config_t *config, i2c_master_bus_handle_t i
     /* Touch is non-fatal: a failure leaves bsp_touch_read a no-op rather than
      * blocking display bring-up. */
     if (i2c_bus) {
-        err = touch_init(config, i2c_bus);
+        err = touch_init(i2c_bus);
         if (err != ESP_OK) ESP_LOGW(TAG, "touch unavailable: %s", esp_err_to_name(err));
     }
     return ESP_OK;

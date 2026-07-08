@@ -64,8 +64,6 @@ static esp_err_t setup_st7123(const bsp_config_t *config, i2c_master_bus_handle_
         return ESP_OK;
     }
     bsp_touch_set_active(touch);
-    bsp_touch_start_reader(config->touch.task_priority, config->touch.task_affinity,
-                           config->touch.poll_interval_ms, 0);
     return ESP_OK;
 }
 
@@ -100,8 +98,6 @@ static esp_err_t setup_ili9881c(const bsp_config_t *config, i2c_master_bus_handl
         return ESP_OK;
     }
     bsp_touch_set_active(touch);
-    bsp_touch_start_reader(config->touch.task_priority, config->touch.task_affinity,
-                           config->touch.poll_interval_ms, 0);
     return ESP_OK;
 }
 

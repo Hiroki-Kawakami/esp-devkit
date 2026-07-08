@@ -4,7 +4,7 @@
  *
  * GT911 grayscale-panel touch driver -- see gt911.h. Chip-specific parts only:
  * I2C attach + config write, HW reset (INT-level address latch), one-shot chip
- * poll (coord_poll_locked), and HotKnot glue. The reader task, INT ISR,
+ * poll (coord_poll_locked), and HotKnot glue. The dispatch source, INT ISR,
  * orientation transform, and the INT->poll->INT state machine live in the
  * common layer (src/bsp_touch.c); this file's bsp_touch_t::poll just fills raw
  * (chip-space) coords + a fresh flag and, if a HotKnot session step is
@@ -14,6 +14,7 @@
 #include "gt911.h"
 #include "gt911_internal.h"
 #include "bsp_touch.h"
+#include "bsp_dispatch.h"
 #include <stdlib.h>
 #include <string.h>
 #include "esp_check.h"
@@ -320,9 +321,9 @@ static esp_err_t gt911_deinit(bsp_touch_t *self) {
  * ===================================================================== */
 
 gt911_handle_t gt911_active_handle(void) {
-    /* HotKnot needs the reader task to drive its state machine; without one the
-     * chip would have no owner, so report no usable device. */
-    return (s_active && bsp_touch_reader_running()) ? s_active : NULL;
+    /* HotKnot needs the dispatch task to drive its state machine; without one
+     * the chip would have no owner, so report no usable device. */
+    return (s_active && bsp_dispatch_running()) ? s_active : NULL;
 }
 
 void gt911_internal_lock(gt911_handle_t h)   { if (h) dev_lock(h); }

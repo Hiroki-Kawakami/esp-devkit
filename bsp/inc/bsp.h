@@ -22,17 +22,16 @@ typedef struct {
         uint8_t task_priority;  /*!< refresh-task priority; 0 -> default (5) */
         int8_t  task_affinity;  /*!< core to pin to (0/1); <0 -> no affinity */
     } epd;
-    /* Touch reader task: when task_priority > 0, samples are pushed to
-     * bsp_touch_set_event_cb(). Zeroed -> no task (poll via bsp_touch_read). */
-    struct {
-        uint8_t  task_priority;     /*!< reader-task priority; 0 -> no task */
-        int8_t   task_affinity;     /*!< core to pin to (0/1); <0 -> no affinity */
-        uint16_t poll_interval_ms;  /*!< reader-task INT-wait fallback; 0 -> default */
-    } touch;
     struct {
         bsp_audio_dsp_mode_t dsp_mode;          /*!< who voices the DSP chain */
         bsp_audio_speaker_mode_t speaker_mode;  /*!< speaker route policy */
     } audio;
+    /* Shared dispatch task (touch/button polling, audio route tracking). Always
+     * runs once any module needs it; only tunable here. */
+    struct {
+        uint8_t task_priority;  /*!< 0 -> default (5) */
+        int8_t  task_affinity;  /*!< core to pin to (0/1); <0 -> no affinity */
+    } dispatch;
 } bsp_config_t;
 
 esp_err_t bsp_init(const bsp_config_t *config);
@@ -81,16 +80,17 @@ void bsp_display_wait_idle(void);
 int bsp_touch_read(bsp_touch_point_t *points, uint8_t max_points);
 void bsp_touch_wait_interrupt(void);
 
-/* Push delivery from the touch reader task (bsp_config.touch): `cb` gets
- * display-space points as each sample arrives (count 0 = all released). Runs off
- * the UI thread, so keep it short and synchronize shared state. NULL unregisters. */
+/* Push delivery from the shared BSP dispatch task: `cb` gets display-space
+ * points as each sample arrives (count 0 = all released). Runs off the UI
+ * thread, so keep it short and synchronize shared state. NULL unregisters. */
 typedef void (*bsp_touch_event_cb_t)(const bsp_touch_point_t *points, int count, void *arg);
 void bsp_touch_set_event_cb(bsp_touch_event_cb_t cb, void *arg);
 
 // MARK: HotKnot
-/* Proximity peer-to-peer over the touch panel. Needs the touch reader task;
- * events (PAIRED / READY / RECEIVED / ERROR) arrive on `cb`. Ends must use
- * opposite roles. No provider -> ESP_ERR_NOT_SUPPORTED. Caveats: docs/gotchas.md. */
+/* Proximity peer-to-peer over the touch panel. Needs an active touch panel --
+ * the session step runs on the shared BSP dispatch task; events (PAIRED /
+ * READY / RECEIVED / ERROR) arrive on `cb`. Ends must use opposite roles. No
+ * provider -> ESP_ERR_NOT_SUPPORTED. Caveats: docs/gotchas.md. */
 esp_err_t bsp_hotknot_begin(bsp_hotknot_role_t role, bsp_hotknot_event_cb_t cb, void *arg);
 esp_err_t bsp_hotknot_send(const void *data, size_t len, uint32_t timeout_ms);
 esp_err_t bsp_hotknot_end(void);
@@ -132,7 +132,8 @@ bool bsp_sd_is_mounted(void);
 
 // MARK: Buttons
 /* Board-provided physical buttons; count == 0 when no provider is registered.
- * Callbacks fire on the input task -- marshal to your UI thread yourself.
+ * Callbacks fire on the shared BSP dispatch task -- marshal to your UI thread
+ * yourself.
  *
  * Click dispatch:
  *   - Only click registered   -> fires on release edge, immediately.
@@ -202,8 +203,8 @@ bool      bsp_audio_get_eq_enabled(void);
 esp_err_t bsp_audio_set_speaker_mode(bsp_audio_speaker_mode_t mode);
 bsp_audio_speaker_mode_t bsp_audio_get_speaker_mode(void);
 
-/* Headphone detect (CAP_HEADPHONE); the callback fires from an internal
- * poller task (~200 ms), NULL unregisters. */
+/* Headphone detect (CAP_HEADPHONE); the callback fires on the shared BSP
+ * dispatch task (~200 ms poll), NULL unregisters. */
 bool bsp_audio_headphone_inserted(void);
 typedef void (*bsp_audio_headphone_cb_t)(bool inserted, void *user);
 esp_err_t bsp_audio_set_headphone_callback(bsp_audio_headphone_cb_t cb, void *user);

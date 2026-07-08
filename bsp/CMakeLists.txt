@@ -19,7 +19,7 @@
 # Model-agnostic display/touch/rtc dispatch — built for both targets.
 set(BSP_COMMON_SRCS
     "src/bsp_display.c"
-    "src/bsp_input.c"
+    "src/bsp_dispatch.c"
     "src/bsp_touch.c"
     "src/bsp_button.c"
     "src/bsp_hotknot.c"

@@ -3,7 +3,8 @@
  * Copyright (c) 2026 Hiroki Kawakami
  *
  * GT911 HotKnot: chip primitives + the BSP provider whose session state machine
- * runs on the gt911 reader task (hk_step). See gt911_hotknot.h.
+ * runs on the shared BSP dispatch task (hk_step, invoked from bsp_touch_t::poll).
+ * See gt911_hotknot.h.
  */
 
 #include "gt911_hotknot.h"
@@ -11,6 +12,7 @@
 #include <string.h>
 #include "esp_check.h"
 #include "esp_log.h"
+#include "bsp_dispatch.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -282,7 +284,7 @@ esp_err_t gt911_hotknot_recover_touch(gt911_handle_t h) {
 }
 
 /* ========================================================================
- * BSP provider + session state machine (runs on the reader task)
+ * BSP provider + session state machine (runs on the shared dispatch task)
  * ===================================================================== */
 
 typedef enum { HK_IDLE, HK_APPROACH, HK_XFER, HK_FAILED } hk_phase_t;
@@ -341,7 +343,7 @@ static esp_err_t hk_begin(bsp_hotknot_t *self, bsp_hotknot_role_t role,
                           bsp_hotknot_event_cb_t cb, void *arg) {
     gt911_hk_t *p = (gt911_hk_t *)self;
     if (p->phase != HK_IDLE) return ESP_ERR_INVALID_STATE;
-    if (!bsp_touch_reader_running()) return ESP_ERR_INVALID_STATE;
+    if (!bsp_dispatch_running()) return ESP_ERR_INVALID_STATE;
 
     p->cb   = cb;
     p->arg  = arg;
@@ -403,7 +405,7 @@ esp_err_t gt911_hotknot_create(bsp_hotknot_t **out_hk) {
     ESP_RETURN_ON_FALSE(out_hk, ESP_ERR_INVALID_ARG, TAG, "null arg");
     gt911_handle_t h = gt911_active_handle();
     if (!h) {
-        ESP_LOGE(TAG, "no GT911 with a reader task — HotKnot unavailable");
+        ESP_LOGE(TAG, "no GT911 with a running dispatch task — HotKnot unavailable");
         return ESP_ERR_INVALID_STATE;
     }
     s_provider.base.begin = hk_begin;

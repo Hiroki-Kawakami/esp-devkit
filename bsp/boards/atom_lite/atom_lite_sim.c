@@ -8,8 +8,10 @@
  */
 
 #include "bsp.h"
+#include "bsp_dispatch.h"
 
 esp_err_t bsp_init(const bsp_config_t *config) {
-    (void)config;
+    bsp_dispatch_configure(config ? config->dispatch.task_priority : 0,
+                           config ? config->dispatch.task_affinity : -1);
     return ESP_OK;
 }

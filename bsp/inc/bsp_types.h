@@ -110,7 +110,7 @@ typedef struct {
     esp_err_t                err;   /*!< ERROR only */
 } bsp_hotknot_event_t;
 
-/* Runs on the touch reader task — keep it short and marshal to the UI thread. */
+/* Runs on the shared BSP dispatch task — keep it short and marshal to the UI thread. */
 typedef void (*bsp_hotknot_event_cb_t)(const bsp_hotknot_event_t *ev, void *arg);
 
 typedef struct {

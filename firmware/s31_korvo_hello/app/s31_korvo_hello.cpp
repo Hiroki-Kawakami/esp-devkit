@@ -154,8 +154,8 @@ static void wire_button_test() {
 
 void app_entry() {
     bsp_config_t bsp_config = {};
-    bsp_config.touch.task_priority = 6;
-    bsp_config.touch.task_affinity = 1;
+    bsp_config.dispatch.task_priority = 6;
+    bsp_config.dispatch.task_affinity = 1;
     bsp_init(&bsp_config);
     bsp_touch_set_event_cb(on_touch_push, nullptr);
     lvgl_init();

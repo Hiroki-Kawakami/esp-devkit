@@ -16,6 +16,7 @@
 #include "driver/gpio.h"
 #include "driver/i2c_master.h"
 #include "bm8563.h"
+#include "bsp_dispatch.h"
 #include "adc_battery.h"
 #include "paper_s3_panel.h"
 #include "pwm_buzzer.h"
@@ -94,6 +95,9 @@ static void battery_init(void) {
 }
 
 esp_err_t bsp_init(const bsp_config_t *config) {
+    bsp_dispatch_configure(config ? config->dispatch.task_priority : 0,
+                           config ? config->dispatch.task_affinity : -1);
+
     bsp_config_t defaults = {0};   /* NULL/zeroed config -> EPD priority 5, core 0 */
     if (!config) config = &defaults;
 

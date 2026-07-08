@@ -22,7 +22,7 @@ typedef struct gt911_dev *gt911_handle_t;
 /* Track id 32 = a HotKnot pair event reported as a synthetic touch. */
 #define GT911_HK_PAIR_TRACK_ID  32u
 
-/* The board's GT911; NULL if none or the shared reader task isn't running
+/* The board's GT911; NULL if none or the shared dispatch task isn't running
  * (HotKnot needs it). */
 gt911_handle_t gt911_active_handle(void);
 

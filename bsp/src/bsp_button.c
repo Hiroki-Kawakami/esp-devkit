@@ -4,8 +4,9 @@
  *
  * Common button layer: dispatches sample() through the active provider vtable
  * and runs the per-button state machine that turns debounced press/release
- * edges into click / double-click / long-press events. Registered as one
- * source of the shared bsp_input task.
+ * edges into click / double-click / long-press events. Registered as a
+ * bsp_dispatch source; polling only runs while at least one callback is
+ * registered and stops once every button has settled.
  *
  * State transitions:
  *   IDLE            +down       -> PRESSED; fire DOWN
@@ -20,7 +21,7 @@
 
 #include "bsp.h"
 #include "bsp_button.h"
-#include "bsp_input.h"
+#include "bsp_dispatch.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -29,6 +30,7 @@
 #define DEFAULT_DEBOUNCE_MS     20
 #define DEFAULT_DOUBLE_MS       300
 #define DEFAULT_LONG_MS         800
+#define POLL_INTERVAL_MS        10
 
 typedef enum {
     BTN_IDLE = 0,
@@ -56,7 +58,9 @@ typedef struct {
 static bsp_button_t   *s_button;
 static button_state_t  s_state[BSP_BUTTON_MAX];
 static uint16_t        s_debounce_ms = DEFAULT_DEBOUNCE_MS;
-static bool            s_source_registered;
+
+static uint32_t button_tick(void *ctx);
+static bsp_dispatch_source_t s_button_source = { .tick = button_tick };
 
 static inline void fire(bsp_button_cb_t cb, void *arg, uint8_t id) {
     if (cb) cb(id, arg);
@@ -142,25 +146,35 @@ static inline bool button_settled(const button_state_t *b) {
     return b->state == BTN_IDLE && !b->raw_differs;
 }
 
-/* Without an INT to wake the task, keep requesting ticks; with one, idle once
- * every button has settled. */
-static bool button_tick(void *ctx) {
+static bool any_callback_registered(void) {
+    const uint8_t n = active_count();
+    for (uint8_t i = 0; i < n; i++) {
+        const button_state_t *b = &s_state[i];
+        if (b->cb_down || b->cb_up || b->cb_click || b->cb_double || b->cb_long) return true;
+    }
+    return false;
+}
+
+/* Idle without a registered callback (nothing to report to). Otherwise, without
+ * an INT to wake the source, keep polling; with one, idle once every button
+ * has settled. */
+static uint32_t button_tick(void *ctx) {
     (void)ctx;
-    if (!s_button || !s_button->sample) return false;
+    if (!s_button || !s_button->sample) return BSP_DISPATCH_IDLE;
 
     const uint8_t n = active_count();
-    if (n == 0) return false;
+    if (n == 0 || !any_callback_registered()) return BSP_DISPATCH_IDLE;
 
     bool pressed[BSP_BUTTON_MAX] = {0};
     if (s_button->sample(s_button, pressed, n) == ESP_OK) {
         for (uint8_t i = 0; i < n; i++) advance_one(i, pressed[i]);
     }
 
-    if (!s_button->has_int) return true;
+    if (!s_button->has_int) return POLL_INTERVAL_MS;
     for (uint8_t i = 0; i < n; i++) {
-        if (!button_settled(&s_state[i])) return true;
+        if (!button_settled(&s_state[i])) return POLL_INTERVAL_MS;
     }
-    return false;
+    return BSP_DISPATCH_IDLE;
 }
 
 void bsp_button_set_active(bsp_button_t *button) {
@@ -175,10 +189,11 @@ void bsp_button_set_active(bsp_button_t *button) {
         };
     }
 
-    if (!s_source_registered) {
-        bsp_input_source_t src = { .tick = button_tick, .ctx = NULL };
-        if (bsp_input_add_source(&src) == ESP_OK) s_source_registered = true;
-    }
+    bsp_dispatch_add_source(&s_button_source);
+}
+
+void bsp_button_notify_from_isr(BaseType_t *hp) {
+    bsp_dispatch_notify_from_isr(&s_button_source, hp);
 }
 
 uint8_t bsp_button_count(void) { return active_count(); }
@@ -187,16 +202,19 @@ void bsp_button_on_down(uint8_t id, bsp_button_cb_t cb, void *arg) {
     if (id >= active_count()) return;
     s_state[id].cb_down  = cb;
     s_state[id].arg_down = arg;
+    bsp_dispatch_notify(&s_button_source);
 }
 void bsp_button_on_up(uint8_t id, bsp_button_cb_t cb, void *arg) {
     if (id >= active_count()) return;
     s_state[id].cb_up  = cb;
     s_state[id].arg_up = arg;
+    bsp_dispatch_notify(&s_button_source);
 }
 void bsp_button_on_click(uint8_t id, bsp_button_cb_t cb, void *arg) {
     if (id >= active_count()) return;
     s_state[id].cb_click  = cb;
     s_state[id].arg_click = arg;
+    bsp_dispatch_notify(&s_button_source);
 }
 void bsp_button_on_double_click(uint8_t id, uint16_t interval_ms,
                                 bsp_button_cb_t cb, void *arg) {
@@ -204,6 +222,7 @@ void bsp_button_on_double_click(uint8_t id, uint16_t interval_ms,
     s_state[id].cb_double  = cb;
     s_state[id].arg_double = arg;
     s_state[id].double_ms  = interval_ms ? interval_ms : DEFAULT_DOUBLE_MS;
+    bsp_dispatch_notify(&s_button_source);
 }
 void bsp_button_on_long_press(uint8_t id, uint16_t duration_ms,
                               bsp_button_cb_t cb, void *arg) {
@@ -211,4 +230,5 @@ void bsp_button_on_long_press(uint8_t id, uint16_t duration_ms,
     s_state[id].cb_long  = cb;
     s_state[id].arg_long = arg;
     s_state[id].long_ms  = duration_ms ? duration_ms : DEFAULT_LONG_MS;
+    bsp_dispatch_notify(&s_button_source);
 }

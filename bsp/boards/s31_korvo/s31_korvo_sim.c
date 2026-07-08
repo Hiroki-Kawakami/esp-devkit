@@ -9,6 +9,7 @@
 #include "bsp.h"
 #include "bsp_display.h"
 #include "bsp_touch.h"
+#include "bsp_dispatch.h"
 #include "sdl_panel.h"
 #include <stdlib.h>
 
@@ -16,6 +17,8 @@
 #define S31_LCD_H 480
 
 esp_err_t bsp_init(const bsp_config_t *config) {
+    bsp_dispatch_configure(config ? config->dispatch.task_priority : 0,
+                           config ? config->dispatch.task_affinity : -1);
     sdl_panel_config_t sdl_config = {
         .title       = "ESP32-S31-Korvo",
         .type        = BSP_DISPLAY_TYPE_RGB,
@@ -30,7 +33,5 @@ esp_err_t bsp_init(const bsp_config_t *config) {
     if (err != ESP_OK) return err;
     bsp_display_set_active(display);
     bsp_touch_set_active(touch);
-    bsp_touch_start_reader(config->touch.task_priority, config->touch.task_affinity,
-                           config->touch.poll_interval_ms, 0);
     return ESP_OK;
 }

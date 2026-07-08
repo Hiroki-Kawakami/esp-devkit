@@ -4,8 +4,8 @@
  *
  * ST7123 capacitive touch controller driver (I2C, polling). Produces a
  * bsp_touch_t provider for the common touch layer (src/bsp_touch.c), which owns
- * the reader task, INT ISR, orientation transform, and the release settle
- * state machine -- start it with bsp_touch_start_reader() after set_active.
+ * the INT ISR, orientation transform, and the release settle state machine, and
+ * registers a bsp_dispatch source to drive polling on bsp_touch_set_active().
  *
  * The board owns the I2C bus and passes the handle here; the driver attaches
  * with i2c_master_bus_add_device(), so other devices on the same bus stay

@@ -20,6 +20,7 @@ static const char *TAG = "s31_korvo_panel";
 #define S31_LCD_H   480
 
 esp_err_t s31_korvo_panel_init(const bsp_config_t *config, i2c_master_bus_handle_t i2c_bus) {
+    (void)config;
     const rgb_lcd_config_t lcd_cfg = {
         .size           = { S31_LCD_W, S31_LCD_H },
         .pixel_format   = BSP_PIXEL_FORMAT_RGB565,
@@ -77,7 +78,5 @@ esp_err_t s31_korvo_panel_init(const bsp_config_t *config, i2c_master_bus_handle
         return ESP_OK;
     }
     bsp_touch_set_active(touch);
-    bsp_touch_start_reader(config->touch.task_priority, config->touch.task_affinity,
-                           config->touch.poll_interval_ms, 0);
     return ESP_OK;
 }

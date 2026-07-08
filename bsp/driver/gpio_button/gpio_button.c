@@ -6,7 +6,8 @@
 #include "gpio_button.h"
 #include <stdlib.h>
 #include "esp_check.h"
-#include "bsp_input.h"
+#include "bsp_button.h"
+#include "bsp_dispatch.h"
 
 static const char *TAG = "gpio_button";
 
@@ -20,13 +21,13 @@ struct gpio_button_dev {
 static void IRAM_ATTR gpio_button_isr(void *arg) {
     (void)arg;
     BaseType_t hp = pdFALSE;
-    bsp_input_notify_from_isr(&hp);
+    bsp_button_notify_from_isr(&hp);
     if (hp) portYIELD_FROM_ISR();
 }
 
 /* Best-effort: on failure has_int stays false and the common layer keeps polling. */
 static void attach_isr(struct gpio_button_dev *dev) {
-    if (bsp_input_install_gpio_isr() != ESP_OK) return;
+    if (bsp_dispatch_install_gpio_isr() != ESP_OK) return;
     for (uint8_t i = 0; i < dev->base.count; i++) {
         gpio_num_t pin = dev->pins[i].gpio;
         gpio_set_intr_type(pin, GPIO_INTR_ANYEDGE);

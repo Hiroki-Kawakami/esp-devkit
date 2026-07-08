@@ -10,13 +10,15 @@
  * instance), mute (a software fade — hardware mute is reserved for power
  * transitions), the DSP voicing mode (Auto: board profile re-applied on route
  * changes; Manual: flat init, app-driven; Disable: no DSP), the speaker route
- * policy (ON/AUTO/OFF + the headphone poll task + insert callback), the
- * click-free idempotent open/close sequencing (see inc_private/bsp_audio.h),
- * and the tone synth fallback (CAP_PCM without CAP_TONE).
+ * policy (ON/AUTO/OFF + a headphone-tracking bsp_dispatch source + insert
+ * callback), the click-free idempotent open/close sequencing (see
+ * inc_private/bsp_audio.h), and the tone synth fallback (CAP_PCM without
+ * CAP_TONE).
  */
 
 #include "bsp.h"
 #include "bsp_audio.h"
+#include "bsp_dispatch.h"
 #include <math.h>
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -36,6 +38,7 @@ static const char *TAG = "BSP_AUDIO";
 #define BSP_AMP_SETTLE_MS   50      /* DAC analog settle before touching the amp */
 #define BSP_MUTE_SETTLE_MS  20      /* hw-mute settle before stopping clocks */
 #define BSP_NOMINAL_RATE    48000   /* DSP placeholder rate until the first open */
+#define BSP_ROUTE_POLL_MS   200     /* route-source re-tick while tracking HP state */
 
 /* Tone synth fallback (CAP_PCM without CAP_TONE): a fixed low-rate mono format
  * chosen for simplicity, not fidelity — it's a beep, not program audio. */
@@ -69,12 +72,15 @@ static bool s_mute;
 static int  s_eq_override = -1;
 
 static volatile bsp_audio_speaker_mode_t s_speaker_mode = BSP_AUDIO_SPEAKER_MODE_ON;
-static TaskHandle_t s_route_task;
 static portMUX_TYPE s_hp_mux = portMUX_INITIALIZER_UNLOCKED;
 static bsp_audio_headphone_cb_t s_hp_cb;
 static void *s_hp_cb_arg;
 static bool s_hp_last;
 static bool s_hp_last_valid;
+
+static uint32_t audio_route_tick(void *ctx);
+static bsp_dispatch_source_t s_route_source = { .tick = audio_route_tick };
+static bool s_route_registered;
 
 static void tone_synth_request_stop(bool wait);
 
@@ -120,51 +126,49 @@ static void apply_dsp_profile(bool hp) {
     audio_dsp_set_mono_mix(s_dsp, profile.mono_mix);
 }
 
-static void route_task(void *arg) {
-    (void)arg;
-    while (1) {
-        bsp_audio_speaker_mode_t mode = s_speaker_mode;
-        bool hp = hp_inserted_now();
+static uint32_t audio_route_tick(void *ctx) {
+    (void)ctx;
+    bsp_audio_speaker_mode_t mode = s_speaker_mode;
+    bool hp = hp_inserted_now();
 
-        /* Detect HP state change: re-voice the DSP for the new route (Auto)
-         * and dispatch the user callback (fired outside the critical section
-         * so user code can take its time / call into BSP). */
-        bsp_audio_headphone_cb_t cb = NULL;
-        void *cb_arg = NULL;
-        bool changed = false;
-        portENTER_CRITICAL(&s_hp_mux);
-        if (s_hp_last_valid && hp != s_hp_last) {
-            changed = true;
-            cb = s_hp_cb;
-            cb_arg = s_hp_cb_arg;
-        }
-        s_hp_last = hp;
-        s_hp_last_valid = true;
-        portEXIT_CRITICAL(&s_hp_mux);
-        if (changed) {
-            apply_dsp_profile(hp);
-            if (cb) cb(hp, cb_arg);
-        }
-
-        apply_speaker_with_hp(mode, hp);
-
-        bool dsp_auto = s_dsp && s_dsp_mode == BSP_AUDIO_DSP_MODE_AUTO &&
-                        s_audio && s_audio->get_dsp_profile;
-        bool need_poll = (mode == BSP_AUDIO_SPEAKER_MODE_AUTO) || (s_hp_cb != NULL) || dsp_auto;
-        TickType_t wait = need_poll ? pdMS_TO_TICKS(200) : portMAX_DELAY;
-        ulTaskNotifyTake(pdTRUE, wait);
+    /* Detect HP state change: re-voice the DSP for the new route (Auto)
+     * and dispatch the user callback (fired outside the critical section
+     * so user code can take its time / call into BSP). */
+    bsp_audio_headphone_cb_t cb = NULL;
+    void *cb_arg = NULL;
+    bool changed = false;
+    portENTER_CRITICAL(&s_hp_mux);
+    if (s_hp_last_valid && hp != s_hp_last) {
+        changed = true;
+        cb = s_hp_cb;
+        cb_arg = s_hp_cb_arg;
     }
+    s_hp_last = hp;
+    s_hp_last_valid = true;
+    portEXIT_CRITICAL(&s_hp_mux);
+    if (changed) {
+        apply_dsp_profile(hp);
+        if (cb) cb(hp, cb_arg);
+    }
+
+    apply_speaker_with_hp(mode, hp);
+
+    bool dsp_auto = s_dsp && s_dsp_mode == BSP_AUDIO_DSP_MODE_AUTO &&
+                    s_audio && s_audio->get_dsp_profile;
+    bool need_poll = (mode == BSP_AUDIO_SPEAKER_MODE_AUTO) || (s_hp_cb != NULL) || dsp_auto;
+    return need_poll ? BSP_ROUTE_POLL_MS : BSP_DISPATCH_IDLE;
 }
 
-static esp_err_t start_route_task_once(void) {
-    if (s_route_task) return ESP_OK;
-    return xTaskCreate(route_task, "bsp_audio_rt", 2048, NULL, 1, &s_route_task) == pdPASS
-        ? ESP_OK : ESP_ERR_NO_MEM;
+static esp_err_t ensure_route_source(void) {
+    if (s_route_registered) return ESP_OK;
+    esp_err_t err = bsp_dispatch_add_source(&s_route_source);
+    if (err == ESP_OK) s_route_registered = true;
+    return err;
 }
 
-/* The route task is needed whenever something tracks the headphone state:
+/* The route source is needed whenever something tracks the headphone state:
  * the AUTO speaker policy, a user insert callback, or Auto DSP voicing. */
-static bool route_task_needed(void) {
+static bool route_source_needed(void) {
     if (!s_audio || !(s_audio->caps & BSP_AUDIO_CAP_HEADPHONE)) return false;
     return s_speaker_mode == BSP_AUDIO_SPEAKER_MODE_AUTO || s_hp_cb ||
            (s_dsp && s_dsp_mode == BSP_AUDIO_DSP_MODE_AUTO && s_audio->get_dsp_profile);
@@ -232,9 +236,9 @@ void bsp_audio_set_active(bsp_audio_t *audio, const bsp_audio_init_t *init) {
         }
     }
 
-    if (route_task_needed()) {
-        if (start_route_task_once() != ESP_OK) {
-            ESP_LOGW(TAG, "route task start failed (HP tracking degraded)");
+    if (route_source_needed()) {
+        if (ensure_route_source() != ESP_OK) {
+            ESP_LOGW(TAG, "route dispatch source registration failed (HP tracking degraded)");
         }
     }
 }
@@ -551,11 +555,11 @@ esp_err_t bsp_audio_set_speaker_mode(bsp_audio_speaker_mode_t mode) {
         !(s_audio->caps & BSP_AUDIO_CAP_HEADPHONE)) return ESP_ERR_NOT_SUPPORTED;
     s_speaker_mode = mode;
     if (mode == BSP_AUDIO_SPEAKER_MODE_AUTO) {
-        esp_err_t err = start_route_task_once();
+        esp_err_t err = ensure_route_source();
         if (err != ESP_OK) return err;
     }
-    if (s_route_task) {
-        xTaskNotifyGive(s_route_task);  /* task re-evaluates + re-arms wait */
+    if (s_route_registered) {
+        bsp_dispatch_notify(&s_route_source);  /* source re-evaluates + re-arms */
     } else {
         apply_speaker(mode);
     }
@@ -577,9 +581,9 @@ esp_err_t bsp_audio_set_headphone_callback(bsp_audio_headphone_cb_t cb, void *us
     s_hp_cb     = cb;
     portEXIT_CRITICAL(&s_hp_mux);
     if (cb) {
-        esp_err_t err = start_route_task_once();
+        esp_err_t err = ensure_route_source();
         if (err != ESP_OK) return err;
-        xTaskNotifyGive(s_route_task);  /* re-evaluate need_poll */
+        bsp_dispatch_notify(&s_route_source);  /* re-evaluate need_poll */
     }
     return ESP_OK;
 }

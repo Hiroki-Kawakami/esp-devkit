@@ -4,8 +4,8 @@
  *
  * GT1151 capacitive touch controller driver (I2C, polling). Produces a
  * bsp_touch_t provider for the common touch layer (src/bsp_touch.c), which owns
- * the reader task, INT ISR, orientation transform, and the release settle
- * state machine -- start it with bsp_touch_start_reader() after set_active.
+ * the INT ISR, orientation transform, and the release settle state machine, and
+ * registers a bsp_dispatch source to drive polling on bsp_touch_set_active().
  *
  * Register layout matches the GT911 (Goodix protocol family): status @ 0x814E,
  * touch data @ 0x814F (8 bytes per point), product ID @ 0x8140. Main
@@ -53,7 +53,7 @@ typedef struct {
 } gt1151_config_t;
 
 /* Reset + probe the chip, attach to the bus, and return a bsp_touch_t provider.
- * Register it with bsp_touch_set_active() and then call bsp_touch_start_reader(). */
+ * Register it with bsp_touch_set_active(). */
 esp_err_t gt1151_touch_create(const gt1151_config_t *config, bsp_touch_t **out_touch);
 
 #ifdef __cplusplus

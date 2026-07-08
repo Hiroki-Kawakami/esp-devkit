@@ -76,7 +76,7 @@ esp_err_t gt911_hotknot_recover_touch(gt911_handle_t handle);
 
 /* ----- BSP provider ------------------------------------------------------ */
 
-/* Provider bound to the active GT911; ESP_ERR_INVALID_STATE if none has a reader task. */
+/* Provider bound to the active GT911; ESP_ERR_INVALID_STATE if none has a running dispatch task. */
 esp_err_t gt911_hotknot_create(bsp_hotknot_t **out_hk);
 
 #ifdef __cplusplus
