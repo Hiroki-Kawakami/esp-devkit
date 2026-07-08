@@ -3,19 +3,21 @@
  * Copyright (c) 2026 Hiroki Kawakami
  *
  * M5Stack Air Quality Kit (ESP32-S3) board: device-side bsp_init. Brings up the
- * SPI bus for the GDEY0154D67 EPD and registers it as the active display, plus
- * the two front buttons (A=GPIO0, B=GPIO8). Power controls fall back to the
- * shared defaults (USB-powered, esp_restart). The host-side counterpart is
- * airq_sim.c.
+ * SPI bus for the GDEY0154D67 EPD and registers it as the active display, the
+ * two front buttons (A=GPIO0, B=GPIO8), and the passive buzzer on GPIO9. Power
+ * controls fall back to the shared defaults (USB-powered, esp_restart). The
+ * host-side counterpart is airq_sim.c.
  */
 
 #include "bsp.h"
+#include "bsp_audio.h"
 #include "bsp_button.h"
 #include "bsp_dispatch.h"
 #include "esp_log.h"
 #include "driver/spi_master.h"
 #include "gdey0154d67_epd.h"
 #include "gpio_button.h"
+#include "pwm_buzzer.h"
 
 static const char *TAG = "airq";
 
@@ -30,6 +32,24 @@ static const char *TAG = "airq";
 
 #define AIRQ_BUTTON_A_GPIO  GPIO_NUM_0
 #define AIRQ_BUTTON_B_GPIO  GPIO_NUM_8
+
+#define AIRQ_PIN_BUZZER     GPIO_NUM_9
+
+static esp_err_t audio_init(const bsp_config_t *config) {
+    const pwm_buzzer_config_t cfg = {
+        .pwm_io  = AIRQ_PIN_BUZZER,
+        .timer   = LEDC_TIMER_0,
+        .channel = LEDC_CHANNEL_0,
+    };
+    bsp_audio_t *audio = NULL;
+    esp_err_t err = pwm_buzzer_create(&cfg, &audio);
+    if (err != ESP_OK) return err;
+    bsp_audio_set_active(audio, &(bsp_audio_init_t){
+        .dsp_mode = config->audio.dsp_mode,
+        .speaker_mode = config->audio.speaker_mode,
+    });
+    return ESP_OK;
+}
 
 esp_err_t bsp_init(const bsp_config_t *config) {
     bsp_dispatch_configure(config ? config->dispatch.task_priority : 0,
@@ -78,6 +98,10 @@ esp_err_t bsp_init(const bsp_config_t *config) {
         bsp_button_set_active(btn);
     } else {
         ESP_LOGW(TAG, "gpio_button unavailable");
+    }
+
+    if ((err = audio_init(config)) != ESP_OK) {
+        ESP_LOGW(TAG, "audio unavailable: %s", esp_err_to_name(err));
     }
 
     return ESP_OK;

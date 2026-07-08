@@ -81,6 +81,7 @@ static void build_hello_screen() {
  * onto the LVGL context. Each press drives a fast partial refresh of the
  * counter. */
 static void bump_counter(int delta) {
+    bsp_audio_tone(delta > 0 ? 2000 : 1000, 60);
     lv_async_call([delta] {
         static int n = 0;
         n += delta;
