@@ -18,10 +18,12 @@ static const char *TAG = "st7789v2";
 
 /* Commands. */
 #define CMD_SWRESET  0x01
+#define CMD_SLPIN    0x10
 #define CMD_SLPOUT   0x11
 #define CMD_INVOFF   0x20
 #define CMD_INVON    0x21
 #define CMD_NORON    0x13
+#define CMD_DISPOFF  0x28
 #define CMD_DISPON   0x29
 #define CMD_CASET    0x2A
 #define CMD_RASET    0x2B
@@ -35,8 +37,13 @@ typedef struct {
     gpio_num_t dc_io;
     gpio_num_t reset_io;
     uint16_t   x_offset, y_offset;
+    uint8_t    madctl;
+    bool       invert;
+    bsp_display_power_t power;
     st7789v2_backlight_cb_t set_backlight;
     void      *backlight_ctx;
+    st7789v2_power_cb_t set_panel_power;
+    void      *panel_power_ctx;
 
     uint16_t *dma_buf[NBUF];
     spi_transaction_t trans[NBUF];
@@ -151,15 +158,48 @@ static void hw_reset(st7789v2_t *d) {
     vTaskDelay(pdMS_TO_TICKS(120));
 }
 
-static void panel_init(st7789v2_t *d, const st7789v2_config_t *cfg) {
+static void panel_init(st7789v2_t *d) {
     hw_reset(d);
     write_cmd(d, CMD_SWRESET);           vTaskDelay(pdMS_TO_TICKS(120));
     write_cmd(d, CMD_SLPOUT);            vTaskDelay(pdMS_TO_TICKS(120));
     write_cmd(d, CMD_COLMOD);            write_data(d, (uint8_t[]){ 0x55 }, 1);  /* 16 bpp */
-    write_cmd(d, CMD_MADCTL);            write_data(d, &(uint8_t){ cfg->madctl }, 1);
-    write_cmd(d, cfg->invert ? CMD_INVON : CMD_INVOFF);
+    write_cmd(d, CMD_MADCTL);            write_data(d, &d->madctl, 1);
+    write_cmd(d, d->invert ? CMD_INVON : CMD_INVOFF);
     write_cmd(d, CMD_NORON);             vTaskDelay(pdMS_TO_TICKS(10));
     write_cmd(d, CMD_DISPON);            vTaskDelay(pdMS_TO_TICKS(10));
+}
+
+/* SLEEP is SLPIN, blanked first with DISPOFF so no partial frame shows; OFF cuts
+ * the panel rail. No rail callback -> OFF collapses to SLEEP. */
+static esp_err_t set_power(bsp_display_t *self, bsp_display_power_t state) {
+    st7789v2_t *d = (st7789v2_t *)self;
+    if (!d->set_panel_power && state == BSP_DISPLAY_POWER_OFF)
+        state = BSP_DISPLAY_POWER_SLEEP;
+    if (state == d->power) return ESP_OK;
+
+    /* Rail was cut: re-power and re-init before any command. */
+    if (d->power == BSP_DISPLAY_POWER_OFF && state != BSP_DISPLAY_POWER_OFF) {
+        d->set_panel_power(d->panel_power_ctx, true);
+        panel_init(d);
+        d->power = BSP_DISPLAY_POWER_ON;
+        if (state == BSP_DISPLAY_POWER_ON) return ESP_OK;
+    }
+
+    switch (state) {
+    case BSP_DISPLAY_POWER_ON:   /* from SLEEP */
+        write_cmd(d, CMD_SLPOUT);   vTaskDelay(pdMS_TO_TICKS(120));
+        write_cmd(d, CMD_DISPON);   vTaskDelay(pdMS_TO_TICKS(10));
+        break;
+    case BSP_DISPLAY_POWER_SLEEP:
+        write_cmd(d, CMD_DISPOFF);
+        write_cmd(d, CMD_SLPIN);    vTaskDelay(pdMS_TO_TICKS(5));
+        break;
+    case BSP_DISPLAY_POWER_OFF:
+        d->set_panel_power(d->panel_power_ctx, false);
+        break;
+    }
+    d->power = state;
+    return ESP_OK;
 }
 
 esp_err_t st7789v2_create(const st7789v2_config_t *cfg, bsp_display_t **out_display) {
@@ -171,8 +211,13 @@ esp_err_t st7789v2_create(const st7789v2_config_t *cfg, bsp_display_t **out_disp
     d->reset_io      = cfg->reset_io;
     d->x_offset      = cfg->x_offset;
     d->y_offset      = cfg->y_offset;
+    d->madctl        = cfg->madctl;
+    d->invert        = cfg->invert;
+    d->power         = BSP_DISPLAY_POWER_ON;
     d->set_backlight = cfg->set_backlight;
     d->backlight_ctx = cfg->backlight_ctx;
+    d->set_panel_power = cfg->set_panel_power;
+    d->panel_power_ctx = cfg->panel_power_ctx;
 
     const gpio_config_t out = {
         .pin_bit_mask = (1ULL << cfg->dc_io) |
@@ -203,13 +248,14 @@ esp_err_t st7789v2_create(const st7789v2_config_t *cfg, bsp_display_t **out_disp
         return err;
     }
 
-    panel_init(d, cfg);
+    panel_init(d);
 
     d->base.type   = BSP_DISPLAY_TYPE_SPI;
     d->base.size   = (bsp_size_t){ cfg->width, cfg->height };
     d->base.format = BSP_PIXEL_FORMAT_RGB565;
     d->base.draw_bitmap = draw_bitmap;
     d->base.deinit      = deinit;
+    d->base.set_power   = set_power;   /* SLEEP always works; OFF needs a rail cb */
     if (d->set_backlight) d->base.set_brightness = set_brightness;
 
     ESP_LOGI(TAG, "ST7789V2 %ux%u ready", cfg->width, cfg->height);

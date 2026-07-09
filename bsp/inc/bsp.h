@@ -61,6 +61,11 @@ bsp_display_type_t bsp_display_get_type(void);
 bsp_size_t bsp_display_get_size(void);
 bsp_pixel_format_t bsp_display_get_pixel_format(void);
 void bsp_display_set_brightness(int brightness);
+
+/* Panel power state (see bsp_display_power_t). ESP_ERR_NOT_SUPPORTED when the
+ * panel has no separable power control. Does not touch brightness -- pair with
+ * bsp_display_set_brightness as needed. */
+esp_err_t bsp_display_set_power(bsp_display_power_t state);
 void bsp_display_draw_bitmap(bsp_rect_t area, const void *pixels, bsp_rotation_t rotation);
 void *bsp_display_get_frame_buffer(int fb_index);
 void bsp_display_flush(int fb_index);

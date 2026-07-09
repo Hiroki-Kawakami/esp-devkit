@@ -250,6 +250,12 @@ static esp_err_t display_set_brightness(bsp_display_t *self, int brightness) {
     return ESP_OK;  /* no backlight on host */
 }
 
+static esp_err_t display_set_power(bsp_display_t *self, bsp_display_power_t state) {
+    (void)self;
+    (void)state;
+    return ESP_OK;  /* no panel rail on host */
+}
+
 /* MARK: bsp_display vtable — SPI / MIPI direct draw */
 
 /* Blit straight to the presented buffer and mark it for present. For SPI that is
@@ -529,6 +535,7 @@ esp_err_t sdl_panel_create(const sdl_panel_config_t *config,
     s_display.draw_bitmap      = display_draw_bitmap;
     s_display.deinit           = display_deinit;
     s_display.set_brightness   = NULL;
+    s_display.set_power        = NULL;
     s_display.get_framebuffers = NULL;
     s_display.flush            = NULL;
     s_display.set_epd_mode     = NULL;
@@ -549,6 +556,7 @@ esp_err_t sdl_panel_create(const sdl_panel_config_t *config,
         }
         s_present_src = s_fb[0];
         s_display.set_brightness   = display_set_brightness;
+        s_display.set_power        = display_set_power;
         s_display.get_framebuffers = display_get_framebuffers;
         s_display.flush            = display_flush;
         break;
@@ -572,6 +580,7 @@ esp_err_t sdl_panel_create(const sdl_panel_config_t *config,
         if (!s_glass) return ESP_ERR_NO_MEM;
         s_present_src = s_glass;
         s_display.set_brightness = display_set_brightness;
+        s_display.set_power      = display_set_power;
         break;
     }
     }

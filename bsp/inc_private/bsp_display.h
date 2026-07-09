@@ -8,12 +8,12 @@
  * through the members directly (single indirection: disp->op(disp, ...)).
  *
  * The portable base contract is draw_bitmap (blit a rectangle of pixels).
- * Host-side framebuffers (get_framebuffers + flush) and a controllable
- * backlight (set_brightness) are optional fast paths: a driver leaves the
- * corresponding pointer NULL when the panel has no such capability (e.g. an EPD
- * has no host framebuffer and no backlight). This keeps the seam usable for
- * non-MIPI panels (SPI-with-GRAM, EPD) without baking the framebuffer-swap
- * model into the contract.
+ * Host-side framebuffers (get_framebuffers + flush), a controllable backlight
+ * (set_brightness), and a panel power state (set_power) are optional: a driver
+ * leaves the corresponding pointer NULL when the panel has no such capability
+ * (e.g. an EPD has no host framebuffer and no backlight). This keeps the seam
+ * usable for non-MIPI panels (SPI-with-GRAM, EPD) without baking the
+ * framebuffer-swap model into the contract.
  *
  * EPD panels add more optional ops (NULL on non-EPD): set_epd_mode sets
  * the persistent waveform mode that draw_bitmap consults — when it is
@@ -45,6 +45,10 @@ struct bsp_display {
 
     /* backlight — NULL when the panel has no controllable backlight */
     esp_err_t (*set_brightness)(bsp_display_t *self, int brightness);
+
+    /* panel power (ON/SLEEP/OFF) — NULL when the panel has no separable power
+     * control. Distinct from set_brightness (the backlight rail). */
+    esp_err_t (*set_power)(bsp_display_t *self, bsp_display_power_t state);
 
     /* host-side framebuffer fast path — NULL when the panel has no host FB */
     void   ** (*get_framebuffers)(bsp_display_t *self);

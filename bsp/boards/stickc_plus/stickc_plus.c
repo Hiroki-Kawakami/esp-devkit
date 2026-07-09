@@ -99,6 +99,11 @@ static void backlight_set(void *ctx, int brightness) {
     axp192_set_rail_enabled(axp, AXP192_RAIL_LDO2, true);
 }
 
+/* Panel IC rail = AXP192 LDO3; cutting it is the display's POWER_OFF (GRAM lost). */
+static void panel_power_set(void *ctx, bool on) {
+    axp192_set_rail_enabled(ctx, AXP192_RAIL_LDO3, on);
+}
+
 static esp_err_t power_init(i2c_master_bus_handle_t bus) {
     const axp192_config_t cfg = {
         .i2c_bus     = bus,
@@ -169,6 +174,8 @@ static esp_err_t display_init(void) {
         .invert        = true,          /* IPS panel */
         .set_backlight = backlight_set,
         .backlight_ctx = s_axp,
+        .set_panel_power = panel_power_set,
+        .panel_power_ctx = s_axp,
     };
     bsp_display_t *display = NULL;
     err = st7789v2_create(&cfg, &display);

@@ -24,6 +24,9 @@ static const char *TAG = "stickc_plus_hello";
 enum { BTN_A = 0, BTN_B = 1, BTN_PWR = 2 };
 static volatile int s_clicks[3];
 
+/* Set by B's long-press (dispatch task), consumed on the LVGL task. */
+static volatile bool s_power_toggle_req;
+
 static void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map) {
     const bsp_rect_t rect = {
         { area->x1, area->y1 },
@@ -108,6 +111,22 @@ static void build_hello_screen() {
         auto *c = static_cast<tick_ctx *>(lv_timer_get_user_data(t));
         lv_label_set_text_fmt(c->buttons, "A%d B%d P%d",
                               s_clicks[BTN_A], s_clicks[BTN_B], s_clicks[BTN_PWR]);
+
+        static bool display_off = false;
+        if (s_power_toggle_req) {
+            s_power_toggle_req = false;
+            display_off = !display_off;
+            if (display_off) {
+                bsp_display_set_brightness(0);
+                bsp_display_set_power(BSP_DISPLAY_POWER_OFF);
+            } else {
+                bsp_display_set_power(BSP_DISPLAY_POWER_ON);
+                lv_obj_invalidate(lv_screen_active());
+                lv_refr_now(lv_display_get_default());
+                bsp_display_set_brightness(100);
+            }
+            ESP_LOGI(TAG, "panel power %s", display_off ? "off" : "on");
+        }
     }, 100, ctx);
 }
 
@@ -123,6 +142,9 @@ static void wire_buttons() {
     bsp_button_on_click(BTN_PWR, on_click, nullptr);
     bsp_button_on_long_press(BTN_PWR, 0, [](uint8_t, void *) {
         ESP_LOGI(TAG, "power key long press");
+    }, nullptr);
+    bsp_button_on_long_press(BTN_B, 0, [](uint8_t, void *) {
+        s_power_toggle_req = true;
     }, nullptr);
 }
 

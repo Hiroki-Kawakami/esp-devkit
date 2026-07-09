@@ -82,6 +82,20 @@ typedef enum {
     BSP_EPD_MODE_TEXT_ALL    = BSP_EPD_MODE_ALL | BSP_EPD_MODE_TEXT,
 } bsp_epd_mode_t;
 
+/* Panel power state, orthogonal to backlight brightness (bsp_display_set_brightness).
+ *  ON    : controller driven, GRAM valid.
+ *  SLEEP : controller sleep (booster/oscillator/drivers stopped). Rails up and
+ *          GRAM retained -> cheap resume, no redraw needed.
+ *  OFF   : panel rail cut. Lowest power, but GRAM and controller registers are
+ *          lost -> resume re-inits the controller and the caller MUST redraw.
+ * A panel lacking a state clamps to the nearest supported one (OFF -> SLEEP when
+ * the board has no panel-rail control). */
+typedef enum {
+    BSP_DISPLAY_POWER_ON,
+    BSP_DISPLAY_POWER_SLEEP,
+    BSP_DISPLAY_POWER_OFF,
+} bsp_display_power_t;
+
 typedef struct {
     int x, y;
     int id;         /*!< pointer track id from the touch controller */

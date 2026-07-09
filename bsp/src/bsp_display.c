@@ -43,6 +43,11 @@ void bsp_display_set_brightness(int brightness) {
     if (s_display && s_display->set_brightness) s_display->set_brightness(s_display, brightness);
 }
 
+esp_err_t bsp_display_set_power(bsp_display_power_t state) {
+    if (s_display && s_display->set_power) return s_display->set_power(s_display, state);
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
 void bsp_display_draw_bitmap(bsp_rect_t area, const void *pixels, bsp_rotation_t rotation) {
     if (s_display && s_display->draw_bitmap) s_display->draw_bitmap(s_display, area, pixels, rotation);
 }
