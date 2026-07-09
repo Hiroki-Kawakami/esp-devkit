@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 Hiroki Kawakami
  *
- * IT8951E e-paper TCON driver (SPI mode). Ported from the m5paper-bsp reference.
+ * IT8951E e-paper TCON driver (SPI mode).
  */
 
 #include "it8951e.h"
@@ -356,10 +356,10 @@ esp_err_t it8951e_get_panel_info(it8951e_handle_t handle, it8951e_panel_info_t *
     info.mem_addr_h = buf[3];
 
     /* Sanity check: if the address came back as 0 or all-ones, the read was
-     * corrupt. Fall back to the M5Paper-known-good value (matches m5gfx). */
+     * corrupt. Fall back to a known-good image-buffer address. */
     uint32_t mem_addr = ((uint32_t)info.mem_addr_h << 16) | info.mem_addr_l;
     if (mem_addr == 0 || mem_addr == 0xFFFFFFFFu) {
-        ESP_LOGW(TAG, "bad mem_addr 0x%08x from GET_DEV_INFO, using M5Paper default",
+        ESP_LOGW(TAG, "bad mem_addr 0x%08x from GET_DEV_INFO, using default",
                  (unsigned)mem_addr);
         info.mem_addr_l = 0x36E0;
         info.mem_addr_h = 0x0012;

@@ -11,9 +11,9 @@
  * i2c_new_master_bus() and passes the handle. The driver attaches itself with
  * i2c_master_bus_add_device(), so other devices on the same bus stay usable.
  *
- * Ported from the m5paper-bsp reference driver. Raw chip coordinates are
- * reported through bsp_touch_raw_point_t; the common layer maps them into
- * display space via swap_xy / mirror_* so bsp_touch_read() reports display pixels.
+ * Raw chip coordinates are reported through bsp_touch_raw_point_t; the common
+ * layer maps them into display space via swap_xy / mirror_* so bsp_touch_read()
+ * reports display pixels.
  */
 
 #pragma once

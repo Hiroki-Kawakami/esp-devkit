@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 Hiroki Kawakami
  *
- * ST7123 MIPI-DSI panel driver (newer M5Stack Tab5 generation). Same shape as
+ * ST7123 MIPI-DSI panel driver. Same shape as
  * the ILI9881C driver — allocates DSI bus + DBI io + DPI panel, owns the host
  * framebuffers, and exposes the result as a bsp_display provider. The driver
  * does not touch panel reset; boards drive it via the I/O expander before

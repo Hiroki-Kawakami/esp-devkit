@@ -2,8 +2,7 @@
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 Hiroki Kawakami
  *
- * IT8951E e-paper TCON driver (SPI mode), as used by the ESP32 M5Paper.
- * Ported from the m5paper-bsp reference. The bsp_display_t provider that wraps
+ * IT8951E e-paper TCON driver (SPI mode). The bsp_display_t provider that wraps
  * this handle into the BSP display vtable lives in it8951e_epd.{c,h}.
  */
 
@@ -36,15 +35,15 @@ extern "C" {
 
 typedef struct it8951e_dev *it8951e_handle_t;
 
-/* Default SPI parameters for IT8951E. Datasheet allows up to ~24 MHz; M5Paper
- * is typically driven around 10 MHz. Register reads (GET_DEV_INFO, the LUTAFSR
- * busy poll) are unreliable at the write clock and need a slower read clock. */
+/* Default SPI parameters for IT8951E. Datasheet allows up to ~24 MHz; ~10 MHz is
+ * a conservative write clock. Register reads (GET_DEV_INFO, the LUTAFSR busy
+ * poll) are unreliable at the write clock and need a slower read clock. */
 #define IT8951E_SPI_MODE            0
 #define IT8951E_SPI_DEFAULT_HZ      (10 * 1000 * 1000)
 #define IT8951E_SPI_READ_DEFAULT_HZ (2 * 1000 * 1000)
 
-/* Waveform / update modes. Names match the IT8951E waveform LUT slots used by
- * the M5Paper firmware. Higher quality = slower; 2-level modes are fast. */
+/* Waveform / update modes. Names match the IT8951E waveform LUT slots.
+ * Higher quality = slower; 2-level modes are fast. */
 typedef enum {
     IT8951E_MODE_INIT = 0,  /* full-screen clear to white (slow, flashes)   */
     IT8951E_MODE_DU   = 1,  /* 2-level direct update, fast                  */

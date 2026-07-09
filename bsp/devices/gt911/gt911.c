@@ -135,9 +135,9 @@ static esp_err_t gpio_as_input(gpio_num_t pin, bool pullup) {
 /* Latches its I2C address from INT level at the RESET rising edge:
  *   INT high -> 0x14, INT low -> 0x5D.
  * We can only force the address when both pins are wired AND INT is output-
- * capable. When RESET is not wired (M5Paper / M5PaperS3) we only re-assert INT
- * as an input -- the chip is not actually reset, so a HotKnot subsystem can
- * only be cleared by a power cycle. */
+ * capable. When RESET is not wired we only re-assert INT as an input -- the chip
+ * is not actually reset, so a HotKnot subsystem can only be cleared by a power
+ * cycle. */
 static esp_err_t hw_reset(struct gt911_dev *dev, uint8_t target_addr) {
     const bool has_rst   = dev->cfg.reset_io != GPIO_NUM_NC;
     const bool has_int   = dev->cfg.int_io   != GPIO_NUM_NC;

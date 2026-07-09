@@ -6,8 +6,8 @@
  * countdown timer (mapped to bsp_rtc's one-shot/interval timer). The chip's
  * timer is periodic in hardware; the driver's INT handler enforces one-shot by
  * disabling the timer on the expiry it services. With no INT gpio wired the
- * timer's INT pin still asserts (on M5Paper it latches the power rail back on);
- * read bsp_rtc_timer_is_expired() and stop it after a deep-sleep wake.
+ * timer's INT pin still asserts (on some boards it latches the power rail back
+ * on); read bsp_rtc_timer_is_expired() and stop it after a deep-sleep wake.
  */
 
 #include "bm8563.h"
