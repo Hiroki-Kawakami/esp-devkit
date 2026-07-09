@@ -61,6 +61,11 @@ static esp_err_t ws2812_set_rgb(bsp_led_t *self, uint8_t index, uint8_t r, uint8
     return transmit_and_wait(dev);
 }
 
+/* Monochrome brightness on an RGB LED: a white scale (r=g=b=level). */
+static esp_err_t ws2812_set_brightness(bsp_led_t *self, uint8_t index, uint8_t level) {
+    return ws2812_set_rgb(self, index, level, level, level);
+}
+
 static esp_err_t ws2812_clear(bsp_led_t *self) {
     ws2812_dev_t *dev = (ws2812_dev_t *)self;
     memset(dev->buf, 0, (size_t)dev->count * 3);
@@ -88,10 +93,11 @@ esp_err_t ws2812_create(const ws2812_config_t *config, bsp_led_t **out_led) {
     dev->buf   = calloc((size_t)config->count * 3, sizeof(uint8_t));
     if (!dev->buf) { free(dev); return ESP_ERR_NO_MEM; }
 
-    dev->base.count   = (uint8_t)(config->count > 255 ? 255 : config->count);
-    dev->base.set_rgb = ws2812_set_rgb;
-    dev->base.clear   = ws2812_clear;
-    dev->base.deinit  = ws2812_deinit;
+    dev->base.count          = (uint8_t)(config->count > 255 ? 255 : config->count);
+    dev->base.set_rgb        = ws2812_set_rgb;
+    dev->base.set_brightness = ws2812_set_brightness;
+    dev->base.clear          = ws2812_clear;
+    dev->base.deinit         = ws2812_deinit;
 
     uint32_t resolution = config->resolution_hz ? config->resolution_hz : WS2812_DEFAULT_RESOLUTION_HZ;
 

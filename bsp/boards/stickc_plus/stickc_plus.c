@@ -7,10 +7,11 @@
  * MPU6886 IMU), raises the TFT rails through the AXP192 (LDO3 = panel IC, LDO2 =
  * backlight), then the SPI bus for the ST7789V2 panel. The AXP192 also backs the
  * power-sensing seam. The passive buzzer on GPIO2 is a tone-only bsp_audio
- * provider. The host-side counterpart is stickc_plus_sim.c.
+ * provider; the red LED on GPIO10 is a PWM bsp_led provider. The host-side
+ * counterpart is stickc_plus_sim.c.
  *
- * Pin map from the M5StickC-Plus schematic. Display / buttons / buzzer are
- * wired (RTC / IMU come later).
+ * Pin map from the M5StickC-Plus schematic. Display / buttons / buzzer / LED
+ * are wired (RTC / IMU come later).
  */
 
 #include "bsp.h"
@@ -23,8 +24,10 @@
 #include "st7789v2.h"
 #include "gpio_button.h"
 #include "pwm_buzzer.h"
+#include "pwm_led.h"
 #include "bsp_audio.h"
 #include "bsp_button.h"
+#include "bsp_led.h"
 #include "bsp_dispatch.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -57,6 +60,9 @@ static const char *TAG = "stickc_plus";
 
 /* Passive buzzer driven by an LEDC PWM channel. */
 #define BUZZER_PIN     GPIO_NUM_2
+
+/* Red LED on GPIO10, active-low, on its own LEDC timer/channel. */
+#define LED_PIN        GPIO_NUM_10
 
 /* 1S Li-ion endpoints for the coarse battery gauge. */
 #define BATT_EMPTY_MV  3000
@@ -185,6 +191,18 @@ static esp_err_t audio_init(const bsp_config_t *config) {
     return ESP_OK;
 }
 
+static void led_init(void) {
+    const pwm_led_config_t cfg = {
+        .gpio       = LED_PIN,
+        .timer      = LEDC_TIMER_1,
+        .channel    = LEDC_CHANNEL_1,
+        .active_low = true,
+    };
+    bsp_led_t *led = NULL;
+    if (pwm_led_create(&cfg, &led) == ESP_OK) bsp_led_set_active(led);
+    else ESP_LOGW(TAG, "led unavailable");
+}
+
 esp_err_t bsp_init(const bsp_config_t *config) {
     bsp_dispatch_configure(config ? config->dispatch.task_priority : 0,
                            config ? config->dispatch.task_affinity : -1);
@@ -206,6 +224,7 @@ esp_err_t bsp_init(const bsp_config_t *config) {
     }
 
     buttons_init();
+    led_init();
 
     if (config && (err = audio_init(config)) != ESP_OK) {
         ESP_LOGW(TAG, "audio unavailable: %s", esp_err_to_name(err));

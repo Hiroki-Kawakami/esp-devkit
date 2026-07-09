@@ -155,12 +155,14 @@ void bsp_button_on_double_click(uint8_t id, uint16_t interval_ms,
 void bsp_button_on_long_press(uint8_t id, uint16_t duration_ms,
                               bsp_button_cb_t cb, void *arg);
 
-// MARK: RGB LED
-/* Board-provided addressable RGB LED(s); count == 0 when no provider is
- * registered. set_rgb / clear return ESP_ERR_INVALID_STATE in that case and
- * ESP_ERR_INVALID_ARG when index >= count. */
+// MARK: LED
+/* Board-provided indicator LED(s), monochrome or RGB; count == 0 when no
+ * provider is registered. Calls return ESP_ERR_INVALID_STATE with no provider,
+ * ESP_ERR_INVALID_ARG when index >= count, and ESP_ERR_NOT_SUPPORTED for the
+ * color model the LED lacks (set_rgb on a monochrome LED). level/channels 0..255. */
 uint8_t bsp_led_count(void);
 esp_err_t bsp_led_set_rgb(uint8_t index, uint8_t r, uint8_t g, uint8_t b);
+esp_err_t bsp_led_set_brightness(uint8_t index, uint8_t level);
 esp_err_t bsp_led_clear(void);
 
 // MARK: Audio

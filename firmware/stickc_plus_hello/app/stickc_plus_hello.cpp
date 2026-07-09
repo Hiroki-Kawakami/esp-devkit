@@ -5,9 +5,10 @@
  * Minimal M5StickC-Plus sample: brings up the BSP + LVGL on the 135x240 ST7789V2
  * panel and shows a title, a once-a-second counter, and the AXP192 battery
  * voltage — enough to prove the display + PMIC path end to end. Buttons A/B beep
- * the GPIO2 buzzer at distinct pitches to prove the tone path. The panel has no
- * host framebuffer, so LVGL renders into partial draw buffers that flush through
- * bsp_display_draw_bitmap.
+ * the GPIO2 buzzer at distinct pitches to prove the tone path, and the GPIO10
+ * red LED breathes via bsp_led_set_brightness to prove the PWM led path. The
+ * panel has no host framebuffer, so LVGL renders into partial draw buffers that
+ * flush through bsp_display_draw_bitmap.
  */
 
 #include "stickc_plus_hello.hpp"
@@ -125,6 +126,19 @@ static void wire_buttons() {
     }, nullptr);
 }
 
+/* Breathe the red LED with a 0..255..0 triangle wave (~4 s period) to prove the
+ * PWM brightness path. Runs on the LVGL task; skips if the board has no LED. */
+static void wire_led() {
+    if (bsp_led_count() == 0) return;
+    auto *phase = new int{0};
+    lv_timer_create([](lv_timer_t *t) {
+        auto *p = static_cast<int *>(lv_timer_get_user_data(t));
+        *p = (*p + 1) % 512;
+        int level = *p < 256 ? *p : 511 - *p;
+        bsp_led_set_brightness(0, (uint8_t)level);
+    }, 8, phase);
+}
+
 void app_entry() {
     bsp_config_t bsp_config = {};
     bsp_config.dispatch.task_priority = 6;
@@ -132,6 +146,7 @@ void app_entry() {
     bsp_display_set_brightness(100);
     wire_buttons();
     lvgl_init();
+    wire_led();
 
     lv_async_call([] {
         build_hello_screen();

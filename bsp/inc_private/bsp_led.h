@@ -15,7 +15,10 @@ typedef struct bsp_led bsp_led_t;
 
 struct bsp_led {
     uint8_t   count;                  /*!< number of individually-addressable LEDs */
+    /* A provider implements the one it backs natively; the other stays NULL and
+     * surfaces as ESP_ERR_NOT_SUPPORTED. RGB backs set_brightness as a white scale. */
     esp_err_t (*set_rgb)(bsp_led_t *self, uint8_t index, uint8_t r, uint8_t g, uint8_t b);
+    esp_err_t (*set_brightness)(bsp_led_t *self, uint8_t index, uint8_t level);
     esp_err_t (*clear)(bsp_led_t *self);
     esp_err_t (*deinit)(bsp_led_t *self);
 };

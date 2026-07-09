@@ -23,7 +23,15 @@ uint8_t bsp_led_count(void) {
 esp_err_t bsp_led_set_rgb(uint8_t index, uint8_t r, uint8_t g, uint8_t b) {
     if (!s_led) return ESP_ERR_INVALID_STATE;
     if (index >= s_led->count) return ESP_ERR_INVALID_ARG;
+    if (!s_led->set_rgb) return ESP_ERR_NOT_SUPPORTED;
     return s_led->set_rgb(s_led, index, r, g, b);
+}
+
+esp_err_t bsp_led_set_brightness(uint8_t index, uint8_t level) {
+    if (!s_led) return ESP_ERR_INVALID_STATE;
+    if (index >= s_led->count) return ESP_ERR_INVALID_ARG;
+    if (!s_led->set_brightness) return ESP_ERR_NOT_SUPPORTED;
+    return s_led->set_brightness(s_led, index, level);
 }
 
 esp_err_t bsp_led_clear(void) {
