@@ -13,11 +13,9 @@
  * only updates GRAM. The GRAM lets refresh re-push the latest contents and lets
  * the 4bpp x/width alignment snap outward without losing edge pixels.
  *
- * The reported size is the IT8951E's reported panel geometry, which on M5Paper
- * is 960x540 landscape — matching ED047TC1/M5PaperS3 so the shared app renders
- * identically. If a panel comes up rotated/mirrored, fix it here (the
- * it8951e_image_t rotation/endian or the size transpose) — orientation is the
- * one bit that needs confirming on hardware.
+ * The reported size is the IT8951E's reported panel geometry. If a panel comes
+ * up rotated/mirrored, fix it here (the it8951e_image_t rotation/endian or the
+ * size transpose) — orientation is the one bit that needs confirming on hardware.
  */
 
 #include "it8951e_epd.h"
@@ -38,7 +36,34 @@ typedef struct {
     bsp_epd_mode_t   mode;     /* persistent mode consulted by draw_bitmap */
     uint8_t         *gram;     /* panel_w*panel_h L8, high nibble = gray    */
     uint8_t         *packed;   /* 4bpp upload scratch, panel_w*panel_h/2    */
+    bsp_display_power_t     power;   /* resting state, not the gated live state */
+    it8951e_epd_power_cb_t  set_panel_power;
+    void                   *panel_power_ctx;
 } it8951e_epd_t;
+
+static esp_err_t tcon_wake(it8951e_epd_t *s) {
+    switch (s->power) {
+    case BSP_DISPLAY_POWER_OFF:
+        s->set_panel_power(s->panel_power_ctx, true);
+        return it8951e_reset(s->epd);
+    case BSP_DISPLAY_POWER_SLEEP:
+        return it8951e_reset(s->epd);
+    default:
+        return it8951e_sys_run(s->epd);
+    }
+}
+
+static esp_err_t tcon_rest(it8951e_epd_t *s) {
+    switch (s->power) {
+    case BSP_DISPLAY_POWER_OFF:
+        s->set_panel_power(s->panel_power_ctx, false);
+        return ESP_OK;
+    case BSP_DISPLAY_POWER_SLEEP:
+        return it8951e_sleep(s->epd);
+    default:
+        return it8951e_standby(s->epd);
+    }
+}
 
 /* The TCON does its own differential drive, so BSP_EPD_MODE_ALL only picks the
  * waveform here -- the whole area is uploaded and driven either way. */
@@ -88,12 +113,16 @@ static esp_err_t op_set_epd_mode(bsp_display_t *self, bsp_epd_mode_t mode) {
 static esp_err_t op_clear(bsp_display_t *self) {
     it8951e_epd_t *s = (it8951e_epd_t *)self;
     memset(s->gram, 0xF0, (size_t)s->panel_w * s->panel_h);   /* white */
-    esp_err_t err = it8951e_bus_acquire(s->epd);
+    esp_err_t err = tcon_wake(s);
     if (err != ESP_OK) return err;
-    err = it8951e_clear(s->epd);
-    it8951e_bus_release(s->epd);
+    err = it8951e_bus_acquire(s->epd);
+    if (err == ESP_OK) {
+        err = it8951e_clear(s->epd);
+        it8951e_bus_release(s->epd);
+    }
     if (err == ESP_OK) err = it8951e_wait_idle(s->epd, REFRESH_TIMEOUT_MS);
-    return err;
+    esp_err_t rerr = tcon_rest(s);
+    return err != ESP_OK ? err : rerr;
 }
 
 static esp_err_t op_refresh(bsp_display_t *self, bsp_rect_t area, bsp_epd_mode_t mode) {
@@ -130,15 +159,46 @@ static esp_err_t op_refresh(bsp_display_t *self, bsp_rect_t area, bsp_epd_mode_t
         .data      = s->packed,
         .data_size = (size_t)aw * ah / 2,
     };
+    esp_err_t err = tcon_wake(s);
+    if (err != ESP_OK) return err;
+
     /* Hold the shared bus across the SPI-active upload+display so an SD read on
      * the same bus can't interleave between packets; release before wait_idle so
      * the bus stays free while the panel physically refreshes. */
-    esp_err_t err = it8951e_bus_acquire(s->epd);
-    if (err != ESP_OK) return err;
-    err = it8951e_load_image(s->epd, &it_area, &img);
-    if (err == ESP_OK) err = it8951e_display(s->epd, &it_area, to_it8951e_mode(mode));
-    it8951e_bus_release(s->epd);
+    err = it8951e_bus_acquire(s->epd);
+    if (err == ESP_OK) {
+        err = it8951e_load_image(s->epd, &it_area, &img);
+        if (err == ESP_OK) err = it8951e_display(s->epd, &it_area, to_it8951e_mode(mode));
+        it8951e_bus_release(s->epd);
+    }
     if (err == ESP_OK) err = it8951e_wait_idle(s->epd, REFRESH_TIMEOUT_MS);
+    esp_err_t rerr = tcon_rest(s);
+    return err != ESP_OK ? err : rerr;
+}
+
+static esp_err_t op_set_power(bsp_display_t *self, bsp_display_power_t state) {
+    it8951e_epd_t *s = (it8951e_epd_t *)self;
+    if (!s->set_panel_power && state == BSP_DISPLAY_POWER_OFF)
+        state = BSP_DISPLAY_POWER_SLEEP;
+    if (state == s->power) return ESP_OK;
+
+    /* Rail was cut: re-power and re-init before any command reaches the TCON. */
+    if (s->power == BSP_DISPLAY_POWER_OFF) {
+        s->set_panel_power(s->panel_power_ctx, true);
+        esp_err_t err = it8951e_reset(s->epd);
+        if (err != ESP_OK) return err;
+    }
+
+    esp_err_t err = ESP_OK;
+    switch (state) {
+    case BSP_DISPLAY_POWER_ON:    err = it8951e_sys_run(s->epd); break;
+    case BSP_DISPLAY_POWER_SLEEP: err = it8951e_sleep(s->epd);   break;
+    case BSP_DISPLAY_POWER_OFF:
+        err = it8951e_wait_idle(s->epd, REFRESH_TIMEOUT_MS);
+        s->set_panel_power(s->panel_power_ctx, false);
+        break;
+    }
+    s->power = state;
     return err;
 }
 
@@ -151,13 +211,16 @@ static esp_err_t op_deinit(bsp_display_t *self) {
     return ESP_OK;
 }
 
-esp_err_t it8951e_epd_create(const it8951e_config_t *cfg, bsp_display_t **out_display) {
+esp_err_t it8951e_epd_create(const it8951e_epd_config_t *cfg, bsp_display_t **out_display) {
     if (!cfg || !out_display) return ESP_ERR_INVALID_ARG;
 
     it8951e_epd_t *s = calloc(1, sizeof(*s));
     if (!s) return ESP_ERR_NO_MEM;
+    s->power           = BSP_DISPLAY_POWER_ON;
+    s->set_panel_power = cfg->set_panel_power;
+    s->panel_power_ctx = cfg->panel_power_ctx;
 
-    esp_err_t err = it8951e_create(cfg, &s->epd);
+    esp_err_t err = it8951e_create(&cfg->tcon, &s->epd);
     if (err != ESP_OK) { free(s); return err; }
 
     it8951e_panel_info_t info;
@@ -183,6 +246,7 @@ esp_err_t it8951e_epd_create(const it8951e_config_t *cfg, bsp_display_t **out_di
     s->base.refresh      = op_refresh;
     s->base.clear        = op_clear;
     s->base.wait_idle    = op_wait_idle;
+    s->base.set_power    = op_set_power;   /* SLEEP always works; OFF needs a rail cb */
     s->mode              = BSP_EPD_MODE_NONE;
 
     *out_display = &s->base;

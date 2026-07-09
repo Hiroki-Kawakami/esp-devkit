@@ -56,15 +56,23 @@ static esp_err_t touch_init(i2c_master_bus_handle_t bus) {
     return ESP_OK;
 }
 
+static void epd_power_set(void *ctx, bool on) {
+    (void)ctx;
+    gpio_set_level(PAPER_PIN_EPD_PWR_EN, on ? 1 : 0);
+}
+
 esp_err_t paper_panel_init(const bsp_config_t *config, i2c_master_bus_handle_t i2c_bus) {
     (void)config;
-    const it8951e_config_t epd_cfg = {
-        .spi_host = PAPER_SPI_HOST,
-        .cs_io    = PAPER_EPD_PIN_CS,
-        .busy_io  = PAPER_EPD_PIN_BUSY,
-        .reset_io = GPIO_NUM_NC,
-        .clock_hz = IT8951E_SPI_DEFAULT_HZ,
-        .vcom_v   = PAPER_VCOM_VOLTS,
+    const it8951e_epd_config_t epd_cfg = {
+        .tcon = {
+            .spi_host = PAPER_SPI_HOST,
+            .cs_io    = PAPER_EPD_PIN_CS,
+            .busy_io  = PAPER_EPD_PIN_BUSY,
+            .reset_io = GPIO_NUM_NC,
+            .clock_hz = IT8951E_SPI_DEFAULT_HZ,
+            .vcom_v   = PAPER_VCOM_VOLTS,
+        },
+        .set_panel_power = epd_power_set,
     };
 
     bsp_display_t *display = NULL;

@@ -32,6 +32,8 @@ typedef struct {
     gdey0154d67_handle_t epd;
     bsp_epd_mode_t       mode;   /* persistent mode consulted by draw_bitmap */
     uint8_t             *fb;     /* 1bpp panel format, bit 1 = white         */
+    bsp_display_power_t  power;
+    bool                 force_full;  /* next refresh forced full: deep sleep loses the partial base */
 } gdey0154d67_epd_t;
 
 static inline void fb_set(uint8_t *fb, int x, int y, bool white) {
@@ -41,15 +43,43 @@ static inline void fb_set(uint8_t *fb, int x, int y, bool white) {
     else       *byte &= (uint8_t)~mask;
 }
 
+static esp_err_t wake_if_asleep(gdey0154d67_epd_t *s) {
+    if (s->power == BSP_DISPLAY_POWER_ON) return ESP_OK;
+    esp_err_t err = gdey0154d67_reset(s->epd);
+    if (err != ESP_OK) return err;
+    s->power = BSP_DISPLAY_POWER_ON;
+    s->force_full = true;
+    return ESP_OK;
+}
+
 static esp_err_t op_refresh(bsp_display_t *self, bsp_rect_t area, bsp_epd_mode_t mode) {
     (void)area;   /* whole frame is always driven (no windowed update) */
     gdey0154d67_epd_t *s = (gdey0154d67_epd_t *)self;
     const bsp_epd_mode_t m = mode & ~BSP_EPD_MODE_ALL;
     if (m == BSP_EPD_MODE_NONE || m == BSP_EPD_MODE_SEED) return ESP_OK;
 
-    if (m == BSP_EPD_MODE_FAST && !(mode & BSP_EPD_MODE_ALL))
+    esp_err_t werr = wake_if_asleep(s);
+    if (werr != ESP_OK) return werr;
+
+    if (m == BSP_EPD_MODE_FAST && !(mode & BSP_EPD_MODE_ALL) && !s->force_full)
         return gdey0154d67_update_partial(s->epd, s->fb);
+    s->force_full = false;
     return gdey0154d67_update_full(s->epd, s->fb);
+}
+
+static esp_err_t op_set_power(bsp_display_t *self, bsp_display_power_t state) {
+    gdey0154d67_epd_t *s = (gdey0154d67_epd_t *)self;
+    const bsp_display_power_t target =
+        state == BSP_DISPLAY_POWER_ON ? BSP_DISPLAY_POWER_ON : BSP_DISPLAY_POWER_SLEEP;
+    if (target == s->power) return ESP_OK;
+
+    if (target == BSP_DISPLAY_POWER_ON) return wake_if_asleep(s);
+
+    gdey0154d67_wait_idle(s->epd, 0);
+    esp_err_t err = gdey0154d67_sleep(s->epd);
+    if (err != ESP_OK) return err;
+    s->power = target;
+    return ESP_OK;
 }
 
 static esp_err_t op_draw_bitmap(bsp_display_t *self, bsp_rect_t area, const void *pixels,
@@ -87,6 +117,8 @@ static esp_err_t op_set_epd_mode(bsp_display_t *self, bsp_epd_mode_t mode) {
 
 static esp_err_t op_clear(bsp_display_t *self) {
     gdey0154d67_epd_t *s = (gdey0154d67_epd_t *)self;
+    esp_err_t err = wake_if_asleep(s);
+    if (err != ESP_OK) return err;
     memset(s->fb, 0xFF, FB_BYTES);   /* all white */
     return gdey0154d67_update_full(s->epd, s->fb);
 }
@@ -139,7 +171,9 @@ esp_err_t gdey0154d67_epd_create(const gdey0154d67_epd_config_t *cfg, bsp_displa
     s->base.refresh      = op_refresh;
     s->base.clear        = op_clear;
     s->base.wait_idle    = op_wait_idle;
+    s->base.set_power    = op_set_power;
     s->mode              = BSP_EPD_MODE_NONE;
+    s->power             = BSP_DISPLAY_POWER_ON;
 
     *out_display = &s->base;
     return ESP_OK;
