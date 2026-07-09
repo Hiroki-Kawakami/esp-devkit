@@ -24,7 +24,7 @@ typedef struct {
 } window_t;
 
 struct adc_button_dev {
-    bsp_button_t             base;
+    bsp_button_raw_t         base;
     adc_continuous_handle_t  handle;
     adc_button_raw_to_mv_fn  raw_to_mv;
     void                    *raw_to_mv_ctx;
@@ -34,7 +34,7 @@ struct adc_button_dev {
 
 static inline uint16_t midpoint(uint16_t a, uint16_t b) { return (uint16_t)((a + b) / 2); }
 
-static esp_err_t adc_button_sample(bsp_button_t *self, bool *pressed, uint8_t max) {
+static esp_err_t adc_button_sample(bsp_button_raw_t *self, bool *pressed, uint8_t max) {
     struct adc_button_dev *dev = (struct adc_button_dev *)self;
     if (max > dev->base.count) max = dev->base.count;
 
@@ -73,7 +73,7 @@ static esp_err_t adc_button_sample(bsp_button_t *self, bool *pressed, uint8_t ma
     return ESP_OK;
 }
 
-static esp_err_t adc_button_deinit(bsp_button_t *self) {
+static esp_err_t adc_button_deinit(bsp_button_raw_t *self) {
     struct adc_button_dev *dev = (struct adc_button_dev *)self;
     if (!dev) return ESP_OK;
     if (dev->handle) {
@@ -84,7 +84,7 @@ static esp_err_t adc_button_deinit(bsp_button_t *self) {
     return ESP_OK;
 }
 
-esp_err_t adc_button_create(const adc_button_config_t *cfg, bsp_button_t **out_button) {
+esp_err_t adc_button_create(const adc_button_config_t *cfg, bsp_button_raw_t **out_button) {
     ESP_RETURN_ON_FALSE(cfg && out_button && cfg->raw_to_mv && cfg->centers_mv,
                         ESP_ERR_INVALID_ARG, TAG, "null arg");
     ESP_RETURN_ON_FALSE(cfg->count > 0 && cfg->count <= ADC_BUTTON_MAX_COUNT,

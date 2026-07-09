@@ -4,7 +4,7 @@
  *
  * Plain GPIO momentary buttons: one pin per button, sampled by level. Returns a
  * bsp_button_t vtable that the common layer (src/bsp_button.c) drives -- register
- * it with bsp_button_set_active(). For ADC-ladder buttons use adc_button instead.
+ * it with bsp_button_add_raw(). For ADC-ladder buttons use adc_button instead.
  */
 
 #pragma once
@@ -26,7 +26,7 @@ typedef struct {
     bool                     enable_pull;   /* internal pull toward the released level */
 } gpio_button_config_t;
 
-esp_err_t gpio_button_create(const gpio_button_config_t *cfg, bsp_button_t **out_button);
+esp_err_t gpio_button_create(const gpio_button_config_t *cfg, bsp_button_raw_t **out_button);
 
 #ifdef __cplusplus
 }

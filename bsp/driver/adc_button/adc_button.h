@@ -5,7 +5,7 @@
  * ADC-ladder button provider using adc_continuous (DMA). N momentary buttons
  * share one ADC channel through a resistor divider; each button pulls a known
  * voltage when pressed. Returns a bsp_button_t vtable that the common layer
- * (src/bsp_button.c) drives -- register it with bsp_button_set_active().
+ * (src/bsp_button.c) drives -- register it with bsp_button_add_raw().
  */
 
 #pragma once
@@ -31,7 +31,7 @@ typedef struct {
 } adc_button_config_t;
 
 /* Caller must release any oneshot handle on the same ADC unit first. */
-esp_err_t adc_button_create(const adc_button_config_t *cfg, bsp_button_t **out_button);
+esp_err_t adc_button_create(const adc_button_config_t *cfg, bsp_button_raw_t **out_button);
 
 #ifdef __cplusplus
 }

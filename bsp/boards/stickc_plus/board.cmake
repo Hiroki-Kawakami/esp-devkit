@@ -7,9 +7,11 @@ set(BOARD_TARGET esp32)
 set(BOARD_DEVICE_SRCS
     "boards/stickc_plus/stickc_plus.c"
     "devices/axp192/axp192.c"
-    "devices/st7789v2/st7789v2.c")
+    "devices/axp192/axp192_button.c"
+    "devices/st7789v2/st7789v2.c"
+    "driver/gpio_button/gpio_button.c")
 set(BOARD_DEVICE_PRIV_INCLUDE_DIRS
-    "devices" "devices/axp192" "devices/st7789v2")
+    "devices" "devices/axp192" "devices/st7789v2" "driver/gpio_button")
 set(BOARD_DEVICE_PRIV_REQUIRES
     driver esp_driver_i2c esp_driver_spi)
 

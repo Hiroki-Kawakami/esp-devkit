@@ -14,14 +14,14 @@ static const char *TAG = "gpio_button";
 #define GPIO_BUTTON_MAX_COUNT   8
 
 struct gpio_button_dev {
-    bsp_button_t      base;
+    bsp_button_raw_t  base;
     gpio_button_pin_t pins[GPIO_BUTTON_MAX_COUNT];
 };
 
 static void IRAM_ATTR gpio_button_isr(void *arg) {
-    (void)arg;
+    struct gpio_button_dev *dev = arg;
     BaseType_t hp = pdFALSE;
-    bsp_button_notify_from_isr(&hp);
+    bsp_button_notify_from_isr(&dev->base, &hp);
     if (hp) portYIELD_FROM_ISR();
 }
 
@@ -37,7 +37,7 @@ static void attach_isr(struct gpio_button_dev *dev) {
     dev->base.has_int = true;
 }
 
-static esp_err_t gpio_button_sample(bsp_button_t *self, bool *pressed, uint8_t max) {
+static esp_err_t gpio_button_sample(bsp_button_raw_t *self, bool *pressed, uint8_t max) {
     struct gpio_button_dev *dev = (struct gpio_button_dev *)self;
     if (max > dev->base.count) max = dev->base.count;
     for (uint8_t i = 0; i < max; i++) {
@@ -47,7 +47,7 @@ static esp_err_t gpio_button_sample(bsp_button_t *self, bool *pressed, uint8_t m
     return ESP_OK;
 }
 
-static esp_err_t gpio_button_deinit(bsp_button_t *self) {
+static esp_err_t gpio_button_deinit(bsp_button_raw_t *self) {
     struct gpio_button_dev *dev = (struct gpio_button_dev *)self;
     if (dev->base.has_int) {
         for (uint8_t i = 0; i < dev->base.count; i++)
@@ -57,7 +57,7 @@ static esp_err_t gpio_button_deinit(bsp_button_t *self) {
     return ESP_OK;
 }
 
-esp_err_t gpio_button_create(const gpio_button_config_t *cfg, bsp_button_t **out_button) {
+esp_err_t gpio_button_create(const gpio_button_config_t *cfg, bsp_button_raw_t **out_button) {
     ESP_RETURN_ON_FALSE(cfg && out_button && cfg->pins, ESP_ERR_INVALID_ARG, TAG, "null arg");
     ESP_RETURN_ON_FALSE(cfg->count > 0 && cfg->count <= GPIO_BUTTON_MAX_COUNT,
                         ESP_ERR_INVALID_ARG, TAG, "bad count");

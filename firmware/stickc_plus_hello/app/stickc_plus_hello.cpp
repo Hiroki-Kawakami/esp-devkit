@@ -17,6 +17,11 @@
 
 static const char *TAG = "stickc_plus_hello";
 
+/* Button ids from the board: 0=A, 1=B, 2=power key. Callbacks run on the BSP
+ * dispatch task, so they only bump these counters; the LVGL timer renders them. */
+enum { BTN_A = 0, BTN_B = 1, BTN_PWR = 2 };
+static volatile int s_clicks[3];
+
 static void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map) {
     const bsp_rect_t rect = {
         { area->x1, area->y1 },
@@ -80,9 +85,15 @@ static void build_hello_screen() {
     lv_obj_set_style_text_color(battery, lv_color_hex(0x808080), 0);
     lv_label_set_text(battery, "-- mV");
 
-    /* Tick once a second: proves the LVGL render/flush loop and reads the PMIC. */
-    struct tick_ctx { lv_obj_t *counter; lv_obj_t *battery; int secs; };
-    auto *ctx = new tick_ctx{ counter, battery, 0 };
+    lv_obj_t *buttons = lv_label_create(scr);
+    lv_obj_set_style_text_font(buttons, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(buttons, lv_color_hex(0xF0C000), 0);
+    lv_label_set_text(buttons, "A0 B0 P0");
+
+    /* Tick once a second: proves the LVGL render/flush loop, reads the PMIC and
+     * mirrors the button click counters. */
+    struct tick_ctx { lv_obj_t *counter; lv_obj_t *battery; lv_obj_t *buttons; int secs; };
+    auto *ctx = new tick_ctx{ counter, battery, buttons, 0 };
     lv_timer_create([](lv_timer_t *t) {
         auto *c = static_cast<tick_ctx *>(lv_timer_get_user_data(t));
         lv_label_set_text_fmt(c->counter, "%d s", ++c->secs);
@@ -91,6 +102,24 @@ static void build_hello_screen() {
             lv_label_set_text_fmt(c->battery, "%lu mV", (unsigned long)mv);
         }
     }, 1000, ctx);
+    lv_timer_create([](lv_timer_t *t) {
+        auto *c = static_cast<tick_ctx *>(lv_timer_get_user_data(t));
+        lv_label_set_text_fmt(c->buttons, "A%d B%d P%d",
+                              s_clicks[BTN_A], s_clicks[BTN_B], s_clicks[BTN_PWR]);
+    }, 100, ctx);
+}
+
+static void wire_buttons() {
+    auto on_click = [](uint8_t id, void *) {
+        s_clicks[id] = s_clicks[id] + 1;
+        ESP_LOGI(TAG, "button %u click", id);
+    };
+    bsp_button_on_click(BTN_A,   on_click, nullptr);
+    bsp_button_on_click(BTN_B,   on_click, nullptr);
+    bsp_button_on_click(BTN_PWR, on_click, nullptr);
+    bsp_button_on_long_press(BTN_PWR, 0, [](uint8_t, void *) {
+        ESP_LOGI(TAG, "power key long press");
+    }, nullptr);
 }
 
 void app_entry() {
@@ -98,6 +127,7 @@ void app_entry() {
     bsp_config.dispatch.task_priority = 6;
     bsp_init(&bsp_config);
     bsp_display_set_brightness(100);
+    wire_buttons();
     lvgl_init();
 
     lv_async_call([] {

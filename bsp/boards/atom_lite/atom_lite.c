@@ -45,9 +45,9 @@ esp_err_t bsp_init(const bsp_config_t *config) {
         .count       = 1,
         .enable_pull = false,
     };
-    bsp_button_t *btn = NULL;
+    bsp_button_raw_t *btn = NULL;
     if (gpio_button_create(&btn_cfg, &btn) == ESP_OK) {
-        bsp_button_set_active(btn);
+        bsp_button_add_raw(btn);
     } else {
         ESP_LOGW(TAG, "gpio_button unavailable");
     }

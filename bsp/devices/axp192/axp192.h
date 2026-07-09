@@ -15,6 +15,7 @@
 #pragma once
 #include "bsp_types.h"
 #include "bsp_power.h"
+#include "bsp_button.h"
 #include "driver/i2c_master.h"
 
 #ifdef __cplusplus
@@ -73,6 +74,16 @@ esp_err_t axp192_set_ldoio0_enabled(axp192_handle_t h, bool on);
 esp_err_t axp192_get_battery_voltage_mv(axp192_handle_t h, uint32_t *out_mv);
 bool      axp192_vbus_present(axp192_handle_t h);
 
+/* Power key (PEK) press events since the last poll. The PMIC latches discrete
+ * short/long press events (not a live pin level); reading clears them. Either
+ * out pointer may be NULL. */
+esp_err_t axp192_poll_power_key(axp192_handle_t h, bool *short_press, bool *long_press);
+
+/* Long-press threshold at which the PEK long-press event fires. The chip only
+ * supports 1.0 / 1.5 / 2.0 / 2.5 s, so `ms` is rounded up to the next of those
+ * (>2.5 s clamps to 2.5 s). */
+esp_err_t axp192_set_pek_long_ms(axp192_handle_t h, uint16_t ms);
+
 /* Software power-off: cut every rail via the shutdown bit. External power on
  * VBUS keeps the chip alive, so this may not actually kill VSYS. */
 esp_err_t axp192_power_off(axp192_handle_t h);
@@ -81,6 +92,12 @@ esp_err_t axp192_power_off(axp192_handle_t h);
  * the battery voltage between empty_mv and full_mv. */
 esp_err_t axp192_power_create(axp192_handle_t h, uint32_t empty_mv, uint32_t full_mv,
                               bsp_power_t **out_power);
+
+/* Wrap the power key as a single tick-driven bsp_button provider: register it
+ * with bsp_button_add(). The PMIC's short/long press events map to CLICK /
+ * LONG_PRESS; the key is polled (no INT line), so the provider reports its own
+ * poll cadence. */
+esp_err_t axp192_button_create(axp192_handle_t h, bsp_button_t **out_button);
 
 #ifdef __cplusplus
 }

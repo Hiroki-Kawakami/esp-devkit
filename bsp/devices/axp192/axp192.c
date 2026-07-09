@@ -23,6 +23,9 @@ static const char *TAG = "axp192";
 #define REG_ADC_EN1       0x82
 #define REG_CHARGE_CTRL   0x33
 #define REG_BACKUP_CHARGE 0x35
+#define REG_IRQ_EN3       0x42   /* [1] PEK short, [0] PEK long press enable */
+#define REG_IRQ_STATUS3   0x46   /* same layout; write 1 to clear */
+#define REG_PEK           0x36   /* [5:4] long-press time: 00=1.0 01=1.5 10=2.0 11=2.5 s */
 #define REG_SHUTDOWN      0x32   /* bit7: power off */
 #define REG_BATT_VOLT_H   0x78   /* 8 MSB */
 #define REG_BATT_VOLT_L   0x79   /* 4 LSB */
@@ -105,6 +108,22 @@ bool axp192_vbus_present(axp192_handle_t h) {
     return axp192_read_reg(h, REG_POWER_STATUS, &v) == ESP_OK && (v & 0x20);
 }
 
+esp_err_t axp192_poll_power_key(axp192_handle_t h, bool *short_press, bool *long_press) {
+    uint8_t st;
+    esp_err_t err = axp192_read_reg(h, REG_IRQ_STATUS3, &st);
+    if (err != ESP_OK) return err;
+    uint8_t pek = st & 0x03;
+    if (pek) axp192_write_reg(h, REG_IRQ_STATUS3, pek);
+    if (short_press) *short_press = pek & 0x02;
+    if (long_press)  *long_press  = pek & 0x01;
+    return ESP_OK;
+}
+
+esp_err_t axp192_set_pek_long_ms(axp192_handle_t h, uint16_t ms) {
+    uint8_t field = ms <= 1000 ? 0 : ms <= 1500 ? 1 : ms <= 2000 ? 2 : 3;   /* ceil */
+    return update_reg(h, REG_PEK, 0x30, (uint8_t)(field << 4));
+}
+
 esp_err_t axp192_power_off(axp192_handle_t h) {
     return update_reg(h, REG_SHUTDOWN, 0, 0x80);
 }
@@ -139,6 +158,7 @@ esp_err_t axp192_create(const axp192_config_t *cfg, axp192_handle_t *out_handle)
     axp192_write_reg(h, REG_ADC_EN1, 0xFF);        /* battery/VBUS/ACIN/APS/TS ADC on */
     axp192_write_reg(h, REG_CHARGE_CTRL, 0xC0);    /* charge on, 4.2 V, min current */
     axp192_write_reg(h, REG_BACKUP_CHARGE, 0xA2);  /* RTC coin cell: on, 3.0 V */
+    update_reg(h, REG_IRQ_EN3, 0, 0x03);           /* latch PEK short/long press events */
 
     *out_handle = h;
     ESP_LOGI(TAG, "AXP192 ready");

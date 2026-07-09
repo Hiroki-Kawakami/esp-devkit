@@ -67,13 +67,13 @@ static void buttons_init(void) {
         .pins  = pins,
         .count = sizeof(pins) / sizeof(pins[0]),
     };
-    bsp_button_t *btn = NULL;
+    bsp_button_raw_t *btn = NULL;
     esp_err_t err = gpio_button_create(&cfg, &btn);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "gpio_button_create: %s", esp_err_to_name(err));
         return;
     }
-    bsp_button_set_active(btn);
+    bsp_button_add_raw(btn);
 }
 
 /* Battery on GPIO35 (ADC1_CH7) via a 1:1 divider (read the pin ×2); 1S Li-ion

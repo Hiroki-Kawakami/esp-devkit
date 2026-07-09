@@ -20,6 +20,8 @@
 #include "driver/i2c_master.h"
 #include "axp192.h"
 #include "st7789v2.h"
+#include "gpio_button.h"
+#include "bsp_button.h"
 #include "bsp_dispatch.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -44,6 +46,11 @@ static const char *TAG = "stickc_plus";
 #define LCD_HEIGHT     240
 #define LCD_X_OFFSET   52
 #define LCD_Y_OFFSET   40
+
+/* Buttons: A/B on plain GPIOs (active-low, external pull-ups) added first, then
+ * the AXP192 power key -- so ids come out 0=A, 1=B, 2=PWR. */
+#define BTN_PIN_A      GPIO_NUM_37
+#define BTN_PIN_B      GPIO_NUM_39
 
 /* 1S Li-ion endpoints for the coarse battery gauge. */
 #define BATT_EMPTY_MV  3000
@@ -136,6 +143,23 @@ static esp_err_t display_init(void) {
     return ESP_OK;
 }
 
+/* A/B as a level provider (interrupt-driven), the AXP192 power key as a polled
+ * tick provider. Two independent providers, appended in id order. */
+static void buttons_init(void) {
+    static const gpio_button_pin_t pins[] = {
+        { BTN_PIN_A, true },
+        { BTN_PIN_B, true },
+    };
+    const gpio_button_config_t gcfg = { .pins = pins, .count = 2, .enable_pull = false };
+    bsp_button_raw_t *gpio = NULL;
+    if (gpio_button_create(&gcfg, &gpio) == ESP_OK) bsp_button_add_raw(gpio);
+    else ESP_LOGW(TAG, "gpio buttons unavailable");
+
+    bsp_button_t *pwr = NULL;
+    if (axp192_button_create(s_axp, &pwr) == ESP_OK) bsp_button_add(pwr);
+    else ESP_LOGW(TAG, "power key unavailable");
+}
+
 esp_err_t bsp_init(const bsp_config_t *config) {
     bsp_dispatch_configure(config ? config->dispatch.task_priority : 0,
                            config ? config->dispatch.task_affinity : -1);
@@ -155,6 +179,8 @@ esp_err_t bsp_init(const bsp_config_t *config) {
         ESP_LOGE(TAG, "display_init: %s", esp_err_to_name(err));
         return err;
     }
+
+    buttons_init();
     return ESP_OK;
 }
 
