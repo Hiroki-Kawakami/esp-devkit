@@ -3,15 +3,16 @@
  * Copyright (c) 2026 Hiroki Kawakami
  *
  * M5StickC-Plus (ESP32-PICO-D4) board: device-side bsp_init orchestration.
- * Brings up the I2C bus shared by the AXP192 PMIC (and, later, the BM8563 RTC /
- * MPU6886 IMU), raises the TFT rails through the AXP192 (LDO3 = panel IC, LDO2 =
- * backlight), then the SPI bus for the ST7789V2 panel. The AXP192 also backs the
- * power-sensing seam. The passive buzzer on GPIO2 is a tone-only bsp_audio
- * provider; the red LED on GPIO10 is a PWM bsp_led provider. The host-side
- * counterpart is stickc_plus_sim.c.
+ * Brings up the I2C bus shared by the AXP192 PMIC and the BM8563 RTC (and, later,
+ * the MPU6886 IMU), raises the TFT rails through the AXP192 (LDO3 = panel IC,
+ * LDO2 = backlight), then the SPI bus for the ST7789V2 panel. The AXP192 also
+ * backs the power-sensing seam; the BM8563 countdown backs bsp_power_hw_reset.
+ * The passive buzzer on GPIO2 is a tone-only bsp_audio provider; the red LED on
+ * GPIO10 is a PWM bsp_led provider. The host-side counterpart is
+ * stickc_plus_sim.c.
  *
- * Pin map from the M5StickC-Plus schematic. Display / buttons / buzzer / LED
- * are wired (RTC / IMU come later).
+ * Pin map from the M5StickC-Plus schematic. Display / buttons / buzzer / LED /
+ * RTC are wired (IMU comes later).
  */
 
 #include "bsp.h"
@@ -22,12 +23,14 @@
 #include "driver/i2c_master.h"
 #include "axp192.h"
 #include "st7789v2.h"
+#include "bm8563.h"
 #include "gpio_button.h"
 #include "pwm_buzzer.h"
 #include "pwm_led.h"
 #include "bsp_audio.h"
 #include "bsp_button.h"
 #include "bsp_led.h"
+#include "bsp_rtc.h"
 #include "bsp_dispatch.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -118,6 +121,22 @@ static esp_err_t power_init(i2c_master_bus_handle_t bus) {
     if (axp192_power_create(s_axp, BATT_EMPTY_MV, BATT_FULL_MV, &power) == ESP_OK) {
         bsp_power_set_active(power);
     }
+    return ESP_OK;
+}
+
+/* BM8563 INT drives the AXP192 power-on latch (not a readable GPIO), so leave
+ * int_io NC: the countdown timer's INT still asserts to reboot from power-off. */
+static esp_err_t rtc_init(i2c_master_bus_handle_t bus) {
+    const bm8563_config_t cfg = {
+        .i2c_bus     = bus,
+        .i2c_address = BM8563_I2C_ADDR,
+        .clock_hz    = BM8563_I2C_DEFAULT_HZ,
+        .int_io      = GPIO_NUM_NC,
+    };
+    bsp_rtc_t *rtc = NULL;
+    esp_err_t err = bm8563_rtc_create(&cfg, &rtc);
+    if (err != ESP_OK) return err;
+    bsp_rtc_set_active(rtc);
     return ESP_OK;
 }
 
@@ -217,6 +236,10 @@ esp_err_t bsp_init(const bsp_config_t *config) {
         return err;
     }
 
+    if ((err = rtc_init(i2c_bus)) != ESP_OK) {
+        ESP_LOGW(TAG, "rtc unavailable: %s", esp_err_to_name(err));
+    }
+
     err = display_init();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "display_init: %s", esp_err_to_name(err));
@@ -238,7 +261,9 @@ void bsp_power_restart(void) {
 }
 
 esp_err_t bsp_power_hw_reset(void) {
-    return ESP_ERR_NOT_SUPPORTED;   /* needs the BM8563 countdown; wired later */
+    esp_err_t err = bsp_rtc_timer_start(200, false);
+    if (err != ESP_OK) return err;
+    return bsp_power_off();
 }
 
 esp_err_t bsp_power_off(void) {

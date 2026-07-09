@@ -4,8 +4,8 @@
  *
  * M5StickC-Plus simulator board: host-side counterpart of stickc_plus.c. The
  * SDL backend mimics the 135x240 RGB565 SPI panel; a fake battery backs the
- * power seam, and the tone-only SDL audio stands in for the GPIO2 passive
- * buzzer. Build with -DBSP_BOARD=stickc_plus.
+ * power seam, the host clock stands in for the BM8563 RTC, and the tone-only SDL
+ * audio stands in for the GPIO2 passive buzzer. Build with -DBSP_BOARD=stickc_plus.
  */
 
 #include "bsp.h"
@@ -13,9 +13,11 @@
 #include "bsp_display.h"
 #include "bsp_dispatch.h"
 #include "bsp_power.h"
+#include "bsp_rtc.h"
 #include "sdl_audio.h"
 #include "sdl_panel.h"
 #include "power_sim.h"
+#include "rtc_sim.h"
 #include <stdio.h>
 
 esp_err_t bsp_init(const bsp_config_t *config) {
@@ -44,6 +46,9 @@ esp_err_t bsp_init(const bsp_config_t *config) {
     } else {
         fprintf(stderr, "[sim] sdl_audio_create failed: %d\n", audio_err);
     }
+
+    bsp_rtc_t *rtc = NULL;
+    if (rtc_sim_create(&rtc) == ESP_OK) bsp_rtc_set_active(rtc);
 
     bsp_power_t *power = NULL;
     if (power_sim_create(&power) == ESP_OK) bsp_power_set_active(power);
