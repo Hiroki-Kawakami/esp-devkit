@@ -29,6 +29,7 @@ typedef struct {
     esp_lcd_panel_handle_t     panel;
     uint8_t fb_num;
     void   *frame_buffers[3];
+    bool    asleep;
 } ili9881c_lcd_t;
 
 static esp_err_t draw_bitmap(bsp_display_t *self, bsp_rect_t rect, const void *data,
@@ -64,6 +65,27 @@ static esp_err_t set_brightness(bsp_display_t *self, int brightness) {
     esp_err_t ret = ledc_set_duty(d->ledc_channel.speed_mode, d->ledc_channel.channel, duty);
     if (ret != ESP_OK) return ret;
     return ledc_update_duty(d->ledc_channel.speed_mode, d->ledc_channel.channel);
+}
+
+/* No panel-rail cut here, so OFF collapses to SLEEP. */
+static esp_err_t set_power(bsp_display_t *self, bsp_display_power_t state) {
+    ili9881c_lcd_t *d = (ili9881c_lcd_t *)self;
+    bool sleep = (state != BSP_DISPLAY_POWER_ON);
+    if (sleep == d->asleep) return ESP_OK;
+
+    esp_err_t err;
+    if (sleep) {
+        if ((err = esp_lcd_panel_io_tx_param(d->io, LCD_CMD_DISPOFF, NULL, 0)) != ESP_OK) return err;
+        if ((err = esp_lcd_panel_io_tx_param(d->io, LCD_CMD_SLPIN, NULL, 0)) != ESP_OK) return err;
+        vTaskDelay(pdMS_TO_TICKS(5));
+    } else {
+        if ((err = esp_lcd_panel_io_tx_param(d->io, LCD_CMD_SLPOUT, NULL, 0)) != ESP_OK) return err;
+        vTaskDelay(pdMS_TO_TICKS(120));
+        if ((err = esp_lcd_panel_io_tx_param(d->io, LCD_CMD_DISPON, NULL, 0)) != ESP_OK) return err;
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    d->asleep = sleep;
+    return ESP_OK;
 }
 
 static esp_err_t deinit(bsp_display_t *self) {
@@ -124,6 +146,7 @@ esp_err_t ili9881c_lcd_create(const ili9881c_config_t *config, bsp_display_t **o
         .draw_bitmap     = draw_bitmap,
         .deinit          = deinit,
         .set_brightness  = set_brightness,
+        .set_power       = set_power,
         .get_framebuffers = get_framebuffers,
         .flush           = flush,
     };
