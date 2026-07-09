@@ -6,10 +6,11 @@
  * Brings up the I2C bus shared by the AXP192 PMIC (and, later, the BM8563 RTC /
  * MPU6886 IMU), raises the TFT rails through the AXP192 (LDO3 = panel IC, LDO2 =
  * backlight), then the SPI bus for the ST7789V2 panel. The AXP192 also backs the
- * power-sensing seam. The host-side counterpart is stickc_plus_sim.c.
+ * power-sensing seam. The passive buzzer on GPIO2 is a tone-only bsp_audio
+ * provider. The host-side counterpart is stickc_plus_sim.c.
  *
- * Pin map from the M5StickC-Plus schematic. Only the display path is wired for
- * now (RTC / IMU / buttons / buzzer come later).
+ * Pin map from the M5StickC-Plus schematic. Display / buttons / buzzer are
+ * wired (RTC / IMU come later).
  */
 
 #include "bsp.h"
@@ -21,6 +22,8 @@
 #include "axp192.h"
 #include "st7789v2.h"
 #include "gpio_button.h"
+#include "pwm_buzzer.h"
+#include "bsp_audio.h"
 #include "bsp_button.h"
 #include "bsp_dispatch.h"
 #include "freertos/FreeRTOS.h"
@@ -51,6 +54,9 @@ static const char *TAG = "stickc_plus";
  * the AXP192 power key -- so ids come out 0=A, 1=B, 2=PWR. */
 #define BTN_PIN_A      GPIO_NUM_37
 #define BTN_PIN_B      GPIO_NUM_39
+
+/* Passive buzzer driven by an LEDC PWM channel. */
+#define BUZZER_PIN     GPIO_NUM_2
 
 /* 1S Li-ion endpoints for the coarse battery gauge. */
 #define BATT_EMPTY_MV  3000
@@ -97,6 +103,9 @@ static esp_err_t power_init(i2c_master_bus_handle_t bus) {
     axp192_set_ldo3_mv(s_axp, 3000);
     axp192_set_rail_enabled(s_axp, AXP192_RAIL_LDO3, true);
     backlight_set(s_axp, 80);
+
+    /* EXTEN gates the buzzer's supply rail. */
+    axp192_set_rail_enabled(s_axp, AXP192_RAIL_EXTEN, true);
     vTaskDelay(pdMS_TO_TICKS(20));
 
     bsp_power_t *power = NULL;
@@ -160,6 +169,22 @@ static void buttons_init(void) {
     else ESP_LOGW(TAG, "power key unavailable");
 }
 
+static esp_err_t audio_init(const bsp_config_t *config) {
+    const pwm_buzzer_config_t cfg = {
+        .pwm_io  = BUZZER_PIN,
+        .timer   = LEDC_TIMER_0,
+        .channel = LEDC_CHANNEL_0,
+    };
+    bsp_audio_t *audio = NULL;
+    esp_err_t err = pwm_buzzer_create(&cfg, &audio);
+    if (err != ESP_OK) return err;
+    bsp_audio_set_active(audio, &(bsp_audio_init_t){
+        .dsp_mode = config->audio.dsp_mode,
+        .speaker_mode = config->audio.speaker_mode,
+    });
+    return ESP_OK;
+}
+
 esp_err_t bsp_init(const bsp_config_t *config) {
     bsp_dispatch_configure(config ? config->dispatch.task_priority : 0,
                            config ? config->dispatch.task_affinity : -1);
@@ -181,10 +206,15 @@ esp_err_t bsp_init(const bsp_config_t *config) {
     }
 
     buttons_init();
+
+    if (config && (err = audio_init(config)) != ESP_OK) {
+        ESP_LOGW(TAG, "audio unavailable: %s", esp_err_to_name(err));
+    }
     return ESP_OK;
 }
 
 void bsp_power_restart(void) {
+    bsp_audio_quiesce();
     esp_restart();
 }
 
@@ -193,6 +223,7 @@ esp_err_t bsp_power_hw_reset(void) {
 }
 
 esp_err_t bsp_power_off(void) {
+    bsp_audio_quiesce();
     if (s_axp) axp192_power_off(s_axp);
     return ESP_FAIL;   /* returning means VBUS held the rail up */
 }

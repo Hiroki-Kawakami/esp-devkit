@@ -4,7 +4,8 @@
  *
  * Minimal M5StickC-Plus sample: brings up the BSP + LVGL on the 135x240 ST7789V2
  * panel and shows a title, a once-a-second counter, and the AXP192 battery
- * voltage — enough to prove the display + PMIC path end to end. The panel has no
+ * voltage — enough to prove the display + PMIC path end to end. Buttons A/B beep
+ * the GPIO2 buzzer at distinct pitches to prove the tone path. The panel has no
  * host framebuffer, so LVGL renders into partial draw buffers that flush through
  * bsp_display_draw_bitmap.
  */
@@ -113,6 +114,8 @@ static void wire_buttons() {
     auto on_click = [](uint8_t id, void *) {
         s_clicks[id] = s_clicks[id] + 1;
         ESP_LOGI(TAG, "button %u click", id);
+        if (id == BTN_A) bsp_audio_tone(2000, 100);
+        else if (id == BTN_B) bsp_audio_tone(3500, 100);
     };
     bsp_button_on_click(BTN_A,   on_click, nullptr);
     bsp_button_on_click(BTN_B,   on_click, nullptr);
