@@ -9,9 +9,10 @@ set(BOARD_DEVICE_SRCS
     "boards/core_s3/core_s3_panel.c"
     "devices/axp2101/axp2101.c"
     "devices/aw9523/aw9523.c"
-    "devices/ili9342c/ili9342c.c")
+    "devices/ili9342c/ili9342c.c"
+    "devices/ft6336u/ft6336u.c")
 set(BOARD_DEVICE_PRIV_INCLUDE_DIRS
-    "devices" "devices/axp2101" "devices/aw9523" "devices/ili9342c")
+    "devices" "devices/axp2101" "devices/aw9523" "devices/ili9342c" "devices/ft6336u")
 set(BOARD_DEVICE_PRIV_REQUIRES
     driver esp_driver_i2c esp_driver_spi)
 

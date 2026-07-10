@@ -30,6 +30,7 @@ typedef enum {
 typedef struct {
     aw9523_pin_mode_t mode : 2;
     bool              initial_value : 1;   /*!< output pins: level driven at init */
+    bool              interrupt : 1;       /*!< input pins: enable the change-INT (else masked) */
 } aw9523_pin_config_t;
 
 typedef struct aw9523_state *aw9523_t;
@@ -43,6 +44,11 @@ esp_err_t aw9523_deinit(aw9523_t aw);
 /* pin: 0..15 (P0_0..P0_7, then P1_0..P1_7). */
 esp_err_t aw9523_set_output(aw9523_t aw, uint8_t pin, bool value);
 esp_err_t aw9523_get_input(aw9523_t aw, uint8_t pin, bool *value);
+
+/* Read both input ports as one 16-bit state (P0 low byte, P1 high). Reading the
+ * input registers also clears the change-INT latch, deasserting the INT output --
+ * call this to service the aggregated INT pin. */
+esp_err_t aw9523_read_inputs(aw9523_t aw, uint16_t *out_state);
 
 #ifdef __cplusplus
 }

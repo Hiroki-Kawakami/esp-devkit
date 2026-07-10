@@ -4,18 +4,24 @@
  *
  * M5Stack CoreS3 (ESP32-S3) board entry: brings up the shared I2C bus, the
  * AXP2101 PMIC rails and the AW9523B I/O expander, then hands off to
- * core_s3_panel_init for the ILI9342C display (touch comes later). The whole
- * CoreS3 family shares this wiring. Host-side counterpart: core_s3_sim.c.
+ * core_s3_panel_init for the ILI9342C display + FT6336U touch. The FT6336U INT is
+ * aggregated on AW9523B P1_2 whose expander INT output lands on GPIO21, so this
+ * file owns that ISR: it clears the expander latch (task context) and wakes the
+ * touch layer. The whole CoreS3 family shares this wiring. Host-side counterpart:
+ * core_s3_sim.c.
  */
 
 #include "bsp.h"
 #include "esp_system.h"
 #include "esp_log.h"
+#include "driver/gpio.h"
 #include "driver/i2c_master.h"
+#include "freertos/FreeRTOS.h"
 #include "axp2101.h"
 #include "aw9523.h"
 #include "core_s3_panel.h"
 #include "bsp_power.h"
+#include "bsp_touch.h"
 #include "bsp_dispatch.h"
 
 static const char *TAG = "core_s3";
@@ -26,6 +32,10 @@ static const char *TAG = "core_s3";
 
 #define AXP2101_ADDR   0x34
 #define AW9523B_ADDR   0x58
+
+/* AW9523B aggregated INT output (FT6336U touch INT is on its P1_2 input). */
+#define AW9523_INT_IO  GPIO_NUM_21
+#define AW_PIN_TOUCH_INT 10   /* AW9523B P1_2 -> 8 + 2 */
 
 /* 1S Li-ion endpoints for the coarse battery gauge. */
 #define BATT_EMPTY_MV  3300
@@ -74,9 +84,9 @@ static esp_err_t power_init(i2c_master_bus_handle_t bus) {
     return ESP_OK;
 }
 
-/* AW9523B outputs high on P0_0, P0_2, P1_0, P1_1 (touch/amp reset release, LCD
- * power/bus enable, LCD reset release); the rest of the driven set low; P0_3/P0_4/
- * P1_2/P1_3 inputs -- same registers M5GFX writes. P1_0 gates the LCD power. */
+/* AW9523B pin setup (same registers M5GFX writes): P0_0/P0_2/P1_0/P1_1 high
+ * (reset releases + LCD power/bus enable), the other driven pins low, and P1_2 an
+ * input with its change-INT enabled -- that is the FT6336U touch INT. */
 static esp_err_t expander_init(i2c_master_bus_handle_t bus) {
     static const uint8_t high[] = { 0, 2, 8, 9 };
     static const uint8_t low[]  = { 1, 5, 6, 7, 12, 13, 14, 15 };
@@ -88,7 +98,42 @@ static esp_err_t expander_init(i2c_master_bus_handle_t bus) {
     for (unsigned i = 0; i < sizeof(low) / sizeof(low[0]); i++)
         pins[low[i]] = (aw9523_pin_config_t){ .mode = AW9523_PIN_MODE_OUTPUT,
                                               .initial_value = false };
+    pins[AW_PIN_TOUCH_INT] = (aw9523_pin_config_t){ .mode = AW9523_PIN_MODE_INPUT,
+                                                    .interrupt = true };
     return aw9523_init(bus, AW9523B_ADDR, pins, &s_aw);
+}
+
+/* Expander INT (GPIO21) service: the ISR only wakes this source; the tick runs in
+ * task context (I2C-capable) to clear the AW9523B latch and wake the touch layer. */
+static uint32_t expander_int_tick(void *ctx) {
+    (void)ctx;
+    aw9523_read_inputs(s_aw, NULL);
+    bsp_touch_notify();
+    return BSP_DISPATCH_IDLE;
+}
+static bsp_dispatch_source_t s_expander_src = { .tick = expander_int_tick };
+
+static void IRAM_ATTR expander_int_isr(void *arg) {
+    (void)arg;
+    BaseType_t hp = pdFALSE;
+    bsp_dispatch_notify_from_isr(&s_expander_src, &hp);
+    if (hp) portYIELD_FROM_ISR();
+}
+
+static esp_err_t expander_int_init(void) {
+    const gpio_config_t cfg = {
+        .pin_bit_mask = 1ULL << AW9523_INT_IO,
+        .mode         = GPIO_MODE_INPUT,
+        .pull_up_en   = GPIO_PULLUP_ENABLE,
+    };
+    esp_err_t err = gpio_config(&cfg);
+    if (err != ESP_OK) return err;
+    if ((err = bsp_dispatch_install_gpio_isr()) != ESP_OK) return err;
+    gpio_set_intr_type(AW9523_INT_IO, GPIO_INTR_NEGEDGE);
+    if ((err = gpio_isr_handler_add(AW9523_INT_IO, expander_int_isr, NULL)) != ESP_OK) return err;
+    gpio_intr_enable(AW9523_INT_IO);
+    bsp_dispatch_add_source(&s_expander_src);
+    return ESP_OK;
 }
 
 esp_err_t bsp_init(const bsp_config_t *config) {
@@ -111,6 +156,8 @@ esp_err_t bsp_init(const bsp_config_t *config) {
         ESP_LOGE(TAG, "panel_init: %s", esp_err_to_name(err));
         return err;
     }
+    if ((err = expander_int_init()) != ESP_OK)
+        ESP_LOGW(TAG, "expander INT unavailable: %s", esp_err_to_name(err));
     return ESP_OK;
 }
 

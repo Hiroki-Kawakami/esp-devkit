@@ -149,7 +149,7 @@ static uint32_t touch_tick(void *ctx) {
     if (!t || !t->poll) return BSP_DISPATCH_IDLE;
 
     const uint8_t settle  = t->settle_count ? t->settle_count : DEFAULT_SETTLE_COUNT;
-    const bool    has_int = (t->int_io >= 0);
+    const bool    has_int = (t->int_io >= 0) || (t->int_io == BSP_TOUCH_INT_EXTERNAL);
     const uint32_t interval = t->poll_interval_ms ? t->poll_interval_ms : 10;
 
     if (has_int && !t->int_pending && s_no_touch_count >= settle && !s_was_down)

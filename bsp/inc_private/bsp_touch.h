@@ -23,6 +23,12 @@ typedef struct {
 
 typedef struct bsp_touch bsp_touch_t;
 
+/* int_io sentinel: the chip has an INT, but it is delivered by an external caller
+ * of bsp_touch_notify() (e.g. aggregated on an I/O expander) rather than a native
+ * GPIO the common layer should attach an ISR to. Enables the idle capability
+ * without owning a pin. (GPIO_NUM_NC == -1 -> no INT; a value >= 0 -> native GPIO.) */
+#define BSP_TOUCH_INT_EXTERNAL  (-2)
+
 struct bsp_touch {
     /* Return the current best-known touch state. Chips with a data-ready
      * handshake cache the last authoritative frame and return it on polls

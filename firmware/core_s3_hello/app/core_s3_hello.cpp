@@ -3,10 +3,11 @@
  * Copyright (c) 2026 Hiroki Kawakami
  *
  * Minimal M5Stack CoreS3 sample: brings up the BSP (AXP2101 rails + AW9523B reset
- * + ILI9342C panel) and LVGL, then shows a title, a once-a-second counter and the
- * AXP2101 battery voltage -- enough to prove the display + PMIC path end to end.
- * The panel has no host framebuffer, so LVGL renders into partial draw buffers
- * that flush through bsp_display_draw_bitmap.
+ * + ILI9342C panel + FT6336U touch) and LVGL, then shows a title, a once-a-second
+ * counter, the AXP2101 battery voltage and the last touch coordinate -- enough to
+ * prove the display + PMIC + touch path end to end. The panel has no host
+ * framebuffer, so LVGL renders into partial draw buffers that flush through
+ * bsp_display_draw_bitmap; touch is read through bsp_touch_read.
  */
 
 #include "core_s3_hello.hpp"
@@ -56,6 +57,21 @@ static void lvgl_init() {
     lv_display_set_buffers(disp, buf0, buf1, buf_bytes, LV_DISPLAY_RENDER_MODE_PARTIAL);
     lv_display_set_flush_cb(disp, flush_cb);
     lv_display_set_default(disp);
+
+    /* Pointer indev fed from the polled FT6336U (bsp_touch_read = latest frame). */
+    lv_indev_t *indev = lv_indev_create();
+    lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
+    lv_indev_set_read_cb(indev, [](lv_indev_t *, lv_indev_data_t *data) {
+        bsp_touch_point_t pt;
+        if (bsp_touch_read(&pt, 1) > 0) {
+            data->point.x = pt.x;
+            data->point.y = pt.y;
+            data->state   = LV_INDEV_STATE_PRESSED;
+        } else {
+            data->state = LV_INDEV_STATE_RELEASED;
+        }
+    });
+    lv_indev_set_display(indev, disp);
 }
 
 static void build_hello_screen() {
@@ -80,7 +96,12 @@ static void build_hello_screen() {
     lv_obj_set_style_text_color(battery, lv_color_hex(0x808080), 0);
     lv_label_set_text(battery, "-- mV");
 
-    /* Tick once a second: proves the LVGL render/flush loop and reads the PMIC. */
+    lv_obj_t *touch = lv_label_create(scr);
+    lv_obj_set_style_text_font(touch, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(touch, lv_color_hex(0xF0C000), 0);
+    lv_label_set_text(touch, "touch: --");
+
+    /* Once a second: proves the render/flush loop and reads the PMIC. */
     struct tick_ctx { lv_obj_t *counter; lv_obj_t *battery; int secs; };
     auto *ctx = new tick_ctx{ counter, battery, 0 };
     lv_timer_create([](lv_timer_t *t) {
@@ -90,6 +111,14 @@ static void build_hello_screen() {
         if (bsp_power_get_battery_voltage(&mv) == ESP_OK)
             lv_label_set_text_fmt(c->battery, "%lu mV", (unsigned long)mv);
     }, 1000, ctx);
+
+    /* Report the latest FT6336U contact so touch is visibly working. */
+    lv_timer_create([](lv_timer_t *t) {
+        auto *label = static_cast<lv_obj_t *>(lv_timer_get_user_data(t));
+        bsp_touch_point_t pt;
+        if (bsp_touch_read(&pt, 1) > 0) lv_label_set_text_fmt(label, "touch: %d,%d", pt.x, pt.y);
+        else                            lv_label_set_text(label, "touch: --");
+    }, 50, touch);
 }
 
 void app_entry() {

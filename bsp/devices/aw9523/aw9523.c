@@ -15,6 +15,7 @@ static const char *TAG = "aw9523";
 #define REG_INPUT0    0x00
 #define REG_OUTPUT0   0x02
 #define REG_CONFIG0   0x04   /* 1 = input, 0 = output */
+#define REG_INT0      0x06   /* interrupt mask: 1 = disabled, 0 = enabled */
 #define REG_ID        0x10   /* reads 0x23 */
 #define REG_CTL       0x11   /* bit4: P0 push-pull (1) vs open-drain (0) */
 #define REG_LEDMODE0  0x12   /* 1 = GPIO mode, 0 = constant-current LED */
@@ -50,11 +51,14 @@ esp_err_t aw9523_init(i2c_master_bus_handle_t i2c_bus, uint8_t address,
     esp_err_t err = i2c_master_bus_add_device(i2c_bus, &dev_cfg, &aw->i2c);
     if (err != ESP_OK) { free(aw); return err; }
 
-    uint16_t dir = 0, outv = 0;   /* config reg bit set = input; so 1<<pin means output here */
+    uint16_t dir = 0, outv = 0;    /* 1<<pin here means output */
+    uint16_t intmask = 0xFFFF;     /* 1 = INT disabled; unmask requested inputs */
     for (int i = 0; i < 16; i++) {
         if (config[i].mode == AW9523_PIN_MODE_OUTPUT) {
             dir |= (uint16_t)(1u << i);
             if (config[i].initial_value) outv |= (uint16_t)(1u << i);
+        } else if (config[i].mode == AW9523_PIN_MODE_INPUT && config[i].interrupt) {
+            intmask &= (uint16_t)~(1u << i);
         }
     }
 
@@ -74,6 +78,8 @@ esp_err_t aw9523_init(i2c_master_bus_handle_t i2c_bus, uint8_t address,
     if (err == ESP_OK) err = write_reg(aw, REG_OUTPUT0 + 1, (uint8_t)(outv >> 8));
     if (err == ESP_OK) err = write_reg(aw, REG_CONFIG0,     (uint8_t)(~dir & 0xFF));
     if (err == ESP_OK) err = write_reg(aw, REG_CONFIG0 + 1, (uint8_t)(~(dir >> 8) & 0xFF));
+    if (err == ESP_OK) err = write_reg(aw, REG_INT0,     (uint8_t)(intmask & 0xFF));
+    if (err == ESP_OK) err = write_reg(aw, REG_INT0 + 1, (uint8_t)(intmask >> 8));
     if (err != ESP_OK) {
         i2c_master_bus_rm_device(aw->i2c);
         free(aw);
@@ -113,5 +119,18 @@ esp_err_t aw9523_get_input(aw9523_t aw, uint8_t pin, bool *value) {
     esp_err_t err = read_reg(aw, REG_INPUT0 + (pin >= 8 ? 1 : 0), &v);
     if (err != ESP_OK) return err;
     *value = (v & (uint8_t)(1u << (pin & 7))) != 0;
+    return ESP_OK;
+}
+
+esp_err_t aw9523_read_inputs(aw9523_t aw, uint16_t *out_state) {
+    if (!aw) return ESP_ERR_INVALID_ARG;
+    /* Read each input port with its own transaction: the AW9523B clears a port's
+     * INT latch on a read of that register, and a 2-byte burst does not. */
+    uint8_t p0, p1;
+    esp_err_t err = read_reg(aw, REG_INPUT0,     &p0);
+    if (err != ESP_OK) return err;
+    err = read_reg(aw, REG_INPUT0 + 1, &p1);
+    if (err != ESP_OK) return err;
+    if (out_state) *out_state = (uint16_t)p0 | ((uint16_t)p1 << 8);
     return ESP_OK;
 }

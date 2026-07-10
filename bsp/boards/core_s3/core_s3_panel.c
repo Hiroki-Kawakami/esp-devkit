@@ -3,14 +3,19 @@
  * Copyright (c) 2026 Hiroki Kawakami
  *
  * M5Stack CoreS3 panel bring-up: ILI9342C 320x240 on SPI2 (bus shared with the
- * microSD slot). Backlight is the AXP2101 DLDO1 rail; RESET is AW9523B P1_1
- * (active low), so both seams route to those chips. Touch (FT6336U) comes later.
+ * microSD slot) + FT6336U I2C touch. Backlight is the AXP2101 DLDO1 rail; the LCD
+ * RESET is AW9523B P1_1 (active low). The FT6336U INT is aggregated on AW9523B
+ * P1_2 (not a native GPIO) and its RESET on AW9523B P0_0; core_s3.c owns the
+ * expander INT -> touch wake, so touch reports int_io = BSP_TOUCH_INT_EXTERNAL.
  */
 
 #include "core_s3_panel.h"
 #include "ili9342c.h"
+#include "ft6336u.h"
 #include "bsp_display.h"
+#include "bsp_touch.h"
 #include "esp_log.h"
+#include "driver/gpio.h"
 #include "driver/spi_master.h"
 
 static const char *TAG = "core_s3_panel";
@@ -43,8 +48,6 @@ static void lcd_reset_set(void *ctx, bool asserted) {
 
 esp_err_t core_s3_panel_init(i2c_master_bus_handle_t i2c_bus,
                              axp2101_handle_t axp, aw9523_t aw) {
-    (void)i2c_bus;   /* used once touch (FT6336U) is added */
-
     const spi_bus_config_t bus_cfg = {
         .mosi_io_num     = LCD_PIN_MOSI,
         .miso_io_num     = -1,
@@ -78,5 +81,18 @@ esp_err_t core_s3_panel_init(i2c_master_bus_handle_t i2c_bus,
     if (err != ESP_OK) return err;
     bsp_display_set_active(display);
     backlight_set(axp, 100);
+
+    /* FT6336U on the system I2C bus; its INT is aggregated on the expander and
+     * driven by core_s3.c, hence int_io = BSP_TOUCH_INT_EXTERNAL. */
+    const ft6336u_config_t tp_cfg = {
+        .i2c_bus  = i2c_bus,
+        .int_io   = BSP_TOUCH_INT_EXTERNAL,
+        .reset_io = GPIO_NUM_NC,
+        .width    = LCD_WIDTH,
+        .height   = LCD_HEIGHT,
+    };
+    bsp_touch_t *touch = NULL;
+    if (ft6336u_touch_create(&tp_cfg, &touch) == ESP_OK) bsp_touch_set_active(touch);
+    else ESP_LOGW(TAG, "touch unavailable");
     return ESP_OK;
 }
