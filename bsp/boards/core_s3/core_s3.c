@@ -2,12 +2,8 @@
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 Hiroki Kawakami
  *
- * M5Stack CoreS3 (ESP32-S3) board entry: brings up the shared I2C bus, the
- * AXP2101 PMIC rails and the AW9523B I/O expander, then hands off to
- * core_s3_panel_init for the ILI9342C display + FT6336U touch. The FT6336U INT is
- * aggregated on AW9523B P1_2 whose expander INT output lands on GPIO21, so this
- * file owns that ISR: it clears the expander latch (task context) and wakes the
- * touch layer. The whole CoreS3 family shares this wiring. Host-side counterpart:
+ * M5Stack CoreS3 (ESP32-S3) board entry: brings up the on-board peripherals and
+ * hands the display + touch off to core_s3_panel. Host-side counterpart:
  * core_s3_sim.c.
  */
 
@@ -19,11 +15,13 @@
 #include "freertos/FreeRTOS.h"
 #include "axp2101.h"
 #include "aw9523.h"
+#include "bm8563.h"
 #include "core_s3_panel.h"
 #include "core_s3_audio.h"
 #include "bsp_power.h"
 #include "bsp_audio.h"
 #include "bsp_touch.h"
+#include "bsp_rtc.h"
 #include "bsp_dispatch.h"
 
 static const char *TAG = "core_s3";
@@ -35,11 +33,10 @@ static const char *TAG = "core_s3";
 #define AXP2101_ADDR   0x34
 #define AW9523B_ADDR   0x58
 
-/* AW9523B aggregated INT output (FT6336U touch INT is on its P1_2 input). */
 #define AW9523_INT_IO  GPIO_NUM_21
-#define AW_PIN_TOUCH_INT 10   /* AW9523B P1_2 -> 8 + 2 */
+#define AW_PIN_TOUCH_INT 10   /* AW9523B P1_2 */
 
-/* 1S Li-ion endpoints for the coarse battery gauge. */
+/* 1S Li-ion endpoints for the battery gauge. */
 #define BATT_EMPTY_MV  3300
 #define BATT_FULL_MV   4200
 
@@ -84,9 +81,22 @@ static esp_err_t power_init(i2c_master_bus_handle_t bus) {
     return ESP_OK;
 }
 
-/* AW9523B pin setup: P0_0/P1_0/P1_1 high (resets + LCD power/bus
- * enable), P0_2 high (AW88298 power -- must be high or the codec won't
- * answer on I2C), P1_2 input with change-INT = FT6336U touch INT. */
+/* INT is not on a readable GPIO (feeds the AXP2101 power path), so int_io stays NC. */
+static esp_err_t rtc_init(i2c_master_bus_handle_t bus) {
+    const bm8563_config_t cfg = {
+        .i2c_bus     = bus,
+        .i2c_address = BM8563_I2C_ADDR,
+        .clock_hz    = BM8563_I2C_DEFAULT_HZ,
+        .int_io      = GPIO_NUM_NC,
+    };
+    bsp_rtc_t *rtc = NULL;
+    esp_err_t err = bm8563_rtc_create(&cfg, &rtc);
+    if (err == ESP_OK) bsp_rtc_set_active(rtc);
+    return err;
+}
+
+/* P0_2 must stay high or the AW88298 codec won't answer on I2C. P1_2 is the
+ * touch INT input; the rest are the LCD/codec power and reset gates. */
 static esp_err_t expander_init(i2c_master_bus_handle_t bus) {
     static const uint8_t high[] = { 0, 2, 8, 9 };
     static const uint8_t low[]  = { 1, 5, 6, 7, 12, 13, 14, 15 };
@@ -103,8 +113,8 @@ static esp_err_t expander_init(i2c_master_bus_handle_t bus) {
     return aw9523_init(bus, AW9523B_ADDR, pins, &s_aw);
 }
 
-/* Expander INT (GPIO21) service: the ISR only wakes this source; the tick runs in
- * task context (I2C-capable) to clear the AW9523B latch and wake the touch layer. */
+/* ISR only wakes; the tick clears the AW9523B latch in task context (I2C) and
+ * wakes the touch layer. */
 static uint32_t expander_int_tick(void *ctx) {
     (void)ctx;
     aw9523_read_inputs(s_aw, NULL);
@@ -136,8 +146,8 @@ static esp_err_t expander_int_init(void) {
     return ESP_OK;
 }
 
-/* AW88298 speaker over I2S1 + its AW9523B P0_2 amp gate. Non-fatal: an amp
- * failure leaves the bsp_audio_* API a no-op rather than blocking bring-up. */
+/* Non-fatal: an amp failure leaves the bsp_audio_* API a no-op rather than
+ * blocking bring-up. */
 static esp_err_t audio_init(const bsp_config_t *config, i2c_master_bus_handle_t bus) {
     bsp_audio_t *audio = NULL;
     esp_err_t err = core_s3_audio_create(&(core_s3_audio_config_t){
@@ -171,6 +181,8 @@ esp_err_t bsp_init(const bsp_config_t *config) {
         ESP_LOGE(TAG, "expander_init: %s", esp_err_to_name(err));
         return err;
     }
+    if ((err = rtc_init(i2c_bus)) != ESP_OK)
+        ESP_LOGW(TAG, "rtc unavailable: %s", esp_err_to_name(err));
     if ((err = core_s3_panel_init(i2c_bus, s_axp, s_aw)) != ESP_OK) {
         ESP_LOGE(TAG, "panel_init: %s", esp_err_to_name(err));
         return err;

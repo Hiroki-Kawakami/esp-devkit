@@ -2,17 +2,18 @@
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 Hiroki Kawakami
  *
- * M5Stack CoreS3 simulator board: host-side counterpart of core_s3.c. The SDL
- * backend mimics the 320x240 RGB565 SPI panel and a fake battery backs the power
- * seam. Build with -DBSP_BOARD=core_s3.
+ * M5Stack CoreS3 simulator board: host-side counterpart of core_s3.c. Build with
+ * -DBSP_BOARD=core_s3.
  */
 
 #include "bsp.h"
 #include "bsp_display.h"
 #include "bsp_dispatch.h"
 #include "bsp_power.h"
+#include "bsp_rtc.h"
 #include "sdl_panel.h"
 #include "power_sim.h"
+#include "rtc_sim.h"
 
 esp_err_t bsp_init(const bsp_config_t *config) {
     bsp_dispatch_configure(config ? config->dispatch.task_priority : 0,
@@ -29,6 +30,9 @@ esp_err_t bsp_init(const bsp_config_t *config) {
     esp_err_t err = sdl_panel_create(&sdl_config, &display, NULL);
     if (err != ESP_OK) return err;
     bsp_display_set_active(display);
+
+    bsp_rtc_t *rtc = NULL;
+    if (rtc_sim_create(&rtc) == ESP_OK) bsp_rtc_set_active(rtc);
 
     bsp_power_t *power = NULL;
     if (power_sim_create(&power) == ESP_OK) bsp_power_set_active(power);
