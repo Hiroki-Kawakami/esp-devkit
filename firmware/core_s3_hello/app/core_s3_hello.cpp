@@ -74,6 +74,62 @@ static void lvgl_init() {
     lv_indev_set_display(indev, disp);
 }
 
+/* ---- AW88298 speaker test ----------------------------------------------- */
+
+static int s_volume = 70;
+
+static lv_obj_t *make_button(lv_obj_t *parent, const char *text) {
+    lv_obj_t *btn = lv_button_create(parent);
+    lv_obj_set_style_pad_all(btn, 10, 0);
+    lv_obj_t *lbl = lv_label_create(btn);
+    lv_label_set_text(lbl, text);
+    lv_obj_center(lbl);
+    return btn;
+}
+
+/* Sustained tone so volume changes are audible while it plays. */
+static void tone_toggle_cb(lv_event_t *e) {
+    lv_obj_t *btn = lv_event_get_target_obj(e);
+    if (lv_obj_has_state(btn, LV_STATE_CHECKED)) bsp_audio_tone(440, 0);
+    else                                         bsp_audio_tone_stop();
+}
+
+struct vol_btn { lv_obj_t *label; int delta; };
+static void volume_cb(lv_event_t *e) {
+    auto *c = static_cast<vol_btn *>(lv_event_get_user_data(e));
+    s_volume += c->delta;
+    if (s_volume < 0)   s_volume = 0;
+    if (s_volume > 100) s_volume = 100;
+    bsp_audio_set_volume(s_volume);
+    lv_label_set_text_fmt(c->label, "Vol: %d", s_volume);
+}
+
+static void build_audio_test(lv_obj_t *scr) {
+    if (!(bsp_audio_get_caps() & BSP_AUDIO_CAP_SPEAKER)) return;
+
+    lv_obj_t *vol = lv_label_create(scr);
+    lv_obj_set_style_text_font(vol, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(vol, lv_color_hex(0x40C0FF), 0);
+    lv_label_set_text_fmt(vol, "Vol: %d", s_volume);
+    bsp_audio_set_volume(s_volume);
+
+    lv_obj_t *row = lv_obj_create(scr);
+    lv_obj_set_size(row, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(row, 0, 0);
+    lv_obj_set_style_pad_all(row, 0, 0);
+    lv_obj_set_style_pad_column(row, 8, 0);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_add_event_cb(make_button(row, "-"), volume_cb, LV_EVENT_CLICKED, new vol_btn{ vol, -10 });
+    lv_obj_add_event_cb(make_button(row, "+"), volume_cb, LV_EVENT_CLICKED, new vol_btn{ vol, +10 });
+
+    lv_obj_t *tone = make_button(row, "TONE");
+    lv_obj_add_flag(tone, LV_OBJ_FLAG_CHECKABLE);
+    lv_obj_add_event_cb(tone, tone_toggle_cb, LV_EVENT_VALUE_CHANGED, nullptr);
+}
+
 static void build_hello_screen() {
     lv_obj_t *scr = lv_screen_active();
     lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
@@ -119,6 +175,8 @@ static void build_hello_screen() {
         if (bsp_touch_read(&pt, 1) > 0) lv_label_set_text_fmt(label, "touch: %d,%d", pt.x, pt.y);
         else                            lv_label_set_text(label, "touch: --");
     }, 50, touch);
+
+    build_audio_test(scr);
 }
 
 void app_entry() {

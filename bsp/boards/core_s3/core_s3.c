@@ -20,7 +20,9 @@
 #include "axp2101.h"
 #include "aw9523.h"
 #include "core_s3_panel.h"
+#include "core_s3_audio.h"
 #include "bsp_power.h"
+#include "bsp_audio.h"
 #include "bsp_touch.h"
 #include "bsp_dispatch.h"
 
@@ -67,8 +69,6 @@ static esp_err_t power_init(i2c_master_bus_handle_t bus) {
     esp_err_t err = axp2101_create(&cfg, &s_axp);
     if (err != ESP_OK) return err;
 
-    /* The LCD logic rail sits somewhere in the LDO tree M5GFX turns on wholesale
-     * (reg0x90 = 0xBF); enable the same set so the panel has power. */
     axp2101_set_rail_mv(s_axp, AXP2101_ALDO3, 3300);
     axp2101_set_rail_mv(s_axp, AXP2101_ALDO4, 3300);
     axp2101_set_rail_enabled(s_axp, AXP2101_ALDO1, true);
@@ -84,9 +84,9 @@ static esp_err_t power_init(i2c_master_bus_handle_t bus) {
     return ESP_OK;
 }
 
-/* AW9523B pin setup (same registers M5GFX writes): P0_0/P0_2/P1_0/P1_1 high
- * (reset releases + LCD power/bus enable), the other driven pins low, and P1_2 an
- * input with its change-INT enabled -- that is the FT6336U touch INT. */
+/* AW9523B pin setup: P0_0/P1_0/P1_1 high (resets + LCD power/bus
+ * enable), P0_2 high (AW88298 power -- must be high or the codec won't
+ * answer on I2C), P1_2 input with change-INT = FT6336U touch INT. */
 static esp_err_t expander_init(i2c_master_bus_handle_t bus) {
     static const uint8_t high[] = { 0, 2, 8, 9 };
     static const uint8_t low[]  = { 1, 5, 6, 7, 12, 13, 14, 15 };
@@ -136,9 +136,28 @@ static esp_err_t expander_int_init(void) {
     return ESP_OK;
 }
 
+/* AW88298 speaker over I2S1 + its AW9523B P0_2 amp gate. Non-fatal: an amp
+ * failure leaves the bsp_audio_* API a no-op rather than blocking bring-up. */
+static esp_err_t audio_init(const bsp_config_t *config, i2c_master_bus_handle_t bus) {
+    bsp_audio_t *audio = NULL;
+    esp_err_t err = core_s3_audio_create(&(core_s3_audio_config_t){
+        .i2c_bus     = bus,
+        .io_expander = s_aw,
+    }, &audio);
+    if (err != ESP_OK) return err;
+    bsp_audio_set_active(audio, &(bsp_audio_init_t){
+        .dsp_mode     = config->audio.dsp_mode,
+        .speaker_mode = config->audio.speaker_mode,
+    });
+    return ESP_OK;
+}
+
 esp_err_t bsp_init(const bsp_config_t *config) {
     bsp_dispatch_configure(config ? config->dispatch.task_priority : 0,
                            config ? config->dispatch.task_affinity : -1);
+
+    bsp_config_t defaults = {0};
+    if (!config) config = &defaults;
 
     i2c_master_bus_handle_t i2c_bus = NULL;
     esp_err_t err = i2c_bus_init(&i2c_bus);
@@ -156,16 +175,20 @@ esp_err_t bsp_init(const bsp_config_t *config) {
         ESP_LOGE(TAG, "panel_init: %s", esp_err_to_name(err));
         return err;
     }
+    if ((err = audio_init(config, i2c_bus)) != ESP_OK)
+        ESP_LOGW(TAG, "audio unavailable: %s", esp_err_to_name(err));
     if ((err = expander_int_init()) != ESP_OK)
         ESP_LOGW(TAG, "expander INT unavailable: %s", esp_err_to_name(err));
     return ESP_OK;
 }
 
 void bsp_power_restart(void) {
+    bsp_audio_quiesce();
     esp_restart();
 }
 
 esp_err_t bsp_power_off(void) {
+    bsp_audio_quiesce();
     if (s_axp) axp2101_power_off(s_axp);
     return ESP_FAIL;   /* returning means VBUS held the rail up */
 }
