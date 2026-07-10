@@ -9,7 +9,7 @@ menu "Board Support Package"
 choice BSP_BOARD
     prompt "Target board"
     default BSP_BOARD_PAPER     if IDF_TARGET_ESP32
-    default BSP_BOARD_PAPER_S3  if IDF_TARGET_ESP32S3
+    default BSP_BOARD_CORE_S3   if IDF_TARGET_ESP32S3
     default BSP_BOARD_TAB5      if IDF_TARGET_ESP32P4
     default BSP_BOARD_S31_KORVO if IDF_TARGET_ESP32S31
 
@@ -24,6 +24,10 @@ choice BSP_BOARD
     config BSP_BOARD_STICKC_PLUS
         bool "M5StickC-Plus (ESP32)"
         depends on IDF_TARGET_ESP32
+
+    config BSP_BOARD_CORE_S3
+        bool "M5Stack CoreS3 (ESP32-S3)"
+        depends on IDF_TARGET_ESP32S3
 
     config BSP_BOARD_PAPER_S3
         bool "M5PaperS3 (ESP32-S3)"

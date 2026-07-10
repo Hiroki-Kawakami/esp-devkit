@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.16)
+include(${CMAKE_CURRENT_SOURCE_DIR}/../../../devkit.cmake)
+devkit_simulator_init()
+project(simulator C CXX)
+devkit_simulator(BOARD core_s3 COMPONENT_DIRS ../app)
