@@ -61,7 +61,7 @@ esp_err_t bsp_init(const bsp_config_t *config) {
     axp192_handle_t axp = axp_probe(i2c_bus);
     ESP_LOGI(TAG, "board: %s", axp ? "Core2" : "Basic");
 
-    if ((err = core_panel_init(axp)) != ESP_OK) {
+    if ((err = core_panel_init(i2c_bus, axp)) != ESP_OK) {
         ESP_LOGE(TAG, "core_panel_init: %s", esp_err_to_name(err));
         return err;
     }

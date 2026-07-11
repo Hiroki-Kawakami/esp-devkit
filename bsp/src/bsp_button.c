@@ -282,6 +282,10 @@ void bsp_button_notify_from_isr(bsp_button_raw_t *self, BaseType_t *hp) {
     if (self && self->source) bsp_dispatch_notify_from_isr(self->source, hp);
 }
 
+void bsp_button_notify(bsp_button_raw_t *self) {
+    if (self && self->source) bsp_dispatch_notify(self->source);
+}
+
 /* --- Public API (flat id space) --------------------------------------------- */
 
 uint8_t bsp_button_count(void) { return s_count; }

@@ -93,3 +93,7 @@ void bsp_button_emit(uint8_t id, bsp_button_event_t event);
 
 /* Wake `self`'s dispatch source from the provider's GPIO ISR. */
 void bsp_button_notify_from_isr(bsp_button_raw_t *self, BaseType_t *hp);
+
+/* Task-context sibling of bsp_button_notify_from_isr: wake `self`'s dispatch
+ * source from a non-ISR path (e.g. another dispatch source feeding samples). */
+void bsp_button_notify(bsp_button_raw_t *self);

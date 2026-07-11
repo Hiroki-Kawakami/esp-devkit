@@ -9,8 +9,12 @@
 
 #include "core_panel.h"
 #include "ili9342c.h"
+#include "ft6336u.h"
 #include "axp192.h"
 #include "bsp_display.h"
+#include "bsp_touch.h"
+#include "bsp_button.h"
+#include "gpio_button.h"
 #include "esp_log.h"
 #include "esp_rom_sys.h"
 #include "driver/gpio.h"
@@ -30,6 +34,14 @@ static const char *TAG = "core_panel";
 #define LCD_PIN_BL        GPIO_NUM_32
 #define LCD_WIDTH         320
 #define LCD_HEIGHT        240
+
+#define TOUCH_PIN_INT     GPIO_NUM_39
+#define TOUCH_BTN_Y0      240
+#define TOUCH_BTN_Y1      280
+
+#define BTN_PIN_A         GPIO_NUM_39
+#define BTN_PIN_B         GPIO_NUM_38
+#define BTN_PIN_C         GPIO_NUM_37
 
 #define BL_LEDC_MODE   LEDC_LOW_SPEED_MODE
 #define BL_LEDC_TIMER  LEDC_TIMER_0
@@ -122,7 +134,43 @@ static bool panel_invert_probe(void) {
     return invert;
 }
 
-esp_err_t core_panel_init(axp192_handle_t axp) {
+static void core_input_init(i2c_master_bus_handle_t i2c_bus) {
+    if (i2c_master_probe(i2c_bus, FT6336U_I2C_ADDR, 100) == ESP_OK) {
+        const ft6336u_config_t tp_cfg = {
+            .i2c_bus  = i2c_bus,
+            .int_io   = GPIO_NUM_NC,
+            .reset_io = GPIO_NUM_NC,
+            .width    = LCD_WIDTH,
+            .height   = LCD_HEIGHT,
+        };
+        bsp_touch_t *touch = NULL;
+        esp_err_t err = ft6336u_touch_create(&tp_cfg, &touch);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "touch unavailable: %s", esp_err_to_name(err));
+            return;
+        }
+        bsp_touch_set_active(touch);
+
+        static const bsp_touch_zone_t zones[] = {
+            {   0, TOUCH_BTN_Y0, 106, TOUCH_BTN_Y1 },
+            { 107, TOUCH_BTN_Y0, 213, TOUCH_BTN_Y1 },
+            { 214, TOUCH_BTN_Y0, 320, TOUCH_BTN_Y1 },
+        };
+        bsp_touch_set_button(&(bsp_touch_button_config_t){ .zones = zones, .count = 3 });
+    } else {
+        static const gpio_button_pin_t pins[] = {
+            { BTN_PIN_A, true },
+            { BTN_PIN_B, true },
+            { BTN_PIN_C, true },
+        };
+        const gpio_button_config_t gcfg = { .pins = pins, .count = 3, .enable_pull = false };
+        bsp_button_raw_t *btn = NULL;
+        if (gpio_button_create(&gcfg, &btn) == ESP_OK) bsp_button_add_raw(btn);
+        else ESP_LOGW(TAG, "gpio buttons unavailable");
+    }
+}
+
+esp_err_t core_panel_init(i2c_master_bus_handle_t i2c_bus, axp192_handle_t axp) {
     esp_err_t err;
     bool invert;
     if (axp) {
@@ -175,5 +223,7 @@ esp_err_t core_panel_init(axp192_handle_t axp) {
     }
     bsp_display_set_active(display);
     cfg.set_backlight(axp, 100);
+
+    core_input_init(i2c_bus);
     return ESP_OK;
 }

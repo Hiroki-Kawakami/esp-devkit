@@ -12,6 +12,9 @@
 #include "lvgl.hpp"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "screens/home_screen.hpp"
+#include "screens/lcd_test_screen.hpp"
+#include "screens/input_test_screen.hpp"
 #include <assert.h>
 
 static const char *TAG = "core_hello";
@@ -57,31 +60,15 @@ static void lvgl_init() {
     lv_display_set_default(disp);
 }
 
-static void build_hello_screen() {
-    lv_obj_t *scr = lv_screen_active();
-    lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
-    lv_obj_set_flex_flow(scr, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(scr, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_row(scr, 16, 0);
-
-    lv_obj_t *title = lv_label_create(scr);
-    lv_label_set_text(title, "M5Stack Core");
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_32, 0);
-    lv_obj_set_style_text_color(title, lv_color_hex(0x00E0A0), 0);
-
-    lv_obj_t *counter = lv_label_create(scr);
-    lv_obj_set_style_text_font(counter, &lv_font_montserrat_24, 0);
-    lv_obj_set_style_text_color(counter, lv_color_white(), 0);
-    lv_label_set_text(counter, "0 s");
-
-    /* Tick once a second: proves the LVGL render/flush loop stays live. */
-    struct tick_ctx { lv_obj_t *counter; int secs; };
-    auto *ctx = new tick_ctx{ counter, 0 };
-    lv_timer_create([](lv_timer_t *t) {
-        auto *c = static_cast<tick_ctx *>(lv_timer_get_user_data(t));
-        lv_label_set_text_fmt(c->counter, "%d s", ++c->secs);
-    }, 1000, ctx);
+static std::shared_ptr<Screen> make_screen(int index) {
+    switch (index) {
+        case 1:  return std::make_shared<LcdTestScreen>();
+        case 2:  return std::make_shared<InputTestScreen>();
+        default: return std::make_shared<HomeScreen>();
+    }
 }
+
+static int s_screen_index = 0;
 
 void app_entry() {
     bsp_config_t bsp_config = {};
@@ -90,7 +77,14 @@ void app_entry() {
     bsp_display_set_brightness(100);
     lvgl_init();
 
+    bsp_button_on_click(2, [](uint8_t, void *) {
+        lv_async_call([] {
+            s_screen_index = (s_screen_index + 1) % 3;
+            screen_manager.load(make_screen(s_screen_index));
+        });
+    }, nullptr);
+
     lv_async_call([] {
-        build_hello_screen();
+        screen_manager.load(make_screen(s_screen_index));
     });
 }

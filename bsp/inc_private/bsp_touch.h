@@ -67,3 +67,14 @@ void bsp_touch_notify(void);
  * cache them for bsp_touch_read. Called by the dispatch source, the simulator,
  * and chip drivers on a sync poll. count 0 = all released. */
 void bsp_touch_emit_event(const bsp_touch_point_t *points, int count);
+
+typedef struct {
+    int x0, y0, x1, y1;
+} bsp_touch_zone_t;
+
+typedef struct {
+    const bsp_touch_zone_t *zones;
+    uint8_t                 count;
+} bsp_touch_button_config_t;
+
+void bsp_touch_set_button(const bsp_touch_button_config_t *config);

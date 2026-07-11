@@ -15,6 +15,7 @@
 
 #include "bsp.h"
 #include "bsp_touch.h"
+#include "bsp_button.h"
 #include "bsp_dispatch.h"
 
 #include <string.h>
@@ -47,6 +48,12 @@ static SemaphoreHandle_t s_wait_sem;
 static uint8_t s_no_touch_count;
 static bool    s_was_down;
 
+#define BSP_TOUCH_BUTTON_MAX  8
+static bsp_touch_zone_t s_btn_zones[BSP_TOUCH_BUTTON_MAX];
+static bool             s_btn_pressed[BSP_TOUCH_BUTTON_MAX];
+static uint8_t          s_btn_count;
+static bsp_button_raw_t s_btn_raw;
+
 static uint32_t touch_tick(void *ctx);
 static bsp_dispatch_source_t s_touch_source = { .tick = touch_tick };
 
@@ -67,9 +74,48 @@ static inline void ensure_snapshot_lock(void) {
 static inline void snapshot_lock(void)   { if (s_snapshot_lock) xSemaphoreTake(s_snapshot_lock, portMAX_DELAY); }
 static inline void snapshot_unlock(void) { if (s_snapshot_lock) xSemaphoreGive(s_snapshot_lock); }
 
+static inline bool point_in_button_zone(int x, int y) {
+    for (uint8_t i = 0; i < s_btn_count; i++) {
+        const bsp_touch_zone_t *z = &s_btn_zones[i];
+        if (x >= z->x0 && x < z->x1 && y >= z->y0 && y < z->y1) return true;
+    }
+    return false;
+}
+
+static void touch_button_feed(const bsp_touch_point_t *points, int count) {
+    bool changed = false;
+    for (uint8_t i = 0; i < s_btn_count; i++) {
+        const bsp_touch_zone_t *z = &s_btn_zones[i];
+        bool hit = false;
+        for (int p = 0; p < count; p++) {
+            int x = points[p].x, y = points[p].y;
+            if (x >= z->x0 && x < z->x1 && y >= z->y0 && y < z->y1) { hit = true; break; }
+        }
+        if (hit != s_btn_pressed[i]) { s_btn_pressed[i] = hit; changed = true; }
+    }
+    if (changed) bsp_button_notify(&s_btn_raw);
+}
+
+static esp_err_t touch_button_sample(bsp_button_raw_t *self, bool *pressed, uint8_t max) {
+    (void)self;
+    uint8_t n = s_btn_count < max ? s_btn_count : max;
+    for (uint8_t i = 0; i < n; i++) pressed[i] = s_btn_pressed[i];
+    return ESP_OK;
+}
+
 void bsp_touch_emit_event(const bsp_touch_point_t *points, int count) {
     if (count < 0) count = 0;
     if (count > BSP_TOUCH_MAX_POINTS) count = BSP_TOUCH_MAX_POINTS;
+
+    bsp_touch_point_t filtered[BSP_TOUCH_MAX_POINTS];
+    if (s_btn_count) {
+        touch_button_feed(points, count);
+        int f = 0;
+        for (int p = 0; p < count; p++)
+            if (!point_in_button_zone(points[p].x, points[p].y)) filtered[f++] = points[p];
+        points = filtered;
+        count  = f;
+    }
 
     ensure_snapshot_lock();
     snapshot_lock();
@@ -79,6 +125,19 @@ void bsp_touch_emit_event(const bsp_touch_point_t *points, int count) {
 
     bsp_touch_event_cb_t cb = s_event_cb;
     if (cb) cb(points, count, s_event_arg);
+}
+
+void bsp_touch_set_button(const bsp_touch_button_config_t *config) {
+    if (!config || !config->zones || config->count == 0) return;
+
+    uint8_t n = config->count;
+    if (n > BSP_TOUCH_BUTTON_MAX) n = BSP_TOUCH_BUTTON_MAX;
+    for (uint8_t i = 0; i < n; i++) s_btn_zones[i] = config->zones[i];
+
+    s_btn_raw.count   = n;
+    s_btn_raw.sample  = touch_button_sample;
+    s_btn_raw.has_int = true;
+    if (bsp_button_add_raw(&s_btn_raw) == ESP_OK) s_btn_count = n;
 }
 
 void bsp_touch_notify(void) {

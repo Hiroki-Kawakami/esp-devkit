@@ -9,9 +9,12 @@ set(BOARD_DEVICE_SRCS
     "boards/core/core.c"
     "boards/core/core_panel.c"
     "devices/ili9342c/ili9342c.c"
-    "devices/axp192/axp192.c")
+    "devices/axp192/axp192.c"
+    "devices/ft6336u/ft6336u.c"
+    "driver/gpio_button/gpio_button.c")
 set(BOARD_DEVICE_PRIV_INCLUDE_DIRS
-    "devices" "devices/ili9342c" "devices/axp192")
+    "devices" "devices/ili9342c" "devices/axp192" "devices/ft6336u"
+    "driver/gpio_button")
 set(BOARD_DEVICE_PRIV_REQUIRES
     driver esp_driver_spi esp_driver_ledc esp_driver_i2c)
 
