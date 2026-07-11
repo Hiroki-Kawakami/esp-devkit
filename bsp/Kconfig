@@ -8,10 +8,14 @@ menu "Board Support Package"
 
 choice BSP_BOARD
     prompt "Target board"
-    default BSP_BOARD_PAPER     if IDF_TARGET_ESP32
+    default BSP_BOARD_CORE      if IDF_TARGET_ESP32
     default BSP_BOARD_CORE_S3   if IDF_TARGET_ESP32S3
     default BSP_BOARD_TAB5      if IDF_TARGET_ESP32P4
     default BSP_BOARD_S31_KORVO if IDF_TARGET_ESP32S31
+
+    config BSP_BOARD_CORE
+        bool "M5Stack Core (Basic / Core2)"
+        depends on IDF_TARGET_ESP32
 
     config BSP_BOARD_PAPER
         bool "M5Paper (ESP32)"
