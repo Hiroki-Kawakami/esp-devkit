@@ -9,6 +9,7 @@
 
 #include "core_panel.h"
 #include "ili9342c.h"
+#include "axp192.h"
 #include "bsp_display.h"
 #include "esp_log.h"
 #include "esp_rom_sys.h"
@@ -18,15 +19,17 @@
 
 static const char *TAG = "core_panel";
 
-#define LCD_SPI_HOST   SPI2_HOST
-#define LCD_PIN_MOSI   GPIO_NUM_23
-#define LCD_PIN_SCLK   GPIO_NUM_18
-#define LCD_PIN_CS     GPIO_NUM_14
-#define LCD_PIN_DC     GPIO_NUM_27
-#define LCD_PIN_RST    GPIO_NUM_33
-#define LCD_PIN_BL     GPIO_NUM_32
-#define LCD_WIDTH      320
-#define LCD_HEIGHT     240
+#define LCD_SPI_HOST      SPI2_HOST
+#define LCD_PIN_MOSI      GPIO_NUM_23
+#define LCD_PIN_SCLK      GPIO_NUM_18
+#define LCD_PIN_CS_BASIC  GPIO_NUM_14
+#define LCD_PIN_DC_BASIC  GPIO_NUM_27
+#define LCD_PIN_CS_CORE2  GPIO_NUM_5
+#define LCD_PIN_DC_CORE2  GPIO_NUM_15
+#define LCD_PIN_RST       GPIO_NUM_33
+#define LCD_PIN_BL        GPIO_NUM_32
+#define LCD_WIDTH         320
+#define LCD_HEIGHT        240
 
 #define BL_LEDC_MODE   LEDC_LOW_SPEED_MODE
 #define BL_LEDC_TIMER  LEDC_TIMER_0
@@ -69,6 +72,42 @@ static void lcd_reset_set(void *ctx, bool asserted) {
     gpio_set_level(LCD_PIN_RST, asserted ? 0 : 1);   /* RESET active low */
 }
 
+#define AXP_REG_GPIO34_FUNC  0x95
+#define AXP_REG_GPIO34_LVL   0x96
+#define AXP_GPIO4_FUNC_KEEP  0x72
+#define AXP_GPIO4_NMOS_OUT   0x84
+#define AXP_GPIO4_LVL_BIT    0x02
+
+static void axp_lcd_reset_init(axp192_handle_t axp) {
+    uint8_t func = 0;
+    axp192_read_reg(axp, AXP_REG_GPIO34_FUNC, &func);
+    axp192_write_reg(axp, AXP_REG_GPIO34_FUNC, (func & AXP_GPIO4_FUNC_KEEP) | AXP_GPIO4_NMOS_OUT);
+}
+
+static void axp_lcd_reset_set(void *ctx, bool asserted) {
+    axp192_handle_t axp = ctx;
+    uint8_t lvl = 0;
+    axp192_read_reg(axp, AXP_REG_GPIO34_LVL, &lvl);
+    if (asserted) lvl &= ~AXP_GPIO4_LVL_BIT;
+    else          lvl |= AXP_GPIO4_LVL_BIT;
+    axp192_write_reg(axp, AXP_REG_GPIO34_LVL, lvl);
+}
+
+static void axp_backlight_set(void *ctx, int brightness) {
+    axp192_handle_t axp = ctx;
+    if (brightness <= 0) {
+        axp192_set_rail_enabled(axp, AXP192_RAIL_DCDC3, false);
+        return;
+    }
+    if (brightness > 100) brightness = 100;
+    axp192_set_dcdc3_mv(axp, 2500 + (3300 - 2500) * brightness / 100);
+    axp192_set_rail_enabled(axp, AXP192_RAIL_DCDC3, true);
+}
+
+static void axp_panel_power_set(void *ctx, bool on) {
+    axp192_set_rail_enabled(ctx, AXP192_RAIL_LDO2, on);
+}
+
 static bool panel_invert_probe(void) {
     gpio_reset_pin(LCD_PIN_RST);
     gpio_set_direction(LCD_PIN_RST, GPIO_MODE_OUTPUT);
@@ -83,14 +122,21 @@ static bool panel_invert_probe(void) {
     return invert;
 }
 
-esp_err_t core_panel_init(void) {
-    bool invert = panel_invert_probe();
-    ESP_LOGI(TAG, "panel invert = %d (GPIO%d probe)", invert, LCD_PIN_RST);
-
+esp_err_t core_panel_init(axp192_handle_t axp) {
     esp_err_t err;
-    if ((err = backlight_init()) != ESP_OK) {
-        ESP_LOGE(TAG, "backlight_init: %s", esp_err_to_name(err));
-        return err;
+    bool invert;
+    if (axp) {
+        invert = true;
+        axp192_set_ldo2_mv(axp, 3300);
+        axp192_set_rail_enabled(axp, AXP192_RAIL_LDO2, true);
+        axp_lcd_reset_init(axp);
+    } else {
+        invert = panel_invert_probe();
+        ESP_LOGI(TAG, "panel invert = %d (GPIO%d probe)", invert, LCD_PIN_RST);
+        if ((err = backlight_init()) != ESP_OK) {
+            ESP_LOGE(TAG, "backlight_init: %s", esp_err_to_name(err));
+            return err;
+        }
     }
 
     const spi_bus_config_t bus_cfg = {
@@ -107,16 +153,20 @@ esp_err_t core_panel_init(void) {
     }
 
     const ili9342c_config_t cfg = {
-        .spi_host      = LCD_SPI_HOST,
-        .cs_io         = LCD_PIN_CS,
-        .dc_io         = LCD_PIN_DC,
-        .clock_hz      = ILI9342C_SPI_DEFAULT_HZ,
-        .width         = LCD_WIDTH,
-        .height        = LCD_HEIGHT,
-        .madctl        = 0x08,
-        .invert        = invert,
-        .set_reset     = lcd_reset_set,
-        .set_backlight = backlight_set,
+        .spi_host        = LCD_SPI_HOST,
+        .cs_io           = axp ? LCD_PIN_CS_CORE2 : LCD_PIN_CS_BASIC,
+        .dc_io           = axp ? LCD_PIN_DC_CORE2 : LCD_PIN_DC_BASIC,
+        .clock_hz        = ILI9342C_SPI_DEFAULT_HZ,
+        .width           = LCD_WIDTH,
+        .height          = LCD_HEIGHT,
+        .madctl          = 0x08,
+        .invert          = invert,
+        .set_reset       = axp ? axp_lcd_reset_set : lcd_reset_set,
+        .reset_ctx       = axp,
+        .set_backlight   = axp ? axp_backlight_set : backlight_set,
+        .backlight_ctx   = axp,
+        .set_panel_power = axp ? axp_panel_power_set : NULL,
+        .panel_power_ctx = axp,
     };
     bsp_display_t *display = NULL;
     if ((err = ili9342c_create(&cfg, &display)) != ESP_OK) {
@@ -124,6 +174,6 @@ esp_err_t core_panel_init(void) {
         return err;
     }
     bsp_display_set_active(display);
-    backlight_set(NULL, 100);
+    cfg.set_backlight(axp, 100);
     return ESP_OK;
 }

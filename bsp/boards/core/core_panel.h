@@ -8,12 +8,13 @@
 
 #pragma once
 #include "bsp.h"
+#include "axp192.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-esp_err_t core_panel_init(void);
+esp_err_t core_panel_init(axp192_handle_t axp);
 
 #ifdef __cplusplus
 }

@@ -8,10 +8,11 @@ set(BOARD_TARGET esp32)
 set(BOARD_DEVICE_SRCS
     "boards/core/core.c"
     "boards/core/core_panel.c"
-    "devices/ili9342c/ili9342c.c")
+    "devices/ili9342c/ili9342c.c"
+    "devices/axp192/axp192.c")
 set(BOARD_DEVICE_PRIV_INCLUDE_DIRS
-    "devices" "devices/ili9342c")
+    "devices" "devices/ili9342c" "devices/axp192")
 set(BOARD_DEVICE_PRIV_REQUIRES
-    driver esp_driver_spi esp_driver_ledc)
+    driver esp_driver_spi esp_driver_ledc esp_driver_i2c)
 
 set(BOARD_SIM_SRCS "boards/core/core_sim.c")
