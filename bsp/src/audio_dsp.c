@@ -22,8 +22,36 @@
  * (beyond it, the in-place pointer path is used — see audio_dsp_process). */
 #define DSP_SNAPSHOT_STAGES    8
 
+/* Fixed-point layout. The public coefficient/gain API stays float; everything
+ * inside process() is integer so the hot loop runs on the ALU (no FPU latency,
+ * no per-sample float<->int conversion) on FPU-less and FPU-equipped targets
+ * alike.
+ *
+ *   coefficients : Q4.28  (int32, range ±8 — covers a1∈[-2,2] and boosted
+ *                          shelf/peak b coefficients with margin)
+ *   samples      : Q(SAMPLE) internal, i.e. value<<SAMPLE. The fractional bits
+ *                  give the recursive feedback sub-LSB resolution; the rest of
+ *                  the int32 range is the inter-stage headroom (~±36 dB above
+ *                  int16 full-scale before an intermediate value overflows).
+ *   gain         : Q(GAIN) linear multiplier.
+ *
+ * Each biquad MAC is int32(coeff) * int32(sample) -> int64, the cheap Xtensa
+ * mull/mulsh path; the accumulator and filter state stay int64. */
+#define DSP_COEFF_Q     28
+#define DSP_SAMPLE_Q    10
+#define DSP_GAIN_Q      24
+#define DSP_GAIN_UNITY  (1 << DSP_GAIN_Q)
+#define DSP_COEFF_HALF  ((int64_t)1 << (DSP_COEFF_Q  - 1))
+#define DSP_SAMPLE_HALF ((int64_t)1 << (DSP_SAMPLE_Q - 1))
+#define DSP_GAIN_HALF   ((int64_t)1 << (DSP_GAIN_Q   - 1))
+
 typedef struct {
-    float z1, z2;
+    int32_t b0, b1, b2;
+    int32_t a1, a2;
+} biquad_q_t;
+
+typedef struct {
+    int64_t z1, z2;
 } biquad_state_t;
 
 struct audio_dsp_state {
@@ -33,22 +61,43 @@ struct audio_dsp_state {
     uint8_t  bits_per_sample;
     size_t   max_stages;
     size_t   num_stages;
-    audio_dsp_biquad_t *biquads;       /* [max_stages] */
-    biquad_state_t     *states;        /* [max_stages * channels] */
+    biquad_q_t     *biquads;           /* [max_stages], Q4.28 */
+    biquad_state_t *states;            /* [max_stages * channels] */
     bool eq_enabled;
     /* Software gain with per-sample fade. Applied AFTER biquads so changing
      * the gain doesn't disturb the filter memory. */
-    float    current_gain;             /* per-frame interpolation cursor */
-    float    target_gain;
-    float    gain_step;                /* per-frame delta toward target */
+    float    target_gain;              /* linear, kept only for the getter */
+    int32_t  current_gain_q;           /* Q24 per-frame interpolation cursor */
+    int32_t  target_gain_q;            /* Q24 */
+    int32_t  gain_step_q;              /* Q24 per-frame delta toward target */
     uint32_t fade_remaining;           /* frames left to step */
     bool     mono_mix;                 /* (L+R)/2 → both channels (stereo only) */
 };
 
-static inline float biquad_step(const audio_dsp_biquad_t *b, biquad_state_t *s, float x) {
-    float y = b->b0 * x + s->z1;
-    s->z1 = b->b1 * x - b->a1 * y + s->z2;
-    s->z2 = b->b2 * x - b->a2 * y;
+static inline int32_t coeff_to_q(float c) {
+    float v = c * (float)(1 << DSP_COEFF_Q);
+    if (v >=  2147483647.0f) return  2147483647;
+    if (v <= -2147483648.0f) return -2147483647 - 1;
+    return (int32_t)lrintf(v);
+}
+
+static inline void biquad_to_q(const audio_dsp_biquad_t *f, biquad_q_t *q) {
+    q->b0 = coeff_to_q(f->b0);
+    q->b1 = coeff_to_q(f->b1);
+    q->b2 = coeff_to_q(f->b2);
+    q->a1 = coeff_to_q(f->a1);
+    q->a2 = coeff_to_q(f->a2);
+}
+
+static inline int32_t gain_to_q(float g) {
+    return (int32_t)lrintf(g * (float)DSP_GAIN_UNITY);
+}
+
+static inline int32_t biquad_step(const biquad_q_t *b, biquad_state_t *s, int32_t x) {
+    int64_t acc = (int64_t)b->b0 * x + s->z1;
+    int32_t y   = (int32_t)((acc + DSP_COEFF_HALF) >> DSP_COEFF_Q);
+    s->z1 = (int64_t)b->b1 * x - (int64_t)b->a1 * y + s->z2;
+    s->z2 = (int64_t)b->b2 * x - (int64_t)b->a2 * y;
     return y;
 }
 
@@ -75,7 +124,7 @@ esp_err_t audio_dsp_init(const audio_dsp_config_t *config, audio_dsp_t *out_dsp)
     if (!dsp) return ESP_ERR_NO_MEM;
 
     dsp->mutex = xSemaphoreCreateMutex();
-    dsp->biquads = calloc(max_stages, sizeof(audio_dsp_biquad_t));
+    dsp->biquads = calloc(max_stages, sizeof(biquad_q_t));
     dsp->states  = calloc(max_stages * config->channels, sizeof(biquad_state_t));
     if (!dsp->mutex || !dsp->biquads || !dsp->states) {
         audio_dsp_deinit(dsp);
@@ -88,12 +137,13 @@ esp_err_t audio_dsp_init(const audio_dsp_config_t *config, audio_dsp_t *out_dsp)
     dsp->max_stages      = max_stages;
     dsp->num_stages      = initial_n;
     dsp->eq_enabled      = config->eq_enabled;
-    dsp->current_gain    = 1.0f;
     dsp->target_gain     = 1.0f;
-    dsp->gain_step       = 0.0f;
+    dsp->current_gain_q  = DSP_GAIN_UNITY;
+    dsp->target_gain_q   = DSP_GAIN_UNITY;
+    dsp->gain_step_q     = 0;
     dsp->fade_remaining  = 0;
     dsp->mono_mix        = config->mono_mix;
-    if (initial_n) memcpy(dsp->biquads, config->biquads, initial_n * sizeof(audio_dsp_biquad_t));
+    for (size_t i = 0; i < initial_n; i++) biquad_to_q(&config->biquads[i], &dsp->biquads[i]);
 
     *out_dsp = dsp;
     return ESP_OK;
@@ -116,7 +166,7 @@ esp_err_t audio_dsp_set_biquads(audio_dsp_t dsp, const audio_dsp_biquad_t *biqua
     if (num_stages > dsp->max_stages) {
         /* Grow the stage capacity to fit. States are recreated (they are
          * reset below anyway); coefficients are fully rewritten below. */
-        audio_dsp_biquad_t *new_biquads = calloc(num_stages, sizeof(audio_dsp_biquad_t));
+        biquad_q_t *new_biquads = calloc(num_stages, sizeof(biquad_q_t));
         biquad_state_t *new_states = calloc(num_stages * dsp->channels, sizeof(biquad_state_t));
         if (!new_biquads || !new_states) {
             free(new_biquads);
@@ -130,7 +180,7 @@ esp_err_t audio_dsp_set_biquads(audio_dsp_t dsp, const audio_dsp_biquad_t *biqua
         dsp->states     = new_states;
         dsp->max_stages = num_stages;
     }
-    if (num_stages) memcpy(dsp->biquads, biquads, num_stages * sizeof(audio_dsp_biquad_t));
+    for (size_t i = 0; i < num_stages; i++) biquad_to_q(&biquads[i], &dsp->biquads[i]);
     dsp->num_stages = num_stages;
     reset_states(dsp);
     xSemaphoreGive(dsp->mutex);
@@ -183,13 +233,13 @@ esp_err_t audio_dsp_process(audio_dsp_t dsp, void *data, size_t bytes) {
      * to stall higher-priority work on the same core. Biquad states are only
      * touched by this function (single consumer), so they're safe to read /
      * write outside the lock. */
-    audio_dsp_biquad_t local_biquads[DSP_SNAPSHOT_STAGES];
-    audio_dsp_biquad_t *biquads_ptr;
+    biquad_q_t local_biquads[DSP_SNAPSHOT_STAGES];
+    biquad_q_t *biquads_ptr;
     size_t   n_stages;
     uint8_t  channels;
     bool     do_biquads;
     bool     mono_mix;
-    float    current_gain, target_gain, gain_step;
+    int32_t  current_gain_q, target_gain_q, gain_step_q;
     uint32_t fade_remaining;
     biquad_state_t *states;
 
@@ -198,26 +248,26 @@ esp_err_t audio_dsp_process(audio_dsp_t dsp, void *data, size_t bytes) {
     channels       = dsp->channels;
     do_biquads     = dsp->eq_enabled && n_stages > 0;
     mono_mix       = dsp->mono_mix && channels == 2;
-    current_gain   = dsp->current_gain;
-    target_gain    = dsp->target_gain;
-    gain_step      = dsp->gain_step;
+    current_gain_q = dsp->current_gain_q;
+    target_gain_q  = dsp->target_gain_q;
+    gain_step_q    = dsp->gain_step_q;
     fade_remaining = dsp->fade_remaining;
     states         = dsp->states;
-    /* Cheap to copy: up to DSP_SNAPSHOT_STAGES * 5 floats = 160 bytes. Larger
+    /* Cheap to copy: up to DSP_SNAPSHOT_STAGES * 5 int32 = 160 bytes. Larger
      * configs keep the mutex held across the processing loop instead — the
      * direct pointer would dangle if a concurrent set_biquads grows (and thus
      * reallocates) the stage arrays. Coefficient updates that large are rare,
      * so the starvation tradeoff only applies where it can't be helped. */
     bool hold_lock = n_stages > DSP_SNAPSHOT_STAGES;
     if (!hold_lock) {
-        if (n_stages) memcpy(local_biquads, dsp->biquads, n_stages * sizeof(audio_dsp_biquad_t));
+        if (n_stages) memcpy(local_biquads, dsp->biquads, n_stages * sizeof(biquad_q_t));
         biquads_ptr = local_biquads;
         xSemaphoreGive(dsp->mutex);
     } else {
         biquads_ptr = dsp->biquads;
     }
 
-    const bool apply_gain = (current_gain != 1.0f) || (target_gain != 1.0f) || (fade_remaining > 0);
+    const bool apply_gain = (current_gain_q != DSP_GAIN_UNITY) || (target_gain_q != DSP_GAIN_UNITY) || (fade_remaining > 0);
     if (!do_biquads && !apply_gain && !mono_mix) {
         if (hold_lock) xSemaphoreGive(dsp->mutex);
         return ESP_OK;
@@ -234,32 +284,31 @@ esp_err_t audio_dsp_process(audio_dsp_t dsp, void *data, size_t bytes) {
     for (size_t f = 0; f < frames; f++) {
         /* Per-frame gain step (same multiplier for L+R so stereo image holds). */
         if (fade_remaining > 0) {
-            current_gain += gain_step;
-            if (--fade_remaining == 0) current_gain = target_gain;
+            current_gain_q += gain_step_q;
+            if (--fade_remaining == 0) current_gain_q = target_gain_q;
         }
-        const float g = current_gain;
+        const int32_t g = current_gain_q;
 
-        float ys[2];
+        int64_t ys[2];
         for (uint8_t ch = 0; ch < channels; ch++) {
-            float x = (float)p[f * channels + ch];
+            int32_t x = (int32_t)p[f * channels + ch] << DSP_SAMPLE_Q;
             if (do_biquads) {
                 for (size_t s = 0; s < n_stages; s++) {
                     x = biquad_step(&biquads_ptr[s], &states[s * channels + ch], x);
                 }
             }
-            x *= g;
-            ys[ch] = x;
+            ys[ch] = ((int64_t)x * g + DSP_GAIN_HALF) >> DSP_GAIN_Q;
         }
         if (mono_mix) {
-            const float mono = (ys[0] + ys[1]) * 0.5f;
+            const int64_t mono = (ys[0] + ys[1]) >> 1;
             ys[0] = mono;
             ys[1] = mono;
         }
         for (uint8_t ch = 0; ch < channels; ch++) {
-            float x = ys[ch];
-            if (x >  32767.0f) x =  32767.0f;
-            if (x < -32768.0f) x = -32768.0f;
-            p[f * channels + ch] = (int16_t)lrintf(x);
+            int32_t out = (int32_t)((ys[ch] + DSP_SAMPLE_HALF) >> DSP_SAMPLE_Q);
+            if (out >  32767) out =  32767;
+            if (out < -32768) out = -32768;
+            p[f * channels + ch] = (int16_t)out;
         }
     }
 
@@ -268,8 +317,8 @@ esp_err_t audio_dsp_process(audio_dsp_t dsp, void *data, size_t bytes) {
      * processing, our writeback below is conditional so we don't overwrite it. */
     if (!hold_lock) xSemaphoreTake(dsp->mutex, portMAX_DELAY);
     /* Only update if no one else changed the fade meanwhile. */
-    if (dsp->target_gain == target_gain) {
-        dsp->current_gain   = current_gain;
+    if (dsp->target_gain_q == target_gain_q) {
+        dsp->current_gain_q = current_gain_q;
         dsp->fade_remaining = fade_remaining;
     }
     xSemaphoreGive(dsp->mutex);
@@ -282,16 +331,18 @@ esp_err_t audio_dsp_set_gain(audio_dsp_t dsp, float target_gain, uint32_t fade_m
     if (target_gain > DSP_MAX_GAIN)  target_gain = DSP_MAX_GAIN;
 
     xSemaphoreTake(dsp->mutex, portMAX_DELAY);
-    dsp->target_gain = target_gain;
-    if (fade_ms == 0 || target_gain == dsp->current_gain) {
-        dsp->current_gain   = target_gain;
+    dsp->target_gain   = target_gain;
+    int32_t target_q   = gain_to_q(target_gain);
+    dsp->target_gain_q = target_q;
+    if (fade_ms == 0 || target_q == dsp->current_gain_q) {
+        dsp->current_gain_q = target_q;
         dsp->fade_remaining = 0;
-        dsp->gain_step      = 0.0f;
+        dsp->gain_step_q    = 0;
     } else {
         uint32_t frames = (uint32_t)(((uint64_t)dsp->sample_rate * fade_ms + 500) / 1000);
         if (frames == 0) frames = 1;
         dsp->fade_remaining = frames;
-        dsp->gain_step      = (target_gain - dsp->current_gain) / (float)frames;
+        dsp->gain_step_q    = (target_q - dsp->current_gain_q) / (int32_t)frames;
     }
     xSemaphoreGive(dsp->mutex);
     return ESP_OK;
