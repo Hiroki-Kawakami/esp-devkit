@@ -7,9 +7,12 @@
  */
 
 #include "bsp.h"
+#include "bsp_audio.h"
 #include "bsp_display.h"
 #include "bsp_dispatch.h"
+#include "sdl_audio.h"
 #include "sdl_panel.h"
+#include <stdio.h>
 
 esp_err_t bsp_init(const bsp_config_t *config) {
     bsp_dispatch_configure(config ? config->dispatch.task_priority : 0,
@@ -26,5 +29,16 @@ esp_err_t bsp_init(const bsp_config_t *config) {
     esp_err_t err = sdl_panel_create(&sdl_config, &display, NULL);
     if (err != ESP_OK) return err;
     bsp_display_set_active(display);
+
+    bsp_audio_t *audio = NULL;
+    esp_err_t audio_err = sdl_audio_create(NULL, &audio);
+    if (audio_err == ESP_OK) {
+        bsp_audio_set_active(audio, &(bsp_audio_init_t){
+            .dsp_mode     = config ? config->audio.dsp_mode : 0,
+            .speaker_mode = config ? config->audio.speaker_mode : 0,
+        });
+    } else {
+        fprintf(stderr, "[sim] sdl_audio_create failed: %d\n", audio_err);
+    }
     return ESP_OK;
 }

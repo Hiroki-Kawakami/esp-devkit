@@ -15,6 +15,7 @@
 #include "screens/home_screen.hpp"
 #include "screens/lcd_test_screen.hpp"
 #include "screens/input_test_screen.hpp"
+#include "screens/audio_test_screen.hpp"
 #include <assert.h>
 
 static const char *TAG = "core_hello";
@@ -60,10 +61,13 @@ static void lvgl_init() {
     lv_display_set_default(disp);
 }
 
+static constexpr int SCREEN_COUNT = 4;
+
 static std::shared_ptr<Screen> make_screen(int index) {
     switch (index) {
         case 1:  return std::make_shared<LcdTestScreen>();
         case 2:  return std::make_shared<InputTestScreen>();
+        case 3:  return std::make_shared<AudioTestScreen>();
         default: return std::make_shared<HomeScreen>();
     }
 }
@@ -79,7 +83,7 @@ void app_entry() {
 
     bsp_button_on_click(2, [](uint8_t, void *) {
         lv_async_call([] {
-            s_screen_index = (s_screen_index + 1) % 3;
+            s_screen_index = (s_screen_index + 1) % SCREEN_COUNT;
             screen_manager.load(make_screen(s_screen_index));
         });
     }, nullptr);

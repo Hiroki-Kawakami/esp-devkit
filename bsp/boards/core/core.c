@@ -12,6 +12,7 @@
 #include "driver/i2c_master.h"
 #include "bsp_dispatch.h"
 #include "core_panel.h"
+#include "core_audio.h"
 #include "axp192.h"
 
 static const char *TAG = "core";
@@ -65,5 +66,8 @@ esp_err_t bsp_init(const bsp_config_t *config) {
         ESP_LOGE(TAG, "core_panel_init: %s", esp_err_to_name(err));
         return err;
     }
+
+    if (config && (err = core_audio_init(config, axp)) != ESP_OK)
+        ESP_LOGW(TAG, "audio unavailable: %s", esp_err_to_name(err));
     return ESP_OK;
 }
