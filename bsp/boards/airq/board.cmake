@@ -1,8 +1,9 @@
 # M5Stack Air Quality Kit — ESP32-S3 + GDEY0154D67 (SSD1681) 200x200 B/W SPI
 # EPD + two front buttons (A=GPIO0, B=GPIO8) + power button (GPIO42) + passive
-# buzzer (GPIO9) + BM8563 RTC on I2C (SCL=GPIO12, SDA=GPIO11). Consumed
-# by bsp/CMakeLists.txt when BSP_BOARD == airq. Paths are relative to the bsp
-# component directory. (Air-quality sensors are not wired yet.)
+# buzzer (GPIO9) + BM8563 RTC on I2C (SCL=GPIO12, SDA=GPIO11). The SEN55/SCD40
+# air sensors sit on the same bus, their rail on BSP_POWER_SWITCH_SENSOR.
+# Consumed by bsp/CMakeLists.txt when BSP_BOARD == airq. Paths are relative to
+# the bsp component directory.
 
 set(BOARD_TARGET esp32s3)
 

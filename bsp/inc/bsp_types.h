@@ -141,7 +141,8 @@ typedef enum {
 } bsp_power_caps_t;
 
 typedef enum {
-    BSP_POWER_SWITCH_USB5V,  /*!< USB host 5V bus power */
+    BSP_POWER_SWITCH_USB5V,   /*!< USB host 5V bus power */
+    BSP_POWER_SWITCH_SENSOR,  /*!< external-sensor power rail */
 } bsp_power_switch_t;
 
 typedef enum {

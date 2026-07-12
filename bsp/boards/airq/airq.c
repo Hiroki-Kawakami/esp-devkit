@@ -6,9 +6,11 @@
  * SPI bus for the GDEY0154D67 EPD and registers it as the active display, the
  * two front buttons (A=GPIO0, B=GPIO8) plus the power button (GPIO42, usable as
  * a normal button after boot), the passive buzzer on GPIO9, and the BM8563 RTC
- * on I2C (SCL=GPIO12, SDA=GPIO11). Power latches on GPIO46 (held high to stay on
- * when VBUS is absent) with battery sense on GPIO14. The host-side counterpart
- * is airq_sim.c.
+ * on I2C (SCL=GPIO12, SDA=GPIO11). The same bus carries the SEN55 (0x69) and
+ * SCD40 (0x62) air sensors; their rail (GPIO10, active LOW) is
+ * BSP_POWER_SWITCH_SENSOR. Power latches on GPIO46 (held high to stay on when
+ * VBUS is absent) with battery sense on GPIO14. The host-side counterpart is
+ * airq_sim.c.
  */
 
 #include "bsp.h"
@@ -45,6 +47,9 @@ static const char *TAG = "airq";
 
 #define AIRQ_PIN_BUZZER     GPIO_NUM_9
 
+/* SEN55 power enable, active LOW; the SCD40 shares the rail. */
+#define AIRQ_PIN_SEN55_PWR  GPIO_NUM_10
+
 /* Power latch: high holds the rail on when VBUS is absent (like M5Paper's MAIN_PWR).
  * Battery is 1/2 VBAT on GPIO14 (ADC2_CH3). */
 #define AIRQ_PIN_MAIN_PWR   GPIO_NUM_46
@@ -52,6 +57,12 @@ static const char *TAG = "airq";
 #define AIRQ_I2C_PORT       I2C_NUM_0
 #define AIRQ_I2C_PIN_SDA    GPIO_NUM_11
 #define AIRQ_I2C_PIN_SCL    GPIO_NUM_12
+
+static i2c_master_bus_handle_t s_i2c_bus;
+
+i2c_master_bus_handle_t bsp_bus_get_i2c_handle(int i2c_port) {
+    return i2c_port == AIRQ_I2C_PORT ? s_i2c_bus : NULL;
+}
 
 static esp_err_t i2c_bus_init(i2c_master_bus_handle_t *out_bus) {
     const i2c_master_bus_config_t i2c_cfg = {
@@ -110,6 +121,30 @@ static void power_hold_init(void) {
     };
     gpio_config(&out);
     gpio_set_level(AIRQ_PIN_MAIN_PWR, 1);
+}
+
+/* The pin stays unconfigured until the first switch call, so the board strap
+ * keeps deciding the boot default. */
+static esp_err_t sensor_power_set(bool on) {
+    const gpio_config_t out = {
+        .pin_bit_mask = 1ULL << AIRQ_PIN_SEN55_PWR,
+        .mode         = GPIO_MODE_OUTPUT,
+        .pull_up_en   = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type    = GPIO_INTR_DISABLE,
+    };
+    esp_err_t err = gpio_config(&out);
+    if (err != ESP_OK) return err;
+    return gpio_set_level(AIRQ_PIN_SEN55_PWR, on ? 0 : 1);
+}
+
+esp_err_t bsp_power_set_switch(bsp_power_switch_t sw, bool on) {
+    switch (sw) {
+    case BSP_POWER_SWITCH_SENSOR:
+        return sensor_power_set(on);
+    default:
+        return ESP_ERR_NOT_SUPPORTED;
+    }
 }
 
 /* Battery on GPIO14 (ADC2_CH3) via a 1:2 divider (read the pin ×2); 1S Li-ion
@@ -185,8 +220,7 @@ esp_err_t bsp_init(const bsp_config_t *config) {
     }
 
     /* Non-fatal: a failure leaves the bsp_rtc API a no-op. */
-    i2c_master_bus_handle_t i2c_bus = NULL;
-    if (i2c_bus_init(&i2c_bus) == ESP_OK && (err = rtc_init(i2c_bus)) != ESP_OK) {
+    if (i2c_bus_init(&s_i2c_bus) == ESP_OK && (err = rtc_init(s_i2c_bus)) != ESP_OK) {
         ESP_LOGW(TAG, "rtc unavailable: %s", esp_err_to_name(err));
     }
 

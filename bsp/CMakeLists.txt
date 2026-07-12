@@ -24,6 +24,7 @@ set(BSP_COMMON_SRCS
     "src/bsp_button.c"
     "src/bsp_hotknot.c"
     "src/bsp_rtc.c"
+    "src/bsp_bus.c"
     "src/bsp_power.c"
     "src/bsp_led.c"
     "src/bsp_audio.c"

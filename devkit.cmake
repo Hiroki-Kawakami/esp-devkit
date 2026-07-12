@@ -23,7 +23,8 @@ set(DEVKIT_DEVICE_COMPONENTS
     bsp
     ui_framework
     libs/image_framework
-    libs/jpeg_decode_enhanced)
+    libs/jpeg_decode_enhanced
+    libs/sensors)
 
 # Simulator components: idf_compat/sim_harness first (simulator-only shims),
 # then libs, then bsp/ui_framework.
@@ -33,7 +34,8 @@ set(DEVKIT_SIMULATOR_COMPONENTS
     bsp
     ui_framework
     libs/image_framework
-    libs/jpeg_decode_enhanced)
+    libs/jpeg_decode_enhanced
+    libs/sensors)
 
 # devkit_idf_init([COMPONENT_DIRS dir...])
 #

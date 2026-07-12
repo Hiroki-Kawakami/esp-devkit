@@ -6,4 +6,4 @@ file(GLOB_RECURSE APP_SRCS
 idf_component_register(
     SRCS ${APP_SRCS}
     INCLUDE_DIRS "."
-    REQUIRES bsp ui_framework)
+    REQUIRES bsp ui_framework sensors)

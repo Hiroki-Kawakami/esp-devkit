@@ -56,6 +56,13 @@ esp_err_t bsp_power_get_battery_voltage(uint32_t *out_mv) BSP_NONNULL(1);
 esp_err_t bsp_power_get_battery_level(uint8_t *out_percent) BSP_NONNULL(1);
 bool      bsp_power_vbus_present(void);
 
+// MARK: Bus
+/* Bus handles the board initialized, for app-side device composition; NULL
+ * when the board does not provide that port. The board owns the bus — attach
+ * devices, don't delete it. */
+typedef struct i2c_master_bus_t *i2c_master_bus_handle_t;
+i2c_master_bus_handle_t bsp_bus_get_i2c_handle(int i2c_port);
+
 // MARK: Display
 bsp_display_type_t bsp_display_get_type(void);
 bsp_size_t bsp_display_get_size(void);

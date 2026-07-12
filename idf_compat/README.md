@@ -15,12 +15,13 @@ straight into the `simulator` executable (one binary → no separate library).
 idf_compat/
   include/            shim headers (what shared code #includes)
     esp_err.h esp_log.h esp_check.h esp_timer.h esp_heap_caps.h nvs.h nvs_flash.h
-    driver/           jpeg_decode.h ppa.h
+    driver/           jpeg_decode.h ppa.h i2c_master.h
     hal/              ppa_types.h color_types.h  (PPA type headers)
+    simulator/        sim-only APIs with no device counterpart: i2c_master_sim.h
     freertos/         host FreeRTOS API: FreeRTOS.h task.h queue.h semphr.h
                       event_groups.h timers.h portmacro.h
   src/                shim implementations
-    esp_err.c esp_timer.c esp_heap_caps.c nvs.c jpeg_decode.c ppa.c
+    esp_err.c esp_timer.c esp_heap_caps.c nvs.c jpeg_decode.c ppa.c i2c_master.c
     freertos_port.c freertos_task.c freertos_queue.c
     freertos_event_groups.c freertos_timers.c
     freertos_internal.h   (shared helpers; not part of the public API)
@@ -37,6 +38,11 @@ nothing is vendored. The same philosophy throughout: reimplement the API
 - The FreeRTOS API (`freertos/*.h`) on native pthreads — see below.
 - `driver/jpeg_decode` — IDF JPEG decode engine API, backed by libjpeg.
 - `driver/ppa` — IDF PPA (Pixel-Processing Accelerator) API, a CPU impl — see below.
+- `driver/i2c_master` — IDF I2C master API on a virtual bus — see below.
+
+The `simulator/` include subdir is for sim-only APIs that have **no device
+counterpart** (attach points for chip emulators and the like); shared code must
+never include from it — only board `*_sim.c` files, emulators, and tests do.
 
 ## Layout rule (how to add a new shim)
 
@@ -76,6 +82,19 @@ is counter-clockwise (`PPA_SRM_ROTATION_ANGLE_*`). All ops run synchronously
 regardless of `PPA_TRANS_MODE_*`, firing `on_trans_done` inline; burst length /
 pending-transaction count / buffer alignment are accepted and ignored. Full
 fidelity notes are at the top of `src/ppa.c`.
+
+## I2C master (virtual bus)
+
+`driver/i2c_master.h` + `src/i2c_master.c` implement the ESP-IDF `i2c_master`
+API on a virtual bus so the same I2C device drivers (e.g. `libs/sensors`) run
+unmodified on host. Pins/clocks are accepted and ignored. Peripherals are chip
+emulators registered per 7-bit address via `simulator/i2c_master_sim.h`
+(`i2c_sim_attach()` — write/read callbacks, ESP_OK = ACK); board `*_sim.c`
+bring-up attaches them, mirroring what is soldered to the real board. NACK maps
+to `ESP_ERR_INVALID_STATE` on transfers and `ESP_ERR_NOT_FOUND` on probe, so
+driver create-time probing and app-level degradation behave as on device.
+Transfers are transaction-granular (no per-byte ACK, no timeouts, no 10-bit
+addressing); a per-bus mutex mirrors the real driver's bus lock.
 
 ## FreeRTOS API (host, on pthreads)
 
