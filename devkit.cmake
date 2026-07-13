@@ -21,7 +21,6 @@ set(DEVKIT_ROOT ${CMAKE_CURRENT_LIST_DIR})
 # Device-side components, in EXTRA_COMPONENT_DIRS order.
 set(DEVKIT_DEVICE_COMPONENTS
     bsp
-    ui_framework
     libs/image_framework
     libs/jpeg_decode_enhanced
     libs/sensors)
@@ -44,12 +43,15 @@ set(DEVKIT_SIMULATOR_COMPONENTS
 # component is discoverable, but only the ones main (transitively) REQUIRES
 # get built. The wrapper calls project(<name>) right after this.
 macro(devkit_idf_init)
-    cmake_parse_arguments(DEVKIT "" "" "COMPONENT_DIRS" ${ARGN})
+    cmake_parse_arguments(DEVKIT "UI_FRAMEWORK" "" "COMPONENT_DIRS" ${ARGN})
 
     set(EXTRA_COMPONENT_DIRS "")
     foreach(_devkit_comp ${DEVKIT_DEVICE_COMPONENTS})
         list(APPEND EXTRA_COMPONENT_DIRS "${DEVKIT_ROOT}/${_devkit_comp}")
     endforeach()
+    if(DEVKIT_UI_FRAMEWORK)
+        list(APPEND EXTRA_COMPONENT_DIRS "${DEVKIT_ROOT}/ui_framework")
+    endif()
     foreach(_devkit_dir ${DEVKIT_COMPONENT_DIRS})
         if(NOT IS_ABSOLUTE "${_devkit_dir}")
             set(_devkit_dir "${CMAKE_CURRENT_SOURCE_DIR}/${_devkit_dir}")

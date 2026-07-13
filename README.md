@@ -11,12 +11,14 @@ Device wrapper (`<target>/CMakeLists.txt`):
 ```cmake
 cmake_minimum_required(VERSION 3.16)
 include(<path-to-esp-devkit>/devkit.cmake)
-devkit_idf_init(COMPONENT_DIRS ../app)
+devkit_idf_init(UI_FRAMEWORK COMPONENT_DIRS ../app)
 project(my_app)
 ```
-`devkit_idf_init` takes `COMPONENT_DIRS` (extra `EXTRA_COMPONENT_DIRS`, e.g. the
-app component), registers every devkit device component alongside them, and
-trims the build to whatever `main` (transitively) `REQUIRES`.
+`devkit_idf_init` takes `UI_FRAMEWORK` and `COMPONENT_DIRS` (extra
+`EXTRA_COMPONENT_DIRS`, e.g. the app component). Pass `UI_FRAMEWORK` only when
+the app requires it so its managed LVGL dependencies are not resolved for
+non-UI firmware. The build is trimmed to whatever `main` transitively
+`REQUIRES`.
 
 Simulator wrapper (`simulator/CMakeLists.txt`):
 ```cmake
