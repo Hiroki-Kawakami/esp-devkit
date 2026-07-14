@@ -8,6 +8,7 @@
 
 #include "bsp.h"
 #include "bsp_display.h"
+#include "bsp_touch.h"
 #include "bsp_dispatch.h"
 #include "bsp_power.h"
 #include "bsp_rtc.h"
@@ -27,9 +28,11 @@ esp_err_t bsp_init(const bsp_config_t *config) {
         .scale_div = 1,
     };
     bsp_display_t *display = NULL;
-    esp_err_t err = sdl_panel_create(&sdl_config, &display, NULL);
+    bsp_touch_t *touch = NULL;
+    esp_err_t err = sdl_panel_create(&sdl_config, &display, &touch);
     if (err != ESP_OK) return err;
     bsp_display_set_active(display);
+    bsp_touch_set_active(touch);
 
     bsp_rtc_t *rtc = NULL;
     if (rtc_sim_create(&rtc) == ESP_OK) bsp_rtc_set_active(rtc);
