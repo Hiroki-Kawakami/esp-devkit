@@ -14,12 +14,16 @@
 #include "core_panel.h"
 #include "core_audio.h"
 #include "axp192.h"
+#include "ip5306.h"
 
 static const char *TAG = "core";
 
 #define I2C_PORT       I2C_NUM_0
 #define I2C_PIN_SDA    GPIO_NUM_21
 #define I2C_PIN_SCL    GPIO_NUM_22
+
+#define BATT_EMPTY_MV  3000
+#define BATT_FULL_MV   4200
 
 static esp_err_t i2c_bus_init(i2c_master_bus_handle_t *out_bus) {
     const i2c_master_bus_config_t cfg = {
@@ -51,6 +55,30 @@ static axp192_handle_t axp_probe(i2c_master_bus_handle_t bus) {
     return axp;
 }
 
+static void power_init(i2c_master_bus_handle_t bus, axp192_handle_t axp) {
+    bsp_power_t *power = NULL;
+    esp_err_t err;
+
+    if (axp) {
+        err = axp192_power_create(axp, BATT_EMPTY_MV, BATT_FULL_MV, &power);
+    } else {
+        const ip5306_config_t config = {
+            .i2c_bus = bus,
+            .i2c_address = IP5306_I2C_ADDR,
+            .clock_hz = IP5306_I2C_DEFAULT_HZ,
+        };
+        ip5306_handle_t ip5306 = NULL;
+        err = ip5306_create(&config, &ip5306);
+        if (err == ESP_OK) {
+            err = ip5306_power_create(ip5306, &power);
+            if (err != ESP_OK) ip5306_destroy(ip5306);
+        }
+    }
+
+    if (err == ESP_OK) bsp_power_set_active(power);
+    else ESP_LOGW(TAG, "battery level unavailable: %s", esp_err_to_name(err));
+}
+
 esp_err_t bsp_init(const bsp_config_t *config) {
     bsp_dispatch_configure(config ? config->dispatch.task_priority : 0,
                            config ? config->dispatch.task_affinity : -1);
@@ -61,6 +89,7 @@ esp_err_t bsp_init(const bsp_config_t *config) {
 
     axp192_handle_t axp = axp_probe(i2c_bus);
     ESP_LOGI(TAG, "board: %s", axp ? "Core2" : "Basic");
+    power_init(i2c_bus, axp);
 
     if ((err = core_panel_init(i2c_bus, axp)) != ESP_OK) {
         ESP_LOGE(TAG, "core_panel_init: %s", esp_err_to_name(err));
