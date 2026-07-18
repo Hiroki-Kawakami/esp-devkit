@@ -24,7 +24,7 @@ extern "C" {
 
 #define ST7123_I2C_ADDR        0x55
 #define ST7123_I2C_DEFAULT_HZ  (100 * 1000)
-#define ST7123_MAX_TOUCH_POINTS 5
+#define ST7123_MAX_TOUCH_POINTS 10
 
 typedef struct {
     i2c_master_bus_handle_t i2c_bus;
