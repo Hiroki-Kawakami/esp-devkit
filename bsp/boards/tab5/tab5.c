@@ -6,8 +6,7 @@
  * the I2C bus shared by the touch chip and the two PI4IOE5V6408 I/O expanders,
  * runs the GT911 INT-pulse reset sequence required across LCD/TP_RST (both
  * routed through PI4IOE1), then hands off to tab5_panel_init for display +
- * touch and brings up the ES8388 audio. USB host, SD, and RTC are not wired
- * here — add them when needed.
+ * touch and brings up the ES8388 audio. USB host and RTC are not wired here.
  */
 
 #include "bsp.h"
@@ -19,6 +18,9 @@
 #include "driver/i2c_master.h"
 #include "pi4io.h"
 #include "bsp_dispatch.h"
+#include "bsp_sd.h"
+#include "sd_mmc.h"
+#include "sd_pwr_ctrl_by_on_chip_ldo.h"
 #include "tab5_panel.h"
 #include "tab5_audio.h"
 
@@ -32,6 +34,14 @@ static const char *TAG = "tab5";
 #define TAB5_PI4IOE2_ADDR 0x44
 
 #define TAB5_TOUCH_PIN_INT GPIO_NUM_23
+
+#define TAB5_SD_PIN_CLK GPIO_NUM_43
+#define TAB5_SD_PIN_CMD GPIO_NUM_44
+#define TAB5_SD_PIN_D0  GPIO_NUM_39
+#define TAB5_SD_PIN_D1  GPIO_NUM_40
+#define TAB5_SD_PIN_D2  GPIO_NUM_41
+#define TAB5_SD_PIN_D3  GPIO_NUM_42
+#define TAB5_SD_LDO_CHANNEL 4
 
 static pi4io_t s_pi4ioe1, s_pi4ioe2;
 
@@ -95,6 +105,48 @@ static void reset_panel_and_touch(void) {
     vTaskDelay(pdMS_TO_TICKS(50));
 }
 
+static esp_err_t sd_power_acquire(void *context, sd_pwr_ctrl_handle_t *out_power) {
+    (void)context;
+    const sd_pwr_ctrl_ldo_config_t power_config = {
+        .ldo_chan_id = TAB5_SD_LDO_CHANNEL,
+    };
+    return sd_pwr_ctrl_new_on_chip_ldo(&power_config, out_power);
+}
+
+static esp_err_t sd_power_release(void *context, sd_pwr_ctrl_handle_t power) {
+    (void)context;
+    return sd_pwr_ctrl_del_on_chip_ldo(power);
+}
+
+static esp_err_t sd_init(void) {
+    sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+    host.slot = SDMMC_HOST_SLOT_0;
+    host.max_freq_khz = SDMMC_FREQ_HIGHSPEED;
+
+    sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
+    slot_config.width = 4;
+    slot_config.clk = TAB5_SD_PIN_CLK;
+    slot_config.cmd = TAB5_SD_PIN_CMD;
+    slot_config.d0 = TAB5_SD_PIN_D0;
+    slot_config.d1 = TAB5_SD_PIN_D1;
+    slot_config.d2 = TAB5_SD_PIN_D2;
+    slot_config.d3 = TAB5_SD_PIN_D3;
+    slot_config.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
+
+    const sd_mmc_config_t config = {
+        .host = host,
+        .slot_config = slot_config,
+        .allocation_unit_size = 16 * 1024,
+        .power_acquire = sd_power_acquire,
+        .power_release = sd_power_release,
+    };
+    bsp_sd_t *sd = NULL;
+    esp_err_t err = sd_mmc_create(&config, &sd);
+    if (err != ESP_OK) return err;
+    bsp_sd_set_active(sd);
+    return ESP_OK;
+}
+
 /* ES8388 output + SPK_EN/HP_DET (both on PI4IOE1). Non-fatal: a codec failure
  * leaves the bsp_audio_* API a no-op rather than blocking display bring-up. */
 static esp_err_t audio_init(const bsp_config_t *config, i2c_master_bus_handle_t bus) {
@@ -132,6 +184,10 @@ esp_err_t bsp_init(const bsp_config_t *config) {
 
     err = tab5_panel_init(config, i2c_bus);
     if (err != ESP_OK) return err;
+
+    if ((err = sd_init()) != ESP_OK) {
+        ESP_LOGW(TAG, "sd unavailable: %s", esp_err_to_name(err));
+    }
 
     if ((err = audio_init(config, i2c_bus)) != ESP_OK) {
         ESP_LOGW(TAG, "audio unavailable: %s", esp_err_to_name(err));

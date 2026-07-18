@@ -11,13 +11,16 @@
 #include "bsp_led.h"
 #include "bsp_button.h"
 #include "bsp_dispatch.h"
+#include "bsp_sd.h"
 #include "esp_system.h"
 #include "esp_log.h"
 #include "esp_adc/adc_oneshot.h"
+#include "driver/gpio.h"
 #include "driver/i2c_master.h"
 #include "s31_korvo_panel.h"
 #include "s31_adc_cali.h"
 #include "adc_button.h"
+#include "sd_mmc.h"
 #include "ws2812.h"
 
 static const char *TAG = "s31_korvo";
@@ -28,6 +31,14 @@ static const char *TAG = "s31_korvo";
 
 #define S31_LED_GPIO     GPIO_NUM_37
 #define S31_LED_COUNT    1
+
+#define S31_SD_PIN_D0  GPIO_NUM_20
+#define S31_SD_PIN_D1  GPIO_NUM_21
+#define S31_SD_PIN_D2  GPIO_NUM_22
+#define S31_SD_PIN_D3  GPIO_NUM_23
+#define S31_SD_PIN_CLK GPIO_NUM_24
+#define S31_SD_PIN_CMD GPIO_NUM_25
+#define S31_SD_PIN_EN  GPIO_NUM_39
 
 /* ADC1_CH0 (GPIO42) button ladder. Voltages from esp-dev-kits schematic. */
 #define S31_BUTTON_COUNT    4
@@ -51,6 +62,55 @@ static esp_err_t i2c_bus_init(i2c_master_bus_handle_t *out_bus) {
     esp_err_t err = i2c_new_master_bus(&cfg, out_bus);
     if (err != ESP_OK) ESP_LOGE(TAG, "i2c_new_master_bus: %s", esp_err_to_name(err));
     return err;
+}
+
+static esp_err_t sd_power_acquire(void *context, sd_pwr_ctrl_handle_t *out_power) {
+    (void)context;
+    *out_power = NULL;
+    const gpio_config_t power_config = {
+        .pin_bit_mask = 1ULL << S31_SD_PIN_EN,
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    esp_err_t err = gpio_config(&power_config);
+    if (err != ESP_OK) return err;
+    return gpio_set_level(S31_SD_PIN_EN, 1);
+}
+
+static esp_err_t sd_power_release(void *context, sd_pwr_ctrl_handle_t power) {
+    (void)context;
+    (void)power;
+    return gpio_set_level(S31_SD_PIN_EN, 0);
+}
+
+static esp_err_t sd_init(void) {
+    sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+    host.slot = SDMMC_HOST_SLOT_0;
+    host.max_freq_khz = SDMMC_FREQ_HIGHSPEED;
+
+    sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
+    slot_config.width = 4;
+    slot_config.clk = S31_SD_PIN_CLK;
+    slot_config.cmd = S31_SD_PIN_CMD;
+    slot_config.d0 = S31_SD_PIN_D0;
+    slot_config.d1 = S31_SD_PIN_D1;
+    slot_config.d2 = S31_SD_PIN_D2;
+    slot_config.d3 = S31_SD_PIN_D3;
+
+    const sd_mmc_config_t config = {
+        .host = host,
+        .slot_config = slot_config,
+        .allocation_unit_size = 16 * 1024,
+        .power_acquire = sd_power_acquire,
+        .power_release = sd_power_release,
+    };
+    bsp_sd_t *sd = NULL;
+    esp_err_t err = sd_mmc_create(&config, &sd);
+    if (err != ESP_OK) return err;
+    bsp_sd_set_active(sd);
+    return ESP_OK;
 }
 
 esp_err_t bsp_init(const bsp_config_t *config) {
@@ -78,6 +138,10 @@ esp_err_t bsp_init(const bsp_config_t *config) {
     }
 
     esp_err_t panel_err = s31_korvo_panel_init(config, i2c_bus);
+
+    if ((err = sd_init()) != ESP_OK) {
+        ESP_LOGW(TAG, "sd unavailable: %s", esp_err_to_name(err));
+    }
 
     /* Button ADC ladder: oneshot only for the S31 cali sweep, then hand ADC1
      * over to adc_continuous (owned by adc_button). Any failure leaves the

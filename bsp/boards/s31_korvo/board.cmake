@@ -11,13 +11,14 @@ set(BOARD_DEVICE_SRCS
     "boards/s31_korvo/s31_adc_cali.c"
     "driver/rgb_lcd/rgb_lcd.c"
     "driver/adc_button/adc_button.c"
+    "driver/sd_mmc/sd_mmc.c"
     "devices/gt1151/gt1151.c"
     "devices/ws2812/ws2812.c")
 set(BOARD_DEVICE_PRIV_INCLUDE_DIRS
-    "driver/rgb_lcd" "driver/adc_button" "devices/gt1151" "devices/ws2812"
+    "driver/rgb_lcd" "driver/adc_button" "driver/sd_mmc" "devices/gt1151" "devices/ws2812"
     "boards/s31_korvo")
 set(BOARD_DEVICE_PRIV_REQUIRES
     esp_driver_gpio esp_driver_i2c esp_driver_ledc esp_driver_rmt esp_lcd
-    esp_adc esp_hw_support)
+    esp_adc esp_hw_support vfs fatfs sdmmc esp_driver_sdmmc)
 
 set(BOARD_SIM_SRCS "boards/s31_korvo/s31_korvo_sim.c")
