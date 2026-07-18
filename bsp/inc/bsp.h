@@ -135,7 +135,7 @@ esp_err_t bsp_rtc_set_int_cb(bsp_rtc_int_cb_t cb, void *arg);
 typedef struct {
     bool    format_if_mount_failed;  /*!< default: false */
     uint8_t max_files;               /*!< open-file limit; 0 -> 5 */
-    int     max_freq_khz;            /*!< 0 -> SDMMC_FREQ_HIGHSPEED (40 MHz) */
+    int     max_freq_khz;            /*!< 0 -> provider default */
 } bsp_sd_mount_config_t;
 
 esp_err_t bsp_sd_mount(const char *mount_point, const bsp_sd_mount_config_t *config);

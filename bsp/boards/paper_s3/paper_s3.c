@@ -17,7 +17,9 @@
 #include "driver/i2c_master.h"
 #include "bm8563.h"
 #include "bsp_dispatch.h"
+#include "bsp_sd.h"
 #include "adc_battery.h"
+#include "sd_spi.h"
 #include "paper_s3_panel.h"
 #include "pwm_buzzer.h"
 
@@ -30,6 +32,33 @@ static const char *TAG = "paper_s3";
 
 #define PAPER_S3_PIN_PWROFF_PULSE  GPIO_NUM_44
 #define PAPER_S3_PIN_BUZZER        GPIO_NUM_21
+
+#define PAPER_S3_SD_SPI_HOST  SPI2_HOST
+#define PAPER_S3_SD_PIN_SCK   GPIO_NUM_39
+#define PAPER_S3_SD_PIN_MOSI  GPIO_NUM_38
+#define PAPER_S3_SD_PIN_MISO  GPIO_NUM_40
+#define PAPER_S3_SD_PIN_CS    GPIO_NUM_47
+
+static esp_err_t sd_init(void) {
+    const sd_spi_config_t config = {
+        .spi_host = PAPER_S3_SD_SPI_HOST,
+        .cs_io = PAPER_S3_SD_PIN_CS,
+        .bus_lifecycle = SD_SPI_BUS_MANAGED,
+        .bus_config = {
+            .mosi_io_num = PAPER_S3_SD_PIN_MOSI,
+            .miso_io_num = PAPER_S3_SD_PIN_MISO,
+            .sclk_io_num = PAPER_S3_SD_PIN_SCK,
+            .quadwp_io_num = GPIO_NUM_NC,
+            .quadhd_io_num = GPIO_NUM_NC,
+            .max_transfer_sz = 4000,
+        },
+        .dma_channel = SPI_DMA_CH_AUTO,
+    };
+    bsp_sd_t *sd = NULL;
+    esp_err_t err = sd_spi_create(&config, &sd);
+    if (err == ESP_OK) bsp_sd_set_active(sd);
+    return err;
+}
 
 static esp_err_t i2c_bus_init(i2c_master_bus_handle_t *out_bus) {
     const i2c_master_bus_config_t i2c_cfg = {
@@ -108,6 +137,10 @@ esp_err_t bsp_init(const bsp_config_t *config) {
 
     esp_err_t err = paper_s3_panel_init(config, i2c_bus);
     if (err != ESP_OK) return err;
+
+    if ((err = sd_init()) != ESP_OK) {
+        ESP_LOGW(TAG, "sd unavailable: %s", esp_err_to_name(err));
+    }
 
     if (i2c_bus && (err = rtc_init(i2c_bus)) != ESP_OK) {
         ESP_LOGW(TAG, "rtc unavailable: %s", esp_err_to_name(err));

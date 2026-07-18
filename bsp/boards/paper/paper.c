@@ -17,14 +17,28 @@
 #include "driver/i2c_master.h"
 #include "bm8563.h"
 #include "bsp_dispatch.h"
+#include "bsp_sd.h"
 #include "gpio_button.h"
 #include "adc_battery.h"
+#include "sd_spi.h"
 #include "paper_config.h"
 #include "paper_panel.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
 static const char *TAG = "paper";
+
+static esp_err_t sd_init(void) {
+    const sd_spi_config_t config = {
+        .spi_host = PAPER_SPI_HOST,
+        .cs_io = PAPER_SD_PIN_CS,
+        .bus_lifecycle = SD_SPI_BUS_BORROWED,
+    };
+    bsp_sd_t *sd = NULL;
+    esp_err_t err = sd_spi_create(&config, &sd);
+    if (err == ESP_OK) bsp_sd_set_active(sd);
+    return err;
+}
 
 static esp_err_t i2c_bus_init(i2c_master_bus_handle_t *out_bus) {
     const i2c_master_bus_config_t i2c_cfg = {
@@ -152,6 +166,10 @@ esp_err_t bsp_init(const bsp_config_t *config) {
 
     err = paper_panel_init(config, i2c_bus);
     if (err != ESP_OK) return err;
+
+    if ((err = sd_init()) != ESP_OK) {
+        ESP_LOGW(TAG, "sd unavailable: %s", esp_err_to_name(err));
+    }
 
     if (i2c_bus && (err = rtc_init(i2c_bus)) != ESP_OK) {
         ESP_LOGW(TAG, "rtc unavailable: %s", esp_err_to_name(err));

@@ -2,10 +2,8 @@
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 Hiroki Kawakami
  *
- * M5Paper (ESP32) board pin map. Shared across paper.c (power + SPI bus),
- * paper_panel.c (EPD + touch) and paper_sd.c (microSD) because the IT8951E EPD
- * and the microSD card sit on the same SPI bus, which paper.c owns. Pin numbers
- * come from the m5paper-bsp reference.
+ * M5Paper (ESP32) board pin map. Shared across paper.c and paper_panel.c because
+ * the IT8951E EPD and the microSD card sit on the same SPI bus, which paper.c owns.
  */
 
 #pragma once

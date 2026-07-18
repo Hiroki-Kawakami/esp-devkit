@@ -30,6 +30,9 @@ set(BSP_COMMON_SRCS
     "src/bsp_audio.c"
     "src/audio_dsp.c")
 
+set(BSP_DEVICE_COMMON_SRCS
+    "src/bsp_sd.c")
+
 if(CMAKE_BUILD_EARLY_EXPANSION)
     # IDF extracts each component's requirements before Kconfig runs, so the
     # concrete board (CONFIG_BSP_BOARD_*) is not knowable here. Only PRIV_REQUIRES
@@ -89,6 +92,7 @@ if(ESP_PLATFORM)
     idf_component_register(
         SRCS
             ${BSP_COMMON_SRCS}
+            ${BSP_DEVICE_COMMON_SRCS}
             ${BOARD_DEVICE_SRCS}
         INCLUDE_DIRS "inc"
         PRIV_INCLUDE_DIRS "inc_private" ${BOARD_DEVICE_PRIV_INCLUDE_DIRS}
