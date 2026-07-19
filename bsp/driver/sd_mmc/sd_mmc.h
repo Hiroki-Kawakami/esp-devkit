@@ -13,9 +13,15 @@ typedef esp_err_t (*sd_mmc_power_acquire_t)(void *context,
 typedef esp_err_t (*sd_mmc_power_release_t)(void *context,
                                              sd_pwr_ctrl_handle_t power);
 
+typedef enum {
+    SD_MMC_HOST_BORROWED,
+    SD_MMC_HOST_MANAGED,
+} sd_mmc_host_lifecycle_t;
+
 typedef struct {
     sdmmc_host_t host;
     sdmmc_slot_config_t slot_config;
+    sd_mmc_host_lifecycle_t host_lifecycle;
     size_t allocation_unit_size;
     sd_mmc_power_acquire_t power_acquire;
     sd_mmc_power_release_t power_release;

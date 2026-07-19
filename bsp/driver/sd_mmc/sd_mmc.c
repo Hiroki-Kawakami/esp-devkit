@@ -21,6 +21,17 @@ typedef struct {
     bool power_acquired;
 } sd_mmc_t;
 
+static esp_err_t sd_mmc_use_borrowed_host(void) {
+    sdmmc_host_state_t state = {0};
+    esp_err_t err = sdmmc_host_get_state(&state);
+    if (err != ESP_OK) return err;
+    if (!state.host_initialized) {
+        ESP_LOGE(TAG, "borrowed SDMMC host is not initialized");
+        return ESP_ERR_INVALID_STATE;
+    }
+    return ESP_OK;
+}
+
 static esp_err_t sd_mmc_mount(bsp_sd_t *self, const char *mount_point,
                               const bsp_sd_mount_config_t *config) {
     sd_mmc_t *sd = (sd_mmc_t *)self;
@@ -40,6 +51,9 @@ static esp_err_t sd_mmc_mount(bsp_sd_t *self, const char *mount_point,
     }
 
     sdmmc_host_t host = sd->config.host;
+    if (sd->config.host_lifecycle == SD_MMC_HOST_BORROWED) {
+        host.init = sd_mmc_use_borrowed_host;
+    }
     if (config->max_freq_khz > 0) host.max_freq_khz = config->max_freq_khz;
     if (sd->power_acquired) host.pwr_ctrl_handle = sd->power;
 
@@ -91,6 +105,8 @@ static esp_err_t sd_mmc_deinit(bsp_sd_t *self) {
 
 esp_err_t sd_mmc_create(const sd_mmc_config_t *config, bsp_sd_t **out_sd) {
     if (!config || !out_sd || !config->host.init) return ESP_ERR_INVALID_ARG;
+    if (config->host_lifecycle != SD_MMC_HOST_BORROWED &&
+        config->host_lifecycle != SD_MMC_HOST_MANAGED) return ESP_ERR_INVALID_ARG;
     if (!!config->power_acquire != !!config->power_release) return ESP_ERR_INVALID_ARG;
 
     sd_mmc_t *sd = calloc(1, sizeof(*sd));

@@ -10,6 +10,7 @@
  */
 
 #include "bsp.h"
+#include "sdkconfig.h"
 #include "esp_system.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -42,6 +43,13 @@ static const char *TAG = "tab5";
 #define TAB5_SD_PIN_D2  GPIO_NUM_41
 #define TAB5_SD_PIN_D3  GPIO_NUM_42
 #define TAB5_SD_LDO_CHANNEL 4
+
+#if defined(CONFIG_ESP_HOSTED_SDIO_HOST_INTERFACE) && \
+    CONFIG_ESP_HOSTED_SDIO_HOST_INTERFACE
+#define TAB5_SD_HOST_LIFECYCLE SD_MMC_HOST_BORROWED
+#else
+#define TAB5_SD_HOST_LIFECYCLE SD_MMC_HOST_MANAGED
+#endif
 
 static pi4io_t s_pi4ioe1, s_pi4ioe2;
 
@@ -136,6 +144,7 @@ static esp_err_t sd_init(void) {
     const sd_mmc_config_t config = {
         .host = host,
         .slot_config = slot_config,
+        .host_lifecycle = TAB5_SD_HOST_LIFECYCLE,
         .allocation_unit_size = 16 * 1024,
         .power_acquire = sd_power_acquire,
         .power_release = sd_power_release,

@@ -102,6 +102,7 @@ static esp_err_t sd_init(void) {
     const sd_mmc_config_t config = {
         .host = host,
         .slot_config = slot_config,
+        .host_lifecycle = SD_MMC_HOST_MANAGED,
         .allocation_unit_size = 16 * 1024,
         .power_acquire = sd_power_acquire,
         .power_release = sd_power_release,
