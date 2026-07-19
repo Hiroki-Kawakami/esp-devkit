@@ -198,7 +198,7 @@ esp_err_t st7123_lcd_create(const st7123_config_t *config, bsp_display_t **out) 
             .h_size            = config->size.width,
             .v_size            = config->size.height,
             .hsync_pulse_width = 2,
-            .hsync_back_porch  = 140,
+            .hsync_back_porch  = 80,
             .hsync_front_porch = 40,
             .vsync_pulse_width = 2,
             .vsync_back_porch  = 8,
