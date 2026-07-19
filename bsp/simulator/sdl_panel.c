@@ -25,12 +25,14 @@
 #include <SDL2/SDL.h>
 #include <jpeglib.h>
 
+#include <errno.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 
 /* Initial host-view rotation (0/90/180/270). The build overrides it — the
  * simulator CMakeLists passes SDL_PANEL_DEFAULT_ROTATION; the r/l keys change it
@@ -90,6 +92,8 @@ static struct {
 } s_touch_pts[SDL_PANEL_MAX_TOUCH];
 static bool s_touch_dirty;
 
+static void capture_screenshot(void);
+
 static Uint32 sdl_texture_format(bsp_pixel_format_t fmt) {
     switch (fmt) {
         // RGB888 framebuffers hold LVGL's native byte order (B, G, R), so the
@@ -116,8 +120,8 @@ static void rotate_window(int delta) {
     s_dirty = true;   /* re-present at the new size/orientation */
 }
 
-/* Drain the SDL event queue: window close quits; r/l rotate the host view; ESC
- * quits. Touch is sampled from the mouse state in pump_input, not from events. */
+/* Drain the SDL event queue: window close quits; s captures; r/l rotate the host
+ * view; ESC quits. Touch is sampled from the mouse state in pump_input. */
 static void pump_events(void) {
     SDL_Event ev;
     while (SDL_PollEvent(&ev)) {
@@ -127,6 +131,9 @@ static void pump_events(void) {
         case SDL_KEYDOWN:
             switch (ev.key.keysym.sym) {
             case SDLK_ESCAPE: exit(0);
+            case SDLK_s:
+                if (!ev.key.repeat) capture_screenshot();
+                break;
             case SDLK_r: rotate_window( 90); break;
             case SDLK_l: rotate_window(-90); break;
             default: break;
@@ -474,6 +481,44 @@ static bool sdl_panel_capture(const char *path) {
     return true;
 }
 
+static void capture_screenshot(void) {
+    time_t now = time(NULL);
+    struct tm local_time;
+    char stamp[32];
+    if (!localtime_r(&now, &local_time) ||
+        strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", &local_time) == 0) {
+        fprintf(stderr, "[sim] screenshot: cannot format timestamp\n");
+        return;
+    }
+
+    char path[1024];
+    for (unsigned int sequence = 0; sequence < 10000; sequence++) {
+        int length = sequence == 0
+            ? snprintf(path, sizeof(path), "screenshots/screenshot-%s.jpg", stamp)
+            : snprintf(path, sizeof(path), "screenshots/screenshot-%s-%03u.jpg",
+                       stamp, sequence);
+        if (length < 0 || (size_t)length >= sizeof(path)) {
+            fprintf(stderr, "[sim] screenshot: path is too long\n");
+            return;
+        }
+
+        struct stat info;
+        if (stat(path, &info) == 0) continue;
+        if (errno != ENOENT) {
+            fprintf(stderr, "[sim] screenshot: cannot inspect %s (%s)\n",
+                    path, strerror(errno));
+            return;
+        }
+
+        if (!sdl_panel_capture(path)) {
+            fprintf(stderr, "[sim] screenshot: failed (%s)\n", path);
+        }
+        return;
+    }
+
+    fprintf(stderr, "[sim] screenshot: no available filename\n");
+}
+
 /* MARK: lifecycle */
 
 esp_err_t sdl_panel_create(const sdl_panel_config_t *config,
@@ -603,7 +648,7 @@ esp_err_t sdl_panel_create(const sdl_panel_config_t *config,
     sim_harness_set_input_callback(sdl_panel_inject_down, sdl_panel_inject_up);
     sim_harness_set_capture_callback(sdl_panel_capture);
 
-    if (!s_headless) fprintf(stderr, "[sim] keys: r/l rotate view, ESC quit\n");
+    if (!s_headless) fprintf(stderr, "[sim] keys: s capture, r/l rotate view, ESC quit\n");
 
     *out_display = &s_display;
     if (out_touch) *out_touch = &s_touch;
