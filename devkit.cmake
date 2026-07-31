@@ -23,7 +23,8 @@ set(DEVKIT_DEVICE_COMPONENTS
     bsp
     libs/image_framework
     libs/jpeg_decode_enhanced
-    libs/sensors)
+    libs/sensors
+    libs/wifi)
 
 # Simulator components: idf_compat/sim_harness first (simulator-only shims),
 # then libs, then bsp/ui_framework.
@@ -34,14 +35,14 @@ set(DEVKIT_SIMULATOR_COMPONENTS
     ui_framework
     libs/image_framework
     libs/jpeg_decode_enhanced
-    libs/sensors)
+    libs/sensors
+    libs/wifi)
 
-# devkit_idf_init([COMPONENT_DIRS dir...])
+# devkit_idf_init([UI_FRAMEWORK] [COMPONENT_DIRS dir...])
 #
-# Registers all devkit components plus COMPONENT_DIRS in EXTRA_COMPONENT_DIRS,
-# then trims the build to main's dependency graph via COMPONENTS: every devkit
-# component is discoverable, but only the ones main (transitively) REQUIRES
-# get built. The wrapper calls project(<name>) right after this.
+# Registers shared components and COMPONENT_DIRS in EXTRA_COMPONENT_DIRS, then
+# trims the build to main's dependency graph via COMPONENTS. The wrapper calls
+# project(<name>) right after this.
 macro(devkit_idf_init)
     cmake_parse_arguments(DEVKIT "UI_FRAMEWORK" "" "COMPONENT_DIRS" ${ARGN})
 
