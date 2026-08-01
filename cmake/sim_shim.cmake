@@ -31,6 +31,9 @@ function(idf_component_register)
         endif()
         target_include_directories(simulator PRIVATE "${dir}")
     endforeach()
+    get_filename_component(_component_name "${CMAKE_CURRENT_SOURCE_DIR}" NAME)
+    set(COMPONENT_LIB simulator PARENT_SCOPE)
+    set(COMPONENT_NAME "${_component_name}" PARENT_SCOPE)
 endfunction()
 
 # No-op stub for the other IDF component-CMake call shared components may use.

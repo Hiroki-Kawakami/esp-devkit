@@ -84,14 +84,17 @@ endmacro()
 
 # devkit_simulator(BOARD board
 #                  [LV_CONF_DIR dir] [DEFAULT_ROTATION deg]
+#                  [SDKCONFIG file] [SAVEDEFCONFIG file]
+#                  [SDKCONFIG_DEFAULTS file...]
 #                  [MAIN_SRCS src...] [COMPONENT_DIRS dir...])
 #
 # Builds the `simulator` host executable: host deps, an
 # idf_component_register() shim that folds devkit components straight into the
 # executable, then adds devkit components + COMPONENT_DIRS as subdirectories.
 macro(devkit_simulator)
-    cmake_parse_arguments(DEVKIT_SIM "" "BOARD;LV_CONF_DIR;DEFAULT_ROTATION"
-        "MAIN_SRCS;COMPONENT_DIRS" ${ARGN})
+    cmake_parse_arguments(DEVKIT_SIM ""
+        "BOARD;LV_CONF_DIR;DEFAULT_ROTATION;SDKCONFIG;SAVEDEFCONFIG"
+        "MAIN_SRCS;COMPONENT_DIRS;SDKCONFIG_DEFAULTS" ${ARGN})
 
     if(NOT DEVKIT_SIM_BOARD)
         message(FATAL_ERROR "devkit_simulator: BOARD is required")
@@ -101,6 +104,33 @@ macro(devkit_simulator)
     endif()
     if(NOT DEVKIT_SIM_MAIN_SRCS)
         set(DEVKIT_SIM_MAIN_SRCS main/main.cpp)
+    endif()
+    if(NOT DEVKIT_SIM_SDKCONFIG)
+        set(DEVKIT_SIM_SDKCONFIG "${CMAKE_CURRENT_SOURCE_DIR}/sdkconfig")
+    elseif(NOT IS_ABSOLUTE "${DEVKIT_SIM_SDKCONFIG}")
+        set(DEVKIT_SIM_SDKCONFIG
+            "${CMAKE_CURRENT_SOURCE_DIR}/${DEVKIT_SIM_SDKCONFIG}")
+    endif()
+    if(NOT DEVKIT_SIM_SDKCONFIG_DEFAULTS)
+        set(DEVKIT_SIM_SDKCONFIG_DEFAULTS
+            "${CMAKE_CURRENT_SOURCE_DIR}/sdkconfig.defaults")
+    else()
+        set(_devkit_sim_defaults "")
+        foreach(_devkit_default ${DEVKIT_SIM_SDKCONFIG_DEFAULTS})
+            if(NOT IS_ABSOLUTE "${_devkit_default}")
+                set(_devkit_default
+                    "${CMAKE_CURRENT_SOURCE_DIR}/${_devkit_default}")
+            endif()
+            list(APPEND _devkit_sim_defaults "${_devkit_default}")
+        endforeach()
+        set(DEVKIT_SIM_SDKCONFIG_DEFAULTS ${_devkit_sim_defaults})
+    endif()
+    if(NOT DEVKIT_SIM_SAVEDEFCONFIG)
+        set(DEVKIT_SIM_SAVEDEFCONFIG
+            "${CMAKE_CURRENT_SOURCE_DIR}/sdkconfig.defaults")
+    elseif(NOT IS_ABSOLUTE "${DEVKIT_SIM_SAVEDEFCONFIG}")
+        set(DEVKIT_SIM_SAVEDEFCONFIG
+            "${CMAKE_CURRENT_SOURCE_DIR}/${DEVKIT_SIM_SAVEDEFCONFIG}")
     endif()
 
     include(FetchContent)
@@ -167,6 +197,14 @@ macro(devkit_simulator)
         endif()
         list(APPEND DEVKIT_SIM_COMPONENT_PATHS "${_devkit_dir}")
     endforeach()
+
+    include("${DEVKIT_ROOT}/cmake/sim_kconfig.cmake")
+    devkit_simulator_kconfig(
+        SDKCONFIG "${DEVKIT_SIM_SDKCONFIG}"
+        SDKCONFIG_DEFAULTS ${DEVKIT_SIM_SDKCONFIG_DEFAULTS}
+        SAVEDEFCONFIG "${DEVKIT_SIM_SAVEDEFCONFIG}"
+        COMPONENT_PATHS ${DEVKIT_SIM_COMPONENT_PATHS})
+
     foreach(_devkit_comp ${DEVKIT_SIM_COMPONENT_PATHS})
         get_filename_component(_devkit_comp_name "${_devkit_comp}" NAME)
         add_subdirectory("${_devkit_comp}" "${CMAKE_BINARY_DIR}/components/${_devkit_comp_name}")

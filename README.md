@@ -29,4 +29,16 @@ project(simulator C CXX)
 devkit_simulator(BOARD airq)
 ```
 `devkit_simulator` args: `BOARD` (required), `LV_CONF_DIR`, `DEFAULT_ROTATION`,
-`MAIN_SRCS`, `COMPONENT_DIRS`.
+`MAIN_SRCS`, `COMPONENT_DIRS`, `SDKCONFIG`, `SDKCONFIG_DEFAULTS`, and
+`SAVEDEFCONFIG`. The configuration paths default to `sdkconfig` and
+`sdkconfig.defaults` in the simulator wrapper directory.
+
+Shared components can expose compile-time options in their `Kconfig` file.
+Simulator builds use their own sdkconfig, independently of the ESP-IDF target:
+```sh
+cmake --build build --target menuconfig
+cmake --build build --target save-defconfig
+```
+The generated `sdkconfig.h` is on the simulator include path, and the generated
+`CONFIG_*` variables are available while evaluating component CMakeLists.txt
+files.

@@ -1,0 +1,14 @@
+mainmenu "esp-devkit Simulator Configuration"
+
+config DEVKIT_SIMULATOR
+    bool
+    default y
+    help
+        Internal platform marker for Kconfig options that are available only
+        in the host simulator build.
+
+menu "Component config"
+
+source "$COMPONENT_KCONFIGS_SOURCE_FILE"
+
+endmenu
