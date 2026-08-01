@@ -11,7 +11,7 @@
 #   include(<esp-devkit>/devkit.cmake)
 #   devkit_simulator_init()
 #   project(simulator C CXX)
-#   devkit_simulator(BOARD airq)
+#   devkit_simulator()
 #
 # project() stays literal in the wrapper: CMake pre-scans the top-level
 # CMakeLists.txt for it, and a project() hidden inside a macro triggers an
@@ -82,8 +82,7 @@ macro(devkit_simulator_init)
     set(FETCHCONTENT_UPDATES_DISCONNECTED ON)
 endmacro()
 
-# devkit_simulator(BOARD board
-#                  [LV_CONF_DIR dir] [DEFAULT_ROTATION deg]
+# devkit_simulator([LV_CONF_DIR dir] [DEFAULT_ROTATION deg]
 #                  [SDKCONFIG file] [SAVEDEFCONFIG file]
 #                  [SDKCONFIG_DEFAULTS file...]
 #                  [MAIN_SRCS src...] [COMPONENT_DIRS dir...])
@@ -96,8 +95,10 @@ macro(devkit_simulator)
         "BOARD;LV_CONF_DIR;DEFAULT_ROTATION;SDKCONFIG;SAVEDEFCONFIG"
         "MAIN_SRCS;COMPONENT_DIRS;SDKCONFIG_DEFAULTS" ${ARGN})
 
-    if(NOT DEVKIT_SIM_BOARD)
-        message(FATAL_ERROR "devkit_simulator: BOARD is required")
+    if(DEVKIT_SIM_BOARD)
+        message(FATAL_ERROR
+            "devkit_simulator: BOARD is no longer supported; select the board "
+            "with CONFIG_BSP_BOARD_* in sdkconfig or sdkconfig.defaults")
     endif()
     if(NOT DEVKIT_SIM_DEFAULT_ROTATION)
         set(DEVKIT_SIM_DEFAULT_ROTATION 0)
@@ -184,8 +185,6 @@ macro(devkit_simulator)
     # corrupt the shim functions' own ${ARGN}. include() is not subject to
     # that substitution.
     include("${DEVKIT_ROOT}/cmake/sim_shim.cmake")
-
-    set(BSP_BOARD ${DEVKIT_SIM_BOARD} CACHE STRING "esp-devkit BSP board")
 
     set(DEVKIT_SIM_COMPONENT_PATHS "")
     foreach(_devkit_comp ${DEVKIT_SIMULATOR_COMPONENTS})

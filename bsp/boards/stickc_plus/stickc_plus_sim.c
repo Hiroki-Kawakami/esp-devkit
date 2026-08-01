@@ -5,7 +5,8 @@
  * M5StickC-Plus simulator board: host-side counterpart of stickc_plus.c. The
  * SDL backend mimics the 135x240 RGB565 SPI panel; a fake battery backs the
  * power seam, the host clock stands in for the BM8563 RTC, and the tone-only SDL
- * audio stands in for the GPIO2 passive buzzer. Build with -DBSP_BOARD=stickc_plus.
+ * audio stands in for the GPIO2 passive buzzer. Select with
+ * CONFIG_BSP_BOARD_STICKC_PLUS=y.
  */
 
 #include "bsp.h"

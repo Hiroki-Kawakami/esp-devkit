@@ -1,13 +1,11 @@
-# Board selection for the shared bsp component (device / ESP-IDF builds only).
-# The simulator does not run Kconfig; it selects the board with set(BSP_BOARD)
-# in its CMakeLists.txt. Each board is gated by its target so menuconfig only
-# offers the boards valid for CONFIG_IDF_TARGET, and multiple boards can share
-# one target.
+# Board selection for the shared bsp component. ESP-IDF limits the choice to
+# boards supported by CONFIG_IDF_TARGET; the simulator can select any board.
 
 menu "Board Support Package"
 
 choice BSP_BOARD
     prompt "Target board"
+    default BSP_BOARD_CORE      if DEVKIT_SIMULATOR
     default BSP_BOARD_CORE      if IDF_TARGET_ESP32
     default BSP_BOARD_CORE_S3   if IDF_TARGET_ESP32S3
     default BSP_BOARD_TAB5      if IDF_TARGET_ESP32P4
@@ -15,48 +13,48 @@ choice BSP_BOARD
 
     config BSP_BOARD_CORE
         bool "M5Stack Core (Basic / Core2)"
-        depends on IDF_TARGET_ESP32
+        depends on DEVKIT_SIMULATOR || IDF_TARGET_ESP32
 
     config BSP_BOARD_PAPER
         bool "M5Paper (ESP32)"
-        depends on IDF_TARGET_ESP32
+        depends on DEVKIT_SIMULATOR || IDF_TARGET_ESP32
 
     config BSP_BOARD_ATOM_LITE
         bool "M5Stack ATOM Lite (ESP32)"
-        depends on IDF_TARGET_ESP32
+        depends on DEVKIT_SIMULATOR || IDF_TARGET_ESP32
 
     config BSP_BOARD_STICKC_PLUS
         bool "M5StickC-Plus (ESP32)"
-        depends on IDF_TARGET_ESP32
+        depends on DEVKIT_SIMULATOR || IDF_TARGET_ESP32
 
     config BSP_BOARD_CORE_S3
         bool "M5Stack CoreS3 (ESP32-S3)"
-        depends on IDF_TARGET_ESP32S3
+        depends on DEVKIT_SIMULATOR || IDF_TARGET_ESP32S3
 
     config BSP_BOARD_PAPER_S3
         bool "M5PaperS3 (ESP32-S3)"
-        depends on IDF_TARGET_ESP32S3
+        depends on DEVKIT_SIMULATOR || IDF_TARGET_ESP32S3
 
     config BSP_BOARD_ATOM_S3_LITE
         bool "M5Stack AtomS3 Lite (ESP32-S3)"
-        depends on IDF_TARGET_ESP32S3
+        depends on DEVKIT_SIMULATOR || IDF_TARGET_ESP32S3
 
     config BSP_BOARD_AIRQ
         bool "M5Stack Air Quality Kit (ESP32-S3)"
-        depends on IDF_TARGET_ESP32S3
+        depends on DEVKIT_SIMULATOR || IDF_TARGET_ESP32S3
 
     config BSP_BOARD_TAB5
         bool "M5Stack Tab5 (ESP32-P4)"
-        depends on IDF_TARGET_ESP32P4
+        depends on DEVKIT_SIMULATOR || IDF_TARGET_ESP32P4
 
     config BSP_BOARD_S31_KORVO
         bool "ESP32-S31-Korvo"
-        depends on IDF_TARGET_ESP32S31
+        depends on DEVKIT_SIMULATOR || IDF_TARGET_ESP32S31
 endchoice
 
 config BSP_EPD_LL_TWEAK
     bool "epd_ll waveform-tuning backdoor"
-    depends on BSP_BOARD_PAPER_S3
+    depends on BSP_BOARD_PAPER_S3 && !DEVKIT_SIMULATOR
     default n
     help
         Compile the epd_ll waveform-tuning backdoor (epd_ll_tweak.h): swap a

@@ -4,7 +4,7 @@
  *
  * M5Paper (ESP32) simulator board: the host-side counterpart of paper.c. The
  * SDL backend mimics the EPD; the panel geometry matches M5PaperS3 so the shared
- * app renders identically. Build with -DBSP_BOARD=paper.
+ * app renders identically. Select with CONFIG_BSP_BOARD_PAPER=y.
  */
 
 #include "bsp.h"

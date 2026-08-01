@@ -3,12 +3,9 @@
 # The model-agnostic glue (src/) and the simulator's SDL backend are built
 # unconditionally; everything board-specific (which chip drivers, include dirs,
 # requirements, and the per-target bring-up files) comes from the selected
-# board's boards/<board>/board.cmake. The board is chosen at configure time by
-# BSP_BOARD, resolved from:
-#   1. an explicit set(BSP_BOARD ...) — the simulator, or a build-root override;
-#   2. Kconfig CONFIG_BSP_BOARD_* — device builds pick the board via sdkconfig,
-#      so several boards can share one IDF_TARGET.
-# With neither set the configure fails, asking for a board to be selected.
+# board's boards/<board>/board.cmake. Both ESP-IDF and the simulator choose the
+# board at configure time through the same Kconfig CONFIG_BSP_BOARD_* symbols.
+# Their sdkconfig files remain independent.
 # There is no runtime board detection: one target builds one board.
 #
 # The build selects device vs. simulator by target: ESP_PLATFORM is defined only
@@ -52,35 +49,32 @@ if(CMAKE_BUILD_EARLY_EXPANSION)
     list(REMOVE_DUPLICATES _bsp_union_reqs)
     set(BOARD_DEVICE_PRIV_REQUIRES ${_bsp_union_reqs})
 else()
-    # Real configure pass. The simulator and build-root overrides set BSP_BOARD
-    # explicitly; device builds leave it to Kconfig.
-    if(NOT DEFINED BSP_BOARD)
-        if(CONFIG_BSP_BOARD_CORE)
-            set(BSP_BOARD core)
-        elseif(CONFIG_BSP_BOARD_PAPER)
-            set(BSP_BOARD paper)
-        elseif(CONFIG_BSP_BOARD_ATOM_LITE)
-            set(BSP_BOARD atom_lite)
-        elseif(CONFIG_BSP_BOARD_STICKC_PLUS)
-            set(BSP_BOARD stickc_plus)
-        elseif(CONFIG_BSP_BOARD_CORE_S3)
-            set(BSP_BOARD core_s3)
-        elseif(CONFIG_BSP_BOARD_PAPER_S3)
-            set(BSP_BOARD paper_s3)
-        elseif(CONFIG_BSP_BOARD_ATOM_S3_LITE)
-            set(BSP_BOARD atom_s3_lite)
-        elseif(CONFIG_BSP_BOARD_AIRQ)
-            set(BSP_BOARD airq)
-        elseif(CONFIG_BSP_BOARD_TAB5)
-            set(BSP_BOARD tab5)
-        elseif(CONFIG_BSP_BOARD_S31_KORVO)
-            set(BSP_BOARD s31_korvo)
-        else()
-            message(FATAL_ERROR
-                "esp-devkit bsp: no board selected for IDF_TARGET '${IDF_TARGET}'. "
-                "Choose one under 'Board Support Package -> Target board' in "
-                "menuconfig (or set CONFIG_BSP_BOARD_* in sdkconfig.defaults).")
-        endif()
+    # Real configure pass: Kconfig has resolved the board for both targets.
+    if(CONFIG_BSP_BOARD_CORE)
+        set(BSP_BOARD core)
+    elseif(CONFIG_BSP_BOARD_PAPER)
+        set(BSP_BOARD paper)
+    elseif(CONFIG_BSP_BOARD_ATOM_LITE)
+        set(BSP_BOARD atom_lite)
+    elseif(CONFIG_BSP_BOARD_STICKC_PLUS)
+        set(BSP_BOARD stickc_plus)
+    elseif(CONFIG_BSP_BOARD_CORE_S3)
+        set(BSP_BOARD core_s3)
+    elseif(CONFIG_BSP_BOARD_PAPER_S3)
+        set(BSP_BOARD paper_s3)
+    elseif(CONFIG_BSP_BOARD_ATOM_S3_LITE)
+        set(BSP_BOARD atom_s3_lite)
+    elseif(CONFIG_BSP_BOARD_AIRQ)
+        set(BSP_BOARD airq)
+    elseif(CONFIG_BSP_BOARD_TAB5)
+        set(BSP_BOARD tab5)
+    elseif(CONFIG_BSP_BOARD_S31_KORVO)
+        set(BSP_BOARD s31_korvo)
+    else()
+        message(FATAL_ERROR
+            "esp-devkit bsp: no board selected. Choose one under "
+            "'Board Support Package -> Target board' in menuconfig (or set "
+            "CONFIG_BSP_BOARD_* in sdkconfig.defaults).")
     endif()
     # board.cmake fills BOARD_TARGET, BOARD_DEVICE_SRCS /
     # BOARD_DEVICE_PRIV_INCLUDE_DIRS / BOARD_DEVICE_PRIV_REQUIRES (device) and

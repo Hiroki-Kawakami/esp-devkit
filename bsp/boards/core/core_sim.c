@@ -3,7 +3,7 @@
  * Copyright (c) 2026 Hiroki Kawakami
  *
  * M5Stack Core simulator board: host-side counterpart of core.c. Build with
- * -DBSP_BOARD=core.
+ * CONFIG_BSP_BOARD_CORE=y.
  */
 
 #include "bsp.h"

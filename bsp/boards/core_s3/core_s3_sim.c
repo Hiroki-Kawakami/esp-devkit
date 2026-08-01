@@ -3,7 +3,7 @@
  * Copyright (c) 2026 Hiroki Kawakami
  *
  * M5Stack CoreS3 simulator board: host-side counterpart of core_s3.c. Build with
- * -DBSP_BOARD=core_s3.
+ * CONFIG_BSP_BOARD_CORE_S3=y.
  */
 
 #include "bsp.h"

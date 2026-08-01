@@ -9,7 +9,8 @@
  * idf_compat virtual I2C bus (port 0) stand in for the air sensors —
  * BSP_POWER_SWITCH_SENSOR is a no-op, the rail is always up here. The front
  * buttons are physical-only, so they stay unwired here; the other power
- * controls fall back to the shared defaults. Build with -DBSP_BOARD=airq.
+ * controls fall back to the shared defaults. Select with
+ * CONFIG_BSP_BOARD_AIRQ=y.
  */
 
 #include "bsp.h"

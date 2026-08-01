@@ -26,10 +26,13 @@ cmake_minimum_required(VERSION 3.16)
 include(<path-to-esp-devkit>/devkit.cmake)
 devkit_simulator_init()
 project(simulator C CXX)
-devkit_simulator(BOARD airq)
+devkit_simulator()
 ```
-`devkit_simulator` args: `BOARD` (required), `LV_CONF_DIR`, `DEFAULT_ROTATION`,
-`MAIN_SRCS`, `COMPONENT_DIRS`, `SDKCONFIG`, `SDKCONFIG_DEFAULTS`, and
+The BSP board is selected with `CONFIG_BSP_BOARD_*` in the simulator's own
+`sdkconfig` or `sdkconfig.defaults`.
+
+`devkit_simulator` args: `LV_CONF_DIR`, `DEFAULT_ROTATION`, `MAIN_SRCS`,
+`COMPONENT_DIRS`, `SDKCONFIG`, `SDKCONFIG_DEFAULTS`, and
 `SAVEDEFCONFIG`. The configuration paths default to `sdkconfig` and
 `sdkconfig.defaults` in the simulator wrapper directory.
 
