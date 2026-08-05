@@ -12,6 +12,7 @@
 
 #include "tab5_panel.h"
 #include "ili9881c.h"
+#include "st7121_lcd.h"
 #include "st7123_lcd.h"
 #include "st712x_touch.h"
 #include "gt911.h"
@@ -68,7 +69,21 @@ static int get_st712x_version(i2c_master_bus_handle_t bus) {
     return version;
 }
 
-static esp_err_t setup_st7123(const bsp_config_t *config, i2c_master_bus_handle_t bus) {
+static esp_err_t setup_st7121_lcd(const bsp_config_t *config) {
+    const st7121_config_t lcd_cfg = {
+        .size           = { TAB5_PANEL_W, TAB5_PANEL_H },
+        .pixel_format   = resolve_pixel_format(config),
+        .fb_num         = resolve_fb_num(config),
+        .backlight_gpio = TAB5_LCD_PIN_BL,
+    };
+    bsp_display_t *display = NULL;
+    esp_err_t err = st7121_lcd_create(&lcd_cfg, &display);
+    if (err != ESP_OK) return err;
+    bsp_display_set_active(display);
+    return ESP_OK;
+}
+
+static esp_err_t setup_st7123_lcd(const bsp_config_t *config) {
     const st7123_config_t lcd_cfg = {
         .size           = { TAB5_PANEL_W, TAB5_PANEL_H },
         .pixel_format   = resolve_pixel_format(config),
@@ -79,7 +94,10 @@ static esp_err_t setup_st7123(const bsp_config_t *config, i2c_master_bus_handle_
     esp_err_t err = st7123_lcd_create(&lcd_cfg, &display);
     if (err != ESP_OK) return err;
     bsp_display_set_active(display);
+    return ESP_OK;
+}
 
+static void setup_st712x_touch(i2c_master_bus_handle_t bus) {
     const st712x_touch_config_t tp_cfg = {
         .i2c_bus     = bus,
         .clock_hz    = ST712X_I2C_DEFAULT_HZ,
@@ -89,16 +107,15 @@ static esp_err_t setup_st7123(const bsp_config_t *config, i2c_master_bus_handle_
         .height      = TAB5_PANEL_H,
     };
     bsp_touch_t *touch = NULL;
-    err = st712x_touch_create(&tp_cfg, &touch);
+    esp_err_t err = st712x_touch_create(&tp_cfg, &touch);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "st712x touch unavailable: %s", esp_err_to_name(err));
-        return ESP_OK;
+        return;
     }
     bsp_touch_set_active(touch);
-    return ESP_OK;
 }
 
-static esp_err_t setup_ili9881c(const bsp_config_t *config, i2c_master_bus_handle_t bus) {
+static esp_err_t setup_ili9881c(const bsp_config_t *config) {
     const ili9881c_config_t lcd_cfg = {
         .size           = { TAB5_PANEL_W, TAB5_PANEL_H },
         .pixel_format   = resolve_pixel_format(config),
@@ -109,7 +126,10 @@ static esp_err_t setup_ili9881c(const bsp_config_t *config, i2c_master_bus_handl
     esp_err_t err = ili9881c_lcd_create(&lcd_cfg, &display);
     if (err != ESP_OK) return err;
     bsp_display_set_active(display);
+    return ESP_OK;
+}
 
+static void setup_gt911(i2c_master_bus_handle_t bus) {
     /* tab5.c already ran the gtp_reset_guitar INT pulse (TP_RST sits on a PI4IOE
      * pin) and left INT high to latch the GT911 to 0x14. Pass reset_io=NC so the
      * driver doesn't try to re-reset; it just probes the chip on the bus. */
@@ -123,13 +143,12 @@ static esp_err_t setup_ili9881c(const bsp_config_t *config, i2c_master_bus_handl
         .height      = TAB5_PANEL_H,
     };
     bsp_touch_t *touch = NULL;
-    err = gt911_touch_create(&tp_cfg, &touch);
+    esp_err_t err = gt911_touch_create(&tp_cfg, &touch);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "gt911 touch unavailable: %s", esp_err_to_name(err));
-        return ESP_OK;
+        return;
     }
     bsp_touch_set_active(touch);
-    return ESP_OK;
 }
 
 esp_err_t tab5_panel_init(const bsp_config_t *config, i2c_master_bus_handle_t i2c_bus) {
@@ -138,13 +157,23 @@ esp_err_t tab5_panel_init(const bsp_config_t *config, i2c_master_bus_handle_t i2
     if (i2c_master_probe(i2c_bus, ST712X_TP_I2C_ADDR, 10) == ESP_OK) {
         int version = get_st712x_version(i2c_bus);
         ESP_LOGI(TAG, "panel: ST712x (version: %d)", version);
-        return setup_st7123(config, i2c_bus);
+
+        esp_err_t err;
+        if (version == 1) err = setup_st7121_lcd(config);
+        else err = setup_st7123_lcd(config);
+        if (err != ESP_OK) return err;
+
+        setup_st712x_touch(i2c_bus);
+        return ESP_OK;
     }
     if (i2c_master_probe(i2c_bus, GT911_TP_I2C_ADDR, 10) == ESP_OK) {
         ESP_LOGI(TAG, "panel: ILI9881C");
-        return setup_ili9881c(config, i2c_bus);
+        esp_err_t err = setup_ili9881c(config);
+        if (err != ESP_OK) return err;
+
+        setup_gt911(i2c_bus);
+        return ESP_OK;
     }
-    ESP_LOGE(TAG, "no known panel found on I2C (neither 0x%02x nor 0x%02x)",
-             ST712X_TP_I2C_ADDR, GT911_TP_I2C_ADDR);
+    ESP_LOGE(TAG, "no known panel found on I2C");
     return ESP_ERR_NOT_FOUND;
 }

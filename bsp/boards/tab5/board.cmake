@@ -9,6 +9,7 @@ set(BOARD_DEVICE_SRCS
     "boards/tab5/tab5_panel.c"
     "boards/tab5/tab5_audio.c"
     "devices/ili9881c/ili9881c.c"
+    "devices/st712x/st7121_lcd.c"
     "devices/st712x/st7123_lcd.c"
     "devices/st712x/st712x_touch.c"
     "devices/gt911/gt911.c"
