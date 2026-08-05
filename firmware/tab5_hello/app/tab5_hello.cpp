@@ -9,7 +9,7 @@
 #include "lvgl.hpp"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
-#include <assert.h>
+#include "screens/home_screen.hpp"
 
 static const char *TAG = "tab5_hello";
 
@@ -25,7 +25,7 @@ static void lvgl_init() {
     esp_err_t err = lvgl_port_init(&config);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "lvgl_port_init: %s", esp_err_to_name(err));
-        assert(0);
+        return;
     }
 
     const bsp_size_t         size = bsp_display_get_size();
@@ -44,17 +44,20 @@ static void lvgl_init() {
         lv_display_flush_ready(d);
     });
     lv_display_set_default(disp);
-}
 
-static void build_hello_screen() {
-    lv_obj_t *scr = lv_screen_active();
-    lv_obj_set_style_bg_color(scr, lv_color_white(), 0);
-
-    lv_obj_t *label = lv_label_create(scr);
-    lv_label_set_text(label, "Hello, Tab5!");
-    lv_obj_set_style_text_font(label, &lv_font_montserrat_48, 0);
-    lv_obj_set_style_text_color(label, lv_color_black(), 0);
-    lv_obj_center(label);
+    lv_indev_t *indev = lv_indev_create();
+    lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
+    lv_indev_set_read_cb(indev, [](lv_indev_t *, lv_indev_data_t *data) {
+        bsp_touch_point_t pt;
+        if (bsp_touch_read(&pt, 1) > 0) {
+            data->point.x = pt.x;
+            data->point.y = pt.y;
+            data->state   = LV_INDEV_STATE_PRESSED;
+        } else {
+            data->state = LV_INDEV_STATE_RELEASED;
+        }
+    });
+    lv_indev_set_display(indev, disp);
 }
 
 void app_entry() {
@@ -65,7 +68,7 @@ void app_entry() {
     lvgl_init();
 
     lv_async_call([] {
-        build_hello_screen();
+        screen_manager.load(std::make_shared<HomeScreen>());
         bsp_display_set_brightness(80);
     });
 }

@@ -3,10 +3,12 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
+#pragma once
 #include "screen.hpp"
 
 lv_obj_t *lv_navigation_create(lv_obj_t *parent);
-lv_obj_t *lv_navigation_back_create(lv_obj_t *parent, const char *title, std::function<void()> back);
+lv_obj_t *lv_navigation_back_create(lv_obj_t *parent, const char *title,
+                                    std::function<void(lv_event_t *)> back);
 lv_obj_t *lv_navigation_back_label(lv_obj_t *back);
 
 class NavigationScreen : public Screen {

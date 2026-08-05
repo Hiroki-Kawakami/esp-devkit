@@ -15,5 +15,10 @@ void lv_widgets_set_fonts(const lv_font_t *title, const lv_font_t *body) {
     s_body_font = body;
 }
 
-const lv_font_t *lv_widgets_title_font() { return s_title_font ? s_title_font : &lv_font_montserrat_32; }
-const lv_font_t *lv_widgets_body_font()  { return s_body_font  ? s_body_font  : &lv_font_montserrat_24; }
+const lv_font_t *lv_widgets_title_font() {
+    return s_title_font ? s_title_font : &lv_font_montserrat_32;
+}
+
+const lv_font_t *lv_widgets_body_font() {
+    return s_body_font ? s_body_font : &lv_font_montserrat_24;
+}

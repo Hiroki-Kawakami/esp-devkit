@@ -19,9 +19,19 @@
 set(UI_FRAMEWORK_SRCS
     "src/lvgl.cpp"
     "src/screen_manager.cpp"
-    "src/widgets/fonts.cpp"
-    "src/widgets/modal.cpp"
-    "src/widgets/navigation.cpp")
+    "src/widgets/common/fonts.cpp"
+    "src/widgets/common/layout.cpp")
+
+if(CONFIG_UI_FRAMEWORK_WIDGETS_PAPER)
+    list(APPEND UI_FRAMEWORK_SRCS
+        "src/widgets/paper/modal.cpp"
+        "src/widgets/paper/navigation.cpp")
+elseif(CONFIG_UI_FRAMEWORK_WIDGETS_TAB5)
+    list(APPEND UI_FRAMEWORK_SRCS
+        "src/widgets/tab5/layout.cpp"
+        "src/widgets/tab5/modal.cpp"
+        "src/widgets/tab5/navigation.cpp")
+endif()
 
 if(ESP_PLATFORM)
     idf_component_register(

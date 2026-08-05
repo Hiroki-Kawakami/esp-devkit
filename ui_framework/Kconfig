@@ -1,0 +1,32 @@
+menu "UI Framework"
+
+choice UI_FRAMEWORK_WIDGETS_IMPLEMENTATION
+    prompt "Widgets implementation"
+    default UI_FRAMEWORK_WIDGETS_PAPER if BSP_BOARD_PAPER || BSP_BOARD_PAPER_S3
+    default UI_FRAMEWORK_WIDGETS_TAB5 if BSP_BOARD_TAB5
+    default UI_FRAMEWORK_WIDGETS_NONE
+
+    config UI_FRAMEWORK_WIDGETS_TAB5
+        bool "Tab5 widgets"
+        help
+            Build the Tab5-specific modal and navigation implementations.
+
+    config UI_FRAMEWORK_WIDGETS_PAPER
+        bool "Paper widgets"
+        help
+            Build the M5Paper and M5PaperS3 modal and navigation implementations.
+
+    config UI_FRAMEWORK_WIDGETS_CUSTOM
+        bool "Application-provided widgets"
+        help
+            Build only the common widget helpers. The application provides the
+            modal and navigation implementations declared by ui_framework.
+
+    config UI_FRAMEWORK_WIDGETS_NONE
+        bool "No styled widgets"
+        help
+            Do not build modal or navigation implementations. Common layout
+            helpers remain available.
+endchoice
+
+endmenu

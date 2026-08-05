@@ -4,12 +4,11 @@
  *
  * Layout widgets — panel-agnostic helpers over LVGL for building flex layouts:
  * style-stripped containers (optionally flex/colored), grow-able spacers, and
- * thin horizontal/vertical separators. Pulled in by lvgl.hpp.
+ * thin horizontal/vertical separators. Pulled in by widgets.hpp.
  */
 
 #pragma once
 #include "lvgl.h"
-#include <optional>
 
 // MARK: Container
 inline lv_obj_t *lv_container_create(lv_obj_t *parent) {
@@ -46,7 +45,7 @@ inline lv_obj_t *lv_spacer_create(lv_obj_t *parent, int32_t width, int32_t heigh
 }
 
 // MARK: Separator
-#define UI_SEPARATOR_COLOR_DEFAULT 0x000000
+lv_color_t lv_separator_default_color();
 
 inline lv_obj_t *lv_hor_separator_create(lv_obj_t *parent, lv_color_t color, int32_t margin = 0) {
     auto obj = lv_container_create(parent);
@@ -57,7 +56,7 @@ inline lv_obj_t *lv_hor_separator_create(lv_obj_t *parent, lv_color_t color, int
     return obj;
 }
 inline lv_obj_t *lv_hor_separator_create(lv_obj_t *parent, int32_t margin = 0) {
-    return lv_hor_separator_create(parent, lv_color_hex(UI_SEPARATOR_COLOR_DEFAULT), margin);
+    return lv_hor_separator_create(parent, lv_separator_default_color(), margin);
 }
 inline lv_obj_t *lv_ver_separator_create(lv_obj_t *parent, lv_color_t color, int32_t margin = 0) {
     auto obj = lv_container_create(parent);
@@ -68,5 +67,5 @@ inline lv_obj_t *lv_ver_separator_create(lv_obj_t *parent, lv_color_t color, int
     return obj;
 }
 inline lv_obj_t *lv_ver_separator_create(lv_obj_t *parent, int32_t margin = 0) {
-    return lv_ver_separator_create(parent, lv_color_hex(UI_SEPARATOR_COLOR_DEFAULT), margin);
+    return lv_ver_separator_create(parent, lv_separator_default_color(), margin);
 }
