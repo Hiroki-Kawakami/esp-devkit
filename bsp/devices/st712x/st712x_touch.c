@@ -2,14 +2,14 @@
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 Hiroki Kawakami
  *
- * ST7123 I2C touch driver -- see st7123_touch.h. Chip-specific parts only: I2C
- * attach + HW reset + one-shot chip poll (ST7123's own 7-byte report layout).
+ * ST712x I2C touch driver -- see st712x_touch.h. Chip-specific parts only: I2C
+ * attach + HW reset + one-shot chip poll (ST712x's 7-byte report layout).
  * The dispatch source, INT ISR, orientation transform, and the INT->poll->INT
  * state machine live in the common layer (src/bsp_touch.c); this file's
  * bsp_touch_t::poll just fills raw (chip-space) coords + a fresh flag.
  */
 
-#include "st7123_touch.h"
+#include "st712x_touch.h"
 #include "bsp_touch.h"
 #include <stdlib.h>
 #include <string.h>
@@ -19,7 +19,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 
-static const char *TAG = "st7123_tp";
+static const char *TAG = "st712x_tp";
 
 /* Registers (16-bit big-endian addresses) ---------------------------------- */
 #define REG_ADV_INFO       0x0010u   /* bit 3 = with_coord, bit 7 = chip_reset */
@@ -37,29 +37,29 @@ static const char *TAG = "st7123_tp";
 typedef struct {
     uint16_t x, y;
     uint8_t  area;     /* per-finger "strength"; not exposed via bsp_touch_t */
-} st7123_point_t;
+} st712x_point_t;
 
-struct st7123_dev {
+struct st712x_dev {
     bsp_touch_t             base;
-    st7123_touch_config_t   cfg;
+    st712x_touch_config_t   cfg;
     i2c_master_dev_handle_t i2c_dev;
     bool                    int_is_input;
     SemaphoreHandle_t       lock;
 
-    st7123_point_t          points[ST7123_MAX_TOUCH_POINTS];
+    st712x_point_t          points[ST712X_MAX_TOUCH_POINTS];
     uint8_t                 count;
     bool                    fresh;
 };
 
 /* --- I2C primitives (caller holds dev->lock) ------------------------------ */
 
-static esp_err_t reg_read_locked(struct st7123_dev *dev, uint16_t reg, uint8_t *buf, size_t len) {
+static esp_err_t reg_read_locked(struct st712x_dev *dev, uint16_t reg, uint8_t *buf, size_t len) {
     uint8_t addr[2] = { (uint8_t)(reg >> 8), (uint8_t)reg };
     return i2c_master_transmit_receive(dev->i2c_dev, addr, 2, buf, len, I2C_TIMEOUT_MS);
 }
 
-static inline void dev_lock(struct st7123_dev *dev)   { if (dev->lock) xSemaphoreTake(dev->lock, portMAX_DELAY); }
-static inline void dev_unlock(struct st7123_dev *dev) { if (dev->lock) xSemaphoreGive(dev->lock); }
+static inline void dev_lock(struct st712x_dev *dev)   { if (dev->lock) xSemaphoreTake(dev->lock, portMAX_DELAY); }
+static inline void dev_unlock(struct st712x_dev *dev) { if (dev->lock) xSemaphoreGive(dev->lock); }
 
 /* --- GPIO / reset --------------------------------------------------------- */
 
@@ -88,7 +88,7 @@ static esp_err_t gpio_as_input(gpio_num_t pin, bool pullup) {
     return gpio_config(&cfg);
 }
 
-static esp_err_t hw_reset(struct st7123_dev *dev) {
+static esp_err_t hw_reset(struct st712x_dev *dev) {
     const bool has_rst = dev->cfg.reset_io != GPIO_NUM_NC;
     const bool has_int = dev->cfg.int_io   != GPIO_NUM_NC;
 
@@ -113,7 +113,7 @@ static esp_err_t hw_reset(struct st7123_dev *dev) {
 
 /* --- Coordinate poll (caller holds dev->lock) ----------------------------- */
 
-static esp_err_t coord_poll_locked(struct st7123_dev *dev) {
+static esp_err_t coord_poll_locked(struct st712x_dev *dev) {
     dev->fresh = false;
 
     uint8_t adv = 0;
@@ -124,7 +124,7 @@ static esp_err_t coord_poll_locked(struct st7123_dev *dev) {
     uint8_t max_touches = 0;
     err = reg_read_locked(dev, REG_MAX_TOUCHES, &max_touches, 1);
     if (err != ESP_OK) return err;
-    if (max_touches > ST7123_MAX_TOUCH_POINTS) max_touches = ST7123_MAX_TOUCH_POINTS;
+    if (max_touches > ST712X_MAX_TOUCH_POINTS) max_touches = ST712X_MAX_TOUCH_POINTS;
 
     if (max_touches == 0) {
         dev->count = 0;
@@ -132,7 +132,7 @@ static esp_err_t coord_poll_locked(struct st7123_dev *dev) {
         return ESP_OK;
     }
 
-    uint8_t buf[ST7123_MAX_TOUCH_POINTS * POINT_SIZE];
+    uint8_t buf[ST712X_MAX_TOUCH_POINTS * POINT_SIZE];
     err = reg_read_locked(dev, REG_REPORT_COORD, buf, (size_t)max_touches * POINT_SIZE);
     if (err != ESP_OK) return err;
 
@@ -153,10 +153,10 @@ static esp_err_t coord_poll_locked(struct st7123_dev *dev) {
 
 /* --- bsp_touch_t vtable --------------------------------------------------- */
 
-static esp_err_t st7123_poll(bsp_touch_t *self,
+static esp_err_t st712x_poll(bsp_touch_t *self,
                              bsp_touch_raw_point_t *out, uint8_t max,
                              uint8_t *count, bool *keep_polling) {
-    struct st7123_dev *dev = (struct st7123_dev *)self;
+    struct st712x_dev *dev = (struct st712x_dev *)self;
 
     dev_lock(dev);
     esp_err_t err = coord_poll_locked(dev);
@@ -167,7 +167,7 @@ static esp_err_t st7123_poll(bsp_touch_t *self,
         for (uint8_t i = 0; i < n; i++) {
             out[i].x  = dev->points[i].x;
             out[i].y  = dev->points[i].y;
-            out[i].id = i;              /* ST7123 reports don't carry a track id */
+            out[i].id = i;              /* ST712x reports don't carry a track id */
         }
     }
     dev_unlock(dev);
@@ -177,8 +177,8 @@ static esp_err_t st7123_poll(bsp_touch_t *self,
     return err;
 }
 
-static esp_err_t st7123_deinit(bsp_touch_t *self) {
-    struct st7123_dev *dev = (struct st7123_dev *)self;
+static esp_err_t st712x_deinit(bsp_touch_t *self) {
+    struct st712x_dev *dev = (struct st712x_dev *)self;
     if (!dev) return ESP_OK;
     if (dev->i2c_dev) i2c_master_bus_rm_device(dev->i2c_dev);
     if (dev->lock)    vSemaphoreDelete(dev->lock);
@@ -188,19 +188,19 @@ static esp_err_t st7123_deinit(bsp_touch_t *self) {
 
 /* --- Lifecycle ------------------------------------------------------------ */
 
-esp_err_t st7123_touch_create(const st7123_touch_config_t *config, bsp_touch_t **out_touch) {
+esp_err_t st712x_touch_create(const st712x_touch_config_t *config, bsp_touch_t **out_touch) {
     if (!config || !config->i2c_bus || !out_touch) return ESP_ERR_INVALID_ARG;
 
-    struct st7123_dev *dev = calloc(1, sizeof(*dev));
+    struct st712x_dev *dev = calloc(1, sizeof(*dev));
     if (!dev) return ESP_ERR_NO_MEM;
     dev->cfg = *config;
 
-    dev->base.poll   = st7123_poll;
-    dev->base.deinit = st7123_deinit;
+    dev->base.poll   = st712x_poll;
+    dev->base.deinit = st712x_deinit;
 
     dev->base.width      = config->width;
     dev->base.height     = config->height;
-    dev->base.max_points = ST7123_MAX_TOUCH_POINTS;
+    dev->base.max_points = ST712X_MAX_TOUCH_POINTS;
     dev->base.swap_xy    = config->swap_xy;
     dev->base.mirror_x   = config->mirror_x;
     dev->base.mirror_y   = config->mirror_y;
@@ -214,8 +214,8 @@ esp_err_t st7123_touch_create(const st7123_touch_config_t *config, bsp_touch_t *
 
     i2c_device_config_t i2c_cfg = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address  = ST7123_I2C_ADDR,
-        .scl_speed_hz    = dev->cfg.clock_hz > 0 ? dev->cfg.clock_hz : ST7123_I2C_DEFAULT_HZ,
+        .device_address  = ST712X_I2C_ADDR,
+        .scl_speed_hz    = dev->cfg.clock_hz > 0 ? dev->cfg.clock_hz : ST712X_I2C_DEFAULT_HZ,
     };
     err = i2c_master_bus_add_device(dev->cfg.i2c_bus, &i2c_cfg, &dev->i2c_dev);
     if (err != ESP_OK) goto fail;
@@ -224,6 +224,6 @@ esp_err_t st7123_touch_create(const st7123_touch_config_t *config, bsp_touch_t *
     return ESP_OK;
 
 fail:
-    st7123_deinit(&dev->base);
+    st712x_deinit(&dev->base);
     return err;
 }

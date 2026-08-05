@@ -4,7 +4,7 @@
  *
  * M5Stack Tab5 panel bring-up. There are two panel generations shipping under
  * the same product name; pick by probing the touch chip on the shared I2C bus:
- *   - 0x55 -> ST7123 generation  (ST7123 MIPI LCD + ST7123 touch)
+ *   - 0x55 -> ST7123 generation  (ST7123 MIPI LCD + ST712x touch)
  *   - 0x14 -> ILI9881C generation (ILI9881C MIPI LCD + GT911 touch)
  * Both share the LCD_RST / TP_RST reset sequence done in tab5.c before this
  * runs, so we only have to create the display + touch providers.
@@ -13,7 +13,7 @@
 #include "tab5_panel.h"
 #include "ili9881c.h"
 #include "st7123_lcd.h"
-#include "st7123_touch.h"
+#include "st712x_touch.h"
 #include "gt911.h"
 #include "esp_log.h"
 
@@ -25,7 +25,7 @@ static const char *TAG = "tab5_panel";
 #define TAB5_PANEL_W       720
 #define TAB5_PANEL_H       1280
 
-#define ST7123_TP_I2C_ADDR  0x55
+#define ST712X_TP_I2C_ADDR  0x55
 #define GT911_TP_I2C_ADDR   0x14
 
 static uint8_t resolve_fb_num(const bsp_config_t *config) {
@@ -49,18 +49,18 @@ static esp_err_t setup_st7123(const bsp_config_t *config, i2c_master_bus_handle_
     if (err != ESP_OK) return err;
     bsp_display_set_active(display);
 
-    const st7123_touch_config_t tp_cfg = {
+    const st712x_touch_config_t tp_cfg = {
         .i2c_bus     = bus,
-        .clock_hz    = ST7123_I2C_DEFAULT_HZ,
+        .clock_hz    = ST712X_I2C_DEFAULT_HZ,
         .int_io      = TAB5_TOUCH_PIN_INT,
         .reset_io    = GPIO_NUM_NC,
         .width       = TAB5_PANEL_W,
         .height      = TAB5_PANEL_H,
     };
     bsp_touch_t *touch = NULL;
-    err = st7123_touch_create(&tp_cfg, &touch);
+    err = st712x_touch_create(&tp_cfg, &touch);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "st7123 touch unavailable: %s", esp_err_to_name(err));
+        ESP_LOGW(TAG, "st712x touch unavailable: %s", esp_err_to_name(err));
         return ESP_OK;
     }
     bsp_touch_set_active(touch);
@@ -104,7 +104,7 @@ static esp_err_t setup_ili9881c(const bsp_config_t *config, i2c_master_bus_handl
 esp_err_t tab5_panel_init(const bsp_config_t *config, i2c_master_bus_handle_t i2c_bus) {
     if (!i2c_bus) return ESP_ERR_INVALID_ARG;
 
-    if (i2c_master_probe(i2c_bus, ST7123_TP_I2C_ADDR, 10) == ESP_OK) {
+    if (i2c_master_probe(i2c_bus, ST712X_TP_I2C_ADDR, 10) == ESP_OK) {
         ESP_LOGI(TAG, "panel generation: ST7123");
         return setup_st7123(config, i2c_bus);
     }
@@ -113,6 +113,6 @@ esp_err_t tab5_panel_init(const bsp_config_t *config, i2c_master_bus_handle_t i2
         return setup_ili9881c(config, i2c_bus);
     }
     ESP_LOGE(TAG, "no known panel found on I2C (neither 0x%02x nor 0x%02x)",
-             ST7123_TP_I2C_ADDR, GT911_TP_I2C_ADDR);
+             ST712X_TP_I2C_ADDR, GT911_TP_I2C_ADDR);
     return ESP_ERR_NOT_FOUND;
 }

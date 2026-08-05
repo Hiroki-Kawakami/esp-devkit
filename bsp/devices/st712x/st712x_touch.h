@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 Hiroki Kawakami
  *
- * ST7123 capacitive touch controller driver (I2C, polling). Produces a
+ * ST712x capacitive touch controller driver (I2C, polling). Produces a
  * bsp_touch_t provider for the common touch layer (src/bsp_touch.c), which owns
  * the INT ISR, orientation transform, and the release settle state machine, and
  * registers a bsp_dispatch source to drive polling on bsp_touch_set_active().
@@ -22,13 +22,13 @@
 extern "C" {
 #endif
 
-#define ST7123_I2C_ADDR        0x55
-#define ST7123_I2C_DEFAULT_HZ  (100 * 1000)
-#define ST7123_MAX_TOUCH_POINTS 10
+#define ST712X_I2C_ADDR         0x55
+#define ST712X_I2C_DEFAULT_HZ   (100 * 1000)
+#define ST712X_MAX_TOUCH_POINTS 10
 
 typedef struct {
     i2c_master_bus_handle_t i2c_bus;
-    uint32_t                clock_hz;   /* 0 -> ST7123_I2C_DEFAULT_HZ        */
+    uint32_t                clock_hz;   /* 0 -> ST712X_I2C_DEFAULT_HZ        */
     gpio_num_t              int_io;     /* INT pin; GPIO_NUM_NC to skip      */
     gpio_num_t              reset_io;   /* RESET (active LOW); NC to skip    */
 
@@ -39,9 +39,9 @@ typedef struct {
     bool                    mirror_y;
     uint16_t                width;
     uint16_t                height;
-} st7123_touch_config_t;
+} st712x_touch_config_t;
 
-esp_err_t st7123_touch_create(const st7123_touch_config_t *config, bsp_touch_t **out_touch);
+esp_err_t st712x_touch_create(const st712x_touch_config_t *config, bsp_touch_t **out_touch);
 
 #ifdef __cplusplus
 }
