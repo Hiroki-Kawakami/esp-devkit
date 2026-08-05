@@ -9,6 +9,7 @@
 // (every set), so nvs_commit() is effectively a flush.
 
 #include "nvs_flash.h"
+#include "idf_compat_internal.h"
 
 #include <pthread.h>
 #include <stdbool.h>
@@ -147,6 +148,25 @@ static void store_free(void) {
     s_ns_cap = 0;
 }
 
+/* Simulator hardware identity is analogous to eFuse, not application NVS, so
+ * preserve its reserved namespace when the emulated NVS partition is erased. */
+static void store_free_except_simulator_identity(void) {
+    size_t kept = 0;
+    for (size_t i = 0; i < s_ns_count; i++) {
+        namespace_t *ns = &s_namespaces[i];
+        if (strcmp(ns->name, IDF_COMPAT_SIM_NVS_NAMESPACE) == 0) {
+            if (kept != i) {
+                s_namespaces[kept] = *ns;
+            }
+            kept++;
+        } else {
+            ns_clear(ns);
+            free(ns->name);
+        }
+    }
+    s_ns_count = kept;
+}
+
 static open_handle_t *find_handle(nvs_handle_t handle) {
     for (size_t i = 0; i < s_handle_count; i++)
         if (s_handles[i].in_use && s_handles[i].handle == handle) return &s_handles[i];
@@ -196,8 +216,9 @@ static void ensure_loaded(void) {
     cJSON_Delete(root);
 }
 
-static void save_unlocked(void) {
+static esp_err_t save_unlocked(void) {
     cJSON *root = cJSON_CreateObject();
+    if (!root) return ESP_ERR_NO_MEM;
 
     for (size_t i = 0; i < s_ns_count; i++) {
         namespace_t *ns = &s_namespaces[i];
@@ -216,14 +237,17 @@ static void save_unlocked(void) {
 
     char *text = cJSON_Print(root);
     cJSON_Delete(root);
-    if (!text) return;
+    if (!text) return ESP_ERR_NO_MEM;
 
     FILE *f = fopen(s_path, "wb");
-    if (f) {
-        fputs(text, f);
-        fclose(f);
+    if (!f) {
+        cJSON_free(text);
+        return ESP_FAIL;
     }
+    bool write_failed = fputs(text, f) == EOF;
+    bool close_failed = fclose(f) != 0;
     cJSON_free(text);
+    return write_failed || close_failed ? ESP_FAIL : ESP_OK;
 }
 
 // ---------------------------------------------------------------------------
@@ -240,8 +264,7 @@ static esp_err_t set_blob(nvs_handle_t handle, const char *key, const void *data
     if (oh->readonly) { ret = ESP_ERR_NVS_READ_ONLY; goto done; }
     ns = get_or_create_ns(oh->ns);
     entry_set(ns, key, data, length);
-    save_unlocked();
-    ret = ESP_OK;
+    ret = save_unlocked();
 done:
     UNLOCK();
     return ret;
@@ -316,11 +339,12 @@ esp_err_t nvs_flash_init(void) {
 
 esp_err_t nvs_flash_erase(void) {
     LOCK();
-    store_free();
+    ensure_loaded();
+    store_free_except_simulator_identity();
     s_loaded = true;
-    save_unlocked();
+    esp_err_t ret = save_unlocked();
     UNLOCK();
-    return ESP_OK;
+    return ret;
 }
 
 void nvs_flash_deregister_security_scheme(void) {
@@ -374,8 +398,7 @@ esp_err_t nvs_commit(nvs_handle_t handle) {
     esp_err_t ret;
     LOCK();
     if (!find_handle(handle)) { ret = ESP_ERR_NVS_INVALID_HANDLE; goto done; }
-    save_unlocked();
-    ret = ESP_OK;
+    ret = save_unlocked();
 done:
     UNLOCK();
     return ret;
@@ -396,8 +419,7 @@ esp_err_t nvs_erase_key(nvs_handle_t handle, const char *key) {
     e = find_entry(ns, key);
     if (!e) { ret = ESP_ERR_NVS_NOT_FOUND; goto done; }
     entry_remove(ns, e);
-    save_unlocked();
-    ret = ESP_OK;
+    ret = save_unlocked();
 done:
     UNLOCK();
     return ret;
@@ -414,8 +436,7 @@ esp_err_t nvs_erase_all(nvs_handle_t handle) {
     if (oh->readonly) { ret = ESP_ERR_NVS_READ_ONLY; goto done; }
     ns = find_ns(oh->ns);
     if (ns) ns_clear(ns);
-    save_unlocked();
-    ret = ESP_OK;
+    ret = save_unlocked();
 done:
     UNLOCK();
     return ret;

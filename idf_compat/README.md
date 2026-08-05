@@ -14,14 +14,16 @@ straight into the `simulator` executable (one binary → no separate library).
 ```
 idf_compat/
   include/            shim headers (what shared code #includes)
-    esp_err.h esp_log.h esp_check.h esp_timer.h esp_heap_caps.h nvs.h nvs_flash.h
+    esp_err.h esp_log.h esp_check.h esp_timer.h esp_heap_caps.h esp_mac.h
+    nvs.h nvs_flash.h
     driver/           jpeg_decode.h ppa.h i2c_master.h
     hal/              ppa_types.h color_types.h  (PPA type headers)
     simulator/        sim-only APIs with no device counterpart: i2c_master_sim.h
     freertos/         host FreeRTOS API: FreeRTOS.h task.h queue.h semphr.h
                       event_groups.h timers.h portmacro.h
   src/                shim implementations
-    esp_err.c esp_timer.c esp_heap_caps.c nvs.c jpeg_decode.c ppa.c i2c_master.c
+    esp_err.c esp_timer.c esp_heap_caps.c esp_mac.c nvs.c jpeg_decode.c ppa.c
+    i2c_master.c
     freertos_port.c freertos_task.c freertos_queue.c
     freertos_event_groups.c freertos_timers.c
     freertos_internal.h   (shared helpers; not part of the public API)
@@ -34,7 +36,7 @@ nothing is vendored. The same philosophy throughout: reimplement the API
 *contract* on host primitives, just enough for the simulator.
 
 - ESP-IDF APIs: `esp_err`, `esp_log`, `esp_check`, `esp_timer`, `esp_heap_caps`,
-  and a JSON-backed `nvs` / `nvs_flash`.
+  `esp_mac`, and a JSON-backed `nvs` / `nvs_flash`.
 - The FreeRTOS API (`freertos/*.h`) on native pthreads — see below.
 - `driver/jpeg_decode` — IDF JPEG decode engine API, backed by libjpeg.
 - `driver/ppa` — IDF PPA (Pixel-Processing Accelerator) API, a CPU impl — see below.
@@ -63,6 +65,29 @@ host binary, component splits like esp_common / nvs_flash are invisible):
 `nvs_data.json` in the cwd; override with the sim-only `nvs_flash_sim_set_path()`
 before the first open). Shared code calls the C API directly — there is no C++
 wrapper. Fidelity notes are at the top of `src/nvs.c`.
+
+The namespace `idf_compat_sim` is reserved for simulator hardware identity and
+is preserved by `nvs_flash_erase()`, just as erasing application NVS on a device
+does not erase its eFuse identity. The default `nvs_data.json` is gitignored
+because it can contain environment-specific values.
+
+## MAC addresses
+
+`esp_mac.h` + `src/esp_mac.c` mirror the ESP-IDF v6.0.2 MAC address API. On the
+first read, the simulator loads its factory MAC from the reserved
+`idf_compat_sim` NVS namespace; if absent, it generates a locally administered
+unicast address and persists it there. It therefore remains stable across
+process restarts that use the same NVS file. Set `SIMULATOR_BASE_MAC` at runtime
+to inject a factory address without persisting it. The value must be a canonical
+six-octet colon-separated unicast address.
+
+The simulator uses IDF's four-universal-address allocation: station is the base,
+then SoftAP / Bluetooth / Ethernet use last-byte offsets 1 / 2 / 3. EUI-64 is
+also supported with a deterministic simulator extension. Interface and base
+overrides made through the standard IDF APIs are process-local and already
+generated interface addresses remain cached when the base changes, matching
+IDF. Call `nvs_flash_sim_set_path()` before the first MAC API if overriding the
+NVS path. Separate virtual devices should use separate NVS files.
 
 ## PPA (Pixel-Processing Accelerator)
 
