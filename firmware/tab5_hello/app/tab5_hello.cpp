@@ -62,6 +62,7 @@ static void lvgl_init() {
 
 void app_entry() {
     bsp_config_t bsp_config = {};
+    bsp_config.display.pixel_format = BSP_PIXEL_FORMAT_RGB565;
     bsp_config.dispatch.task_priority = 6;
     bsp_config.dispatch.task_affinity = 1;
     bsp_init(&bsp_config);

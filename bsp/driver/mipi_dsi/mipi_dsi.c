@@ -30,7 +30,7 @@ typedef struct {
 esp_err_t mipi_dsi_send_init_cmds(esp_lcd_panel_io_handle_t io,
                                   const mipi_dsi_init_cmd_t *cmds,
                                   size_t count) {
-    if (!io || (count > 0 && !cmds)) return ESP_ERR_INVALID_ARG;
+    if (count > 0 && !cmds) return ESP_ERR_INVALID_ARG;
 
     for (size_t i = 0; i < count; i++) {
         if (cmds[i].data_bytes > 0 && !cmds[i].data) return ESP_ERR_INVALID_ARG;
@@ -139,7 +139,6 @@ static esp_err_t validate_config(const mipi_dsi_config_t *config) {
 }
 
 esp_err_t mipi_dsi_lcd_create(const mipi_dsi_config_t *config, bsp_display_t **out) {
-    if (!config || !out) return ESP_ERR_INVALID_ARG;
     *out = NULL;
 
     esp_err_t ret = validate_config(config);

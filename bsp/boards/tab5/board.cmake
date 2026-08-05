@@ -14,10 +14,11 @@ set(BOARD_DEVICE_SRCS
     "devices/gt911/gt911.c"
     "devices/pi4io/pi4io.c"
     "devices/es8388/es8388.c"
+    "driver/mipi_dsi/mipi_dsi.c"
     "driver/sd_mmc/sd_mmc.c")
 set(BOARD_DEVICE_PRIV_INCLUDE_DIRS
     "devices" "devices/ili9881c" "devices/st712x" "devices/gt911" "devices/pi4io"
-    "devices/es8388" "driver/sd_mmc")
+    "devices/es8388" "driver/mipi_dsi" "driver/sd_mmc")
 set(BOARD_DEVICE_PRIV_REQUIRES
     driver esp_driver_ledc esp_driver_i2s esp_lcd vfs fatfs sdmmc esp_driver_sdmmc)
 

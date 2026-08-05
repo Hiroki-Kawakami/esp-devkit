@@ -2,11 +2,9 @@
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 Hiroki Kawakami
  *
- * ILI9881C MIPI-DSI panel driver. Allocates the DSI bus + DBI io + DPI panel
- * via esp_lcd, owns its host framebuffers, and exposes the result as a
- * bsp_display provider (BSP_DISPLAY_TYPE_MIPI_DSI). The board registers the
- * provider with bsp_display_set_active() and drives it through the public
- * bsp_display_* API.
+ * ILI9881C MIPI-DSI panel driver. Supplies the panel timings and initialization
+ * sequence to the generic mipi_dsi driver, which exposes the result as a
+ * bsp_display provider (BSP_DISPLAY_TYPE_MIPI_DSI).
  *
  * Backlight is a PWM via LEDC on backlight_gpio (0..100% via set_brightness).
  * The driver does not touch panel reset — boards that wire RESET through an

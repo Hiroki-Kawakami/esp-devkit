@@ -1,14 +1,8 @@
+#include "mipi_dsi.h"
 #include <stddef.h>
 #include <stdint.h>
 
-typedef struct {
-    int          cmd;
-    const void  *data;
-    size_t       data_bytes;
-    unsigned int delay_ms;
-} st7123_init_cmd_t;
-
-static const st7123_init_cmd_t st7123_init_cmds[] = {
+static const mipi_dsi_init_cmd_t st7123_init_cmds[] = {
     {0x60, (uint8_t[]){0x71, 0x23, 0xa2}, 3, 0},
     {0x60, (uint8_t[]){0x71, 0x23, 0xa3}, 3, 0},
     {0x60, (uint8_t[]){0x71, 0x23, 0xa4}, 3, 0},

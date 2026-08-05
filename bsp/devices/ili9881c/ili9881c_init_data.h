@@ -1,14 +1,8 @@
+#include "mipi_dsi.h"
 #include <stddef.h>
 #include <stdint.h>
 
-typedef struct {
-    int          cmd;         /* LCD command                                      */
-    const void  *data;        /* command-specific data bytes                      */
-    size_t       data_bytes;  /* size of `data` in bytes                          */
-    unsigned int delay_ms;    /* delay after the command                          */
-} ili9881c_init_cmd_t;
-
-static const ili9881c_init_cmd_t ili9881c_init_cmds[] = {
+static const mipi_dsi_init_cmd_t ili9881c_init_cmds[] = {
     // {cmd, { data }, data_size, delay}
     /**** CMD_Page 1 ****/
     {0xFF, (uint8_t[]){0x98, 0x81, 0x01}, 3, 0},
