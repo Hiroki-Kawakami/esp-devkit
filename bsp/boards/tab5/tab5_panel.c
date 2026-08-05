@@ -37,6 +37,37 @@ static bsp_pixel_format_t resolve_pixel_format(const bsp_config_t *config) {
            ? BSP_PIXEL_FORMAT_RGB888 : BSP_PIXEL_FORMAT_RGB565;
 }
 
+static int get_st712x_version(i2c_master_bus_handle_t bus) {
+    const i2c_device_config_t dev_cfg = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address  = ST712X_TP_I2C_ADDR,
+        .scl_speed_hz    = ST712X_I2C_DEFAULT_HZ,
+    };
+    i2c_master_dev_handle_t dev = NULL;
+    esp_err_t err = i2c_master_bus_add_device(bus, &dev_cfg, &dev);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "failed to attach ST712x for version read: %s", esp_err_to_name(err));
+        return -1;
+    }
+
+    const uint8_t reg_addr[2] = { 0x00, 0x00 };
+    uint8_t version = 0;
+    err = i2c_master_transmit_receive(dev, reg_addr, sizeof(reg_addr),
+                                      &version, sizeof(version), 50);
+
+    esp_err_t remove_err = i2c_master_bus_rm_device(dev);
+    if (remove_err != ESP_OK) {
+        ESP_LOGW(TAG, "failed to detach ST712x after version read: %s",
+                 esp_err_to_name(remove_err));
+    }
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "failed to read ST712x version: %s", esp_err_to_name(err));
+        return -1;
+    }
+
+    return version;
+}
+
 static esp_err_t setup_st7123(const bsp_config_t *config, i2c_master_bus_handle_t bus) {
     const st7123_config_t lcd_cfg = {
         .size           = { TAB5_PANEL_W, TAB5_PANEL_H },
@@ -105,11 +136,12 @@ esp_err_t tab5_panel_init(const bsp_config_t *config, i2c_master_bus_handle_t i2
     if (!i2c_bus) return ESP_ERR_INVALID_ARG;
 
     if (i2c_master_probe(i2c_bus, ST712X_TP_I2C_ADDR, 10) == ESP_OK) {
-        ESP_LOGI(TAG, "panel generation: ST7123");
+        int version = get_st712x_version(i2c_bus);
+        ESP_LOGI(TAG, "panel: ST712x (version: %d)", version);
         return setup_st7123(config, i2c_bus);
     }
     if (i2c_master_probe(i2c_bus, GT911_TP_I2C_ADDR, 10) == ESP_OK) {
-        ESP_LOGI(TAG, "panel generation: ILI9881C");
+        ESP_LOGI(TAG, "panel: ILI9881C");
         return setup_ili9881c(config, i2c_bus);
     }
     ESP_LOGE(TAG, "no known panel found on I2C (neither 0x%02x nor 0x%02x)",
