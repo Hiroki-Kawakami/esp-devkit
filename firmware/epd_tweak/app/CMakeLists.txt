@@ -11,7 +11,7 @@ idf_component_register(
     REQUIRES bsp ui_framework image_framework
     PRIV_REQUIRES esp_driver_usb_serial_jtag esp_driver_uart)
 
-# paper_s3 only: reach into the bsp's private epd_ll headers for the
+# Direct-drive EPD targets: reach into the bsp's private epd_ll headers for the
 # waveform-tuning backdoor (see epd_ll_tweak.h). The esp32/paper build has no
 # epd_ll, so SerialCmd.cpp compiles the wf/dump commands out.
 if(CONFIG_BSP_EPD_LL_TWEAK)

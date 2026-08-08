@@ -35,6 +35,10 @@ choice BSP_BOARD
         bool "M5PaperS3 (ESP32-S3)"
         depends on DEVKIT_SIMULATOR || IDF_TARGET_ESP32S3
 
+    config BSP_BOARD_LILYGO_T5
+        bool "LilyGo T5 ePaper S3 (ESP32-S3)"
+        depends on IDF_TARGET_ESP32S3
+
     config BSP_BOARD_ATOM_S3_LITE
         bool "M5Stack AtomS3 Lite (ESP32-S3)"
         depends on DEVKIT_SIMULATOR || IDF_TARGET_ESP32S3
@@ -54,7 +58,7 @@ endchoice
 
 config BSP_EPD_LL_TWEAK
     bool "epd_ll waveform-tuning backdoor"
-    depends on BSP_BOARD_PAPER_S3 && !DEVKIT_SIMULATOR
+    depends on (BSP_BOARD_PAPER_S3 || BSP_BOARD_LILYGO_T5) && !DEVKIT_SIMULATOR
     default n
     help
         Compile the epd_ll waveform-tuning backdoor (epd_ll_tweak.h): swap a

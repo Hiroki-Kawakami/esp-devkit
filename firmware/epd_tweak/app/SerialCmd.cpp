@@ -8,7 +8,7 @@
  *
  *   ping                          liveness probe
  *   info                          -> #OK info <w> <h> <tweak 0|1> <stepmax>
- *   wf <slot> <steps> <hex>       rebind a waveform LUT (paper_s3 only);
+ *   wf <slot> <steps> <hex>       rebind a direct-drive EPD waveform LUT;
  *                                 hex = steps*16 uint32 words, 8 hex chars each
  *   dump <slot>                   -> #OK dump <slot> <steps> <hex>
  *   refresh <fast|quality> [all]  full-screen one-shot refresh
@@ -104,7 +104,7 @@ static char *next_tok(char **cursor) {
     return start;
 }
 
-// MARK: - waveform LUT swap (paper_s3 / epd_ll only)
+// MARK: - waveform LUT swap (direct-drive EPD / epd_ll only)
 
 #if CONFIG_BSP_EPD_LL_TWEAK
 
