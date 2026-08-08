@@ -59,19 +59,64 @@ typedef enum {
 
 typedef const uint32_t (*epd_ll_lut_t)[16];
 
+/* Board-side low-speed control and power backend. Direct-GPIO and custom
+ * configurations are deliberately disjoint: only the union member selected by
+ * type is valid.
+ *
+ * A custom backend owns the complete power and frame-boundary sequences:
+ *   - power_on / power_off control the panel power rails.
+ *   - frame_begin / frame_end generate the complete frame-boundary sequence.
+ *   - line_begin starts one scanline before its i80 transfer.
+ *   - line_latch completes one scanline from the i80 transfer-done ISR.
+ *
+ * All custom callbacks are required. line_latch and everything it calls must
+ * be IRAM-safe, non-blocking, and safe to run in interrupt context. Any state
+ * read by line_latch must reside in internal RAM; ctx must outlive the display.
+ * epd_ll copies the custom configuration during create.
+ */
+typedef struct {
+    struct {
+        esp_err_t (*init)(void *ctx);
+        void (*power_on)(void *ctx);
+        void (*power_off)(void *ctx);
+        void (*frame_begin)(void *ctx);
+        void (*frame_end)(void *ctx);
+        void (*line_begin)(void *ctx);
+        void (*line_latch)(void *ctx);
+    } ops;
+    void *ctx;
+} epd_ll_custom_control_config_t;
+
+typedef enum {
+    EPD_LL_CONTROL_GPIO,
+    EPD_LL_CONTROL_CUSTOM,
+} epd_ll_control_type_t;
+
+typedef struct {
+    int ckv_pin;
+    int spv_pin;
+    int le_pin;
+    int oe_pin;
+    int pwr_pin;
+} epd_ll_gpio_control_config_t;
+
+typedef struct {
+    epd_ll_control_type_t type;
+    union {
+        epd_ll_gpio_control_config_t   gpio;
+        epd_ll_custom_control_config_t custom;
+    };
+} epd_ll_control_config_t;
+
 typedef struct {
     int data_pins[8];   /* DB0..DB7                                   */
     int sph_pin;        /* STH (horizontal start pulse, i80 CS)       */
     int cl_pin;         /* CL  (pixel clock, i80 WR / PCLK)           */
-    int ckv_pin;        /* CKV (vertical / gate clock)                */
-    int spv_pin;        /* SPV (vertical start pulse)                 */
-    int le_pin;         /* LE  (source latch enable)                  */
-    int oe_pin;         /* OE  (panel output enable, power seq)       */
-    int pwr_pin;        /* PWR (DC-DC enable, power seq)              */
     /* The i80 driver insists on a valid D/C pin even for EPD buses that don't
-     * have one. Pass any GPIO you control (e.g. the PWR pin) -- the bus routes
-     * its D/C there during init, then it's reclaimed as a plain output. */
+     * have one. Pass a spare GPIO, or a GPIO the selected control backend can
+     * safely restore after bus init (the direct-GPIO backend uses PWR). */
     int dc_dummy_pin;
+    epd_ll_control_config_t control;
     uint32_t pclk_hz;       /* i80 pixel clock                        */
     int      width;         /* panel width, px                        */
     int      height;        /* panel height, px                       */

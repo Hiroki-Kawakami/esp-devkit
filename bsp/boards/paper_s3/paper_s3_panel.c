@@ -62,11 +62,17 @@ esp_err_t paper_s3_panel_init(const bsp_config_t *config, i2c_master_bus_handle_
         .data_pins     = { 6, 14, 7, 12, 9, 11, 8, 10 },
         .sph_pin       = 13,
         .cl_pin        = 16,
-        .ckv_pin       = 18,
-        .spv_pin       = 17,
-        .le_pin        = 15,
-        .oe_pin        = 45,
-        .pwr_pin       = 46,
+        .dc_dummy_pin  = 46,
+        .control = {
+            .type = EPD_LL_CONTROL_GPIO,
+            .gpio = {
+                .ckv_pin = 18,
+                .spv_pin = 17,
+                .le_pin  = 15,
+                .oe_pin  = 45,
+                .pwr_pin = 46,
+            },
+        },
         .task_priority = config->epd.task_priority ? config->epd.task_priority : 5,
         .task_affinity = config->epd.task_affinity,
     };

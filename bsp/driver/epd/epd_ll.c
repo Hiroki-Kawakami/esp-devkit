@@ -81,10 +81,72 @@ static const char *TAG = "epd_ll";
 
 // MARK: - i80 bus + CKV/SPV/LE scan protocol (singleton, internal)
 
+static esp_err_t gpio_control_init(void *ctx) {
+    epd_ll_gpio_control_config_t *gpio = ctx;
+    const gpio_config_t config = {
+        .pin_bit_mask = (1ULL << gpio->ckv_pin) | (1ULL << gpio->spv_pin) |
+                        (1ULL << gpio->le_pin) | (1ULL << gpio->oe_pin) |
+                        (1ULL << gpio->pwr_pin),
+        .mode      = GPIO_MODE_OUTPUT,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    ESP_RETURN_ON_ERROR(gpio_config(&config), TAG, "control gpio");
+    gpio_set_level(gpio->ckv_pin, 0);
+    gpio_set_level(gpio->spv_pin, 0);
+    gpio_set_level(gpio->le_pin, 0);
+    gpio_set_level(gpio->oe_pin, 0);
+    gpio_set_level(gpio->pwr_pin, 0);
+    return ESP_OK;
+}
+
+static void gpio_control_power_on(void *ctx) {
+    epd_ll_gpio_control_config_t *gpio = ctx;
+    gpio_set_level(gpio->oe_pin, 1);  esp_rom_delay_us(100);
+    gpio_set_level(gpio->pwr_pin, 1); esp_rom_delay_us(100);
+}
+
+static void gpio_control_power_off(void *ctx) {
+    epd_ll_gpio_control_config_t *gpio = ctx;
+    gpio_set_level(gpio->pwr_pin, 0); esp_rom_delay_us(1000);
+    gpio_set_level(gpio->oe_pin, 0);  esp_rom_delay_us(100);
+}
+
+static void gpio_control_frame_begin(void *ctx) {
+    epd_ll_gpio_control_config_t *gpio = ctx;
+    gpio_set_level(gpio->spv_pin, 0); esp_rom_delay_us(1);
+    gpio_set_level(gpio->ckv_pin, 0); esp_rom_delay_us(3);
+    gpio_set_level(gpio->ckv_pin, 1); esp_rom_delay_us(1);
+    gpio_set_level(gpio->spv_pin, 1);
+    for (int i = 0; i < 3; i++) {
+        esp_rom_delay_us(3);
+        gpio_set_level(gpio->ckv_pin, 0);
+        esp_rom_delay_us(3);
+        gpio_set_level(gpio->ckv_pin, 1);
+    }
+}
+
+static void gpio_control_frame_end(void *ctx) {
+    epd_ll_gpio_control_config_t *gpio = ctx;
+    gpio_set_level(gpio->le_pin, 0);
+    gpio_set_level(gpio->ckv_pin, 1);
+}
+
+static void gpio_control_line_begin(void *ctx) {
+    epd_ll_gpio_control_config_t *gpio = ctx;
+    gpio_set_level(gpio->le_pin, 0);
+    gpio_set_level(gpio->ckv_pin, 1);
+}
+
+static IRAM_ATTR void gpio_control_line_latch(void *ctx) {
+    epd_ll_gpio_control_config_t *gpio = ctx;
+    gpio_set_level(gpio->ckv_pin, 0);
+    gpio_set_level(gpio->le_pin, 1);
+}
+
 static esp_lcd_i80_bus_handle_t   s_i80_bus;
 static esp_lcd_panel_io_handle_t  s_io;
 static volatile bool              s_dma_busy;   /* a scanline DMA is in flight */
-static int      s_ckv_pin, s_spv_pin, s_le_pin;
+static epd_ll_custom_control_config_t s_bus_control;
 static uint16_t s_line_bytes;
 static uint8_t  s_line_padding;
 #if EPD_PROFILE
@@ -94,30 +156,19 @@ static int64_t  s_wait_us, s_tx_us;   /* bus_write_line split: dma-wait vs tx_co
 static IRAM_ATTR bool on_trans_done(esp_lcd_panel_io_handle_t io,
                                     esp_lcd_panel_io_event_data_t *edata,
                                     void *user_ctx) {
-    gpio_set_level(s_ckv_pin, 0);
-    gpio_set_level(s_le_pin, 1);
+    s_bus_control.ops.line_latch(s_bus_control.ctx);
     s_dma_busy = false;
     return false;
 }
 
-static esp_err_t bus_init(const epd_ll_config_t *cfg) {
+static esp_err_t bus_init(const epd_ll_config_t *cfg,
+                          const epd_ll_custom_control_config_t *control) {
     s_dma_busy     = false;
-    s_ckv_pin      = cfg->ckv_pin;
-    s_spv_pin      = cfg->spv_pin;
-    s_le_pin       = cfg->le_pin;
+    s_bus_control  = *control;
     s_line_bytes   = cfg->line_bytes;
     s_line_padding = cfg->line_padding;
 
-    /* Bit-banged control lines CKV/SPV (gate) + LE (latch), all idle low. */
-    gpio_config_t gc = {
-        .pin_bit_mask = (1ULL << cfg->ckv_pin) | (1ULL << cfg->spv_pin) | (1ULL << cfg->le_pin),
-        .mode         = GPIO_MODE_OUTPUT,
-        .intr_type    = GPIO_INTR_DISABLE,
-    };
-    ESP_RETURN_ON_ERROR(gpio_config(&gc), TAG, "ctrl gpio");
-    gpio_set_level(cfg->ckv_pin, 0);
-    gpio_set_level(cfg->spv_pin, 0);
-    gpio_set_level(cfg->le_pin, 0);
+    ESP_RETURN_ON_ERROR(control->ops.init(control->ctx), TAG, "control init");
 
     esp_lcd_i80_bus_config_t bus_cfg = {
         .dc_gpio_num        = cfg->dc_dummy_pin,
@@ -157,18 +208,8 @@ static esp_err_t bus_init(const epd_ll_config_t *cfg) {
 
 /* Pulse SPV/CKV to scan the gate driver back to the top row. */
 static void bus_frame_begin(void) {
-    const int ckv = s_ckv_pin, spv = s_spv_pin;
     while (s_dma_busy) taskYIELD();
-    gpio_set_level(spv, 0); esp_rom_delay_us(1);
-    gpio_set_level(ckv, 0); esp_rom_delay_us(3);
-    gpio_set_level(ckv, 1); esp_rom_delay_us(1);
-    gpio_set_level(spv, 1);
-    for (int i = 0; i < 3; i++) {
-        esp_rom_delay_us(3);
-        gpio_set_level(ckv, 0);
-        esp_rom_delay_us(3);
-        gpio_set_level(ckv, 1);
-    }
+    s_bus_control.ops.frame_begin(s_bus_control.ctx);
 }
 
 /* Queue one scanline. Blocks until the previous transfer (and its latch) is done,
@@ -183,8 +224,7 @@ static void bus_write_line(const uint8_t *data) {
     int64_t w1 = esp_timer_get_time(); s_wait_us += w1 - w0;
 #endif
     s_dma_busy = true;
-    gpio_set_level(s_le_pin, 0);           /* close the latch before shifting */
-    gpio_set_level(s_ckv_pin, 1);          /* CKV high for this line */
+    s_bus_control.ops.line_begin(s_bus_control.ctx);
     esp_lcd_panel_io_tx_color(s_io, -1, data, s_line_bytes + s_line_padding);
 #if EPD_PROFILE
     s_tx_us += esp_timer_get_time() - w1;
@@ -194,8 +234,7 @@ static void bus_write_line(const uint8_t *data) {
 /* Wait for the last in-flight scanline and park CKV/LE. */
 static void bus_frame_end(void) {
     while (s_dma_busy) taskYIELD();        /* wait last line (the ISR already latched it) */
-    gpio_set_level(s_le_pin, 0);
-    gpio_set_level(s_ckv_pin, 1);
+    s_bus_control.ops.frame_end(s_bus_control.ctx);
 }
 
 // MARK: - refresh engine
@@ -232,8 +271,8 @@ typedef struct {
     volatile int    waiters;    /* callers blocked on an in-flight region      */
 
     bsp_epd_mode_t mode;        /* persistent draw mode                        */
-    int            oe_pin;
-    int            pwr_pin;
+    epd_ll_custom_control_config_t control;
+    epd_ll_gpio_control_config_t   gpio_control;
 
     TaskHandle_t      task;     /* background waveform engine                  */
     SemaphoreHandle_t mtx;      /* guards state/counter writes + table build   */
@@ -241,16 +280,15 @@ typedef struct {
     SemaphoreHandle_t retire_evt; /* posted each retiring frame / while waiters */
     volatile bool     running;  /* task is awake (driving), not sleeping       */
     volatile bool     stop;     /* deinit requested                            */
+    bool              hardware_ready; /* control backend / power GPIOs initialized */
 } epd_t;
 
 static void power_on(epd_t *s) {
-    gpio_set_level(s->oe_pin, 1);  esp_rom_delay_us(100);
-    gpio_set_level(s->pwr_pin, 1); esp_rom_delay_us(100);
+    s->control.ops.power_on(s->control.ctx);
 }
 
 static void power_off(epd_t *s) {
-    gpio_set_level(s->pwr_pin, 0); esp_rom_delay_us(1000);
-    gpio_set_level(s->oe_pin, 0);  esp_rom_delay_us(100);
+    s->control.ops.power_off(s->control.ctx);
 }
 
 /* Caller holds mtx and has found an in-flight conflict: wait one retire cycle
@@ -637,7 +675,7 @@ static esp_err_t op_deinit(bsp_display_t *self) {
     if (s->mtx)        vSemaphoreDelete(s->mtx);
     if (s->done)       vSemaphoreDelete(s->done);
     if (s->retire_evt) vSemaphoreDelete(s->retire_evt);
-    power_off(s);
+    if (s->hardware_ready) power_off(s);
     free(s->state);
     free(s->row_nonidle);
     free(s->line[0]);
@@ -656,16 +694,18 @@ static esp_err_t op_deinit(bsp_display_t *self) {
  * refresh task so the ISR overlaps the next blit instead of stalling it. */
 static esp_err_t              s_bus_init_err;
 static const epd_ll_config_t *s_bus_init_cfg;
+static const epd_ll_custom_control_config_t *s_bus_init_control;
 static TaskHandle_t           s_bus_init_waiter;
 
 static void bus_init_task(void *arg) {
     (void)arg;
-    s_bus_init_err = bus_init(s_bus_init_cfg);
+    s_bus_init_err = bus_init(s_bus_init_cfg, s_bus_init_control);
     xTaskNotifyGive(s_bus_init_waiter);
     vTaskDelete(NULL);
 }
 
-static esp_err_t bus_init_pinned(const epd_ll_config_t *cfg) {
+static esp_err_t bus_init_pinned(const epd_ll_config_t *cfg,
+                                 const epd_ll_custom_control_config_t *control) {
     int core;
     if (cfg->task_affinity < 0 || cfg->task_affinity >= portNUM_PROCESSORS) {
         core = (xPortGetCoreID() + 1) % portNUM_PROCESSORS;        /* opposite the caller */
@@ -673,15 +713,18 @@ static esp_err_t bus_init_pinned(const epd_ll_config_t *cfg) {
         core = (cfg->task_affinity + 1) % portNUM_PROCESSORS;      /* opposite the refresh task */
     }
     s_bus_init_cfg    = cfg;
+    s_bus_init_control = control;
     s_bus_init_waiter = xTaskGetCurrentTaskHandle();
     if (xTaskCreatePinnedToCore(bus_init_task, "epd_businit", 4096, NULL, 5, NULL, core) != pdPASS) {
-        return bus_init(cfg);   /* fallback: init (and ISR) on this core */
+        return bus_init(cfg, control);   /* fallback: init (and ISR) on this core */
     }
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
     return s_bus_init_err;
 }
 
 esp_err_t epd_ll_create(const epd_ll_config_t *cfg, bsp_display_t **out_display) {
+    if (!cfg || !out_display || !cfg->get_waveform_lut) return ESP_ERR_INVALID_ARG;
+
     epd_t *s = calloc(1, sizeof(*s));
     if (!s) return ESP_ERR_NO_MEM;
 
@@ -695,12 +738,44 @@ esp_err_t epd_ll_create(const epd_ll_config_t *cfg, bsp_display_t **out_display)
     s->base.clear        = op_clear;
     s->base.wait_idle    = op_wait_idle;
     s->mode              = BSP_EPD_MODE_NONE;
-    s->oe_pin            = cfg->oe_pin;
-    s->pwr_pin           = cfg->pwr_pin;
     s->width             = cfg->width;
     s->height            = cfg->height;
     s->line_bytes        = cfg->line_bytes;
     s->line_padding      = cfg->line_padding;
+
+    switch (cfg->control.type) {
+        case EPD_LL_CONTROL_GPIO:
+            s->gpio_control = cfg->control.gpio;
+            s->control = (epd_ll_custom_control_config_t){
+                .ops = {
+                    .init        = gpio_control_init,
+                    .power_on    = gpio_control_power_on,
+                    .power_off   = gpio_control_power_off,
+                    .frame_begin = gpio_control_frame_begin,
+                    .frame_end   = gpio_control_frame_end,
+                    .line_begin  = gpio_control_line_begin,
+                    .line_latch  = gpio_control_line_latch,
+                },
+                .ctx = &s->gpio_control,
+            };
+            break;
+
+        case EPD_LL_CONTROL_CUSTOM: {
+            const epd_ll_custom_control_config_t *custom = &cfg->control.custom;
+            if (!custom->ops.init || !custom->ops.power_on || !custom->ops.power_off ||
+                !custom->ops.frame_begin || !custom->ops.frame_end ||
+                !custom->ops.line_begin || !custom->ops.line_latch) {
+                free(s);
+                return ESP_ERR_INVALID_ARG;
+            }
+            s->control = *custom;
+            break;
+        }
+
+        default:
+            free(s);
+            return ESP_ERR_INVALID_ARG;
+    }
 
     /* Bind + validate the panel's waveforms (CLEAR is mandatory: it backs the
      * clear op and the bring-up white baseline). */
@@ -730,19 +805,13 @@ esp_err_t epd_ll_create(const epd_ll_config_t *cfg, bsp_display_t **out_display)
     memset(s->hold_line, 0, lb);   /* all pixels hold (action 0), padding zero */
     memset(s->uni_line, 0, lb);
 
-    ESP_ERROR_CHECK(bus_init_pinned(cfg));
+    ESP_ERROR_CHECK(bus_init_pinned(cfg, &s->control));
 
-    /* Power rails off. Configure AFTER bus_init: PWR is lent as the i80 dummy D/C
-     * and bus_init hands it back as an output without setting a level, so we own
-     * the level here (and the bus init can't clobber it). */
-    gpio_config_t gc = {
-        .pin_bit_mask = (1ULL << cfg->oe_pin) | (1ULL << cfg->pwr_pin),
-        .mode         = GPIO_MODE_OUTPUT,
-        .intr_type    = GPIO_INTR_DISABLE,
-    };
-    ESP_ERROR_CHECK(gpio_config(&gc));
-    gpio_set_level(cfg->oe_pin, 0);
-    gpio_set_level(cfg->pwr_pin, 0);
+    /* i80 temporarily routes its required dummy D/C signal to dc_dummy_pin.
+     * The control backend restores its complete powered-off state after the
+     * bus hands that pin back to GPIO. */
+    power_off(s);
+    s->hardware_ready = true;
 
     s->mtx        = xSemaphoreCreateMutex();
     s->done       = xSemaphoreCreateBinary();

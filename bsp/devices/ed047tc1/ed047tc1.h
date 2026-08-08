@@ -11,17 +11,14 @@
 
 #pragma once
 #include "bsp_display.h"
+#include "epd_ll.h"
 
 typedef struct {
     int data_pins[8];   /* DB0..DB7 source data bus                  */
     int sph_pin;        /* STH / i80 CS                              */
     int cl_pin;         /* CL  / i80 WR (PCLK)                       */
-    int ckv_pin;        /* CKV (vertical / gate clock)               */
-    int spv_pin;        /* SPV (vertical start pulse)                */
-    int le_pin;         /* LE  (source latch enable)                 */
-    int oe_pin;         /* OE  (panel output enable, power seq)      */
-    int pwr_pin;        /* PWR (EPD DC/DC enable, power seq); also    */
-                        /* lent to the i80 bus as its dummy D/C pin   */
+    int dc_dummy_pin;   /* i80 requires a D/C GPIO; panel has none   */
+    epd_ll_control_config_t control;
     uint8_t task_priority;  /* async refresh-task priority               */
     int     task_affinity;  /* core to pin the refresh task to; <0 -> none */
 } ed047tc1_config_t;

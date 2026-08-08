@@ -143,12 +143,8 @@ esp_err_t ed047tc1_epd_create(const ed047tc1_config_t *cfg, bsp_display_t **out_
     epd_ll_config_t ec = {
         .sph_pin          = cfg->sph_pin,
         .cl_pin           = cfg->cl_pin,
-        .ckv_pin          = cfg->ckv_pin,
-        .spv_pin          = cfg->spv_pin,
-        .le_pin           = cfg->le_pin,
-        .oe_pin           = cfg->oe_pin,
-        .pwr_pin          = cfg->pwr_pin,
-        .dc_dummy_pin     = cfg->pwr_pin,   /* PWR lent as the i80 dummy D/C pin */
+        .dc_dummy_pin     = cfg->dc_dummy_pin,
+        .control          = cfg->control,
         .pclk_hz          = ED047TC1_PCLK_HZ,
         .width            = ED047TC1_WIDTH,
         .height           = ED047TC1_HEIGHT,
