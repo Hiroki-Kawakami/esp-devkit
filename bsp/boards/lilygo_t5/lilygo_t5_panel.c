@@ -10,10 +10,14 @@
 #include "lilygo_t5_panel.h"
 #include "bsp_display.h"
 #include "ed047tc1.h"
+#include "gt911.h"
 #include "driver/gpio.h"
 #include "esp_attr.h"
+#include "esp_log.h"
 #include "esp_rom_sys.h"
 #include "soc/gpio_struct.h"
+
+static const char *TAG = "lilygo_t5_panel";
 
 #define T5_CFG_DATA_PIN  GPIO_NUM_13
 #define T5_CFG_CLK_PIN   GPIO_NUM_12
@@ -28,6 +32,9 @@
 #define T5_CFG_POWER_ENABLE  (1U << 5)
 #define T5_CFG_MODE          (1U << 6)
 #define T5_CFG_OE            (1U << 7)
+
+#define T5_TOUCH_PIN_INT  GPIO_NUM_47
+#define T5_TOUCH_PIN_RST  GPIO_NUM_NC
 
 typedef struct {
     uint8_t value;
@@ -174,7 +181,30 @@ static IRAM_ATTR void control_line_latch(void *ctx) {
     fast_gpio_set(T5_CKV_PIN, false);
 }
 
-esp_err_t lilygo_t5_panel_init(const bsp_config_t *config) {
+static esp_err_t touch_init(i2c_master_bus_handle_t bus) {
+    const gt911_config_t config = {
+        .i2c_bus     = bus,
+        .i2c_address = GT911_I2C_ADDR_AUTO,
+        .clock_hz    = GT911_I2C_DEFAULT_HZ,
+        .int_io      = T5_TOUCH_PIN_INT,
+        .reset_io    = T5_TOUCH_PIN_RST,
+        .swap_xy     = true,
+        .mirror_x    = false,
+        .mirror_y    = true,
+        .width       = 960,
+        .height      = 540,
+        .hotknot     = GT911_HOTKNOT_TUNING_DEFAULTS,
+    };
+
+    bsp_touch_t *touch = NULL;
+    esp_err_t err = gt911_touch_create(&config, &touch);
+    if (err != ESP_OK) return err;
+    bsp_touch_set_active(touch);
+    return ESP_OK;
+}
+
+esp_err_t lilygo_t5_panel_init(const bsp_config_t *config,
+                               i2c_master_bus_handle_t i2c_bus) {
     const ed047tc1_config_t panel = {
         .data_pins    = { 8, 1, 2, 3, 4, 5, 6, 7 },
         .sph_pin      = 40,
@@ -203,5 +233,12 @@ esp_err_t lilygo_t5_panel_init(const bsp_config_t *config) {
     esp_err_t err = ed047tc1_epd_create(&panel, &display);
     if (err != ESP_OK) return err;
     bsp_display_set_active(display);
+
+    if (i2c_bus) {
+        err = touch_init(i2c_bus);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "touch unavailable: %s", esp_err_to_name(err));
+        }
+    }
     return ESP_OK;
 }
