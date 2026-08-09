@@ -6,7 +6,7 @@
 #include "home_screen.hpp"
 
 void HomeScreen::build() {
-    createNavigation("HomeScreen");
+    createNavigation("HomeScreen", false);
 
     auto label = lv_label_create(contents_);
     lv_label_set_text(label, "Hello, Tab5!");

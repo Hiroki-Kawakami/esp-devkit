@@ -5,6 +5,7 @@
 
 #include "widgets.hpp"
 #include "screen_manager.hpp"
+#include <src/core/lv_obj_style.h>
 
 lv_obj_t *lv_navigation_create(lv_obj_t *parent) {
     auto navigation = lv_container_create(parent, lv_color_white());
@@ -48,19 +49,31 @@ lv_obj_t *lv_navigation_back_label(lv_obj_t *back) {
     return static_cast<lv_obj_t *>(lv_obj_get_user_data(back));
 }
 
+lv_obj_t *lv_navigation_title_create(lv_obj_t *parent, const char *title) {
+    lv_obj_t *label = lv_label_create(parent);
+    lv_label_set_text(label, title);
+    lv_obj_set_style_text_font(label, &lv_font_montserrat_38, 0);
+    lv_obj_set_style_pad_hor(label, 8, 0);
+    return label;
+}
+
 void NavigationScreen::back() {
     screen_manager.pop();
 }
 
-void NavigationScreen::createNavigation(const char *title) {
+void NavigationScreen::createNavigation(const char *title, bool back) {
     lv_obj_set_flex_flow(root_, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_bg_color(root_, lv_color_hex(0xeeeeee), 0);
     lv_obj_set_style_pad_row(root_, 0, 0);
 
     navigation_ = lv_navigation_create(root_);
-    auto button = lv_navigation_back_create(navigation_, title,
-        [this](lv_event_t *) { back(); });
-    navigation_title_ = lv_navigation_back_label(button);
+    if (back) {
+        auto button = lv_navigation_back_create(navigation_, title,
+            [this](lv_event_t *) { this->back(); });
+        navigation_title_ = lv_navigation_back_label(button);
+    } else {
+        navigation_title_ = lv_navigation_title_create(navigation_, title);
+    }
 
     contents_ = lv_spacer_create(root_, LV_PCT(100), LV_SIZE_CONTENT, 1);
     lv_obj_set_flex_flow(contents_, LV_FLEX_FLOW_COLUMN);

@@ -10,6 +10,7 @@ lv_obj_t *lv_navigation_create(lv_obj_t *parent);
 lv_obj_t *lv_navigation_back_create(lv_obj_t *parent, const char *title,
                                     std::function<void(lv_event_t *)> back);
 lv_obj_t *lv_navigation_back_label(lv_obj_t *back);
+lv_obj_t *lv_navigation_title_create(lv_obj_t *parent, const char *title);
 
 class NavigationScreen : public Screen {
 public:
@@ -21,5 +22,5 @@ protected:
     lv_obj_t *navigation_title_;
     lv_obj_t *contents_;
 
-    void createNavigation(const char *title);
+    void createNavigation(const char *title, bool back = true);
 };
