@@ -20,7 +20,7 @@ typedef struct {
     ledc_channel_config_t      ledc_channel;
     esp_lcd_panel_handle_t     panel;
     uint8_t fb_num;
-    void   *frame_buffers[3];
+    void   *frame_buffers[BSP_DISPLAY_MAX_FRAME_BUFFERS];
 } rgb_lcd_t;
 
 static esp_err_t draw_bitmap(bsp_display_t *self, bsp_rect_t rect, const void *data,
@@ -88,7 +88,9 @@ esp_err_t rgb_lcd_create(const rgb_lcd_config_t *config, bsp_display_t **out) {
         .flush           = flush,
     };
     state->fb_num = config->fb_num > 0 ? config->fb_num : 1;
-    if (state->fb_num > 3) state->fb_num = 3;
+    if (state->fb_num > BSP_DISPLAY_MAX_FRAME_BUFFERS) {
+        state->fb_num = BSP_DISPLAY_MAX_FRAME_BUFFERS;
+    }
 
     if (config->backlight_gpio != GPIO_NUM_NC) {
         const ledc_timer_config_t timer_cfg = {

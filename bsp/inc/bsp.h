@@ -65,6 +65,7 @@ i2c_master_bus_handle_t bsp_bus_get_i2c_handle(int i2c_port);
 
 // MARK: Display
 bsp_display_type_t bsp_display_get_type(void);
+uint32_t bsp_display_get_caps(void);
 bsp_size_t bsp_display_get_size(void);
 bsp_pixel_format_t bsp_display_get_pixel_format(void);
 void bsp_display_set_brightness(int brightness);

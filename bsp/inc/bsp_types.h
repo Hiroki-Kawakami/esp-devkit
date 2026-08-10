@@ -31,6 +31,8 @@ static inline int bsp_rect_min_y(bsp_rect_t rect) { return rect.origin.y; }
 static inline int bsp_rect_max_x(bsp_rect_t rect) { return rect.origin.x + rect.size.width; }
 static inline int bsp_rect_max_y(bsp_rect_t rect) { return rect.origin.y + rect.size.height; }
 
+#define BSP_DISPLAY_MAX_FRAME_BUFFERS 3
+
 typedef enum {
     BSP_DISPLAY_TYPE_NONE,
     BSP_DISPLAY_TYPE_SPI,
@@ -39,6 +41,11 @@ typedef enum {
     BSP_DISPLAY_TYPE_SPI_EPD,
     BSP_DISPLAY_TYPE_DIRECT_EPD,
 } bsp_display_type_t;
+
+typedef enum {
+    BSP_DISPLAY_CAP_FRAMEBUFFER = 1 << 0,
+    BSP_DISPLAY_CAP_EPD_REFRESH = 1 << 1,
+} bsp_display_caps_t;
 
 typedef enum {
     BSP_PIXEL_FORMAT_L8,

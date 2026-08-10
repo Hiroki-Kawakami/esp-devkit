@@ -6,6 +6,7 @@
  */
 
 #include "tab5_hello.hpp"
+#include "display_manager.hpp"
 #include "lvgl.hpp"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
@@ -28,22 +29,13 @@ static void lvgl_init() {
         return;
     }
 
-    const bsp_size_t         size = bsp_display_get_size();
-    const bsp_pixel_format_t fmt  = bsp_display_get_pixel_format();
-    void  *fb0 = bsp_display_get_frame_buffer(0);
-    void  *fb1 = bsp_display_get_frame_buffer(1);
-    const size_t fb_bytes = (size_t)size.width * size.height * bsp_pixel_format_bytes(fmt);
-
-    lv_display_t *disp = lv_display_create(size.width, size.height);
-    lv_display_set_color_format(disp,
-        fmt == BSP_PIXEL_FORMAT_RGB888 ? LV_COLOR_FORMAT_RGB888 : LV_COLOR_FORMAT_RGB565);
-    lv_display_set_buffers(disp, fb0, fb1, fb_bytes, LV_DISPLAY_RENDER_MODE_DIRECT);
-    lv_display_set_flush_cb(disp, [](lv_display_t *d, const lv_area_t *, uint8_t *px_map) {
-        int fb_index = (px_map == bsp_display_get_frame_buffer(1)) ? 1 : 0;
-        bsp_display_flush(fb_index);
-        lv_display_flush_ready(d);
-    });
-    lv_display_set_default(disp);
+    DisplayManagerConfig display_config = {};
+    lv_display_t *disp = nullptr;
+    err = display_manager.create_display(display_config, &disp);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "create_display: %s", esp_err_to_name(err));
+        return;
+    }
 
     lv_indev_t *indev = lv_indev_create();
     lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);

@@ -1,6 +1,6 @@
 # esp-devkit ui_framework — LVGL port abstraction + reusable UI utilities
-# (lvgl++ helpers in lvgl.hpp/.cpp, ScreenManager/Screen). Panel-agnostic: the
-# BSP<->LVGL binding lives in the app, not here.
+# (lvgl++ helpers in lvgl.hpp/.cpp, ScreenManager/Screen, and the optional
+# BSP-backed DisplayManager).
 #
 # Both targets share the same sources. The per-target LVGL-port split is fenced
 # behind ESP_PLATFORM inside lvgl.{hpp,cpp}: the app calls lvgl_port_init() the
@@ -17,6 +17,7 @@
 # here is stable across 9.x; an exact match is not required.
 
 set(UI_FRAMEWORK_SRCS
+    "src/display_manager.cpp"
     "src/lvgl.cpp"
     "src/screen_manager.cpp"
     "src/widgets/common/fonts.cpp"
@@ -37,7 +38,8 @@ if(ESP_PLATFORM)
     idf_component_register(
         SRCS ${UI_FRAMEWORK_SRCS}
         INCLUDE_DIRS "inc"
-        REQUIRES esp_lvgl_port)
+        REQUIRES bsp esp_lvgl_port
+        PRIV_REQUIRES esp_driver_ppa)
 else()
     # Fetch original LVGL for the host build. release/v9.5 tracks the same
     # major.minor as the device's managed lvgl (esp_lvgl_port pulls 9.x).

@@ -31,6 +31,18 @@ bsp_display_type_t bsp_display_get_type(void) {
     return s_display ? s_display->type : BSP_DISPLAY_TYPE_NONE;
 }
 
+uint32_t bsp_display_get_caps(void) {
+    uint32_t caps = 0;
+    if (!s_display) return caps;
+    if (s_display->get_framebuffers && s_display->flush) {
+        caps |= BSP_DISPLAY_CAP_FRAMEBUFFER;
+    }
+    if (s_display->set_epd_mode && s_display->refresh) {
+        caps |= BSP_DISPLAY_CAP_EPD_REFRESH;
+    }
+    return caps;
+}
+
 bsp_size_t bsp_display_get_size(void) {
     return s_display ? s_display->size : (bsp_size_t){0, 0};
 }
@@ -73,7 +85,11 @@ void bsp_blit_rotated(uint8_t *dst, int dst_stride_px, size_t px,
 }
 
 void *bsp_display_get_frame_buffer(int fb_index) {
-    return s_frame_buffers ? s_frame_buffers[fb_index] : NULL;
+    if (!s_frame_buffers || fb_index < 0 ||
+        fb_index >= BSP_DISPLAY_MAX_FRAME_BUFFERS) {
+        return NULL;
+    }
+    return s_frame_buffers[fb_index];
 }
 
 void bsp_display_flush(int fb_index) {

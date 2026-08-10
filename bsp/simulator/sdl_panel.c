@@ -53,7 +53,7 @@ static int                s_window_rotation = SDL_PANEL_DEFAULT_ROTATION;   /* h
 static size_t             s_bpp = 2;          /* bytes per pixel of the panel format */
 static bsp_pixel_format_t s_format = BSP_PIXEL_FORMAT_RGB565;
 
-#define SDL_PANEL_MAX_FB 3
+#define SDL_PANEL_MAX_FB BSP_DISPLAY_MAX_FRAME_BUFFERS
 static uint8_t *s_fb[SDL_PANEL_MAX_FB];       /* MIPI host framebuffers */
 static void    *s_fb_ptrs[SDL_PANEL_MAX_FB];
 static int      s_fb_num;

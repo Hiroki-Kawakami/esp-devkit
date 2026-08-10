@@ -17,7 +17,7 @@
 extern "C" {
 #endif
 
-#define MIPI_DSI_MAX_FRAME_BUFFERS 3
+#define MIPI_DSI_MAX_FRAME_BUFFERS BSP_DISPLAY_MAX_FRAME_BUFFERS
 
 typedef struct {
     int          cmd;
