@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.16)
+include(${CMAKE_CURRENT_SOURCE_DIR}/../../../devkit.cmake)
+devkit_simulator_init()
+project(paper_ui_test C CXX)
+devkit_simulator(DEFAULT_ROTATION 90 COMPONENT_DIRS ../app)
