@@ -37,19 +37,6 @@ static void lvgl_init() {
         return;
     }
 
-    lv_indev_t *indev = lv_indev_create();
-    lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
-    lv_indev_set_read_cb(indev, [](lv_indev_t *, lv_indev_data_t *data) {
-        bsp_touch_point_t pt;
-        if (bsp_touch_read(&pt, 1) > 0) {
-            data->point.x = pt.x;
-            data->point.y = pt.y;
-            data->state   = LV_INDEV_STATE_PRESSED;
-        } else {
-            data->state = LV_INDEV_STATE_RELEASED;
-        }
-    });
-    lv_indev_set_display(indev, disp);
 }
 
 void app_entry() {

@@ -11,6 +11,8 @@
 
 #include "bsp.h"
 #include "esp_heap_caps.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 
 #ifdef ESP_PLATFORM
 #include "soc/soc_caps.h"
@@ -28,6 +30,7 @@
 namespace {
 
 constexpr uint8_t kMaxOperations = 6;
+constexpr int kPrimaryTouchId = 0;
 
 enum class DisplayRenderPath : uint8_t {
     Direct,
@@ -96,7 +99,10 @@ struct DisplayManagerContext {
     uint8_t epd_enabled : 1 = false;
     uint8_t next_epd_mode_valid : 1 = false;
     uint8_t dirty_valid : 1 = false;
-    uint8_t : 4;
+    uint8_t input_down : 1 = false;
+    uint8_t input_armed : 1 = false;
+    uint8_t input_pending : 1 = false;
+    uint8_t : 1;
 
     bsp_size_t panel_size = {};
     bsp_size_t logical_size = {};
@@ -112,6 +118,8 @@ struct DisplayManagerContext {
     lv_area_t dirty = {};
 
     lv_display_t *display = nullptr;
+    lv_indev_t *indev = nullptr;
+    lv_point_t input_point = {};
     void *buffer0 = nullptr;
     void *buffer1 = nullptr;
 
@@ -129,6 +137,61 @@ struct DisplayManagerContext {
 };
 
 namespace {
+
+bool point_inside(const DisplayManagerContext &display,
+                  const bsp_touch_point_t &point) {
+    return display.visible &&
+        point.x >= display.output_area.origin.x &&
+        point.y >= display.output_area.origin.y &&
+        point.x < display.output_area.origin.x + display.output_area.size.width &&
+        point.y < display.output_area.origin.y + display.output_area.size.height;
+}
+
+lv_point_t map_touch_point(const DisplayManagerContext &display,
+                           const bsp_touch_point_t &point) {
+    int x = point.x - display.output_area.origin.x;
+    int y = point.y - display.output_area.origin.y;
+    int output_width = display.output_area.size.width;
+    int output_height = display.output_area.size.height;
+    int logical_width = display.logical_size.width;
+    int logical_height = display.logical_size.height;
+
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+    if (x >= output_width) x = output_width - 1;
+    if (y >= output_height) y = output_height - 1;
+
+    lv_point_t result;
+    switch (display.rotation) {
+        case BSP_ROTATION_90:
+            result.x = logical_width - 1 -
+                (int)((int64_t)y * logical_width / output_height);
+            result.y = (int)((int64_t)x * logical_height / output_width);
+            break;
+        case BSP_ROTATION_180:
+            result.x = logical_width - 1 -
+                (int)((int64_t)x * logical_width / output_width);
+            result.y = logical_height - 1 -
+                (int)((int64_t)y * logical_height / output_height);
+            break;
+        case BSP_ROTATION_270:
+            result.x = (int)((int64_t)y * logical_width / output_height);
+            result.y = logical_height - 1 -
+                (int)((int64_t)x * logical_height / output_width);
+            break;
+        default:
+            result.x = (int)((int64_t)x * logical_width / output_width);
+            result.y = (int)((int64_t)y * logical_height / output_height);
+            break;
+    }
+    return result;
+}
+
+void clear_input_state(DisplayManagerContext &display) {
+    display.input_down = false;
+    display.input_armed = false;
+    display.input_pending = false;
+}
 
 void update_scale(DisplayManagerContext &context) {
     if (swaps_axes(context.rotation)) {
@@ -358,6 +421,15 @@ esp_err_t DisplayManager::create_display(const DisplayManagerConfig &config,
     if (!out_display) return ESP_ERR_INVALID_ARG;
     *out_display = nullptr;
 
+    uint8_t display_slot = kMaxDisplays;
+    for (uint8_t i = 0; i < kMaxDisplays; ++i) {
+        if (!displays_[i]) {
+            display_slot = i;
+            break;
+        }
+    }
+    if (display_slot == kMaxDisplays) return ESP_ERR_NO_MEM;
+
     bsp_size_t panel_size = bsp_display_get_size();
     if (panel_size.width <= 0 || panel_size.height <= 0) {
         return ESP_ERR_INVALID_STATE;
@@ -503,6 +575,41 @@ esp_err_t DisplayManager::create_display(const DisplayManagerConfig &config,
     lv_display_set_flush_cb(context->display, flush_cb);
     if (config.make_default) lv_display_set_default(context->display);
 
+    if (!touch_mutex_) {
+        touch_mutex_ = xSemaphoreCreateMutex();
+        if (!touch_mutex_) {
+            lv_display_delete(context->display);
+            if (context->render_path != DisplayRenderPath::Direct) {
+                heap_caps_free(context->buffer0);
+                if (context->buffer1) heap_caps_free(context->buffer1);
+            }
+            delete context;
+            return ESP_ERR_NO_MEM;
+        }
+        bsp_touch_set_event_cb(touch_event_cb, this);
+    }
+
+    context->indev = lv_indev_create();
+    if (!context->indev) {
+        lv_display_delete(context->display);
+        if (context->render_path != DisplayRenderPath::Direct) {
+            heap_caps_free(context->buffer0);
+            if (context->buffer1) heap_caps_free(context->buffer1);
+        }
+        delete context;
+        return ESP_ERR_NO_MEM;
+    }
+    lv_indev_set_type(context->indev, LV_INDEV_TYPE_POINTER);
+    lv_indev_set_user_data(context->indev, context);
+    lv_indev_set_read_cb(context->indev, indev_read_cb);
+    lv_indev_set_display(context->indev, context->display);
+    lv_indev_set_mode(context->indev, LV_INDEV_MODE_EVENT);
+
+    auto touch_mutex = static_cast<SemaphoreHandle_t>(touch_mutex_);
+    xSemaphoreTake(touch_mutex, portMAX_DELAY);
+    displays_[display_slot] = context;
+    xSemaphoreGive(touch_mutex);
+
     if (is_epd) bsp_display_set_epd_mode(BSP_EPD_MODE_NONE);
 
     *out_display = context->display;
@@ -513,8 +620,12 @@ esp_err_t DisplayManager::set_rotation(lv_display_t *display,
                                        bsp_rotation_t rotation) {
     DisplayManagerContext *context = context_for(display);
     if (!context) return ESP_ERR_INVALID_ARG;
+
+    auto touch_mutex = static_cast<SemaphoreHandle_t>(touch_mutex_);
+    if (touch_mutex) xSemaphoreTake(touch_mutex, portMAX_DELAY);
     if (context->render_path == DisplayRenderPath::Direct &&
         rotation != BSP_ROTATION_0) {
+        if (touch_mutex) xSemaphoreGive(touch_mutex);
         return ESP_ERR_NOT_SUPPORTED;
     }
 
@@ -525,8 +636,10 @@ esp_err_t DisplayManager::set_rotation(lv_display_t *display,
         !scale_is_one(*context)) {
         context->rotation = previous;
         update_scale(*context);
+        if (touch_mutex) xSemaphoreGive(touch_mutex);
         return ESP_ERR_NOT_SUPPORTED;
     }
+    if (touch_mutex) xSemaphoreGive(touch_mutex);
     return ESP_OK;
 }
 
@@ -548,12 +661,41 @@ esp_err_t DisplayManager::set_visible(lv_display_t *display, bool visible) {
     DisplayManagerContext *context = context_for(display);
     if (!context) return ESP_ERR_INVALID_ARG;
 
+    bool reset_input = false;
+    auto touch_mutex = static_cast<SemaphoreHandle_t>(touch_mutex_);
+    if (touch_mutex) xSemaphoreTake(touch_mutex, portMAX_DELAY);
     bool was_visible = context->visible;
     context->visible = visible;
+    if (active_touch_display_ == context && !visible) {
+        active_touch_display_ = nullptr;
+        outside_touch_active_ = false;
+        reset_input = true;
+    }
+    if (!visible && (context->input_down || context->input_armed ||
+                     context->input_pending)) {
+        reset_input = true;
+    }
+    if (!visible) {
+        clear_input_state(*context);
+    }
+    if (touch_mutex) xSemaphoreGive(touch_mutex);
+
+    if (reset_input) lv_indev_reset(context->indev, nullptr);
     if (visible && !was_visible) {
         lv_obj_t *screen = lv_display_get_screen_active(display);
         if (screen) lv_obj_invalidate(screen);
     }
+    return ESP_OK;
+}
+
+esp_err_t DisplayManager::set_outside_touch_callback(TouchCallback callback,
+                                                      void *arg) {
+    auto touch_mutex = static_cast<SemaphoreHandle_t>(touch_mutex_);
+    if (!touch_mutex) return ESP_ERR_INVALID_STATE;
+    xSemaphoreTake(touch_mutex, portMAX_DELAY);
+    outside_touch_callback_ = callback;
+    outside_touch_arg_ = arg;
+    xSemaphoreGive(touch_mutex);
     return ESP_OK;
 }
 
@@ -594,6 +736,148 @@ void DisplayManager::flush_cb(lv_display_t *display, const lv_area_t *area,
         lv_display_flush_is_last(display),
     };
     context->execute(flush);
+}
+
+void DisplayManager::indev_read_cb(lv_indev_t *indev, lv_indev_data_t *data) {
+    auto *display = static_cast<DisplayManagerContext *>(
+        lv_indev_get_user_data(indev));
+    auto touch_mutex = static_cast<SemaphoreHandle_t>(
+        display_manager.touch_mutex_);
+    if (!display || !touch_mutex) {
+        data->state = LV_INDEV_STATE_RELEASED;
+        return;
+    }
+
+    xSemaphoreTake(touch_mutex, portMAX_DELAY);
+    data->point = display->input_point;
+    if (display->input_down || display->input_armed) {
+        data->state = LV_INDEV_STATE_PRESSED;
+        display->input_armed = false;
+        display->input_pending = !display->input_down;
+    } else {
+        data->state = LV_INDEV_STATE_RELEASED;
+        display->input_pending = false;
+    }
+    xSemaphoreGive(touch_mutex);
+}
+
+void DisplayManager::touch_event_cb(const bsp_touch_point_t *points, int count,
+                                    void *arg) {
+    auto *manager = static_cast<DisplayManager *>(arg);
+    auto touch_mutex = static_cast<SemaphoreHandle_t>(manager->touch_mutex_);
+    if (!touch_mutex) return;
+    if (count < 0) count = 0;
+
+    TouchCallback outside_cb = nullptr;
+    void *outside_arg = nullptr;
+    bool call_outside = false;
+    bool schedule_dispatch = false;
+    const bsp_touch_point_t *primary = nullptr;
+    for (int i = 0; points && i < count; ++i) {
+        if (points[i].id == kPrimaryTouchId) {
+            primary = &points[i];
+            break;
+        }
+    }
+
+    xSemaphoreTake(touch_mutex, portMAX_DELAY);
+
+    if (primary) {
+        if (!manager->active_touch_display_ &&
+            !manager->outside_touch_active_) {
+            for (uint8_t i = kMaxDisplays; i > 0; --i) {
+                DisplayManagerContext *display = manager->displays_[i - 1];
+                if (!display) continue;
+                if (point_inside(*display, *primary)) {
+                    manager->active_touch_display_ = display;
+                    break;
+                }
+            }
+            if (!manager->active_touch_display_) {
+                manager->outside_touch_active_ = true;
+            }
+        }
+
+        if (manager->active_touch_display_) {
+            DisplayManagerContext &display =
+                *manager->active_touch_display_;
+            if (!display.input_down) display.input_armed = true;
+            display.input_down = true;
+            display.input_point = map_touch_point(display, *primary);
+            display.input_pending = true;
+            schedule_dispatch = true;
+        } else {
+            call_outside = true;
+        }
+    } else {
+        if (manager->active_touch_display_) {
+            DisplayManagerContext &display =
+                *manager->active_touch_display_;
+            display.input_down = false;
+            display.input_pending = true;
+            schedule_dispatch = true;
+            manager->active_touch_display_ = nullptr;
+        }
+        if (manager->outside_touch_active_) {
+            call_outside = manager->outside_touch_active_;
+            if (count == 0) manager->outside_touch_active_ = false;
+        }
+    }
+
+    if (schedule_dispatch && !manager->input_dispatch_pending_) {
+        manager->input_dispatch_pending_ = true;
+    } else {
+        schedule_dispatch = false;
+    }
+
+    if (call_outside) {
+        outside_cb = manager->outside_touch_callback_;
+        outside_arg = manager->outside_touch_arg_;
+    }
+    xSemaphoreGive(touch_mutex);
+
+    if (outside_cb) outside_cb(points, count, outside_arg);
+
+    lv_result_t dispatch_result = LV_RESULT_OK;
+    if (schedule_dispatch) {
+        lv_lock();
+        dispatch_result = lv_async_call(input_dispatch_cb, manager);
+        lv_unlock();
+    }
+    if (dispatch_result != LV_RESULT_OK) {
+        xSemaphoreTake(touch_mutex, portMAX_DELAY);
+        manager->input_dispatch_pending_ = false;
+        xSemaphoreGive(touch_mutex);
+    }
+}
+
+void DisplayManager::input_dispatch_cb(void *arg) {
+    auto *manager = static_cast<DisplayManager *>(arg);
+    auto touch_mutex = static_cast<SemaphoreHandle_t>(manager->touch_mutex_);
+    if (!touch_mutex) return;
+
+    while (true) {
+        lv_indev_t *indev = nullptr;
+
+        xSemaphoreTake(touch_mutex, portMAX_DELAY);
+        for (uint8_t i = 0; i < kMaxDisplays; ++i) {
+            DisplayManagerContext *display = manager->displays_[i];
+            if (!display) continue;
+            if (display->input_pending) {
+                if (lv_display_get_screen_prev(display->display)) {
+                    clear_input_state(*display);
+                    continue;
+                }
+                indev = display->indev;
+                break;
+            }
+        }
+        if (!indev) manager->input_dispatch_pending_ = false;
+        xSemaphoreGive(touch_mutex);
+
+        if (!indev) break;
+        lv_indev_read(indev);
+    }
 }
 
 DisplayManager display_manager;
