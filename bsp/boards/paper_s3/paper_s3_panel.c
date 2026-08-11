@@ -90,3 +90,7 @@ esp_err_t paper_s3_panel_init(const bsp_config_t *config, i2c_master_bus_handle_
     }
     return ESP_OK;
 }
+
+bsp_rotation_t bsp_display_portrait(void) {
+    return BSP_ROTATION_90;
+}

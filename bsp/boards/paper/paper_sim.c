@@ -50,3 +50,7 @@ esp_err_t bsp_power_off(void) {
     fprintf(stderr, "[sim] bsp_power_off: staying on\n");
     return ESP_FAIL;
 }
+
+bsp_rotation_t bsp_display_portrait(void) {
+    return BSP_ROTATION_90;
+}

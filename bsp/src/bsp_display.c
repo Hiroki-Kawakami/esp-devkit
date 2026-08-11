@@ -55,6 +55,10 @@ void bsp_display_set_brightness(int brightness) {
     if (s_display && s_display->set_brightness) s_display->set_brightness(s_display, brightness);
 }
 
+__attribute__((weak)) bsp_rotation_t bsp_display_portrait(void) {
+    return BSP_ROTATION_0;
+}
+
 esp_err_t bsp_display_set_power(bsp_display_power_t state) {
     if (s_display && s_display->set_power) return s_display->set_power(s_display, state);
     return ESP_ERR_NOT_SUPPORTED;

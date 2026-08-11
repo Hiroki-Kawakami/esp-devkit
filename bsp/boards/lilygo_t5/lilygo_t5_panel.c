@@ -242,3 +242,7 @@ esp_err_t lilygo_t5_panel_init(const bsp_config_t *config,
     }
     return ESP_OK;
 }
+
+bsp_rotation_t bsp_display_portrait(void) {
+    return BSP_ROTATION_90;
+}

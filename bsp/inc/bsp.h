@@ -69,6 +69,7 @@ uint32_t bsp_display_get_caps(void);
 bsp_size_t bsp_display_get_size(void);
 bsp_pixel_format_t bsp_display_get_pixel_format(void);
 void bsp_display_set_brightness(int brightness);
+bsp_rotation_t bsp_display_portrait(void);
 
 /* Panel power state (see bsp_display_power_t). ESP_ERR_NOT_SUPPORTED when the
  * panel has no separable power control. Does not touch brightness -- pair with
