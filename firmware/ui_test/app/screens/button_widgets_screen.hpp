@@ -6,12 +6,11 @@
 #pragma once
 #include "screen_manager.hpp"
 #include "widgets.hpp"
-#include <functional>
 
-class HomeScreen : public NavigationScreen {
+class ButtonWidgetsScreen : public NavigationScreen {
 public:
     void build() override;
 
 private:
-    lv_obj_t *create_row(const char *title, std::function<void(lv_event_t*)> on_click);
+    void create_sample(const char *title, lv_button_type_t type);
 };

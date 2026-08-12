@@ -59,6 +59,13 @@ lv_obj_t *lv_navigation_title_create(lv_obj_t *parent, const char *title) {
     return label;
 }
 
+lv_obj_t *lv_navigation_icon_button_create(lv_obj_t *parent, const lv_font_t *font, const char *icon) {
+    lv_obj_t *label = lv_label_create(parent);
+    lv_label_set_text(label, icon);
+    lv_obj_set_style_text_font(label, font, 0);
+    return label;
+}
+
 void NavigationScreen::back() {
     screen_manager.pop();
 }

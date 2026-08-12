@@ -11,6 +11,7 @@ lv_obj_t *lv_navigation_back_create(lv_obj_t *parent, const char *title,
                                     std::function<void(lv_event_t *)> back);
 lv_obj_t *lv_navigation_back_label(lv_obj_t *back);
 lv_obj_t *lv_navigation_title_create(lv_obj_t *parent, const char *title);
+lv_obj_t *lv_navigation_icon_button_create(lv_obj_t *parent, const lv_font_t *font, const char *icon);
 
 class NavigationScreen : public Screen {
 public:
