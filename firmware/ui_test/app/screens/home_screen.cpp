@@ -7,7 +7,7 @@
 #include "button_widgets_screen.hpp"
 
 void HomeScreen::build() {
-    createNavigation("UI Test", false);
+    createNavigation("UI Test", LV_NAVIGATION_STYLE_UNIFIED);
 
     create_row("Button Widgets", [](lv_event_t*){
         screen_manager.push(std::make_shared<ButtonWidgetsScreen>());

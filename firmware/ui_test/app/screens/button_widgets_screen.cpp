@@ -6,7 +6,7 @@
 #include "button_widgets_screen.hpp"
 
 void ButtonWidgetsScreen::build() {
-    createNavigation("Button Widgets");
+    createNavigation("Button Widgets", LV_NAVIGATION_STYLE_LIST | LV_NAVIGATION_STYLE_BACK);
     lv_obj_set_flex_align(contents_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER);
 
     create_sample("Default", LV_BUTTON_TYPE_DEFAULT);
