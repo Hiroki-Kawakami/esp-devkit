@@ -57,7 +57,7 @@ lv_obj_t *lv_navigation_create(lv_obj_t *parent, lv_navigation_style_t style) {
 }
 
 lv_obj_t *lv_navigation_back_create(lv_obj_t *parent, const char *title, std::function<void(lv_event_t *)> back) {
-    auto button = lv_button_create(parent, LV_BUTTON_TYPE_PLAIN);
+    auto button = lv_button_create(parent, LV_BUTTON_STYLE_PLAIN);
     lv_obj_add_style(button, &back_button_style, 0);
     lv_obj_add_event_fn(button, LV_EVENT_CLICKED, back);
 

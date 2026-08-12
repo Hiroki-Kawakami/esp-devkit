@@ -12,5 +12,5 @@ public:
     void build() override;
 
 private:
-    void create_sample(const char *title, lv_button_type_t type);
+    void create_sample(const char *title, lv_button_style_t type);
 };

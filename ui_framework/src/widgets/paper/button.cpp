@@ -40,11 +40,11 @@ void button_style_init() {
 
 }
 
-lv_obj_t *lv_button_create(lv_obj_t *parent, lv_button_type_t type) {
+lv_obj_t *lv_button_create(lv_obj_t *parent, lv_button_style_t type) {
     button_style_init();
     lv_obj_t *button = lv_button_create(parent);
     lv_obj_remove_style_all(button);
-    if (type == LV_BUTTON_TYPE_PLAIN) {
+    if (type == LV_BUTTON_STYLE_PLAIN) {
         lv_obj_add_style(button, &plain_button_style, 0);
         lv_obj_add_style(button, &default_button_pressed_style, LV_STATE_PRESSED);
     } else {

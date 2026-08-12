@@ -9,14 +9,14 @@ void ButtonWidgetsScreen::build() {
     createNavigation("Button Widgets", LV_NAVIGATION_STYLE_LIST | LV_NAVIGATION_STYLE_BACK);
     lv_obj_set_flex_align(contents_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER);
 
-    create_sample("Default", LV_BUTTON_TYPE_DEFAULT);
-    create_sample("Primary", LV_BUTTON_TYPE_PRIMARY);
-    create_sample("Secondary", LV_BUTTON_TYPE_SECONDARY);
-    create_sample("Destructive", LV_BUTTON_TYPE_DESTRUCTIVE);
-    create_sample("Plain", LV_BUTTON_TYPE_PLAIN);
+    create_sample("Default", LV_BUTTON_STYLE_DEFAULT);
+    create_sample("Primary", LV_BUTTON_STYLE_PRIMARY);
+    create_sample("Secondary", LV_BUTTON_STYLE_SECONDARY);
+    create_sample("Destructive", LV_BUTTON_STYLE_DESTRUCTIVE);
+    create_sample("Plain", LV_BUTTON_STYLE_PLAIN);
 }
 
-void ButtonWidgetsScreen::create_sample(const char *title, lv_button_type_t type) {
+void ButtonWidgetsScreen::create_sample(const char *title, lv_button_style_t type) {
     auto label = lv_label_create(contents_);
     lv_label_set_text(label, title);
     lv_obj_set_style_margin_all(label, 8, 0);
@@ -29,7 +29,7 @@ void ButtonWidgetsScreen::create_sample(const char *title, lv_button_type_t type
     auto button1 = lv_button_create(row, type);
     lv_button_set_text(button1, "Button");
 
-    auto button2 = lv_button_create(row, type | LV_BUTTON_TYPE_OUTLINE);
+    auto button2 = lv_button_create(row, type | LV_BUTTON_STYLE_OUTLINE);
     lv_button_set_text(button2, "Button");
 
     lv_hor_separator_create(contents_);

@@ -71,7 +71,7 @@ void button_style_init() {
 
 }
 
-lv_obj_t *lv_button_create(lv_obj_t *parent, lv_button_type_t type) {
+lv_obj_t *lv_button_create(lv_obj_t *parent, lv_button_style_t type) {
     button_style_init();
 
     lv_obj_t *button = lv_button_create(parent);
@@ -79,36 +79,36 @@ lv_obj_t *lv_button_create(lv_obj_t *parent, lv_button_type_t type) {
     lv_obj_add_style(button, &base_style, 0);
 
     switch (type) {
-    case LV_BUTTON_TYPE_DEFAULT:
-    case LV_BUTTON_TYPE_PRIMARY:
+    case LV_BUTTON_STYLE_DEFAULT:
+    case LV_BUTTON_STYLE_PRIMARY:
         lv_obj_add_style(button, &primary_style, 0);
         lv_obj_add_style(button, &pressed_style, LV_STATE_PRESSED);
         break;
-    case LV_BUTTON_TYPE_SECONDARY:
+    case LV_BUTTON_STYLE_SECONDARY:
         lv_obj_add_style(button, &secondary_style, 0);
         lv_obj_add_style(button, &pressed_style, LV_STATE_PRESSED);
         break;
-    case LV_BUTTON_TYPE_DESTRUCTIVE:
+    case LV_BUTTON_STYLE_DESTRUCTIVE:
         lv_obj_add_style(button, &destructive_style, 0);
         lv_obj_add_style(button, &pressed_style, LV_STATE_PRESSED);
         break;
-    case LV_BUTTON_TYPE_PRIMARY | LV_BUTTON_TYPE_OUTLINE:
+    case LV_BUTTON_STYLE_PRIMARY | LV_BUTTON_STYLE_OUTLINE:
         lv_obj_add_style(button, &primary_outline_style, 0);
         lv_obj_add_style(button, &pressed_style, LV_STATE_PRESSED);
         break;
-    case LV_BUTTON_TYPE_DEFAULT | LV_BUTTON_TYPE_OUTLINE:
-    case LV_BUTTON_TYPE_SECONDARY | LV_BUTTON_TYPE_OUTLINE:
+    case LV_BUTTON_STYLE_DEFAULT | LV_BUTTON_STYLE_OUTLINE:
+    case LV_BUTTON_STYLE_SECONDARY | LV_BUTTON_STYLE_OUTLINE:
         lv_obj_add_style(button, &secondary_outline_style, 0);
         lv_obj_add_style(button, &pressed_style, LV_STATE_PRESSED);
         break;
-    case LV_BUTTON_TYPE_DESTRUCTIVE | LV_BUTTON_TYPE_OUTLINE:
+    case LV_BUTTON_STYLE_DESTRUCTIVE | LV_BUTTON_STYLE_OUTLINE:
         lv_obj_add_style(button, &destructive_outline_style, 0);
         lv_obj_add_style(button, &pressed_style, LV_STATE_PRESSED);
         break;
-    case LV_BUTTON_TYPE_PLAIN:
+    case LV_BUTTON_STYLE_PLAIN:
         lv_obj_add_style(button, &plain_pressed_style, LV_STATE_PRESSED);
         break;
-    case LV_BUTTON_TYPE_PLAIN | LV_BUTTON_TYPE_OUTLINE:
+    case LV_BUTTON_STYLE_PLAIN | LV_BUTTON_STYLE_OUTLINE:
         lv_obj_add_style(button, &plain_outline_style, 0);
         lv_obj_add_style(button, &plain_pressed_style, LV_STATE_PRESSED);
         break;
