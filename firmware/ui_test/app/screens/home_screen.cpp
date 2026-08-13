@@ -5,12 +5,16 @@
 
 #include "home_screen.hpp"
 #include "button_widgets_screen.hpp"
+#include "list_widgets_screen.hpp"
 
 void HomeScreen::build() {
     createNavigation("UI Test");
 
     create_row("Button Widgets", [](lv_event_t*){
         screen_manager.push(std::make_shared<ButtonWidgetsScreen>());
+    });
+    create_row("List Widget", [](lv_event_t*){
+        screen_manager.push(std::make_shared<ListWidgetsScreen>());
     });
 }
 
