@@ -54,11 +54,21 @@ esp_err_t lvgl_port_init(const lvgl_port_cfg_t *cfg) {
 // Run LVGL until `tick` returns false: pump input, service timers, present, then
 // hand the frame to the caller (the sim-harness step), passing whether the UI is
 // idle (no animation running) for the harness `settle` predicate.
+//
+// lv_timer_handler()'s sleep hint covers LVGL's own timers and nothing else, so
+// it goes idle for hundreds of milliseconds while a framebuffer written from
+// outside LVGL — video, camera, any DMA-style producer — already holds new
+// content. The present cadence is therefore capped independently of it;
+// sdl_panel_present() returns immediately when the panel is not dirty, so the
+// extra wakeups cost a timer scan.
+static const uint32_t kPresentIntervalMs = 16;
+
 void lvgl_sim_loop(std::function<bool(bool is_idle)> tick) {
     while (s_inited) {
         sdl_panel_pump_input();
         uint32_t sleep_time_ms = lv_timer_handler();
         if (sleep_time_ms == LV_NO_TIMER_READY) sleep_time_ms = LV_DEF_REFR_PERIOD;
+        if (sleep_time_ms > kPresentIntervalMs) sleep_time_ms = kPresentIntervalMs;
         sdl_panel_present();
         if (!tick(lv_anim_count_running() == 0)) break;
         usleep(sleep_time_ms * 1000);
