@@ -42,6 +42,8 @@ static const char *TAG = "ES8388";
 struct es8388_state {
     i2c_master_dev_handle_t i2c;
     i2s_chan_handle_t tx;
+    int i2s_port;
+    i2s_std_gpio_config_t gpio_cfg;
     uint8_t dac_outputs;
     bool enabled;
     uint32_t rate;
@@ -117,18 +119,55 @@ static esp_err_t codec_reset(es8388_t s) {
     return r ? ESP_FAIL : ESP_OK;
 }
 
+/* i2s_channel_reconfig_std_slot() reallocates the DMA descriptors for the new
+ * slot width, freeing the old ones only once the new allocation succeeds. If
+ * it fails (DMA-capable memory exhausted), the channel is left disabled with
+ * its previous descriptors still held, and every later retry hits the same
+ * shortage. Tearing the channel down and rebuilding it releases those held
+ * descriptors outright, which a failed reconfig never does — the one path
+ * that can recover without a device reset. */
+static esp_err_t recreate_channel(es8388_t s, uint32_t rate, uint8_t bits, uint8_t ch) {
+    if (s->tx) i2s_del_channel(s->tx);
+    s->tx = NULL;
+
+    i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(s->i2s_port, I2S_ROLE_MASTER);
+    chan_cfg.auto_clear = true;
+    esp_err_t err = i2s_new_channel(&chan_cfg, &s->tx, NULL);
+    if (err != ESP_OK) return err;
+
+    const i2s_std_config_t std_cfg = {
+        .clk_cfg  = I2S_STD_CLK_DEFAULT_CONFIG(rate),
+        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(
+            to_bit_width(bits), ch == 1 ? I2S_SLOT_MODE_MONO : I2S_SLOT_MODE_STEREO),
+        .gpio_cfg = s->gpio_cfg,
+    };
+    return i2s_channel_init_std_mode(s->tx, &std_cfg);
+}
+
 static esp_err_t apply_format(es8388_t s, uint32_t rate, uint8_t bits, uint8_t ch) {
     if (s->enabled) {
         esp_err_t err = i2s_channel_disable(s->tx);
         if (err != ESP_OK) return err;
         s->enabled = false;
     }
-    i2s_std_clk_config_t clk = I2S_STD_CLK_DEFAULT_CONFIG(rate);
-    i2s_std_slot_config_t slot = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(
-        to_bit_width(bits), ch == 1 ? I2S_SLOT_MODE_MONO : I2S_SLOT_MODE_STEREO);
-    esp_err_t err = i2s_channel_reconfig_std_clock(s->tx, &clk);
-    if (err == ESP_OK) err = i2s_channel_reconfig_std_slot(s->tx, &slot);
-    if (err != ESP_OK) return err;
+    /* A prior recreate_channel() may have left s->tx NULL (i2s_new_channel
+     * itself failed) — nothing to reconfig, go straight to rebuilding it. */
+    esp_err_t err = s->tx ? ESP_OK : ESP_FAIL;
+    if (s->tx) {
+        i2s_std_clk_config_t clk = I2S_STD_CLK_DEFAULT_CONFIG(rate);
+        i2s_std_slot_config_t slot = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(
+            to_bit_width(bits), ch == 1 ? I2S_SLOT_MODE_MONO : I2S_SLOT_MODE_STEREO);
+        err = i2s_channel_reconfig_std_clock(s->tx, &clk);
+        if (err == ESP_OK) err = i2s_channel_reconfig_std_slot(s->tx, &slot);
+    }
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "i2s reconfig failed (%d), recreating channel", err);
+        err = recreate_channel(s, rate, bits, ch);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "i2s channel recreate failed (%d)", err);
+            return err;
+        }
+    }
     err = reg_write(s, REG_DACCONTROL1, (uint8_t)(bits_to_word_len(bits) << 3));
     if (err != ESP_OK) return err;
     err = i2s_channel_enable(s->tx);
@@ -156,6 +195,16 @@ esp_err_t es8388_init(const es8388_config_t *config, es8388_t *out) {
     ret = i2c_master_bus_add_device(config->i2c_bus, &dev_cfg, &s->i2c);
     if (ret != ESP_OK) { ESP_LOGE(TAG, "i2c add device: %d", ret); goto err_free; }
 
+    s->i2s_port = config->i2s_port;
+    s->gpio_cfg = (i2s_std_gpio_config_t){
+        .mclk = config->mclk_gpio,
+        .bclk = config->bclk_gpio,
+        .ws   = config->ws_gpio,
+        .dout = config->dout_gpio,
+        .din  = config->din_gpio,
+        .invert_flags = { 0 },
+    };
+
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(config->i2s_port, I2S_ROLE_MASTER);
     chan_cfg.auto_clear = true;
     ret = i2s_new_channel(&chan_cfg, &s->tx, NULL);
@@ -164,14 +213,7 @@ esp_err_t es8388_init(const es8388_config_t *config, es8388_t *out) {
     const i2s_std_config_t std_cfg = {
         .clk_cfg  = I2S_STD_CLK_DEFAULT_CONFIG(48000),
         .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
-        .gpio_cfg = {
-            .mclk = config->mclk_gpio,
-            .bclk = config->bclk_gpio,
-            .ws   = config->ws_gpio,
-            .dout = config->dout_gpio,
-            .din  = config->din_gpio,
-            .invert_flags = { 0 },
-        },
+        .gpio_cfg = s->gpio_cfg,
     };
     ret = i2s_channel_init_std_mode(s->tx, &std_cfg);
     if (ret != ESP_OK) { ESP_LOGE(TAG, "i2s init_std: %d", ret); goto err_chan; }
