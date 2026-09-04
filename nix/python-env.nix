@@ -13,6 +13,7 @@ let
       dependencies = deps;
       doCheck = false;
       pythonImportsCheck = [];
+      makeWrapperArgs = [ "--set" "PYTHONSAFEPATH" "1" ];
     };
 
   esptool = mkPypiPkg {

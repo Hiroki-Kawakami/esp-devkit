@@ -52,7 +52,7 @@ let
     let s = set.${name}.${system} or (throw "esp toolchain ${name}: unsupported system ${system}");
     in pkgs.fetchurl { inherit (s) url sha256; };
 
-  mkUnpacked = { name, ver, src, extraBuildInputs ? [] }:
+  mkUnpacked = { name, ver, src, extraBuildInputs ? [], extraInstall ? "" }:
     pkgs.stdenv.mkDerivation {
       pname = name;
       version = ver;
@@ -76,6 +76,7 @@ let
         runHook preInstall
         mkdir -p $out
         cp -R ${name}/. $out/
+        ${extraInstall}
         runHook postInstall
       '';
     };
@@ -88,6 +89,11 @@ let
     ver = gdbVersion;
     src = pickFrom gdbSources name;
     extraBuildInputs = [ pkgs.python3 pkgs.ncurses pkgs.expat pkgs.gmp pkgs.mpfr ];
+    extraInstall = ''
+      for gdb in $out/bin/*-gdb-3.*; do
+        [ "$gdb" = "$out/bin/${name}-${pkgs.python3.pythonVersion}" ] || rm -f "$gdb"
+      done
+    '';
   };
 
   # ROM symbol ELFs; ESP_ROM_ELF_DIR feeds the build's gdbinit for monitor backtraces.

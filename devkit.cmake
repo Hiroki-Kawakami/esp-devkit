@@ -143,7 +143,7 @@ macro(devkit_simulator)
     # Host dependencies
     # ---------------------------------------------------------------------------
     find_package(SDL2 REQUIRED)
-    find_package(CJSON REQUIRED)     # idf_compat's nvs shim persists to a JSON blob
+    find_package(cJSON REQUIRED)     # idf_compat's nvs shim persists to a JSON blob
     find_package(Threads REQUIRED)   # host FreeRTOS API (idf_compat) is built on pthreads
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(JPEG REQUIRED IMPORTED_TARGET libjpeg)
