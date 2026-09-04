@@ -13,7 +13,7 @@ ImageScreen::~ImageScreen() {
 }
 
 void ImageScreen::build() {
-    const bsp_size_t size = bsp_display_get_size();
+    const bsp_size_t size = bsp_display_get_size(BSP_PANEL_MAIN);
 
     dsc_.header.magic  = LV_IMAGE_HEADER_MAGIC;
     dsc_.header.cf     = LV_COLOR_FORMAT_L8;
@@ -31,7 +31,7 @@ void ImageScreen::build() {
 
     lv_obj_add_flag(root_, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_fn(root_, LV_EVENT_CLICKED, [this](lv_event_t *) {
-        bsp_display_clear();
+        bsp_display_clear(BSP_PANEL_MAIN);
         epd_set_next_refresh_mode(BSP_EPD_MODE_QUALITY_ALL);
         lv_obj_invalidate(root_);
     });

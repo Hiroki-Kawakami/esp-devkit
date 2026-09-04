@@ -19,7 +19,7 @@
  * Only what differs per model — window title, geometry, pixel format, panel
  * type, and the type-specific params below — is passed in via the config; a
  * board (boards/<model>/<model>_sim.c) calls sdl_panel_create() and registers
- * the returned provider with bsp_display_set_active().
+ * the returned provider with bsp_display_attach().
  *
  * Touch and the headless sim-harness hooks are added on top of this backend
  * later; this header is intentionally display-only for now.
@@ -51,7 +51,7 @@ typedef struct {
 } sdl_panel_config_t;
 
 /* Bring up the SDL window and return the bsp_display + bsp_touch providers backed
- * by it (both share the one window). Register them with bsp_display_set_active()
+ * by it (both share the one window). Register them with bsp_display_attach()
  * and bsp_touch_set_active(). out_touch may be NULL for a display-only board.
  * Only one window per process is supported (the host runs a single board), so a
  * second call returns the already-created providers.

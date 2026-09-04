@@ -79,7 +79,7 @@ static esp_err_t setup_st7121_lcd(const bsp_config_t *config) {
     bsp_display_t *display = NULL;
     esp_err_t err = st7121_lcd_create(&lcd_cfg, &display);
     if (err != ESP_OK) return err;
-    bsp_display_set_active(display);
+    bsp_display_attach(display, NULL);
     return ESP_OK;
 }
 
@@ -93,7 +93,7 @@ static esp_err_t setup_st7123_lcd(const bsp_config_t *config) {
     bsp_display_t *display = NULL;
     esp_err_t err = st7123_lcd_create(&lcd_cfg, &display);
     if (err != ESP_OK) return err;
-    bsp_display_set_active(display);
+    bsp_display_attach(display, NULL);
     return ESP_OK;
 }
 
@@ -125,7 +125,7 @@ static esp_err_t setup_ili9881c(const bsp_config_t *config) {
     bsp_display_t *display = NULL;
     esp_err_t err = ili9881c_lcd_create(&lcd_cfg, &display);
     if (err != ESP_OK) return err;
-    bsp_display_set_active(display);
+    bsp_display_attach(display, NULL);
     return ESP_OK;
 }
 

@@ -80,7 +80,8 @@ esp_err_t paper_s3_panel_init(const bsp_config_t *config, i2c_master_bus_handle_
     bsp_display_t *display = NULL;
     esp_err_t err = ed047tc1_epd_create(&cfg, &display);
     if (err != ESP_OK) return err;
-    bsp_display_set_active(display);
+    display->portrait = BSP_ROTATION_90;
+    bsp_display_attach(display, NULL);
 
     /* Touch is non-fatal: a failure leaves bsp_touch_read a no-op rather than
      * blocking display bring-up. */
@@ -89,8 +90,4 @@ esp_err_t paper_s3_panel_init(const bsp_config_t *config, i2c_master_bus_handle_
         if (err != ESP_OK) ESP_LOGW(TAG, "touch unavailable: %s", esp_err_to_name(err));
     }
     return ESP_OK;
-}
-
-bsp_rotation_t bsp_display_portrait(void) {
-    return BSP_ROTATION_90;
 }

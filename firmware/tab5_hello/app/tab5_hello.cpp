@@ -49,6 +49,6 @@ void app_entry() {
 
     lv_async_call([] {
         screen_manager.load(std::make_shared<HomeScreen>());
-        bsp_display_set_brightness(80);
+        bsp_display_set_brightness(BSP_PANEL_MAIN, 80);
     });
 }

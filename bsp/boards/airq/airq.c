@@ -196,7 +196,7 @@ esp_err_t bsp_init(const bsp_config_t *config) {
         ESP_LOGE(TAG, "gdey0154d67_epd_create: %s", esp_err_to_name(err));
         return err;
     }
-    bsp_display_set_active(display);
+    bsp_display_attach(display, NULL);
 
     static const gpio_button_pin_t btn_pins[] = {
         { .gpio = AIRQ_BUTTON_A_GPIO, .active_low = true },

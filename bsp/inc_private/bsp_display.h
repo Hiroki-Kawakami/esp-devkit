@@ -38,6 +38,10 @@ struct bsp_display {
     bsp_size_t          size;
     bsp_pixel_format_t  format;
 
+    /* Rotation an app applies for a portrait layout — set by the board after
+     * create() when the glass is mounted rotated. 0 leaves the panel as-is. */
+    bsp_rotation_t      portrait;
+
     /* portable base contract (always non-NULL) */
     esp_err_t (*draw_bitmap)(bsp_display_t *self, bsp_rect_t area, const void *pixels,
                              bsp_rotation_t rotation);
@@ -61,10 +65,13 @@ struct bsp_display {
     esp_err_t (*wait_idle)(bsp_display_t *self);
 };
 
-/* Register the active display with the common layer (src/bsp_display.c), which
- * implements the model-agnostic public bsp_display_* API on top of it. A board's
- * bsp_init() calls this once after creating its display provider. */
-void bsp_display_set_active(bsp_display_t *display);
+/* Register a display with the common layer (src/bsp_display.c), which implements
+ * the model-agnostic public bsp_display_* API on top of it, and hand back the
+ * bsp_panel_id_t the public API addresses it by (out_panel may be NULL). A
+ * board's bsp_init() attaches its built-in panel first, so that one is always
+ * BSP_PANEL_MAIN; a board's bsp_module_attach_* implementation attaches the
+ * panels an app plugs in later. Full (BSP_DISPLAY_MAX_PANELS) -> ESP_ERR_NO_MEM. */
+esp_err_t bsp_display_attach(bsp_display_t *display, bsp_panel_id_t *out_panel);
 
 /* Shared rotated blit for copy-based backends (EPD GRAM, SPI glass): write the
  * source pixels into the panel-coordinate rect `area`, un-rotating by `rotation`.

@@ -104,6 +104,7 @@ struct DisplayManagerContext {
     uint8_t input_pending : 1 = false;
     uint8_t : 1;
 
+    bsp_panel_id_t panel = BSP_PANEL_MAIN;
     bsp_size_t panel_size = {};
     bsp_size_t logical_size = {};
     bsp_rect_t output_area = {};
@@ -363,7 +364,8 @@ void map_flush_area(DisplayManagerContext &display, DisplayFlushContext &flush) 
 
 void draw_bitmap(DisplayManagerContext &display, DisplayFlushContext &flush) {
     if (flush.result != ESP_OK || !display.visible) return;
-    bsp_display_draw_bitmap(bsp_rect(flush.area), flush.pixels, display.rotation);
+    bsp_display_draw_bitmap(display.panel, bsp_rect(flush.area), flush.pixels,
+                            display.rotation);
 }
 
 void accumulate_dirty(DisplayManagerContext &display, DisplayFlushContext &flush) {
@@ -389,7 +391,7 @@ void refresh_epd(DisplayManagerContext &display, DisplayFlushContext &flush) {
     display.next_epd_mode_valid = false;
 
     if (mode != BSP_EPD_MODE_NONE && display.dirty_valid) {
-        bsp_display_refresh(bsp_rect(display.dirty), mode);
+        bsp_display_refresh(display.panel, bsp_rect(display.dirty), mode);
     }
     display.dirty_valid = false;
 }
@@ -400,13 +402,13 @@ void flush_framebuffer(DisplayManagerContext &display, DisplayFlushContext &flus
 
     int framebuffer_index = display.render_path == DisplayRenderPath::Direct &&
         flush.pixels == display.buffer1 ? 1 : 0;
-    bsp_display_flush(framebuffer_index);
+    bsp_display_flush(display.panel, framebuffer_index);
 }
 
 void composite_immediate(DisplayManagerContext &display,
                          DisplayFlushContext &flush) {
     if (!flush.last || !display.visible) return;
-    void *framebuffer = bsp_display_get_frame_buffer(0);
+    void *framebuffer = bsp_display_get_frame_buffer(display.panel, 0);
     flush.result = composite_surface(display, framebuffer);
 }
 
@@ -430,7 +432,8 @@ esp_err_t DisplayManager::create_display(const DisplayManagerConfig &config,
     }
     if (display_slot == kMaxDisplays) return ESP_ERR_NO_MEM;
 
-    bsp_size_t panel_size = bsp_display_get_size();
+    const bsp_panel_id_t panel = config.viewport.panel;
+    bsp_size_t panel_size = bsp_display_get_size(panel);
     if (panel_size.width <= 0 || panel_size.height <= 0) {
         return ESP_ERR_INVALID_STATE;
     }
@@ -454,7 +457,7 @@ esp_err_t DisplayManager::create_display(const DisplayManagerConfig &config,
     auto *context = new (std::nothrow) DisplayManagerContext;
     if (!context) return ESP_ERR_NO_MEM;
 
-    uint32_t caps = bsp_display_get_caps();
+    uint32_t caps = bsp_display_get_caps(panel);
     bool has_framebuffer = caps & BSP_DISPLAY_CAP_FRAMEBUFFER;
     bool is_epd = caps & BSP_DISPLAY_CAP_EPD_REFRESH;
     bool full_output = same_rect(output_area, full_panel_rect(panel_size));
@@ -463,11 +466,12 @@ esp_err_t DisplayManager::create_display(const DisplayManagerConfig &config,
         logical_size.height == panel_size.height &&
         config.viewport.rotation == BSP_ROTATION_0;
 
+    context->panel = panel;
     context->panel_size = panel_size;
     context->logical_size = logical_size;
     context->output_area = output_area;
     context->rotation = config.viewport.rotation;
-    context->format = bsp_display_get_pixel_format();
+    context->format = bsp_display_get_pixel_format(panel);
     context->bytes_per_pixel = bsp_pixel_format_bytes(context->format);
     context->epd_enabled = is_epd;
     update_scale(*context);
@@ -485,12 +489,12 @@ esp_err_t DisplayManager::create_display(const DisplayManagerConfig &config,
     lv_display_render_mode_t render_mode;
     if (config.present_mode == DisplayPresentMode::Immediate &&
         has_framebuffer && identity && !is_epd) {
-        context->buffer0 = bsp_display_get_frame_buffer(0);
+        context->buffer0 = bsp_display_get_frame_buffer(panel, 0);
         if (!context->buffer0) {
             delete context;
             return ESP_ERR_INVALID_STATE;
         }
-        context->buffer1 = bsp_display_get_frame_buffer(1);
+        context->buffer1 = bsp_display_get_frame_buffer(panel, 1);
         buffer_bytes = (size_t)logical_size.width * logical_size.height *
             context->bytes_per_pixel;
         render_mode = LV_DISPLAY_RENDER_MODE_DIRECT;
@@ -610,7 +614,7 @@ esp_err_t DisplayManager::create_display(const DisplayManagerConfig &config,
     displays_[display_slot] = context;
     xSemaphoreGive(touch_mutex);
 
-    if (is_epd) bsp_display_set_epd_mode(BSP_EPD_MODE_NONE);
+    if (is_epd) bsp_display_set_epd_mode(panel, BSP_EPD_MODE_NONE);
 
     *out_display = context->display;
     return ESP_OK;
@@ -710,18 +714,18 @@ esp_err_t DisplayManager::compose(lv_display_t *display,
         return ESP_ERR_NOT_SUPPORTED;
     }
 
-    void *framebuffer = bsp_display_get_frame_buffer(framebuffer_index);
+    void *framebuffer = bsp_display_get_frame_buffer(context->panel, framebuffer_index);
     if (!framebuffer) return ESP_ERR_INVALID_ARG;
     return composite_surface(*context, framebuffer);
 }
 
-esp_err_t DisplayManager::present(int framebuffer_index) {
-    if (!(bsp_display_get_caps() & BSP_DISPLAY_CAP_FRAMEBUFFER)) return ESP_OK;
+esp_err_t DisplayManager::present(bsp_panel_id_t panel, int framebuffer_index) {
+    if (!(bsp_display_get_caps(panel) & BSP_DISPLAY_CAP_FRAMEBUFFER)) return ESP_OK;
 
-    void *framebuffer = bsp_display_get_frame_buffer(framebuffer_index);
+    void *framebuffer = bsp_display_get_frame_buffer(panel, framebuffer_index);
     if (!framebuffer) return ESP_ERR_INVALID_ARG;
 
-    bsp_display_flush(framebuffer_index);
+    bsp_display_flush(panel, framebuffer_index);
     return ESP_OK;
 }
 

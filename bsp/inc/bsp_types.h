@@ -32,6 +32,13 @@ static inline int bsp_rect_max_x(bsp_rect_t rect) { return rect.origin.x + rect.
 static inline int bsp_rect_max_y(bsp_rect_t rect) { return rect.origin.y + rect.size.height; }
 
 #define BSP_DISPLAY_MAX_FRAME_BUFFERS 3
+#define BSP_DISPLAY_MAX_PANELS 2
+
+/* Panel selector for the bsp_display_* API. The board's built-in panel is
+ * attached first by bsp_init and therefore always BSP_PANEL_MAIN; panels an app
+ * attaches later (a module on an expansion port) get the next free id. */
+typedef int bsp_panel_id_t;
+#define BSP_PANEL_MAIN 0
 
 typedef enum {
     BSP_DISPLAY_TYPE_NONE,
@@ -102,6 +109,20 @@ typedef enum {
     BSP_DISPLAY_POWER_SLEEP,
     BSP_DISPLAY_POWER_OFF,
 } bsp_display_power_t;
+
+/* Where a module is attached (bsp_module_attach_*). The app says what it plugged
+ * where; the board owns the pins, rails and bring-up. */
+typedef enum {
+    BSP_MODULE_PORT_MBUS,
+    BSP_MODULE_PORT_A,
+    BSP_MODULE_PORT_B,
+    BSP_MODULE_PORT_C,
+} bsp_module_port_t;
+
+typedef struct {
+    bsp_size_t         size;          /*!< {0,0} -> board default */
+    bsp_pixel_format_t pixel_format;  /*!< 0 -> board default */
+} bsp_display_module_config_t;
 
 typedef struct {
     int x, y;

@@ -79,7 +79,7 @@ esp_err_t core_s3_panel_init(i2c_master_bus_handle_t i2c_bus,
     bsp_display_t *display = NULL;
     err = ili9342c_create(&cfg, &display);
     if (err != ESP_OK) return err;
-    bsp_display_set_active(display);
+    bsp_display_attach(display, NULL);
     backlight_set(axp, 100);
 
     /* FT6336U on the system I2C bus; its INT is aggregated on the expander and

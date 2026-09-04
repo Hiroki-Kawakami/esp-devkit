@@ -56,10 +56,10 @@ static void lvgl_init() {
         assert(0);
     }
 
-    const bsp_size_t         size = bsp_display_get_size();
-    const bsp_pixel_format_t fmt  = bsp_display_get_pixel_format();
-    void  *fb0 = bsp_display_get_frame_buffer(0);
-    void  *fb1 = bsp_display_get_frame_buffer(1);
+    const bsp_size_t         size = bsp_display_get_size(BSP_PANEL_MAIN);
+    const bsp_pixel_format_t fmt  = bsp_display_get_pixel_format(BSP_PANEL_MAIN);
+    void  *fb0 = bsp_display_get_frame_buffer(BSP_PANEL_MAIN, 0);
+    void  *fb1 = bsp_display_get_frame_buffer(BSP_PANEL_MAIN, 1);
     const size_t fb_bytes = (size_t)size.width * size.height * bsp_pixel_format_bytes(fmt);
 
     lv_display_t *disp = lv_display_create(size.width, size.height);
@@ -67,8 +67,8 @@ static void lvgl_init() {
         fmt == BSP_PIXEL_FORMAT_RGB888 ? LV_COLOR_FORMAT_RGB888 : LV_COLOR_FORMAT_RGB565);
     lv_display_set_buffers(disp, fb0, fb1, fb_bytes, LV_DISPLAY_RENDER_MODE_DIRECT);
     lv_display_set_flush_cb(disp, [](lv_display_t *d, const lv_area_t *, uint8_t *px_map) {
-        int fb_index = (px_map == bsp_display_get_frame_buffer(1)) ? 1 : 0;
-        bsp_display_flush(fb_index);
+        int fb_index = (px_map == bsp_display_get_frame_buffer(BSP_PANEL_MAIN, 1)) ? 1 : 0;
+        bsp_display_flush(BSP_PANEL_MAIN, fb_index);
         lv_display_flush_ready(d);
     });
     lv_display_set_default(disp);

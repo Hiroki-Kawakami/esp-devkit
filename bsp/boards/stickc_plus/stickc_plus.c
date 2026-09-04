@@ -180,7 +180,7 @@ static esp_err_t display_init(void) {
     bsp_display_t *display = NULL;
     err = st7789v2_create(&cfg, &display);
     if (err != ESP_OK) return err;
-    bsp_display_set_active(display);
+    bsp_display_attach(display, NULL);
     return ESP_OK;
 }
 

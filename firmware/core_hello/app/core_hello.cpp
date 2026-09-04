@@ -25,7 +25,7 @@ static void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
         { area->x1, area->y1 },
         { area->x2 - area->x1 + 1, area->y2 - area->y1 + 1 },
     };
-    bsp_display_draw_bitmap(rect, px_map, BSP_ROTATION_0);
+    bsp_display_draw_bitmap(BSP_PANEL_MAIN, rect, px_map, BSP_ROTATION_0);
     lv_display_flush_ready(disp);
 }
 
@@ -44,7 +44,7 @@ static void lvgl_init() {
         assert(0);
     }
 
-    const bsp_size_t size = bsp_display_get_size();
+    const bsp_size_t size = bsp_display_get_size(BSP_PANEL_MAIN);
 
     /* SPI panel: no host framebuffer, so render into two quarter-screen partial
      * buffers and blit each flushed region over draw_bitmap. */
@@ -78,7 +78,7 @@ void app_entry() {
     bsp_config_t bsp_config = {};
     bsp_config.dispatch.task_priority = 6;
     bsp_init(&bsp_config);
-    bsp_display_set_brightness(100);
+    bsp_display_set_brightness(BSP_PANEL_MAIN, 100);
     lvgl_init();
 
     bsp_button_on_click(2, [](uint8_t, void *) {

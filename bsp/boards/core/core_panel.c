@@ -221,7 +221,7 @@ esp_err_t core_panel_init(i2c_master_bus_handle_t i2c_bus, axp192_handle_t axp) 
         ESP_LOGE(TAG, "ili9342c_create: %s", esp_err_to_name(err));
         return err;
     }
-    bsp_display_set_active(display);
+    bsp_display_attach(display, NULL);
     cfg.set_backlight(axp, 100);
 
     core_input_init(i2c_bus);

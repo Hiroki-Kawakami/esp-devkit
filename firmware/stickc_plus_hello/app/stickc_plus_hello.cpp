@@ -32,7 +32,7 @@ static void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
         { area->x1, area->y1 },
         { area->x2 - area->x1 + 1, area->y2 - area->y1 + 1 },
     };
-    bsp_display_draw_bitmap(rect, px_map, BSP_ROTATION_0);
+    bsp_display_draw_bitmap(BSP_PANEL_MAIN, rect, px_map, BSP_ROTATION_0);
     lv_display_flush_ready(disp);
 }
 
@@ -51,7 +51,7 @@ static void lvgl_init() {
         assert(0);
     }
 
-    const bsp_size_t size = bsp_display_get_size();
+    const bsp_size_t size = bsp_display_get_size(BSP_PANEL_MAIN);
 
     /* SPI panel: no host framebuffer, so render into two quarter-screen partial
      * buffers and blit each flushed region over draw_bitmap. */
@@ -117,13 +117,13 @@ static void build_hello_screen() {
             s_power_toggle_req = false;
             display_off = !display_off;
             if (display_off) {
-                bsp_display_set_brightness(0);
-                bsp_display_set_power(BSP_DISPLAY_POWER_OFF);
+                bsp_display_set_brightness(BSP_PANEL_MAIN, 0);
+                bsp_display_set_power(BSP_PANEL_MAIN, BSP_DISPLAY_POWER_OFF);
             } else {
-                bsp_display_set_power(BSP_DISPLAY_POWER_ON);
+                bsp_display_set_power(BSP_PANEL_MAIN, BSP_DISPLAY_POWER_ON);
                 lv_obj_invalidate(lv_screen_active());
                 lv_refr_now(lv_display_get_default());
-                bsp_display_set_brightness(100);
+                bsp_display_set_brightness(BSP_PANEL_MAIN, 100);
             }
             ESP_LOGI(TAG, "panel power %s", display_off ? "off" : "on");
         }
@@ -165,7 +165,7 @@ void app_entry() {
     bsp_config_t bsp_config = {};
     bsp_config.dispatch.task_priority = 6;
     bsp_init(&bsp_config);
-    bsp_display_set_brightness(100);
+    bsp_display_set_brightness(BSP_PANEL_MAIN, 100);
     wire_buttons();
     lvgl_init();
     wire_led();

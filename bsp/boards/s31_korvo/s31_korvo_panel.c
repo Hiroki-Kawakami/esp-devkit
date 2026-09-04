@@ -58,7 +58,7 @@ esp_err_t s31_korvo_panel_init(const bsp_config_t *config, i2c_master_bus_handle
         ESP_LOGE(TAG, "rgb_lcd_create: %s", esp_err_to_name(err));
         return err;
     }
-    bsp_display_set_active(display);
+    bsp_display_attach(display, NULL);
 
     /* GT1151 touch. RST/INT are not wired on this board (both NC), so the
      * driver only probes the chip on its power-on I2C address. */

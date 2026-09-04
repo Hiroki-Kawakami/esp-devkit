@@ -55,7 +55,7 @@ static void draw_gradient_ticks(uint8_t *bot, int stride, int w, int h) {
 }
 
 void TestPatternScreen::build() {
-    const bsp_size_t size = bsp_display_get_size();
+    const bsp_size_t size = bsp_display_get_size(BSP_PANEL_MAIN);
     const int W = size.width, H = size.height;
     const size_t fb_bytes = (size_t)W * H;
 
@@ -114,7 +114,7 @@ void TestPatternScreen::build() {
     // final flush issues QUALITY_ALL via epd_set_next_refresh_mode.
     lv_obj_add_flag(root_, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_fn(root_, LV_EVENT_CLICKED, [this](lv_event_t *) {
-        bsp_display_clear();
+        bsp_display_clear(BSP_PANEL_MAIN);
         epd_set_next_refresh_mode(BSP_EPD_MODE_QUALITY_ALL);
         lv_obj_invalidate(root_);
     });

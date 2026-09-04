@@ -28,7 +28,7 @@ esp_err_t bsp_init(const bsp_config_t *config) {
     bsp_display_t *display = NULL;
     esp_err_t err = sdl_panel_create(&sdl_config, &display, NULL);
     if (err != ESP_OK) return err;
-    bsp_display_set_active(display);
+    bsp_display_attach(display, NULL);
 
     bsp_audio_t *audio = NULL;
     esp_err_t audio_err = sdl_audio_create(NULL, &audio);

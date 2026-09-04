@@ -30,7 +30,7 @@ static void lvgl_init() {
     }
 
     DisplayManagerConfig display_config = {};
-    display_config.viewport.rotation = bsp_display_portrait();
+    display_config.viewport.rotation = bsp_display_portrait(BSP_PANEL_MAIN);
     lv_display_t *disp = nullptr;
     err = display_manager.create_display(display_config, &disp);
     if (err != ESP_OK) {
@@ -50,6 +50,6 @@ void app_entry() {
 
     lv_async_call([] {
         screen_manager.load(std::make_shared<HomeScreen>());
-        bsp_display_set_brightness(80);
+        bsp_display_set_brightness(BSP_PANEL_MAIN, 80);
     });
 }

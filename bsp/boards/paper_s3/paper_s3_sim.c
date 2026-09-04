@@ -35,7 +35,8 @@ esp_err_t bsp_init(const bsp_config_t *config) {
     esp_err_t err = sdl_panel_create(&sdl_config, &display, &touch);
     if (err != ESP_OK) return err;
 
-    bsp_display_set_active(display);
+    display->portrait = BSP_ROTATION_90;
+    bsp_display_attach(display, NULL);
     bsp_touch_set_active(touch);
 
     bsp_rtc_t *rtc = NULL;
@@ -59,8 +60,4 @@ esp_err_t bsp_init(const bsp_config_t *config) {
 
 esp_err_t bsp_power_off(void) {
     exit(0);
-}
-
-bsp_rotation_t bsp_display_portrait(void) {
-    return BSP_ROTATION_90;
 }

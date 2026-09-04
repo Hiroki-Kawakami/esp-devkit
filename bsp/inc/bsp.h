@@ -64,31 +64,49 @@ typedef struct i2c_master_bus_t *i2c_master_bus_handle_t;
 i2c_master_bus_handle_t bsp_bus_get_i2c_handle(int i2c_port);
 
 // MARK: Display
-bsp_display_type_t bsp_display_get_type(void);
-uint32_t bsp_display_get_caps(void);
-bsp_size_t bsp_display_get_size(void);
-bsp_pixel_format_t bsp_display_get_pixel_format(void);
-void bsp_display_set_brightness(int brightness);
-bsp_rotation_t bsp_display_portrait(void);
+/* Every call names the panel it addresses. The board's built-in panel is
+ * BSP_PANEL_MAIN; a module attached with bsp_module_attach_* gets its id from
+ * that call. An id no panel is attached to is inert: getters return zero values
+ * and the rest are no-ops. */
+bsp_display_type_t bsp_display_get_type(bsp_panel_id_t panel);
+uint32_t bsp_display_get_caps(bsp_panel_id_t panel);
+bsp_size_t bsp_display_get_size(bsp_panel_id_t panel);
+bsp_pixel_format_t bsp_display_get_pixel_format(bsp_panel_id_t panel);
+void bsp_display_set_brightness(bsp_panel_id_t panel, int brightness);
+
+/* Rotation to apply for a portrait layout on a panel whose glass is mounted
+ * rotated; BSP_ROTATION_0 on panels that already are portrait-native. */
+bsp_rotation_t bsp_display_portrait(bsp_panel_id_t panel);
 
 /* Panel power state (see bsp_display_power_t). ESP_ERR_NOT_SUPPORTED when the
  * panel has no separable power control. Does not touch brightness -- pair with
  * bsp_display_set_brightness as needed. */
-esp_err_t bsp_display_set_power(bsp_display_power_t state);
-void bsp_display_draw_bitmap(bsp_rect_t area, const void *pixels, bsp_rotation_t rotation);
-void *bsp_display_get_frame_buffer(int fb_index);
-void bsp_display_flush(int fb_index);
+esp_err_t bsp_display_set_power(bsp_panel_id_t panel, bsp_display_power_t state);
+void bsp_display_draw_bitmap(bsp_panel_id_t panel, bsp_rect_t area, const void *pixels,
+                             bsp_rotation_t rotation);
+void *bsp_display_get_frame_buffer(bsp_panel_id_t panel, int fb_index);
+void bsp_display_flush(bsp_panel_id_t panel, int fb_index);
 
 // EPD-only: no-op on non-EPD panels. refresh honors `area`; OR
 // BSP_EPD_MODE_ALL into the mode to drive every pixel of the area (ghost
 // clear). clear blanks the whole panel to white (the known-baseline reset).
 // Bring-up does not clear — establish a baseline via clear or SEED-mode draws.
-void bsp_display_set_epd_mode(bsp_epd_mode_t mode);
-void bsp_display_refresh(bsp_rect_t area, bsp_epd_mode_t mode);
-void bsp_display_clear(void);
+void bsp_display_set_epd_mode(bsp_panel_id_t panel, bsp_epd_mode_t mode);
+void bsp_display_refresh(bsp_panel_id_t panel, bsp_rect_t area, bsp_epd_mode_t mode);
+void bsp_display_clear(bsp_panel_id_t panel);
 
 /* Block until no panel update is in flight — the gate before cutting power. */
-void bsp_display_wait_idle(void);
+void bsp_display_wait_idle(bsp_panel_id_t panel);
+
+// MARK: Module
+/* Declare which module is attached where. The app supplies the port and what it
+ * wants from the module; the board owns the pins, rails and bring-up, and
+ * attaches the resulting panel. A NULL config takes the board's defaults.
+ * Boards that cannot host the module (no such port, or no driver wired up)
+ * return ESP_ERR_NOT_SUPPORTED. */
+esp_err_t bsp_module_attach_display(bsp_module_port_t port,
+                                    const bsp_display_module_config_t *config,
+                                    bsp_panel_id_t *out_panel) BSP_NONNULL(3);
 
 // MARK: Touch
 int bsp_touch_read(bsp_touch_point_t *points, uint8_t max_points);

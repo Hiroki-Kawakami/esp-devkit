@@ -7,7 +7,7 @@
  * the parallel bus, so there is no init sequence and no chip-specific driver.
  * The panel is fully described by its geometry, timings, and pin map; this
  * driver takes those as config and returns a bsp_display provider (type
- * BSP_DISPLAY_TYPE_RGB) that the board registers with bsp_display_set_active().
+ * BSP_DISPLAY_TYPE_RGB) that the board registers with bsp_display_attach().
  *
  * Backlight is a PWM via LEDC on backlight_gpio (0..100% via set_brightness);
  * NC skips backlight control. RESET / DISP_EN are handled by the board (through

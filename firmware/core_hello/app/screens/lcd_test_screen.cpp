@@ -68,6 +68,6 @@ void LcdTestScreen::adjust(int delta) {
 }
 
 void LcdTestScreen::apply() {
-    bsp_display_set_brightness(brightness_);
+    bsp_display_set_brightness(BSP_PANEL_MAIN, brightness_);
     lv_label_set_text_fmt(brightness_label_, "Brightness: %d%%   (BtnA -  BtnB +)", brightness_);
 }

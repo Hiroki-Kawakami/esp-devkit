@@ -232,7 +232,8 @@ esp_err_t lilygo_t5_panel_init(const bsp_config_t *config,
     bsp_display_t *display = NULL;
     esp_err_t err = ed047tc1_epd_create(&panel, &display);
     if (err != ESP_OK) return err;
-    bsp_display_set_active(display);
+    display->portrait = BSP_ROTATION_90;
+    bsp_display_attach(display, NULL);
 
     if (i2c_bus) {
         err = touch_init(i2c_bus);
@@ -241,8 +242,4 @@ esp_err_t lilygo_t5_panel_init(const bsp_config_t *config,
         }
     }
     return ESP_OK;
-}
-
-bsp_rotation_t bsp_display_portrait(void) {
-    return BSP_ROTATION_90;
 }

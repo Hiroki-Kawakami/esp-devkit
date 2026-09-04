@@ -199,13 +199,13 @@ static void cmd_refresh(char **cur) {
     else { reply("#ERR refresh: usage: refresh <fast|quality|text> [all]"); return; }
     if (all_s && !strcmp(all_s, "all")) mode = (bsp_epd_mode_t)(mode | BSP_EPD_MODE_ALL);
 
-    bsp_rect_t full = { { 0, 0 }, bsp_display_get_size() };
-    bsp_display_refresh(full, mode);
+    bsp_rect_t full = { { 0, 0 }, bsp_display_get_size(BSP_PANEL_MAIN) };
+    bsp_display_refresh(BSP_PANEL_MAIN, full, mode);
     reply("#OK refresh");
 }
 
 static void cmd_clear() {
-    bsp_display_clear();
+    bsp_display_clear(BSP_PANEL_MAIN);
     reply("#OK clear");
 }
 
@@ -256,7 +256,7 @@ static bool img_append_b64(const char *s) {
 /* decode -> Gray8 contain-fit -> 16-level dither -> centered on a white
  * panel-sized canvas, handed to ImageScreen on the LVGL context. */
 static void img_show() {
-    const bsp_size_t panel = bsp_display_get_size();
+    const bsp_size_t panel = bsp_display_get_size(BSP_PANEL_MAIN);
 
     imgf_format_t fmt = imgf_sniff(s_img, s_img_len < 8 ? s_img_len : 8);
     imgf_decoder_t *dec = imgf_make_decoder(fmt);
@@ -365,7 +365,7 @@ static void handle_line(char *line) {
     if (!strcmp(cmd, "ping")) {
         reply("#OK ping");
     } else if (!strcmp(cmd, "info")) {
-        bsp_size_t size = bsp_display_get_size();
+        bsp_size_t size = bsp_display_get_size(BSP_PANEL_MAIN);
 #if CONFIG_BSP_EPD_LL_TWEAK
         reply("#OK info %d %d 1 %d", size.width, size.height, EPD_WF_STEP_MAX);
 #else

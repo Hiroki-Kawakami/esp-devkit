@@ -21,6 +21,9 @@ enum class DisplayPresentMode : uint8_t {
 };
 
 struct DisplayViewportConfig {
+    /* Physical panel this display renders to (bsp_display_*). */
+    bsp_panel_id_t panel = BSP_PANEL_MAIN;
+
     /* Empty size uses the whole BSP panel. Coordinates are panel-native. */
     bsp_rect_t output_area = {};
 
@@ -75,7 +78,7 @@ public:
 
     /* framebuffer_index is ignored when the BSP has no framebuffers. */
     esp_err_t compose(lv_display_t *display, int framebuffer_index);
-    esp_err_t present(int framebuffer_index);
+    esp_err_t present(bsp_panel_id_t panel, int framebuffer_index);
 
 private:
     static constexpr uint8_t kMaxDisplays = 4;

@@ -58,8 +58,8 @@ static void dirty_extend(int x1, int y1, int x2, int y2) {
 static void dirty_refresh(bsp_epd_mode_t mode) {
     bsp_rect_t rect = s_dirty_valid
         ? (bsp_rect_t){ { s_dx1, s_dy1 }, { s_dx2 - s_dx1 + 1, s_dy2 - s_dy1 + 1 } }
-        : (bsp_rect_t){ { 0, 0 }, bsp_display_get_size() };
-    bsp_display_refresh(rect, mode);
+        : (bsp_rect_t){ { 0, 0 }, bsp_display_get_size(BSP_PANEL_MAIN) };
+    bsp_display_refresh(BSP_PANEL_MAIN, rect, mode);
     s_dirty_valid = false;
 }
 
@@ -81,8 +81,8 @@ static void lvgl_init() {
         assert(0);
     }
 
-    const bsp_size_t         size = bsp_display_get_size();
-    const bsp_pixel_format_t fmt  = bsp_display_get_pixel_format();
+    const bsp_size_t         size = bsp_display_get_size(BSP_PANEL_MAIN);
+    const bsp_pixel_format_t fmt  = bsp_display_get_pixel_format(BSP_PANEL_MAIN);
     const size_t buf_bytes = (size_t)size.width * size.height * bsp_pixel_format_bytes(fmt) / 4;
 
     s_buf = (uint8_t *)heap_caps_aligned_alloc(4, buf_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -93,7 +93,7 @@ static void lvgl_init() {
         lv_area_t rot = *area;
         lv_display_rotate_area(disp, &rot);
         bsp_rect_t rect = { { rot.x1, rot.y1 }, { rot.x2 - rot.x1 + 1, rot.y2 - rot.y1 + 1 } };
-        bsp_display_draw_bitmap(rect, px_map, BSP_ROTATION_0);
+        bsp_display_draw_bitmap(BSP_PANEL_MAIN, rect, px_map, BSP_ROTATION_0);
         dirty_extend(rot.x1, rot.y1, rot.x2, rot.y2);
 
         if (lv_display_flush_is_last(disp)) {
@@ -126,7 +126,7 @@ static void lvgl_init() {
     lv_indev_set_display(indev, s_disp);
     lv_indev_set_group(indev, lv_group_get_default());
 
-    bsp_display_set_epd_mode(BSP_EPD_MODE_NONE);
+    bsp_display_set_epd_mode(BSP_PANEL_MAIN, BSP_EPD_MODE_NONE);
 }
 
 void app_entry() {
