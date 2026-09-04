@@ -24,6 +24,7 @@
 #include "sd_pwr_ctrl_by_on_chip_ldo.h"
 #include "tab5_panel.h"
 #include "tab5_audio.h"
+#include "tab5_module_display.h"
 
 static const char *TAG = "tab5";
 
@@ -52,6 +53,11 @@ static const char *TAG = "tab5";
 #endif
 
 static pi4io_t s_pi4ioe1, s_pi4ioe2;
+static i2c_master_bus_handle_t s_i2c_bus;
+
+i2c_master_bus_handle_t bsp_bus_get_i2c_handle(int i2c_port) {
+    return i2c_port == TAB5_I2C_PORT ? s_i2c_bus : NULL;
+}
 
 static esp_err_t i2c_bus_init(i2c_master_bus_handle_t *out_bus) {
     const i2c_master_bus_config_t cfg = {
@@ -182,6 +188,7 @@ esp_err_t bsp_init(const bsp_config_t *config) {
     i2c_master_bus_handle_t i2c_bus = NULL;
     esp_err_t err = i2c_bus_init(&i2c_bus);
     if (err != ESP_OK) return err;
+    s_i2c_bus = i2c_bus;
 
     err = io_expanders_init(i2c_bus);
     if (err != ESP_OK) {
@@ -202,6 +209,13 @@ esp_err_t bsp_init(const bsp_config_t *config) {
         ESP_LOGW(TAG, "audio unavailable: %s", esp_err_to_name(err));
     }
     return ESP_OK;
+}
+
+esp_err_t bsp_module_attach_display(bsp_module_port_t port,
+                                    const bsp_display_module_config_t *config,
+                                    bsp_panel_id_t *out_panel) {
+    if (port != BSP_MODULE_PORT_MBUS) return ESP_ERR_NOT_SUPPORTED;
+    return tab5_module_display_attach(config, out_panel);
 }
 
 esp_err_t bsp_power_hw_reset(void) {

@@ -39,6 +39,37 @@ static void lvgl_init() {
 
 }
 
+/* Optional HDMI module on the M-Bus: absent hardware just leaves the internal
+ * panel as the only display. */
+static void hdmi_init() {
+    bsp_panel_id_t panel = BSP_PANEL_MAIN;
+    esp_err_t err = bsp_module_attach_display(BSP_MODULE_PORT_MBUS, nullptr, &panel);
+    if (err != ESP_OK) {
+        ESP_LOGI(TAG, "display module not attached: %s", esp_err_to_name(err));
+        return;
+    }
+
+    lv_async_call([panel] {
+        DisplayManagerConfig display_config = {};
+        display_config.viewport.panel = panel;
+        display_config.buffer.lines = 32;
+        display_config.make_default = false;
+        lv_display_t *disp = nullptr;
+        esp_err_t err = display_manager.create_display(display_config, &disp);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "create_display(hdmi): %s", esp_err_to_name(err));
+            return;
+        }
+
+        lv_obj_t *screen = lv_display_get_screen_active(disp);
+        lv_obj_set_style_bg_color(screen, lv_color_hex(0x102040), LV_PART_MAIN);
+        lv_obj_t *label = lv_label_create(screen);
+        lv_label_set_text(label, "esp-devkit / Tab5 HDMI");
+        lv_obj_set_style_text_color(label, lv_color_white(), LV_PART_MAIN);
+        lv_obj_center(label);
+    });
+}
+
 void app_entry() {
     bsp_config_t bsp_config = {};
     bsp_config.display.pixel_format = BSP_PIXEL_FORMAT_RGB565;
@@ -46,6 +77,7 @@ void app_entry() {
     bsp_config.dispatch.task_affinity = 1;
     bsp_init(&bsp_config);
     lvgl_init();
+    hdmi_init();
 
     lv_async_call([] {
         screen_manager.load(std::make_shared<HomeScreen>());

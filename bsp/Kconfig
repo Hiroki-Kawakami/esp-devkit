@@ -56,6 +56,16 @@ choice BSP_BOARD
         depends on DEVKIT_SIMULATOR || IDF_TARGET_ESP32S31
 endchoice
 
+config BSP_M5_HDMI_FPGA_BITSTREAM
+    bool "Bundle the HDMI module's FPGA bitstream"
+    depends on BSP_BOARD_TAB5 && !DEVKIT_SIMULATOR
+    default y
+    help
+        Link the video module's FPGA gateware into the firmware (~222 KB) so a
+        module whose FPGA SRAM is empty -- every cold start -- is loaded over
+        JTAG during attach. Turn this off to reclaim the flash, at the cost of
+        only working with a module some other host has already loaded.
+
 config BSP_EPD_LL_TWEAK
     bool "epd_ll waveform-tuning backdoor"
     depends on (BSP_BOARD_PAPER_S3 || BSP_BOARD_LILYGO_T5) && !DEVKIT_SIMULATOR

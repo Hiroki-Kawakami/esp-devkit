@@ -8,7 +8,11 @@
  * the entry point and the provider it hands back.
  *
  * These are the weak defaults every board inherits; a board that hosts the
- * module defines the same symbol and overrides them.
+ * module defines the same symbol and overrides them. The override has to live
+ * in a translation unit the link already pulls in for other reasons (the
+ * board's bsp_init file): a strong definition sitting alone in an object no one
+ * references is never extracted from the component's archive, and this weak
+ * default silently wins instead.
  */
 
 #include "bsp.h"

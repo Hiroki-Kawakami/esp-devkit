@@ -8,6 +8,7 @@ set(BOARD_DEVICE_SRCS
     "boards/tab5/tab5.c"
     "boards/tab5/tab5_panel.c"
     "boards/tab5/tab5_audio.c"
+    "boards/tab5/tab5_module_display.c"
     "devices/ili9881c/ili9881c.c"
     "devices/st712x/st7121_lcd.c"
     "devices/st712x/st7123_lcd.c"
@@ -15,12 +16,17 @@ set(BOARD_DEVICE_SRCS
     "devices/gt911/gt911.c"
     "devices/pi4io/pi4io.c"
     "devices/es8388/es8388.c"
+    "devices/lt8618sx/lt8618sx.c"
+    "devices/m5_hdmi_fpga/m5_hdmi_fpga.c"
+    "devices/m5_hdmi_fpga/m5_hdmi_fpga_jtag.c"
     "driver/mipi_dsi/mipi_dsi.c"
     "driver/sd_mmc/sd_mmc.c")
 set(BOARD_DEVICE_PRIV_INCLUDE_DIRS
     "devices" "devices/ili9881c" "devices/st712x" "devices/gt911" "devices/pi4io"
-    "devices/es8388" "driver/mipi_dsi" "driver/sd_mmc")
+    "devices/es8388" "devices/lt8618sx" "devices/m5_hdmi_fpga"
+    "driver/mipi_dsi" "driver/sd_mmc")
 set(BOARD_DEVICE_PRIV_REQUIRES
-    driver esp_driver_ledc esp_driver_i2s esp_lcd vfs fatfs sdmmc esp_driver_sdmmc)
+    driver esp_driver_ledc esp_driver_i2s esp_driver_spi esp_timer esp_lcd vfs fatfs
+    sdmmc esp_driver_sdmmc)
 
 set(BOARD_SIM_SRCS "boards/tab5/tab5_sim.c")
