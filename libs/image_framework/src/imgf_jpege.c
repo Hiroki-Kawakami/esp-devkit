@@ -129,11 +129,19 @@ typedef struct {
     uint32_t bitbuf;
     int      bitcnt;
 
+    bool     input_565;
+
     uint8_t *dst;
     size_t   dst_cap;
     size_t   dst_pos;
     uint8_t  overflow;
+
+    imgf_sink_t sink;        /* .write == NULL -> buffer mode */
+    uint8_t    *staging;     /* sink mode: dst points here */
+    size_t      sink_total;
 } jpege_t;
+
+#define SINK_STAGING_BYTES 512
 
 /* ---- helpers ---------------------------------------------------------- */
 
@@ -165,8 +173,21 @@ static void scale_qtab(const uint8_t *std, uint8_t *out, int quality) {
 
 /* ---- bit writer ------------------------------------------------------- */
 
+/* Sink mode: hand the staged bytes to the sink; a short write is sticky
+ * (overflow), like a full buffer in buffer mode. */
+static void drain_to_sink(jpege_t *j) {
+    if (j->dst_pos == 0 || j->overflow) return;
+    int n = j->sink.write(j->sink.user, j->dst, j->dst_pos);
+    if (n < 0 || (size_t)n != j->dst_pos) { j->overflow = 1; return; }
+    j->sink_total += j->dst_pos;
+    j->dst_pos = 0;
+}
+
 static void put_byte(jpege_t *j, uint8_t b) {
-    if (j->dst_pos >= j->dst_cap) { j->overflow = 1; return; }
+    if (j->dst_pos >= j->dst_cap) {
+        if (j->sink.write) drain_to_sink(j);
+        if (j->dst_pos >= j->dst_cap) { j->overflow = 1; return; }
+    }
     j->dst[j->dst_pos++] = b;
 }
 
@@ -434,9 +455,18 @@ static void absorb_row(jpege_t *j, const uint8_t *src) {
         for (int x = w; x < j->width_pad; x++) dst[x] = dst[w - 1];
     } else {
         for (int x = 0; x < w; x++) {
-            int r = src[3 * x + 0];
-            int g = src[3 * x + 1];
-            int b = src[3 * x + 2];
+            int r, g, b;
+            if (j->input_565) {
+                uint16_t v;
+                memcpy(&v, src + 2 * x, 2);
+                r = (v >> 11) & 0x1F; r = (r << 3) | (r >> 2);
+                g = (v >>  5) & 0x3F; g = (g << 2) | (g >> 4);
+                b =  v        & 0x1F; b = (b << 3) | (b >> 2);
+            } else {
+                r = src[3 * x + 0];
+                g = src[3 * x + 1];
+                b = src[3 * x + 2];
+            }
             int yv  = ( 77 * r + 150 * g +  29 * b + 128) >> 8;
             int cbv = (-43 * r -  85 * g + 128 * b + 32896) >> 8;
             int crv = (128 * r - 107 * g -  21 * b + 32896) >> 8;
@@ -468,12 +498,10 @@ static void pad_last_rows(jpege_t *j) {
 
 /* ---- vtable ----------------------------------------------------------- */
 
-static imgf_err_t jpege_bind(imgf_encoder_t *base, uint8_t *dst, size_t cap) {
-    jpege_t *j = (jpege_t *)base;
-    j->dst = dst;
-    j->dst_cap = cap;
+static imgf_err_t jpege_reset(jpege_t *j) {
     j->dst_pos = 0;
     j->overflow = 0;
+    j->sink_total = 0;
     j->total_rows = 0;
     j->rows_in_buf = 0;
     j->mcu_rows_done = 0;
@@ -481,6 +509,27 @@ static imgf_err_t jpege_bind(imgf_encoder_t *base, uint8_t *dst, size_t cap) {
     j->bitcnt = 0;
     for (int i = 0; i < 3; i++) j->dc_pred[i] = 0;
     return write_headers(j);
+}
+
+static imgf_err_t jpege_bind(imgf_encoder_t *base, uint8_t *dst, size_t cap) {
+    jpege_t *j = (jpege_t *)base;
+    j->sink.write = NULL;
+    j->dst = dst;
+    j->dst_cap = cap;
+    return jpege_reset(j);
+}
+
+static imgf_err_t jpege_bind_sink(imgf_encoder_t *base, imgf_sink_t sink) {
+    jpege_t *j = (jpege_t *)base;
+    if (!j->staging) {
+        j->staging = (uint8_t *)imgf_alloc_internal(SINK_STAGING_BYTES);
+        if (!j->staging) return IMGF_ERR_OOM;
+    }
+    j->sink = sink;
+    j->dst = j->staging;
+    j->dst_cap = SINK_STAGING_BYTES;
+    imgf_err_t err = jpege_reset(j);
+    return (err == IMGF_OK && j->overflow) ? IMGF_ERR_IO : err;
 }
 
 static int jpege_push(imgf_encoder_t *base, const uint8_t *row) {
@@ -493,7 +542,7 @@ static int jpege_push(imgf_encoder_t *base, const uint8_t *row) {
         j->rows_in_buf = 0;
         j->mcu_rows_done++;
     }
-    if (j->overflow) { base->last_error = IMGF_ERR_OOM; return -1; }
+    if (j->overflow) { base->last_error = j->sink.write ? IMGF_ERR_IO : IMGF_ERR_OOM; return -1; }
     return 1;
 }
 
@@ -508,6 +557,11 @@ static imgf_err_t jpege_finish(imgf_encoder_t *base, size_t *bytes_written) {
     }
     flush_bits(j);
     put_marker(j, 0xD9);
+    if (j->sink.write) {
+        drain_to_sink(j);
+        if (bytes_written) *bytes_written = j->sink_total;
+        return j->overflow ? IMGF_ERR_IO : IMGF_OK;
+    }
     if (bytes_written) *bytes_written = j->dst_pos;
     return j->overflow ? IMGF_ERR_OOM : IMGF_OK;
 }
@@ -515,11 +569,16 @@ static imgf_err_t jpege_finish(imgf_encoder_t *base, size_t *bytes_written) {
 static void jpege_destroy(imgf_encoder_t *base) {
     jpege_t *j = (jpege_t *)base;
     if (j->block_buf) imgf_free(j->block_buf);
+    if (j->staging) imgf_free(j->staging);
     free(j);
 }
 
 static const imgf_encoder_vtable_t k_jpege_vt = {
-    jpege_bind, jpege_push, jpege_finish, jpege_destroy,
+    .bind      = jpege_bind,
+    .bind_sink = jpege_bind_sink,
+    .push_row  = jpege_push,
+    .finish    = jpege_finish,
+    .destroy   = jpege_destroy,
 };
 
 /* ---- public ----------------------------------------------------------- */
@@ -550,7 +609,8 @@ imgf_encoder_t *imgf_jpege_create(uint16_t width, uint16_t height,
         if (out_err) *out_err = IMGF_ERR_INVALID_ARG;
         return NULL;
     }
-    if (input_pf != IMGF_PIX_GRAY8 && input_pf != IMGF_PIX_RGB888) {
+    if (input_pf != IMGF_PIX_GRAY8 && input_pf != IMGF_PIX_RGB888 &&
+        input_pf != IMGF_PIX_RGB565) {
         if (out_err) *out_err = IMGF_ERR_UNSUPPORTED;
         return NULL;
     }
@@ -565,6 +625,7 @@ imgf_encoder_t *imgf_jpege_create(uint16_t width, uint16_t height,
     j->width    = width;
     j->height   = height;
     j->n_comp   = (input_pf == IMGF_PIX_GRAY8) ? 1 : 3;
+    j->input_565 = (input_pf == IMGF_PIX_RGB565);
     resolve_subsample(j->n_comp, opts->subsample, &j->sub_h, &j->sub_v);
     j->mcu_w = 8 * j->sub_h;
     j->mcu_h = 8 * j->sub_v;

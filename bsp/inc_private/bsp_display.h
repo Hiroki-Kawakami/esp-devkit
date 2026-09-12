@@ -25,6 +25,12 @@
  * the area is driven, diff or not (ghost clear). clear blanks the whole panel to
  * white with the panel's clear waveform — the known-baseline reset. wait_idle
  * blocks until every in-flight panel update completes — the power-off gate.
+ *
+ * read_bitmap is the optional inverse of draw_bitmap (NULL when the panel has no
+ * way to read its own contents): copy the panel-coordinate rect `area` into
+ * `pixels`, tightly packed rows in the panel's pixel format, rotation 0. Drivers
+ * that own the shown image (host framebuffers, EPD GRAM) copy from it; SPI glass
+ * reads its controller VRAM back over the bus. Serves bsp_harness_display_read.
  */
 
 #pragma once
@@ -59,7 +65,14 @@ struct bsp_display {
     esp_err_t (*refresh)(bsp_display_t *self, bsp_rect_t area, bsp_epd_mode_t mode);
     esp_err_t (*clear)(bsp_display_t *self);
     esp_err_t (*wait_idle)(bsp_display_t *self);
+
+    /* readback — NULL when the panel contents cannot be read */
+    esp_err_t (*read_bitmap)(bsp_display_t *self, bsp_rect_t area, void *pixels);
 };
+
+/* The active display provider (NULL before bsp_display_set_active). For the
+ * bsp-internal harness hooks that need the vtable rather than the public API. */
+bsp_display_t *bsp_display_get_active(void);
 
 /* Register the active display with the common layer (src/bsp_display.c), which
  * implements the model-agnostic public bsp_display_* API on top of it. A board's

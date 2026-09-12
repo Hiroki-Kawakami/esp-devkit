@@ -14,6 +14,7 @@
 #include "bsp_rtc.h"
 #include "bsp_power.h"
 #include "sdl_panel.h"
+#include "sim_button.h"
 #include "rtc_sim.h"
 #include "power_sim.h"
 #include <stdio.h>
@@ -36,6 +37,9 @@ esp_err_t bsp_init(const bsp_config_t *config) {
 
     bsp_display_set_active(display);
     bsp_touch_set_active(touch);
+
+    bsp_button_raw_t *buttons = NULL;
+    if (sim_button_create(3, &buttons) == ESP_OK) bsp_button_add_raw(buttons);
 
     bsp_rtc_t *rtc = NULL;
     if (rtc_sim_create(&rtc) == ESP_OK) bsp_rtc_set_active(rtc);

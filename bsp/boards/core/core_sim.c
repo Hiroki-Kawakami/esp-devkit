@@ -12,6 +12,7 @@
 #include "bsp_dispatch.h"
 #include "sdl_audio.h"
 #include "sdl_panel.h"
+#include "sim_button.h"
 #include <stdio.h>
 
 esp_err_t bsp_init(const bsp_config_t *config) {
@@ -29,6 +30,9 @@ esp_err_t bsp_init(const bsp_config_t *config) {
     esp_err_t err = sdl_panel_create(&sdl_config, &display, NULL);
     if (err != ESP_OK) return err;
     bsp_display_set_active(display);
+
+    bsp_button_raw_t *buttons = NULL;
+    if (sim_button_create(3, &buttons) == ESP_OK) bsp_button_add_raw(buttons);
 
     bsp_audio_t *audio = NULL;
     esp_err_t audio_err = sdl_audio_create(NULL, &audio);

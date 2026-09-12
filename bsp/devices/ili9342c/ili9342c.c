@@ -28,12 +28,17 @@ static const char *TAG = "ili9342c";
 #define CMD_CASET    0x2A
 #define CMD_RASET    0x2B
 #define CMD_RAMWR    0x2C
+#define CMD_RAMRD    0x2E
 #define CMD_COLMOD   0x3A
 #define CMD_MADCTL   0x36
 
 typedef struct {
     bsp_display_t base;
     spi_device_handle_t spi;
+    spi_device_handle_t spi_rd;      /* slow-clock readback device; NULL when disabled */
+    uint8_t   *rd_buf;
+    gpio_num_t cs_io;
+    bool       cs_manual;            /* two devices share the CS pin -> driven here */
     gpio_num_t dc_io;
     uint8_t    madctl;
     bool       invert;
@@ -52,10 +57,13 @@ typedef struct {
 } ili9342c_t;
 
 static inline void dc(ili9342c_t *d, int level) { gpio_set_level(d->dc_io, level); }
+static inline void cs(ili9342c_t *d, int level) { if (d->cs_manual) gpio_set_level(d->cs_io, level); }
 
 static void tx(ili9342c_t *d, const uint8_t *data, size_t len) {
     spi_transaction_t t = { .length = len * 8, .tx_buffer = data };
+    cs(d, 0);
     spi_device_polling_transmit(d->spi, &t);
+    cs(d, 1);
 }
 
 static void write_cmd(ili9342c_t *d, uint8_t c) { dc(d, 0); tx(d, &c, 1); }
@@ -66,7 +74,53 @@ static void set_window(ili9342c_t *d, int x0, int y0, int x1, int y1) {
     uint8_t row[4] = { y0 >> 8, y0 & 0xFF, y1 >> 8, y1 & 0xFF };
     write_cmd(d, CMD_CASET); write_data(d, col, 4);
     write_cmd(d, CMD_RASET); write_data(d, row, 4);
-    write_cmd(d, CMD_RAMWR);
+}
+
+/* RAMRD returns one dummy byte, then 18-bit pixels as 3 bytes (R, G, B in the
+ * top 6 bits of each), so the read is windowed to what one DMA chunk holds and
+ * repacked into host-endian RGB565. The command and the data phase must stay
+ * CS-contiguous, which is why readback builds drive CS from software: the SPI
+ * driver would reroute a shared CS pin to whichever device was added last. */
+static esp_err_t read_bitmap(bsp_display_t *self, bsp_rect_t area, void *pixels) {
+    ili9342c_t *d = (ili9342c_t *)self;
+    const int w = area.size.width, h = area.size.height;
+    const int rows_per_read = (ILI9342C_DMA_CHUNK_BYTES - 4) / (w * 3);
+    if (rows_per_read < 1) return ESP_ERR_INVALID_SIZE;
+    uint16_t *out = pixels;
+
+    for (int y = 0; y < h; y += rows_per_read) {
+        const int n = (h - y < rows_per_read) ? h - y : rows_per_read;
+        const size_t bytes = 1 + (size_t)w * n * 3;
+        const size_t rx = (bytes + 3) & ~(size_t)3;
+
+        set_window(d, area.origin.x, area.origin.y + y,
+                   area.origin.x + w - 1, area.origin.y + y + n - 1);
+
+        esp_err_t err = spi_device_acquire_bus(d->spi_rd, portMAX_DELAY);
+        if (err != ESP_OK) return err;
+        uint8_t cmd = CMD_RAMRD;
+        spi_transaction_t tc = { .length = 8, .tx_buffer = &cmd };
+        cs(d, 0);
+        dc(d, 0);
+        err = spi_device_polling_transmit(d->spi_rd, &tc);
+        dc(d, 1);
+        if (err == ESP_OK) {
+            spi_transaction_t tr = {
+                .length = rx * 8, .rxlength = rx * 8, .rx_buffer = d->rd_buf,
+            };
+            err = spi_device_transmit(d->spi_rd, &tr);
+        }
+        cs(d, 1);
+        spi_device_release_bus(d->spi_rd);
+        if (err != ESP_OK) return err;
+
+        const uint8_t *p = d->rd_buf + 1;
+        for (size_t i = 0; i < (size_t)w * n; i++, p += 3) {
+            out[i] = (uint16_t)(((p[0] & 0xF8) << 8) | ((p[1] & 0xFC) << 3) | (p[2] >> 3));
+        }
+        out += (size_t)w * n;
+    }
+    return ESP_OK;
 }
 
 /* Stream `count` RGB565 pixels to GRAM, byte-swapping to the panel's big-endian
@@ -74,6 +128,7 @@ static void set_window(ili9342c_t *d, int x0, int y0, int x1, int y1) {
  * the DMA of the current one. */
 static void stream_pixels(ili9342c_t *d, const uint16_t *px, size_t count) {
     dc(d, 1);
+    cs(d, 0);
     size_t queued = 0, idx = 0;
     int bi = 0;
     while (idx < count) {
@@ -96,6 +151,7 @@ static void stream_pixels(ili9342c_t *d, const uint16_t *px, size_t count) {
         spi_device_get_trans_result(d->spi, &r, portMAX_DELAY);
         queued--;
     }
+    cs(d, 1);
 }
 
 static esp_err_t draw_bitmap(bsp_display_t *self, bsp_rect_t area, const void *pixels,
@@ -120,6 +176,7 @@ static esp_err_t draw_bitmap(bsp_display_t *self, bsp_rect_t area, const void *p
 
     set_window(d, area.origin.x, area.origin.y,
                area.origin.x + w - 1, area.origin.y + h - 1);
+    write_cmd(d, CMD_RAMWR);
     stream_pixels(d, src, (size_t)w * h);
     return ESP_OK;
 }
@@ -133,6 +190,8 @@ static esp_err_t set_brightness(bsp_display_t *self, int brightness) {
 static esp_err_t deinit(bsp_display_t *self) {
     ili9342c_t *d = (ili9342c_t *)self;
     if (d->spi) spi_bus_remove_device(d->spi);
+    if (d->spi_rd) spi_bus_remove_device(d->spi_rd);
+    heap_caps_free(d->rd_buf);
     for (int i = 0; i < NBUF; i++) heap_caps_free(d->dma_buf[i]);
     free(d->rotate_buf);
     free(d);
@@ -219,6 +278,8 @@ esp_err_t ili9342c_create(const ili9342c_config_t *cfg, bsp_display_t **out_disp
 
     ili9342c_t *d = calloc(1, sizeof(*d));
     if (!d) return ESP_ERR_NO_MEM;
+    d->cs_io           = cfg->cs_io;
+    d->cs_manual       = cfg->read_clock_hz > 0;
     d->dc_io           = cfg->dc_io;
     d->madctl          = cfg->madctl;
     d->invert          = cfg->invert;
@@ -231,10 +292,11 @@ esp_err_t ili9342c_create(const ili9342c_config_t *cfg, bsp_display_t **out_disp
     d->panel_power_ctx = cfg->panel_power_ctx;
 
     const gpio_config_t out = {
-        .pin_bit_mask = 1ULL << cfg->dc_io,
+        .pin_bit_mask = (1ULL << cfg->dc_io) | (d->cs_manual ? 1ULL << cfg->cs_io : 0),
         .mode         = GPIO_MODE_OUTPUT,
     };
     gpio_config(&out);
+    cs(d, 1);
 
     for (int i = 0; i < NBUF; i++) {
         d->dma_buf[i] = heap_caps_malloc(ILI9342C_DMA_CHUNK_BYTES, MALLOC_CAP_DMA);
@@ -246,7 +308,7 @@ esp_err_t ili9342c_create(const ili9342c_config_t *cfg, bsp_display_t **out_disp
     const spi_device_interface_config_t dev_cfg = {
         .clock_speed_hz = cfg->clock_hz ? cfg->clock_hz : ILI9342C_SPI_DEFAULT_HZ,
         .mode           = 0,
-        .spics_io_num   = cfg->cs_io,
+        .spics_io_num   = d->cs_manual ? GPIO_NUM_NC : cfg->cs_io,
         .queue_size     = NBUF,
         .flags          = SPI_DEVICE_HALFDUPLEX,
     };
@@ -258,6 +320,24 @@ esp_err_t ili9342c_create(const ili9342c_config_t *cfg, bsp_display_t **out_disp
         return err;
     }
 
+    if (cfg->read_clock_hz > 0) {
+        const spi_device_interface_config_t rd_cfg = {
+            .clock_speed_hz = cfg->read_clock_hz,
+            .mode           = 0,
+            .spics_io_num   = GPIO_NUM_NC,
+            .queue_size     = 1,
+            .flags          = SPI_DEVICE_HALFDUPLEX,
+        };
+        d->rd_buf = heap_caps_malloc(ILI9342C_DMA_CHUNK_BYTES, MALLOC_CAP_DMA);
+        err = d->rd_buf ? spi_bus_add_device(cfg->spi_host, &rd_cfg, &d->spi_rd) : ESP_ERR_NO_MEM;
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "readback device: %s", esp_err_to_name(err));
+            d->spi_rd = NULL;
+            deinit(&d->base);
+            return err;
+        }
+    }
+
     panel_init(d);
 
     d->base.type   = BSP_DISPLAY_TYPE_SPI;
@@ -267,6 +347,7 @@ esp_err_t ili9342c_create(const ili9342c_config_t *cfg, bsp_display_t **out_disp
     d->base.deinit      = deinit;
     d->base.set_power   = set_power;
     if (d->set_backlight) d->base.set_brightness = set_brightness;
+    if (d->spi_rd)        d->base.read_bitmap    = read_bitmap;
 
     ESP_LOGI(TAG, "ILI9342C %ux%u ready", cfg->width, cfg->height);
     *out_display = &d->base;

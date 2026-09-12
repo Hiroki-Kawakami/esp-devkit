@@ -13,6 +13,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <stdlib.h>
+#include <string.h>
 
 static const char *TAG = "mipi_dsi";
 
@@ -23,6 +24,7 @@ typedef struct {
     esp_lcd_panel_io_handle_t  io;
     esp_lcd_panel_handle_t     panel;
     uint8_t                    fb_num;
+    uint8_t                    shown;   /* framebuffer index of the last flush */
     void                      *frame_buffers[MIPI_DSI_MAX_FRAME_BUFFERS];
     bool                       asleep;
 } mipi_dsi_lcd_t;
@@ -62,12 +64,28 @@ static esp_err_t flush(bsp_display_t *self, int fb_index) {
     mipi_dsi_lcd_t *lcd = (mipi_dsi_lcd_t *)self;
     if (fb_index < 0 || fb_index >= lcd->fb_num) return ESP_ERR_INVALID_ARG;
     if (!lcd->frame_buffers[fb_index]) return ESP_ERR_INVALID_STATE;
+    lcd->shown = (uint8_t)fb_index;
     return esp_lcd_panel_draw_bitmap(lcd->panel, 0, 0,
         self->size.width, self->size.height, lcd->frame_buffers[fb_index]);
 }
 
 static void **get_framebuffers(bsp_display_t *self) {
     return ((mipi_dsi_lcd_t *)self)->frame_buffers;
+}
+
+static esp_err_t read_bitmap(bsp_display_t *self, bsp_rect_t area, void *pixels) {
+    mipi_dsi_lcd_t *lcd = (mipi_dsi_lcd_t *)self;
+    const uint8_t *fb = lcd->frame_buffers[lcd->shown];
+    if (!fb) return ESP_ERR_INVALID_STATE;
+    const size_t px = bsp_pixel_format_bytes(self->format);
+    const size_t row_bytes = (size_t)area.size.width * px;
+    uint8_t *dst = pixels;
+    for (int r = 0; r < area.size.height; r++) {
+        memcpy(dst + (size_t)r * row_bytes,
+               fb + ((size_t)(area.origin.y + r) * self->size.width + area.origin.x) * px,
+               row_bytes);
+    }
+    return ESP_OK;
 }
 
 static esp_err_t set_brightness(bsp_display_t *self, int brightness) {
@@ -157,6 +175,7 @@ esp_err_t mipi_dsi_lcd_create(const mipi_dsi_config_t *config, bsp_display_t **o
         .set_power        = set_power,
         .get_framebuffers = get_framebuffers,
         .flush            = flush,
+        .read_bitmap      = read_bitmap,
     };
     lcd->fb_num = config->fb_num ? config->fb_num : 1;
 

@@ -17,6 +17,8 @@
 #include "bsp_touch.h"
 #include "bsp_button.h"
 #include "bsp_dispatch.h"
+#include "bsp_harness.h"
+#include "sdkconfig.h"
 
 #include <string.h>
 
@@ -254,3 +256,9 @@ void bsp_touch_set_active(bsp_touch_t *touch) {
 
     bsp_dispatch_add_source(&s_touch_source);
 }
+
+#if CONFIG_BSP_HARNESS
+bool bsp_harness_touch_present(void) {
+    return s_touch != NULL;
+}
+#endif

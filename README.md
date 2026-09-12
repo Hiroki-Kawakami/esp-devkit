@@ -45,3 +45,9 @@ cmake --build build --target save-defconfig
 The generated `sdkconfig.h` is on the simulator include path, and the generated
 `CONFIG_*` variables are available while evaluating component CMakeLists.txt
 files.
+
+## Documentation
+
+- [Test harness](docs/harness.md) — scripted UI verification: synthetic touch
+  and button input plus a JPEG capture of the panel, driven by the same script
+  on the simulator or a board.

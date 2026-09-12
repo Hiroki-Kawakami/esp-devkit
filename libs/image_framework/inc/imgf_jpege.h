@@ -38,8 +38,8 @@ typedef struct {
  * before create (header + ~2 bytes/pixel for very low quality + slack). */
 size_t imgf_jpege_buffer_upper_bound(uint16_t w, uint16_t h, imgf_pixfmt_t input_pf);
 
-/* input_pf must be IMGF_PIX_GRAY8 or IMGF_PIX_RGB888 (RGB565 unsupported;
- * convert with the resizer first). */
+/* input_pf: IMGF_PIX_GRAY8, IMGF_PIX_RGB888 or IMGF_PIX_RGB565 (host-endian
+ * uint16 rows, expanded to 8-bit channels while absorbing each row). */
 imgf_encoder_t *imgf_jpege_create(uint16_t width, uint16_t height,
                                   imgf_pixfmt_t input_pf,
                                   const imgf_jpege_opts_t *opts,

@@ -20,10 +20,9 @@
  */
 
 #include "sdl_panel.h"
-#include "sim_harness.h"
+#include "bsp_harness.h"
 
 #include <SDL2/SDL.h>
-#include <jpeglib.h>
 
 #include <errno.h>
 #include <stdbool.h>
@@ -67,10 +66,10 @@ static const uint8_t *s_present_src;
 
 static bsp_epd_mode_t s_epd_mode = BSP_EPD_MODE_NONE;
 
-/* Headless verification support (driven by the sim harness later). With
- * SIMULATOR_HEADLESS set we skip the SDL window/renderer/texture entirely — no
- * host display, so it runs in non-interactive shells / CI. Buffers are still
- * maintained so a snapshot reflects a finished frame. */
+/* Headless verification support. With SIMULATOR_HEADLESS set we skip the SDL
+ * window/renderer/texture entirely — no host display, so it runs in
+ * non-interactive shells / CI. Buffers are still maintained so a readback
+ * reflects a finished frame. */
 static bool s_headless;
 
 /* Set by any mutator (any thread); the actual SDL render is deferred to
@@ -80,9 +79,9 @@ static bool s_dirty;
 static bsp_display_t s_display;
 static bsp_touch_t   s_touch;
 
-/* Touch snapshot in PANEL coordinates. Setters (pump_input's mouse read, the
- * harness's inject_*) mutate s_touch_pts under s_touch_mtx and fire
- * bsp_touch_notify() -- the sim's stand-in for the device INT edge. */
+/* Touch snapshot in PANEL coordinates. pump_input's mouse read mutates
+ * s_touch_pts under s_touch_mtx and fires bsp_touch_notify() -- the sim's
+ * stand-in for the device INT edge. */
 #define SDL_PANEL_MAX_TOUCH 10
 static SDL_mutex *s_touch_mtx;
 static struct {
@@ -378,109 +377,25 @@ static esp_err_t touch_deinit(bsp_touch_t *self) {
     return ESP_OK;
 }
 
-/* MARK: sim harness capture callback */
+/* MARK: readback + screenshot */
 
-/* Encode the current on-glass image to a JPEG at path (registered with the sim
- * harness in sdl_panel_create). The panel format is already ours, so the encoder
- * lives here rather than in the harness — that keeps the harness BSP-agnostic.
- * The snapshot is a plain memory read, so this is safe to call from the harness's
- * interpreter thread concurrently with the main-thread present. */
-static void make_parent_dirs(const char *path) {
-    char buf[1024];
-    size_t n = strlen(path);
-    if (n == 0 || n >= sizeof(buf)) return;
-    memcpy(buf, path, n + 1);
-    for (char *p = buf + 1; *p; p++) {
-        if (*p == '/') {
-            *p = '\0';
-            mkdir(buf, 0755);
-            *p = '/';
-        }
+/* Rows of the presented image (framebuffer for MIPI/RGB, glass for SPI/EPD) in
+ * the panel's own format -- the same bytes present() uploads. */
+static esp_err_t display_read_bitmap(bsp_display_t *self, bsp_rect_t area, void *pixels) {
+    (void)self;
+    if (!s_present_src) return ESP_ERR_INVALID_STATE;
+    const size_t row_bytes = (size_t)area.size.width * s_bpp;
+    uint8_t *dst = pixels;
+    for (int r = 0; r < area.size.height; r++) {
+        memcpy(dst + (size_t)r * row_bytes,
+               s_present_src + ((size_t)(area.origin.y + r) * s_panel_w + area.origin.x) * s_bpp,
+               row_bytes);
     }
+    return ESP_OK;
 }
 
-/* Convert one panel pixel (by linear index) from the on-glass format to RGB24. */
-static void capture_pixel_rgb(size_t s_idx, uint8_t *dst) {
-    switch (s_format) {
-    case BSP_PIXEL_FORMAT_RGB888: {   /* framebuffer holds B,G,R (LVGL native) */
-        const uint8_t *p = s_present_src + s_idx * 3;
-        dst[0] = p[2]; dst[1] = p[1]; dst[2] = p[0];
-        break;
-    }
-    case BSP_PIXEL_FORMAT_L8: {
-        uint8_t g = s_present_src[s_idx];
-        dst[0] = dst[1] = dst[2] = g;
-        break;
-    }
-    case BSP_PIXEL_FORMAT_RGB565:
-    default: {
-        uint16_t v = ((const uint16_t *)s_present_src)[s_idx];
-        uint8_t r5 = (v >> 11) & 0x1F, g6 = (v >> 5) & 0x3F, b5 = v & 0x1F;
-        dst[0] = (uint8_t)((r5 << 3) | (r5 >> 2));
-        dst[1] = (uint8_t)((g6 << 2) | (g6 >> 4));
-        dst[2] = (uint8_t)((b5 << 3) | (b5 >> 2));
-        break;
-    }
-    }
-}
-
-static bool sdl_panel_capture(const char *path) {
-    if (!s_present_src) return false;
-
-    make_parent_dirs(path);
-    FILE *f = fopen(path, "wb");
-    if (!f) {
-        fprintf(stderr, "[sim] capture: cannot open %s\n", path);
-        return false;
-    }
-
-    /* Apply the host-view rotation so the saved image is in the orientation the
-     * window shows (CW by s_window_rotation). Headless never runs the r/l keys, so
-     * this is exactly the build-time SDL_PANEL_DEFAULT_ROTATION — deterministic. */
-    const int  rot    = s_window_rotation;
-    const bool swap   = (rot == 90 || rot == 270);
-    const int  out_w  = swap ? s_panel_h : s_panel_w;
-    const int  out_h  = swap ? s_panel_w : s_panel_h;
-
-    uint8_t *row = malloc((size_t)out_w * 3);
-    if (!row) { fclose(f); return false; }
-
-    struct jpeg_compress_struct cinfo;
-    struct jpeg_error_mgr jerr;
-    cinfo.err = jpeg_std_error(&jerr);
-    jpeg_create_compress(&cinfo);
-    jpeg_stdio_dest(&cinfo, f);
-    cinfo.image_width = (JDIMENSION)out_w;
-    cinfo.image_height = (JDIMENSION)out_h;
-    cinfo.input_components = 3;
-    cinfo.in_color_space = JCS_RGB;
-    jpeg_set_defaults(&cinfo);
-    jpeg_set_quality(&cinfo, 90, TRUE);
-    jpeg_start_compress(&cinfo, TRUE);
-
-    for (int oy = 0; oy < out_h; oy++) {
-        for (int ox = 0; ox < out_w; ox++) {
-            int sx, sy;   /* source (panel-native) coords for output (ox, oy) */
-            switch (rot) {
-                case 90:  sx = oy;                 sy = s_panel_h - 1 - ox; break;
-                case 270: sx = s_panel_w - 1 - oy; sy = ox;                 break;
-                case 180: sx = s_panel_w - 1 - ox; sy = s_panel_h - 1 - oy; break;
-                default:  sx = ox;                 sy = oy;                 break;
-            }
-            capture_pixel_rgb((size_t)sy * s_panel_w + sx, row + (size_t)ox * 3);
-        }
-        JSAMPROW rp = row;
-        jpeg_write_scanlines(&cinfo, &rp, 1);
-    }
-
-    jpeg_finish_compress(&cinfo);
-    jpeg_destroy_compress(&cinfo);
-    free(row);
-    fclose(f);
-    fprintf(stderr, "[sim] captured %s (%dx%d)\n", path, out_w, out_h);
-    return true;
-}
-
+/* `s` key: timestamped JPEG under screenshots/, written by whoever registered
+ * the bsp_harness screenshot callback (the harness component's capture path). */
 static void capture_screenshot(void) {
     time_t now = time(NULL);
     struct tm local_time;
@@ -510,8 +425,10 @@ static void capture_screenshot(void) {
             return;
         }
 
-        if (!sdl_panel_capture(path)) {
+        if (!bsp_harness_screenshot(path)) {
             fprintf(stderr, "[sim] screenshot: failed (%s)\n", path);
+        } else {
+            fprintf(stderr, "[sim] captured %s\n", path);
         }
         return;
     }
@@ -587,6 +504,7 @@ esp_err_t sdl_panel_create(const sdl_panel_config_t *config,
     s_display.refresh          = NULL;
     s_display.clear            = NULL;
     s_display.wait_idle        = NULL;
+    s_display.read_bitmap      = display_read_bitmap;
 
     switch (config->type) {
     case BSP_DISPLAY_TYPE_RGB:
@@ -643,11 +561,6 @@ esp_err_t sdl_panel_create(const sdl_panel_config_t *config,
     s_touch.height     = (uint16_t)s_panel_h;
     s_touch.max_points = SDL_PANEL_MAX_TOUCH;
 
-    /* Self-register with the sim harness: it drives these without ever knowing
-     * about sdl_panel (input injection + frame capture are this backend's job). */
-    sim_harness_set_input_callback(sdl_panel_inject_down, sdl_panel_inject_up);
-    sim_harness_set_capture_callback(sdl_panel_capture);
-
     if (!s_headless) fprintf(stderr, "[sim] keys: s capture, r/l rotate view, ESC quit\n");
 
     *out_display = &s_display;
@@ -697,7 +610,7 @@ void sdl_panel_present(void) {
 void sdl_panel_pump_input(void) {
     /* Main thread only. Drain events (so a window close quits) and, when there is
      * a window, sample the mouse into the id-0 snapshot slot the background
-     * touch_read consumes. Headless touch comes from sdl_panel_inject_* instead. */
+     * touch_read consumes. Headless touch comes from bsp_harness_touch_inject. */
     if (s_headless) return;
     pump_events();
     int wx, wy;
@@ -709,20 +622,4 @@ void sdl_panel_pump_input(void) {
     } else {
         touch_set_point(0, false, 0, 0);
     }
-}
-
-void sdl_panel_inject_down(int id, int x, int y) {
-    touch_set_point(id, true, x, y);
-}
-
-void sdl_panel_inject_up(int id) {
-    touch_set_point(id, false, 0, 0);
-}
-
-const void *sdl_panel_snapshot(int *width, int *height, bsp_pixel_format_t *format) {
-    if (!s_present_src) return NULL;   /* not created yet */
-    if (width)  *width  = s_panel_w;
-    if (height) *height = s_panel_h;
-    if (format) *format = s_format;
-    return s_present_src;
 }

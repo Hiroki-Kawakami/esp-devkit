@@ -16,6 +16,11 @@
  * is likewise a board callback (set_backlight), NULL when the board has no
  * control, and the panel-IC rail is set_panel_power (NULL -> OFF collapses to
  * SLEEP).
+ *
+ * Readback (read_bitmap) is opt-in via read_clock_hz: it needs the bus brought
+ * up with MISO wired to the panel's SDO, and runs RAMRD on a second, slow-clock
+ * device handle because the controller's read timing is far below the 40 MHz
+ * write clock and GPIO-matrix inputs are not reliable above ~26 MHz anyway.
  */
 
 #pragma once
@@ -29,6 +34,7 @@ extern "C" {
 #endif
 
 #define ILI9342C_SPI_DEFAULT_HZ   (40 * 1000 * 1000)
+#define ILI9342C_SPI_READ_HZ      (10 * 1000 * 1000)
 #define ILI9342C_DMA_CHUNK_BYTES  4096
 
 typedef void (*ili9342c_reset_cb_t)(void *ctx, bool asserted);
@@ -40,6 +46,7 @@ typedef struct {
     gpio_num_t        cs_io;       /* CS (hardware-driven) */
     gpio_num_t        dc_io;       /* D/C, LOW = command, HIGH = data */
     int               clock_hz;    /* 0 -> ILI9342C_SPI_DEFAULT_HZ */
+    int               read_clock_hz; /* 0 -> no readback; needs MISO on the bus */
 
     uint16_t          width;       /* visible glass width (px), 320 landscape */
     uint16_t          height;      /* visible glass height (px), 240 landscape */

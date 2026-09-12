@@ -14,6 +14,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "imgf_stream.h"
 #include "imgf_types.h"
 
 #ifdef __cplusplus
@@ -26,6 +27,12 @@ typedef struct imgf_encoder imgf_encoder_t;
  * imgf_encoder_buffer_size(e). For container encoders the header is written
  * at bind time; the trailer is written by finish(). */
 imgf_err_t      imgf_encoder_bind_buffer (imgf_encoder_t *e, uint8_t *dst, size_t cap);
+
+/* Alternative to bind_buffer: stream the output through `sink` as it is
+ * produced. Only container encoders support this (raw formats need the
+ * caller's buffer and return IMGF_ERR_UNSUPPORTED); finish() then reports the
+ * total pushed to the sink. A write shortfall surfaces as IMGF_ERR_IO. */
+imgf_err_t      imgf_encoder_bind_sink   (imgf_encoder_t *e, imgf_sink_t sink);
 
 /* Feed one row of source pixels (format determined by the concrete encoder's
  * expected input pixfmt — query via imgf_encoder_input_pixfmt). Returns 1 on
@@ -58,6 +65,14 @@ imgf_err_t      imgf_encoder_encode_buffer(imgf_encoder_t *e,
                                            const uint8_t *src, size_t src_stride,
                                            uint8_t *dst, size_t dst_cap,
                                            size_t *out_bytes);
+
+/* Layer 2, pull variant: rows are read from `src` one at a time (exactly
+ * width * bpp bytes each, no padding) through `row_buf`, which the caller
+ * sizes for one input row. The encoder must already be bound (buffer or
+ * sink); every row is pushed, then finish() runs. A short read is
+ * IMGF_ERR_TRUNCATED, a source error IMGF_ERR_IO. */
+imgf_err_t      imgf_encoder_encode_stream(imgf_encoder_t *e, imgf_stream_t src,
+                                           uint8_t *row_buf, size_t *out_bytes);
 
 #ifdef __cplusplus
 }

@@ -15,6 +15,7 @@ const char *imgf_err_to_str(imgf_err_t err) {
         case IMGF_ERR_INVALID_STATE:  return "InvalidState";
         case IMGF_ERR_INVALID_ARG:    return "InvalidArgument";
         case IMGF_ERR_TOO_LARGE:      return "TooLarge";
+        case IMGF_ERR_IO:             return "IoError";
         default:                      return "Unknown";
     }
 }

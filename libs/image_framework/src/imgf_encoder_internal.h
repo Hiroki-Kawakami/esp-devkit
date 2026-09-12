@@ -18,6 +18,7 @@ extern "C" {
 
 typedef struct imgf_encoder_vtable {
     imgf_err_t (*bind)    (imgf_encoder_t *e, uint8_t *dst, size_t cap);
+    imgf_err_t (*bind_sink)(imgf_encoder_t *e, imgf_sink_t sink);   /* NULL = unsupported */
     int        (*push_row)(imgf_encoder_t *e, const uint8_t *row);
     imgf_err_t (*finish)  (imgf_encoder_t *e, size_t *bytes_written);
     void       (*destroy) (imgf_encoder_t *e);

@@ -20,12 +20,16 @@
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
 #include "driver/ledc.h"
+#include "sdkconfig.h"
 
 static const char *TAG = "core_panel";
 
 #define LCD_SPI_HOST      SPI2_HOST
 #define LCD_PIN_MOSI      GPIO_NUM_23
 #define LCD_PIN_SCLK      GPIO_NUM_18
+#define LCD_PIN_MISO_BASIC GPIO_NUM_19
+#define LCD_PIN_MISO_CORE2 GPIO_NUM_38
+#define SD_PIN_CS          GPIO_NUM_4
 #define LCD_PIN_CS_BASIC  GPIO_NUM_14
 #define LCD_PIN_DC_BASIC  GPIO_NUM_27
 #define LCD_PIN_CS_CORE2  GPIO_NUM_5
@@ -187,9 +191,20 @@ esp_err_t core_panel_init(i2c_master_bus_handle_t i2c_bus, axp192_handle_t axp) 
         }
     }
 
+    /* SDO is only wired into the bus for the harness readback path; a plain
+     * build keeps the LCD write-only. The microSD shares that MISO line and its
+     * CS floats after reset, so it is parked deselected or the card answers
+     * every read with 0xFF over the panel. */
+#if CONFIG_BSP_HARNESS
+    const gpio_num_t miso = axp ? LCD_PIN_MISO_CORE2 : LCD_PIN_MISO_BASIC;
+    gpio_set_direction(SD_PIN_CS, GPIO_MODE_OUTPUT);
+    gpio_set_level(SD_PIN_CS, 1);
+#else
+    const gpio_num_t miso = GPIO_NUM_NC;
+#endif
     const spi_bus_config_t bus_cfg = {
         .mosi_io_num     = LCD_PIN_MOSI,
-        .miso_io_num     = -1,
+        .miso_io_num     = miso,
         .sclk_io_num     = LCD_PIN_SCLK,
         .quadwp_io_num   = -1,
         .quadhd_io_num   = -1,
@@ -205,6 +220,7 @@ esp_err_t core_panel_init(i2c_master_bus_handle_t i2c_bus, axp192_handle_t axp) 
         .cs_io           = axp ? LCD_PIN_CS_CORE2 : LCD_PIN_CS_BASIC,
         .dc_io           = axp ? LCD_PIN_DC_CORE2 : LCD_PIN_DC_BASIC,
         .clock_hz        = ILI9342C_SPI_DEFAULT_HZ,
+        .read_clock_hz   = miso != GPIO_NUM_NC ? ILI9342C_SPI_READ_HZ : 0,
         .width           = LCD_WIDTH,
         .height          = LCD_HEIGHT,
         .madctl          = 0x08,

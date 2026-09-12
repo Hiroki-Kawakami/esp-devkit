@@ -49,6 +49,16 @@ typedef struct {
 imgf_stream_t imgf_stream_from_file(imgf_file_source_t *state,
                                     FILE *fp, long offset, size_t length);
 
+/* Sequential byte sink, the output-side counterpart of imgf_stream_t. write()
+ * returns the number of bytes accepted; anything short of n is a sink error.
+ * Container encoders bound with imgf_encoder_bind_sink() stage a few hundred
+ * bytes at a time and push them here, so neither side ever holds the whole
+ * encoded image. */
+typedef struct imgf_sink {
+    int   (*write)(void *user, const void *data, size_t n);
+    void   *user;
+} imgf_sink_t;
+
 #ifdef __cplusplus
 }
 #endif

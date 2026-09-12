@@ -11,6 +11,10 @@
  * (lvgl_port_cfg_t + lvgl_port_init(), implemented in lvgl.cpp) plus
  * lvgl_sim_loop() — the host present loop. App/board code thus calls
  * lvgl_port_init() identically on both targets.
+ *
+ * With CONFIG_HARNESS the test harness (libs/harness) is wired to this port
+ * from inside lvgl_port_init() -- idle = no running animation, captures
+ * serialized against the LVGL task -- so the app needs no call of its own.
  */
 
 #pragma once
@@ -39,5 +43,6 @@ typedef struct {
 } lvgl_port_cfg_t;
 
 esp_err_t lvgl_port_init(const lvgl_port_cfg_t *cfg);
-void lvgl_sim_loop(std::function<bool(bool is_idle)> tick);
+/* Host present loop; returns once the harness receives `quit` (or stdin EOF). */
+void lvgl_sim_loop();
 #endif

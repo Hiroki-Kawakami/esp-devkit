@@ -11,6 +11,7 @@
 #include "bsp_touch.h"
 #include "bsp_dispatch.h"
 #include "sdl_panel.h"
+#include "sim_button.h"
 #include <stdlib.h>
 
 #define S31_LCD_W 800
@@ -33,5 +34,8 @@ esp_err_t bsp_init(const bsp_config_t *config) {
     if (err != ESP_OK) return err;
     bsp_display_set_active(display);
     bsp_touch_set_active(touch);
+
+    bsp_button_raw_t *buttons = NULL;
+    if (sim_button_create(4, &buttons) == ESP_OK) bsp_button_add_raw(buttons);
     return ESP_OK;
 }

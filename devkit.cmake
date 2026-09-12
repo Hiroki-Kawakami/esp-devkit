@@ -21,18 +21,19 @@ set(DEVKIT_ROOT ${CMAKE_CURRENT_LIST_DIR})
 # Device-side components, in EXTRA_COMPONENT_DIRS order.
 set(DEVKIT_DEVICE_COMPONENTS
     bsp
+    libs/harness
     libs/image_framework
     libs/jpeg_decode_enhanced
     libs/sensors
     libs/wifi)
 
-# Simulator components: idf_compat/sim_harness first (simulator-only shims),
-# then libs, then bsp/ui_framework.
+# Simulator components: idf_compat first (simulator-only shims), then bsp /
+# ui_framework and the libs.
 set(DEVKIT_SIMULATOR_COMPONENTS
     idf_compat
-    sim_harness
     bsp
     ui_framework
+    libs/harness
     libs/image_framework
     libs/jpeg_decode_enhanced
     libs/sensors

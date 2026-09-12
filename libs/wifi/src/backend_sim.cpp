@@ -14,7 +14,7 @@
 #include <vector>
 
 #include "esp_log.h"
-#include "sim_harness.h"
+#include "harness.h"
 #include "wifi_backend.hpp"
 #include "wifi_sim.hpp"
 
@@ -282,7 +282,7 @@ void register_harness_commands() {
         "wifi-drop",
     };
     for (const char* name : names) {
-        sim_harness_register(name, harness_command, nullptr);
+        harness_register(name, harness_command, nullptr);
     }
 }
 

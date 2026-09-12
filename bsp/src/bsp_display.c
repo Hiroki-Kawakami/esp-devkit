@@ -27,6 +27,10 @@ void bsp_display_set_active(bsp_display_t *display) {
         : NULL;
 }
 
+bsp_display_t *bsp_display_get_active(void) {
+    return s_display;
+}
+
 bsp_display_type_t bsp_display_get_type(void) {
     return s_display ? s_display->type : BSP_DISPLAY_TYPE_NONE;
 }
@@ -39,6 +43,9 @@ uint32_t bsp_display_get_caps(void) {
     }
     if (s_display->set_epd_mode && s_display->refresh) {
         caps |= BSP_DISPLAY_CAP_EPD_REFRESH;
+    }
+    if (s_display->read_bitmap) {
+        caps |= BSP_DISPLAY_CAP_READBACK;
     }
     return caps;
 }

@@ -25,6 +25,7 @@ typedef int imgf_err_t;
 #define IMGF_ERR_INVALID_STATE   5
 #define IMGF_ERR_INVALID_ARG     6
 #define IMGF_ERR_TOO_LARGE       7
+#define IMGF_ERR_IO              8
 
 const char *imgf_err_to_str(imgf_err_t err);
 

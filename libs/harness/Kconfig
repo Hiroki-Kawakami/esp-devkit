@@ -1,0 +1,16 @@
+menu "Test harness"
+
+config HARNESS
+    bool "Scripted UI test harness" if !DEVKIT_SIMULATOR
+    default y if DEVKIT_SIMULATOR
+    default n
+    select BSP_HARNESS
+    help
+        Compile the harness.h line protocol and its transport (IDF log console
+        on device, stdin/stdout on the host) so tools/harness/harness.py can
+        drive the UI and read the screen back. Pulls in the bsp_harness.h
+        injection hooks and the libs/image_framework JPEG encoder; leave off in
+        production builds. The simulator always has it -- its wifi backend and
+        present loop use the harness directly.
+
+endmenu

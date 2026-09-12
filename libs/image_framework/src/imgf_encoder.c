@@ -21,6 +21,15 @@ imgf_err_t imgf_encoder_bind_buffer(imgf_encoder_t *e, uint8_t *dst, size_t cap)
     return err;
 }
 
+imgf_err_t imgf_encoder_bind_sink(imgf_encoder_t *e, imgf_sink_t sink) {
+    if (!e || !sink.write) return IMGF_ERR_INVALID_ARG;
+    if (!e->vt->bind_sink) { e->last_error = IMGF_ERR_UNSUPPORTED; return IMGF_ERR_UNSUPPORTED; }
+    imgf_err_t err = e->vt->bind_sink(e, sink);
+    e->last_error = err;
+    if (err == IMGF_OK) e->bound = 1;
+    return err;
+}
+
 int imgf_encoder_push_row(imgf_encoder_t *e, const uint8_t *row) {
     if (!e || !row) return -1;
     if (!e->bound) { e->last_error = IMGF_ERR_INVALID_STATE; return -1; }
@@ -58,6 +67,27 @@ imgf_err_t imgf_encoder_encode_buffer(imgf_encoder_t *e,
     for (uint16_t y = 0; y < e->height; y++) {
         if (imgf_encoder_push_row(e, src + (size_t)y * src_stride) < 0)
             return imgf_encoder_last_error(e);
+    }
+    return imgf_encoder_finish(e, out_bytes);
+}
+
+imgf_err_t imgf_encoder_encode_stream(imgf_encoder_t *e, imgf_stream_t src,
+                                      uint8_t *row_buf, size_t *out_bytes) {
+    if (!e || !src.read || !row_buf) return IMGF_ERR_INVALID_ARG;
+    if (!e->bound) return IMGF_ERR_INVALID_STATE;
+    int bpp = imgf_pixfmt_bpp(e->input_pf);
+    if (bpp == 0) bpp = 1;
+    size_t row_bytes = (size_t)e->width * bpp;
+
+    for (uint16_t y = 0; y < e->height; y++) {
+        size_t got = 0;
+        while (got < row_bytes) {
+            int n = src.read(src.user, row_buf + got, row_bytes - got);
+            if (n < 0) return IMGF_ERR_IO;
+            if (n == 0) return IMGF_ERR_TRUNCATED;
+            got += (size_t)n;
+        }
+        if (imgf_encoder_push_row(e, row_buf) < 0) return imgf_encoder_last_error(e);
     }
     return imgf_encoder_finish(e, out_bytes);
 }

@@ -8,8 +8,8 @@
  * host RTC stands in for the BM8563, and emulated SEN55/SCD40 chips on the
  * idf_compat virtual I2C bus (port 0) stand in for the air sensors —
  * BSP_POWER_SWITCH_SENSOR is a no-op, the rail is always up here. The front
- * buttons are physical-only, so they stay unwired here; the other power
- * controls fall back to the shared defaults. Select with
+ * buttons are harness-only (sim_button); the other power controls fall back
+ * to the shared defaults. Select with
  * CONFIG_BSP_BOARD_AIRQ=y.
  */
 
@@ -20,6 +20,7 @@
 #include "bsp_rtc.h"
 #include "sdl_audio.h"
 #include "sdl_panel.h"
+#include "sim_button.h"
 #include "rtc_sim.h"
 #include "sen55_sim.h"
 #include "scd40_sim.h"
@@ -53,6 +54,9 @@ esp_err_t bsp_init(const bsp_config_t *config) {
     if (err != ESP_OK) return err;
 
     bsp_display_set_active(display);
+
+    bsp_button_raw_t *buttons = NULL;
+    if (sim_button_create(3, &buttons) == ESP_OK) bsp_button_add_raw(buttons);
 
     bsp_audio_t *audio = NULL;
     esp_err_t audio_err = sdl_audio_create(&(sdl_audio_config_t){ .tone_only = true }, &audio);

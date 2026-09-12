@@ -43,7 +43,15 @@ if(ESP_PLATFORM)
         SRCS ${UI_FRAMEWORK_SRCS}
         INCLUDE_DIRS "inc"
         REQUIRES bsp esp_lvgl_port
-        PRIV_REQUIRES esp_driver_ppa)
+        PRIV_REQUIRES esp_driver_ppa harness)
+
+    # Route the app's lvgl_port_init() through lvgl.cpp's __wrap_ version, which
+    # starts the harness after the real init. The simulator needs no equivalent
+    # (its lvgl_port_init is our own shim) -- and must not have one, since the
+    # macOS linker has no --wrap.
+    if(CONFIG_HARNESS)
+        target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=lvgl_port_init")
+    endif()
 else()
     # Fetch original LVGL for the host build. release/v9.5 tracks the same
     # major.minor as the device's managed lvgl (esp_lvgl_port pulls 9.x).

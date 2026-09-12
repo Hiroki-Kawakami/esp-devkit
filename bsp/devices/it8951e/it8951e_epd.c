@@ -104,6 +104,17 @@ static esp_err_t op_wait_idle(bsp_display_t *self) {
     return it8951e_wait_idle(s->epd, REFRESH_TIMEOUT_MS);
 }
 
+/* GRAM keeps gray in the high nibble; widen it to a full L8 value. */
+static esp_err_t op_read_bitmap(bsp_display_t *self, bsp_rect_t area, void *pixels) {
+    it8951e_epd_t *s = (it8951e_epd_t *)self;
+    uint8_t *dst = pixels;
+    for (int r = 0; r < area.size.height; r++) {
+        const uint8_t *src = s->gram + (size_t)(area.origin.y + r) * s->panel_w + area.origin.x;
+        for (int c = 0; c < area.size.width; c++) *dst++ = (uint8_t)(src[c] | (src[c] >> 4));
+    }
+    return ESP_OK;
+}
+
 static esp_err_t op_set_epd_mode(bsp_display_t *self, bsp_epd_mode_t mode) {
     ((it8951e_epd_t *)self)->mode = mode;
     return ESP_OK;
@@ -247,6 +258,7 @@ esp_err_t it8951e_epd_create(const it8951e_epd_config_t *cfg, bsp_display_t **ou
     s->base.clear        = op_clear;
     s->base.wait_idle    = op_wait_idle;
     s->base.set_power    = op_set_power;   /* SLEEP always works; OFF needs a rail cb */
+    s->base.read_bitmap  = op_read_bitmap;
     s->mode              = BSP_EPD_MODE_NONE;
 
     *out_display = &s->base;

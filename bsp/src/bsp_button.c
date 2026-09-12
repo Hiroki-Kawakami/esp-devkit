@@ -26,6 +26,8 @@
 #include "bsp.h"
 #include "bsp_button.h"
 #include "bsp_dispatch.h"
+#include "bsp_harness.h"
+#include "sdkconfig.h"
 
 #include <stdlib.h>
 #include "freertos/FreeRTOS.h"
@@ -55,6 +57,10 @@ typedef struct provider_node {
 } provider_node_t;
 
 static provider_node_t *s_providers;
+
+#if CONFIG_BSP_HARNESS
+static bool s_inject[BSP_BUTTON_MAX];   /* harness-held levels, ORed into raw samples */
+#endif
 
 static inline void fire(bsp_button_cb_t cb, void *arg, uint8_t id) {
     if (cb) cb(id, arg);
@@ -239,6 +245,9 @@ static uint32_t raw_tick(bsp_button_t *self) {
 
     bool pressed[BSP_BUTTON_MAX] = {0};
     if (w->raw->sample(w->raw, pressed, n) != ESP_OK) return POLL_INTERVAL_MS;
+#if CONFIG_BSP_HARNESS
+    for (uint8_t i = 0; i < n; i++) pressed[i] |= s_inject[self->base_id + i];
+#endif
 
     bool all_settled = true;
     for (uint8_t i = 0; i < n; i++) {
@@ -324,3 +333,18 @@ void bsp_button_on_long_press(uint8_t id, uint16_t duration_ms,
     s_cb[id].long_ms  = duration_ms ? duration_ms : DEFAULT_LONG_MS;
     register_changed(id);
 }
+
+#if CONFIG_BSP_HARNESS
+esp_err_t bsp_harness_button_inject(uint8_t id, bool pressed) {
+    if (id >= s_count) return ESP_ERR_INVALID_ARG;
+    provider_node_t *n = node_for_id(id);
+    if (!n) return ESP_ERR_INVALID_STATE;
+    if (n->provider->tick == raw_tick) {
+        s_inject[id] = pressed;
+        bsp_dispatch_notify(&n->source);
+        return ESP_OK;
+    }
+    bsp_button_emit(id, pressed ? BSP_BUTTON_EVENT_DOWN : BSP_BUTTON_EVENT_UP);
+    return ESP_OK;
+}
+#endif

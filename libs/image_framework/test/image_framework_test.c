@@ -1161,10 +1161,132 @@ static void test_jpege_format_metadata(void) {
     CHECK(imgf_encoder_input_pixfmt(eg) == IMGF_PIX_GRAY8);
     imgf_encoder_destroy(eg);
 
-    /* RGB565 is not a valid JPEG input. */
     imgf_encoder_t *e2 = imgf_jpege_create(8, 8, IMGF_PIX_RGB565, NULL, &err);
-    CHECK(e2 == NULL);
-    CHECK(err == IMGF_ERR_UNSUPPORTED);
+    CHECK(err == IMGF_OK);
+    CHECK(imgf_encoder_input_pixfmt(e2) == IMGF_PIX_RGB565);
+    imgf_encoder_destroy(e2);
+}
+
+static void test_jpege_rgb565_red_roundtrip(void) {
+    uint8_t src[16 * 16 * 2];
+    const uint16_t red = (uint16_t)((27 << 11) | (7 << 5) | 3);   /* ~ (220, 30, 30) */
+    for (int i = 0; i < 16 * 16; i++) memcpy(src + 2 * i, &red, 2);
+    uint8_t out[16 * 16 * 3] = {0};
+    CHECK(jpeg_roundtrip(src, 16, 16, IMGF_PIX_RGB565, 90, out));
+    int c = (8 * 16 + 8) * 3;
+    CHECK(near_value(out[c + 0], 220, 25));
+    CHECK(near_value(out[c + 1], 30, 30));
+    CHECK(near_value(out[c + 2], 30, 30));
+}
+
+typedef struct {
+    uint8_t *buf;
+    size_t   cap, len;
+    size_t   max_chunk;
+    int      calls;
+} sink_capture_t;
+
+static int sink_capture_write(void *user, const void *data, size_t n) {
+    sink_capture_t *c = user;
+    if (c->len + n > c->cap) return -1;
+    memcpy(c->buf + c->len, data, n);
+    c->len += n;
+    c->calls++;
+    if (n > c->max_chunk) c->max_chunk = n;
+    return (int)n;
+}
+
+/* Sink mode must produce exactly the buffer-mode bytes, delivered in staged
+ * chunks (never the whole image in one write). */
+static void test_jpege_sink_matches_buffer(void) {
+    enum { W = 48, H = 40 };
+    uint8_t src[W * H * 3];
+    for (int y = 0; y < H; y++)
+        for (int x = 0; x < W; x++) {
+            uint8_t *p = src + (y * W + x) * 3;
+            p[0] = (uint8_t)(x * 5); p[1] = (uint8_t)(y * 6); p[2] = (uint8_t)((x ^ y) * 3);
+        }
+    imgf_err_t err;
+    imgf_encoder_t *e = imgf_jpege_create(W, H, IMGF_PIX_RGB888, NULL, &err);
+    CHECK(err == IMGF_OK);
+    size_t cap = imgf_encoder_buffer_size(e);
+    uint8_t *ref = malloc(cap);
+    size_t ref_len = 0;
+    CHECK(imgf_encoder_encode_buffer(e, src, 0, ref, cap, &ref_len) == IMGF_OK);
+
+    uint8_t *out = malloc(cap);
+    sink_capture_t cap_state = { out, cap, 0, 0, 0 };
+    imgf_sink_t sink = { sink_capture_write, &cap_state };
+    CHECK(imgf_encoder_bind_sink(e, sink) == IMGF_OK);
+    for (int y = 0; y < H; y++) CHECK(imgf_encoder_push_row(e, src + (size_t)y * W * 3) == 1);
+    size_t out_len = 0;
+    CHECK(imgf_encoder_finish(e, &out_len) == IMGF_OK);
+    CHECK(out_len == ref_len);
+    CHECK(cap_state.len == ref_len);
+    CHECK(memcmp(out, ref, ref_len) == 0);
+    CHECK(cap_state.calls > 1);
+    CHECK(cap_state.max_chunk < ref_len);
+    imgf_encoder_destroy(e);
+    free(ref);
+    free(out);
+}
+
+static void test_jpege_sink_short_write_is_io(void) {
+    imgf_err_t err;
+    imgf_encoder_t *e = imgf_jpege_create(64, 64, IMGF_PIX_GRAY8, NULL, &err);
+    CHECK(err == IMGF_OK);
+    uint8_t tiny[64];
+    sink_capture_t cap_state = { tiny, sizeof tiny, 0, 0, 0 };
+    imgf_sink_t sink = { sink_capture_write, &cap_state };
+    CHECK(imgf_encoder_bind_sink(e, sink) == IMGF_OK);
+    uint8_t row[64];
+    memset(row, 77, sizeof row);
+    int rc = 1;
+    for (int y = 0; y < 64 && rc == 1; y++) rc = imgf_encoder_push_row(e, row);
+    imgf_err_t fin = imgf_encoder_finish(e, NULL);
+    CHECK(rc < 0 || fin == IMGF_ERR_IO);
+    if (rc < 0) CHECK(imgf_encoder_last_error(e) == IMGF_ERR_IO);
+    imgf_encoder_destroy(e);
+}
+
+static void test_raw_encoder_rejects_sink(void) {
+    imgf_err_t err;
+    imgf_encoder_t *e = imgf_raw_encoder_create(IMGF_RAW_L8, 4, 2, NULL, &err);
+    CHECK(err == IMGF_OK);
+    sink_capture_t cap_state = { NULL, 0, 0, 0, 0 };
+    imgf_sink_t sink = { sink_capture_write, &cap_state };
+    CHECK(imgf_encoder_bind_sink(e, sink) == IMGF_ERR_UNSUPPORTED);
+    imgf_encoder_destroy(e);
+}
+
+/* encode_stream pulls rows from an imgf_stream_t and must match encode_buffer. */
+static void test_jpege_encode_stream_matches_buffer(void) {
+    enum { W = 24, H = 20 };
+    uint8_t src[W * H];
+    for (int i = 0; i < W * H; i++) src[i] = (uint8_t)(i * 7);
+    imgf_err_t err;
+    imgf_encoder_t *e = imgf_jpege_create(W, H, IMGF_PIX_GRAY8, NULL, &err);
+    CHECK(err == IMGF_OK);
+    size_t cap = imgf_encoder_buffer_size(e);
+    uint8_t *ref = malloc(cap), *out = malloc(cap);
+    size_t ref_len = 0, out_len = 0;
+    CHECK(imgf_encoder_encode_buffer(e, src, 0, ref, cap, &ref_len) == IMGF_OK);
+
+    imgf_buffer_source_t st;
+    imgf_stream_t s = imgf_stream_from_buffer(&st, src, sizeof src);
+    uint8_t row[W];
+    CHECK(imgf_encoder_bind_buffer(e, out, cap) == IMGF_OK);
+    CHECK(imgf_encoder_encode_stream(e, s, row, &out_len) == IMGF_OK);
+    CHECK(out_len == ref_len);
+    CHECK(memcmp(out, ref, ref_len) == 0);
+
+    /* Short source -> truncated. */
+    imgf_stream_t short_s = imgf_stream_from_buffer(&st, src, sizeof src - 1);
+    CHECK(imgf_encoder_bind_buffer(e, out, cap) == IMGF_OK);
+    CHECK(imgf_encoder_encode_stream(e, short_s, row, &out_len) == IMGF_ERR_TRUNCATED);
+    imgf_encoder_destroy(e);
+    free(ref);
+    free(out);
 }
 
 static void test_encoder_finish_before_full_rejected(void) {
@@ -1568,6 +1690,11 @@ int main(void) {
     test_jpege_subsample_roundtrip();
     test_jpege_subsample_padding();
     test_jpege_gray_ignores_subsample();
+    test_jpege_rgb565_red_roundtrip();
+    test_jpege_sink_matches_buffer();
+    test_jpege_sink_short_write_is_io();
+    test_raw_encoder_rejects_sink();
+    test_jpege_encode_stream_matches_buffer();
 
     test_recolor_gray_passthrough_srgb();
     test_recolor_luma_ordering();

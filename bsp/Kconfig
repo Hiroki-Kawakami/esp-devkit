@@ -56,6 +56,14 @@ choice BSP_BOARD
         depends on DEVKIT_SIMULATOR || IDF_TARGET_ESP32S31
 endchoice
 
+config BSP_HARNESS
+    bool
+    help
+        Compile the bsp_harness.h hooks: synthetic touch/button injection,
+        display readback (SPI panels add a MISO read path for it), and the
+        screenshot callback. Not selectable on its own -- libs/harness selects
+        it, since it is the only thing that drives these hooks.
+
 config BSP_EPD_LL_TWEAK
     bool "epd_ll waveform-tuning backdoor"
     depends on (BSP_BOARD_PAPER_S3 || BSP_BOARD_LILYGO_T5) && !DEVKIT_SIMULATOR

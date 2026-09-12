@@ -125,7 +125,10 @@ static void raw_destroy(imgf_encoder_t *base) {
 }
 
 static const imgf_encoder_vtable_t k_raw_vt = {
-    raw_bind, raw_push, raw_finish, raw_destroy,
+    .bind     = raw_bind,
+    .push_row = raw_push,
+    .finish   = raw_finish,
+    .destroy  = raw_destroy,
 };
 
 /* ---- factory ---------------------------------------------------------- */

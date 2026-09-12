@@ -127,6 +127,20 @@ static esp_err_t op_wait_idle(bsp_display_t *self) {
     return gdey0154d67_wait_idle(((gdey0154d67_epd_t *)self)->epd, 0);
 }
 
+static esp_err_t op_read_bitmap(bsp_display_t *self, bsp_rect_t area, void *pixels) {
+    gdey0154d67_epd_t *s = (gdey0154d67_epd_t *)self;
+    uint8_t *dst = pixels;
+    for (int r = 0; r < area.size.height; r++) {
+        const int y = area.origin.y + r;
+        for (int c = 0; c < area.size.width; c++) {
+            const int x = area.origin.x + c;
+            const bool white = s->fb[(size_t)y * STRIDE + (x >> 3)] & (0x80 >> (x & 7));
+            *dst++ = white ? 0xFF : 0x00;
+        }
+    }
+    return ESP_OK;
+}
+
 static esp_err_t op_deinit(bsp_display_t *self) {
     gdey0154d67_epd_t *s = (gdey0154d67_epd_t *)self;
     if (s->epd) gdey0154d67_destroy(s->epd);
@@ -172,6 +186,7 @@ esp_err_t gdey0154d67_epd_create(const gdey0154d67_epd_config_t *cfg, bsp_displa
     s->base.clear        = op_clear;
     s->base.wait_idle    = op_wait_idle;
     s->base.set_power    = op_set_power;
+    s->base.read_bitmap  = op_read_bitmap;
     s->mode              = BSP_EPD_MODE_NONE;
     s->power             = BSP_DISPLAY_POWER_ON;
 

@@ -45,6 +45,7 @@ typedef enum {
 typedef enum {
     BSP_DISPLAY_CAP_FRAMEBUFFER = 1 << 0,
     BSP_DISPLAY_CAP_EPD_REFRESH = 1 << 1,
+    BSP_DISPLAY_CAP_READBACK    = 1 << 2,   /* bsp_harness_display_read available */
 } bsp_display_caps_t;
 
 typedef enum {

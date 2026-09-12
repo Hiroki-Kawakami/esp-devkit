@@ -20,14 +20,17 @@ done
 
 "$CC_BIN" -std=c11 -Wall -Wextra -Werror \
     -I"$TEST_ROOT/idf_compat/include" \
-    -c "$TEST_ROOT/sim_harness/sim_harness.c" \
-    -o "$TEST_TMP/sim_harness.o"
+    -I"$TEST_ROOT/libs/harness/inc" \
+    -I"$TEST_ROOT/libs/harness/src" \
+    -I"$TEST_ROOT/libs/image_framework/inc" \
+    -c "$TEST_ROOT/libs/harness/src/harness.c" \
+    -o "$TEST_TMP/harness.o"
 
 "$CXX_BIN" -std=c++17 -Wall -Wextra -Werror \
     -I"$TEST_ROOT/libs/wifi/inc" \
     -I"$TEST_ROOT/libs/wifi/src" \
     -I"$TEST_ROOT/idf_compat/include" \
-    -I"$TEST_ROOT/sim_harness" \
+    -I"$TEST_ROOT/libs/harness/inc" \
     "$TEST_ROOT/libs/wifi/test/test_wifi_manager.cpp" \
     "$TEST_ROOT/libs/wifi/src/wifi_manager.cpp" \
     "$TEST_ROOT/libs/wifi/src/backend_sim.cpp" \
@@ -37,7 +40,7 @@ done
     "$TEST_TMP/freertos_task.o" \
     "$TEST_TMP/freertos_queue.o" \
     "$TEST_TMP/freertos_timers.o" \
-    "$TEST_TMP/sim_harness.o" \
+    "$TEST_TMP/harness.o" \
     -pthread $CJSON_FLAGS \
     -o "$TEST_TMP/test_wifi_manager"
 

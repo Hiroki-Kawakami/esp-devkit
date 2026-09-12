@@ -11,6 +11,7 @@
 #include "esp_lcd_panel_rgb.h"
 #include "esp_log.h"
 #include <stdlib.h>
+#include <string.h>
 
 static const char *TAG = "rgb_lcd";
 
@@ -20,6 +21,7 @@ typedef struct {
     ledc_channel_config_t      ledc_channel;
     esp_lcd_panel_handle_t     panel;
     uint8_t fb_num;
+    uint8_t shown;   /* framebuffer index of the last flush */
     void   *frame_buffers[BSP_DISPLAY_MAX_FRAME_BUFFERS];
 } rgb_lcd_t;
 
@@ -37,12 +39,28 @@ static esp_err_t flush(bsp_display_t *self, int fb_index) {
     rgb_lcd_t *d = (rgb_lcd_t *)self;
     if (fb_index < 0 || fb_index >= d->fb_num) return ESP_ERR_INVALID_ARG;
     if (d->frame_buffers[fb_index] == NULL) return ESP_ERR_INVALID_STATE;
+    d->shown = (uint8_t)fb_index;
     return esp_lcd_panel_draw_bitmap(d->panel, 0, 0,
         self->size.width, self->size.height, d->frame_buffers[fb_index]);
 }
 
 static void **get_framebuffers(bsp_display_t *self) {
     return ((rgb_lcd_t *)self)->frame_buffers;
+}
+
+static esp_err_t read_bitmap(bsp_display_t *self, bsp_rect_t area, void *pixels) {
+    rgb_lcd_t *d = (rgb_lcd_t *)self;
+    const uint8_t *fb = d->frame_buffers[d->shown];
+    if (!fb) return ESP_ERR_INVALID_STATE;
+    const size_t px = bsp_pixel_format_bytes(self->format);
+    const size_t row_bytes = (size_t)area.size.width * px;
+    uint8_t *dst = pixels;
+    for (int r = 0; r < area.size.height; r++) {
+        memcpy(dst + (size_t)r * row_bytes,
+               fb + ((size_t)(area.origin.y + r) * self->size.width + area.origin.x) * px,
+               row_bytes);
+    }
+    return ESP_OK;
 }
 
 static esp_err_t set_brightness(bsp_display_t *self, int brightness) {
@@ -86,6 +104,7 @@ esp_err_t rgb_lcd_create(const rgb_lcd_config_t *config, bsp_display_t **out) {
         .set_brightness  = set_brightness,
         .get_framebuffers = get_framebuffers,
         .flush           = flush,
+        .read_bitmap     = read_bitmap,
     };
     state->fb_num = config->fb_num > 0 ? config->fb_num : 1;
     if (state->fb_num > BSP_DISPLAY_MAX_FRAME_BUFFERS) {

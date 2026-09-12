@@ -527,6 +527,19 @@ static esp_err_t op_set_epd_mode(bsp_display_t *self, bsp_epd_mode_t mode) {
     return ESP_OK;
 }
 
+/* Reads each pixel's target gray (what was drawn) rather than the confirmed
+ * on-glass value, so a capture right after a draw shows the intended frame;
+ * the two agree once wait_idle returns. */
+static esp_err_t op_read_bitmap(bsp_display_t *self, bsp_rect_t area, void *pixels) {
+    epd_t *s = (epd_t *)self;
+    uint8_t *dst = pixels;
+    for (int r = 0; r < area.size.height; r++) {
+        const uint16_t *row = s->state + (size_t)(area.origin.y + r) * s->width + area.origin.x;
+        for (int c = 0; c < area.size.width; c++) *dst++ = (uint8_t)((row[c] & 0x0F) * 17);
+    }
+    return ESP_OK;
+}
+
 static int mode_to_wf(bsp_epd_mode_t mode) {
     switch (mode & ~BSP_EPD_MODE_ALL) {
         case BSP_EPD_MODE_FAST:    return EPD_LL_WAVEFORM_FAST;
@@ -737,6 +750,7 @@ esp_err_t epd_ll_create(const epd_ll_config_t *cfg, bsp_display_t **out_display)
     s->base.refresh      = op_refresh;
     s->base.clear        = op_clear;
     s->base.wait_idle    = op_wait_idle;
+    s->base.read_bitmap  = op_read_bitmap;
     s->mode              = BSP_EPD_MODE_NONE;
     s->width             = cfg->width;
     s->height            = cfg->height;
