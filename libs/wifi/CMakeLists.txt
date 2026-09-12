@@ -10,7 +10,8 @@ if(ESP_PLATFORM)
         esp32c6
         esp32c61
         esp32s2
-        esp32s3)
+        esp32s3
+        esp32s31)
 
     if(IDF_TARGET STREQUAL "esp32p4")
         set(WIFI_NETIF_SRC "src/wifi_netif_remote.cpp")

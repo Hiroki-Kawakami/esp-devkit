@@ -3,10 +3,6 @@
 #   ./run.sh                # host SDL simulator (default)
 #   ./run.sh esp32s31       # ESP32-S31-Korvo: idf.py flash monitor
 # Any extra args after esp32s31 pass through to idf.py (e.g. `./run.sh esp32s31 build`).
-#
-# The esp32s31 target requires IDF 6.1 (still in beta). This script re-execs
-# itself under `nix develop .#beta` when needed; the simulator path stays on
-# the default shell. Assumes the toolchain is on PATH otherwise.
 set -e
 
 HERE=$(cd -- "$(dirname -- "$0")" && pwd)
@@ -20,10 +16,6 @@ case "$TARGET" in
     "$HERE/simulator/build/simulator"
     ;;
   esp32s31)
-    if [ "$ESP_IDF_VERSION" != "6.1" ]; then
-        FLAKE_ROOT=$(cd -- "$HERE/../.." && pwd)
-        exec nix develop "path:$FLAKE_ROOT#beta" -c "$0" esp32s31 "$@"
-    fi
     if [ $# -eq 0 ]; then
         idf.py -C "$HERE/$TARGET" -b 3000000 flash
         idf.py -C "$HERE/$TARGET" monitor

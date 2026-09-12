@@ -16,7 +16,7 @@ let
   gdbUrl = arch: hostTriple:
     "https://github.com/espressif/binutils-gdb/releases/download/${gdbReleaseTag}/${arch}-esp-elf-gdb-${gdbVersion}-${hostTriple}.tar.gz";
 
-  # Pinned from esp-idf v6.0.2 tools/tools.json.
+  # Pinned from esp-idf v6.1 tools/tools.json.
   sources = {
     xtensa-esp-elf = {
       "aarch64-darwin" = { url = tarballUrl "xtensa" "aarch64-apple-darwin"; sha256 = "68d3fb1e75c6bb1b88c6a2c74977abd51efd09b560a99149bafdcf403cb21941"; };

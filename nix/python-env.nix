@@ -90,8 +90,7 @@ let
     deps = [];
   };
 
-  # Added in IDF 6.1: esp-idf-sbom + idf_drivers_gdb (see requirements.core.txt).
-  # esp-pylib is a transitive dep of esp-idf-sbom. Harmless on 6.0.2.
+  # esp-pylib is a transitive dep of esp-idf-sbom.
   esp-pylib = mkPypiPkg {
     pname = "esp-pylib";
     version = "1.1.2";

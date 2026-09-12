@@ -1,24 +1,16 @@
 {
   description = "ESP32 development environment";
 
-  # Two ESP-IDF versions are pinned side by side:
-  #   default -> v6.0.2 (stable, all shipping boards)
-  #   beta    -> v6.1-beta1 (needed for esp32s31 / ESP32-S31-Korvo)
-  # crosstool-NG (nix/toolchains.nix) is shared: both IDFs pin esp-15.2.0_20251204.
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-26.05";
     flake-utils.url = "github:numtide/flake-utils";
     esp-idf-src = {
-      url = "git+https://github.com/espressif/esp-idf?ref=refs/tags/v6.0.2&submodules=1";
-      flake = false;
-    };
-    esp-idf-beta-src = {
-      url = "git+https://github.com/espressif/esp-idf?ref=refs/tags/v6.1-beta1&submodules=1";
+      url = "git+https://github.com/espressif/esp-idf?ref=refs/tags/v6.1&submodules=1";
       flake = false;
     };
   };
 
-  outputs = { self, nixpkgs, flake-utils, esp-idf-src, esp-idf-beta-src }:
+  outputs = { self, nixpkgs, flake-utils, esp-idf-src }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs { inherit system; };
@@ -27,13 +19,13 @@
         pythonEnv = (import ./nix/python-env.nix { inherit pkgs; }).pythonEnv;
 
         # Copy the IDF checkout into a writable store path (idf_tools writes to it).
-        mkIdfStore = { src, tag }: pkgs.runCommandLocal "esp-idf-${tag}" { } ''
+        idfStore = pkgs.runCommandLocal "esp-idf-v6.1" { } ''
           mkdir -p $out
-          cp -R ${src}/. $out/
+          cp -R ${esp-idf-src}/. $out/
           chmod -R u+w $out
         '';
-
-        mkIdfShell = { idfStore, idfVersion }: pkgs.mkShell {
+      in {
+        devShells.default = pkgs.mkShell {
           packages = [
             pythonEnv
             toolchains.xtensa
@@ -60,22 +52,11 @@
             # constraints fetch + version check.
             export IDF_PYTHON_CHECK_CONSTRAINTS=no
             export IDF_COMPONENT_MANAGER=1
-            export ESP_IDF_VERSION="${idfVersion}"
+            export ESP_IDF_VERSION="6.1"
             export ESP_ROM_ELF_DIR="${toolchains.romElfs}/"  # trailing slash required
             export HOST_GCC="${pkgs.gcc}"
             export PATH=$IDF_PATH/tools:${toolchains.xtensa}/bin:${toolchains.riscv32}/bin:${toolchains.xtensaGdb}/bin:${toolchains.riscv32Gdb}/bin:$PATH
           '';
-        };
-      in {
-        devShells.default = mkIdfShell {
-          idfStore = mkIdfStore { src = esp-idf-src; tag = "v6.0.2"; };
-          idfVersion = "6.0";
-        };
-
-        # Enter with: nix develop .#beta -c <cmd>
-        devShells.beta = mkIdfShell {
-          idfStore = mkIdfStore { src = esp-idf-beta-src; tag = "v6.1-beta1"; };
-          idfVersion = "6.1";
         };
       }
     );
