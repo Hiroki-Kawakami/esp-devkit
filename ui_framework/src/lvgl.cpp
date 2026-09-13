@@ -35,6 +35,20 @@ lv_event_dsc_t *lv_obj_add_event_fn(lv_obj_t *obj, lv_event_code_t filter,
     }, filter, fn_ptr);
 }
 
+#ifdef ESP_PLATFORM
+// Linked in place of LVGL's lv_async_call() via -Wl,--wrap (see CMakeLists.txt):
+// esp_lvgl_port's task sleeps on its event group, so a queued async call would
+// not run until something else -- an indev poll, an animation -- happened to
+// wake it. Waking it here is what makes lv_async_call() take effect promptly.
+extern "C" lv_result_t __real_lv_async_call(lv_async_cb_t async_xcb, void *user_data);
+
+extern "C" lv_result_t __wrap_lv_async_call(lv_async_cb_t async_xcb, void *user_data) {
+    lv_result_t res = __real_lv_async_call(async_xcb, user_data);
+    if (res == LV_RESULT_OK) lvgl_port_task_wake(LVGL_PORT_EVENT_USER, nullptr);
+    return res;
+}
+#endif
+
 #if defined(ESP_PLATFORM) && CONFIG_HARNESS
 static bool harness_idle(void *) {
     if (!lvgl_port_lock(0)) return false;

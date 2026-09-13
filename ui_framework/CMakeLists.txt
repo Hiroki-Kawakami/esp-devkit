@@ -45,6 +45,11 @@ if(ESP_PLATFORM)
         REQUIRES bsp esp_lvgl_port
         PRIV_REQUIRES esp_driver_ppa harness)
 
+    # Route every lv_async_call() through lvgl.cpp's __wrap_ version, which wakes
+    # the esp_lvgl_port task so the queued call runs without waiting for an
+    # unrelated indev/animation wakeup.
+    target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=lv_async_call")
+
     # Route the app's lvgl_port_init() through lvgl.cpp's __wrap_ version, which
     # starts the harness after the real init. The simulator needs no equivalent
     # (its lvgl_port_init is our own shim) -- and must not have one, since the
