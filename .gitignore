@@ -8,3 +8,4 @@ nvs_data.json
 .direnv
 .DS_Store
 screenshots/
+__pycache__
