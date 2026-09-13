@@ -26,6 +26,10 @@ extern "C" {
 #define SEN55_I2C_DEFAULT_HZ  (100 * 1000)  /* chip max */
 #define SEN55_POWER_UP_MS     100           /* rail-on until the chip is addressable */
 
+#define SEN55_VOC_STATE_SIZE  8             /* opaque blob, see sen55_get_voc_state */
+#define SEN55_WARM_START_COLD 0             /* chip default */
+#define SEN55_WARM_START_WARM 65535
+
 typedef struct {
     i2c_master_bus_handle_t i2c_bus;      /*!< initialized bus, not owned */
     uint8_t                 i2c_address;  /*!< 0 -> SEN55_I2C_ADDR */
@@ -33,6 +37,14 @@ typedef struct {
 } sen55_config_t;
 
 typedef struct sen55 sen55_t;
+
+/* T_compensated = T + slope * T + offset, eased in over time_constant_s
+ * (63 % after that many seconds). All zero on the chip by default. */
+typedef struct {
+    float    offset_c;
+    float    slope;
+    uint16_t time_constant_s;
+} sen55_temp_compensation_t;
 
 /* Values the chip has not produced yet (warm-up, or PM in RHT/gas-only mode)
  * come back as NAN. voc/nox are unitless 1..500 indices. */
@@ -60,6 +72,29 @@ esp_err_t sen55_stop(sen55_t *sensor);
 /* New values arrive every 1 s while measuring; read clears the ready flag. */
 esp_err_t sen55_data_ready(sen55_t *sensor, bool *out_ready);
 esp_err_t sen55_read(sen55_t *sensor, sen55_data_t *out);
+
+/* Everything below is volatile — reset and power loss revert it to the chip's
+ * defaults, so re-applying it is the host's job.
+ *
+ * The VOC state is the baseline the index is scored against; start discards it
+ * even after a brief stop, so preserving the index across a restart means
+ * reading the state while measuring and writing it back before the next start.
+ * It only carries a short interruption: an old baseline restores a stale
+ * calibration rather than a useful one, so the caller is the one that has to
+ * decide it is still fresh enough. NOx has no equivalent command — it always
+ * re-learns. */
+esp_err_t sen55_get_voc_state(sen55_t *sensor, uint8_t out[SEN55_VOC_STATE_SIZE]);
+esp_err_t sen55_set_voc_state(sen55_t *sensor, const uint8_t state[SEN55_VOC_STATE_SIZE]);
+
+/* Corrects the self-heating of the design-in; tune per enclosure. */
+esp_err_t sen55_get_temp_compensation(sen55_t *sensor, sen55_temp_compensation_t *out);
+esp_err_t sen55_set_temp_compensation(sen55_t *sensor, const sen55_temp_compensation_t *params);
+
+/* How warm the chip already is, 0..65535: the temperature compensation assumes
+ * a cold device otherwise. Settable in any mode but applied by the next start,
+ * so write it before starting. */
+esp_err_t sen55_get_warm_start(sen55_t *sensor, uint16_t *out_value);
+esp_err_t sen55_set_warm_start(sen55_t *sensor, uint16_t value);
 
 esp_err_t sen55_fan_clean(sen55_t *sensor);  /* manual fan cleaning (~10 s), measuring only */
 esp_err_t sen55_read_status(sen55_t *sensor, uint32_t *out_flags);  /* chip device-status register */

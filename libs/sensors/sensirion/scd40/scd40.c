@@ -18,7 +18,9 @@
 #define SCD40_CMD_GET_ASC           0x2313
 #define SCD40_CMD_FORCED_RECAL      0x362F
 #define SCD40_CMD_SET_TEMP_OFFSET   0x241D
+#define SCD40_CMD_GET_TEMP_OFFSET   0x2318
 #define SCD40_CMD_SET_ALTITUDE      0x2427
+#define SCD40_CMD_GET_ALTITUDE      0x2322
 #define SCD40_CMD_SET_PRESSURE      0xE000
 #define SCD40_CMD_PERSIST_SETTINGS  0x3615
 #define SCD40_CMD_READ_SERIAL       0x3682
@@ -137,9 +139,23 @@ esp_err_t scd40_set_temperature_offset(scd40_t *sensor, float offset_degc) {
     return write_cmd_word_delay(sensor, SCD40_CMD_SET_TEMP_OFFSET, raw, 1);
 }
 
+esp_err_t scd40_get_temperature_offset(scd40_t *sensor, float *out_offset_degc) {
+    if (!sensor || !out_offset_degc) return ESP_ERR_INVALID_ARG;
+    uint16_t word;
+    esp_err_t err = sensirion_cmd_read(sensor->i2c_dev, SCD40_CMD_GET_TEMP_OFFSET, 1, &word, 1);
+    if (err != ESP_OK) return err;
+    *out_offset_degc = (175.0f * word) / 65535.0f;
+    return ESP_OK;
+}
+
 esp_err_t scd40_set_altitude(scd40_t *sensor, uint16_t meters) {
     if (!sensor) return ESP_ERR_INVALID_ARG;
     return write_cmd_word_delay(sensor, SCD40_CMD_SET_ALTITUDE, meters, 1);
+}
+
+esp_err_t scd40_get_altitude(scd40_t *sensor, uint16_t *out_meters) {
+    if (!sensor || !out_meters) return ESP_ERR_INVALID_ARG;
+    return sensirion_cmd_read(sensor->i2c_dev, SCD40_CMD_GET_ALTITUDE, 1, out_meters, 1);
 }
 
 esp_err_t scd40_set_ambient_pressure(scd40_t *sensor, uint32_t pascals) {

@@ -132,10 +132,20 @@ static esp_err_t scd40_sim_on_write(void *ctx, const uint8_t *data, size_t len) 
             if (!idle) return ESP_FAIL;
             chip->temp_offset_raw = arg;
             return ESP_OK;
+        case 0x2318: {  /* get temperature offset */
+            if (!idle) return ESP_FAIL;
+            stage_words(chip, &chip->temp_offset_raw, 1);
+            return ESP_OK;
+        }
         case 0x2427:  /* set sensor altitude */
             if (!idle) return ESP_FAIL;
             chip->altitude_m = arg;
             return ESP_OK;
+        case 0x2322: {  /* get sensor altitude */
+            if (!idle) return ESP_FAIL;
+            stage_words(chip, &chip->altitude_m, 1);
+            return ESP_OK;
+        }
         case 0xE000:  /* set ambient pressure (allowed while measuring) */
             chip->pressure_raw = arg;
             return ESP_OK;
@@ -172,6 +182,7 @@ esp_err_t scd40_sim_attach(i2c_master_bus_handle_t bus, uint8_t address, scd40_s
     chip->address = address ? address : SCD40_I2C_ADDR;
     chip->lcg = 0x5CD40u;
     chip->asc_enabled = true;
+    chip->temp_offset_raw = (uint16_t)(4.0f * 65535.0f / 175.0f + 0.5f);  /* chip default */
     walk_reset(chip);
 
     const i2c_sim_device_ops_t ops = {

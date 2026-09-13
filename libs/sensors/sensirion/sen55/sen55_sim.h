@@ -6,8 +6,10 @@
  * idf_compat virtual bus so the real sen55.c driver runs unmodified on host.
  * Board *_sim.c bring-up attaches it (the sim counterpart of the soldered
  * chip). Reproduces the mode state machine, the 1 s data-ready cadence
- * (read clears it), warm-up NAN for VOC/NOx, and NACKs for commands invalid
- * in the current mode. Values default to a plausible slow random walk.
+ * (read clears it), warm-up NAN for VOC/NOx, the volatile parameters (VOC
+ * state, temperature compensation, warm start) including their loss on reset,
+ * and NACKs for commands invalid in the current mode. Values default to a
+ * plausible slow random walk.
  */
 
 #pragma once

@@ -3,7 +3,9 @@
  * Copyright (c) 2026 Hiroki Kawakami
  *
  * Warm-up is shortened for sim usefulness: VOC index appears 2 s after start,
- * NOx after 10 s (the real chip takes longer for NOx).
+ * NOx after 10 s (the real chip takes longer for NOx). Restoring a VOC
+ * algorithm state skips that warm-up, which is the observable half of what the
+ * command is for on the real chip.
  */
 
 #include "sen55_sim.h"
@@ -29,12 +31,17 @@ struct sen55_sim {
     uint16_t                address;
     sen55_sim_mode_t        mode;
     int64_t                 mode_start_us;
+    int64_t                 voc_ready_us;
     int64_t                 last_sample_us;
     bool                    have_sample;
     bool                    env_override;
     sen55_data_t            env;
     sen55_data_t            walk;
     uint32_t                lcg;
+    uint8_t                 voc_state[SEN55_VOC_STATE_SIZE];
+    bool                    voc_state_restored;
+    uint16_t                temp_comp[3];
+    uint16_t                warm_start;
     uint8_t                 resp[SENSIRION_MAX_WORDS * 3];
     size_t                  resp_len;
 };
@@ -81,6 +88,11 @@ static void stage_words(sen55_sim_t *chip, const uint16_t *words, size_t count) 
     chip->resp_len = count * 3;
 }
 
+static void stage_bytes(sen55_sim_t *chip, const uint8_t *data, size_t count) {
+    sensirion_pack_bytes(data, count, chip->resp);
+    chip->resp_len = count / 2 * 3;
+}
+
 static void stage_ascii(sen55_sim_t *chip, const char *text) {
     uint8_t raw[32] = { 0 };
     strncpy((char *)raw, text, sizeof(raw));
@@ -101,7 +113,7 @@ static void stage_measured_values(sen55_sim_t *chip, int64_t now) {
         if (chip->mode == SEN55_SIM_RHT_GAS_ONLY) {
             v.pm1_0 = v.pm2_5 = v.pm4_0 = v.pm10_0 = NAN;
         }
-        if (now - chip->mode_start_us < SEN55_SIM_VOC_WARMUP_US) v.voc_index = NAN;
+        if (now < chip->voc_ready_us) v.voc_index = NAN;
         if (now - chip->mode_start_us < SEN55_SIM_NOX_WARMUP_US) v.nox_index = NAN;
     }
     const uint16_t words[8] = {
@@ -117,18 +129,69 @@ static esp_err_t start_mode(sen55_sim_t *chip, sen55_sim_mode_t mode, int64_t no
     if (chip->mode != SEN55_SIM_IDLE) return ESP_FAIL;
     chip->mode = mode;
     chip->mode_start_us = now;
+    chip->voc_ready_us = chip->voc_state_restored ? now : now + SEN55_SIM_VOC_WARMUP_US;
+    chip->voc_state_restored = false;
     chip->last_sample_us = now;
     chip->have_sample = false;
     return ESP_OK;
+}
+
+/* Every parameter the chip holds is volatile, so reset reverts all of them. */
+static void volatile_config_reset(sen55_sim_t *chip) {
+    memset(chip->voc_state, 0, sizeof(chip->voc_state));
+    memset(chip->temp_comp, 0, sizeof(chip->temp_comp));
+    chip->voc_state_restored = false;
+    chip->warm_start = 0;
 }
 
 static esp_err_t sen55_sim_on_write(void *ctx, const uint8_t *data, size_t len) {
     sen55_sim_t *chip = ctx;
     if (len < 2) return ESP_FAIL;
     uint16_t cmd = (uint16_t)((data[0] << 8) | data[1]);
-    if (len != 2) return ESP_FAIL;  /* no payload-carrying commands emulated */
+    uint16_t args[SENSIRION_MAX_WORDS];
+    size_t n_args = (len - 2) / 3;
+    if ((len - 2) % 3 != 0 || n_args > SENSIRION_MAX_WORDS) return ESP_FAIL;
+    if (n_args > 0 && sensirion_unpack_words(&data[2], n_args * 3, args, n_args) != ESP_OK) {
+        return ESP_FAIL;
+    }
     int64_t now = esp_timer_get_time();
     chip->resp_len = 0;
+
+    /* The read/write parameter commands: the same address reads with no payload
+     * and writes with one. Split out so the rest can reject payloads outright. */
+    switch (cmd) {
+        case 0x60B2:  /* temperature compensation parameters */
+            if (n_args == 0) {
+                stage_words(chip, chip->temp_comp, 3);
+                return ESP_OK;
+            }
+            if (n_args != 3) return ESP_FAIL;
+            memcpy(chip->temp_comp, args, sizeof(chip->temp_comp));
+            return ESP_OK;
+        case 0x60C6:  /* warm start parameter */
+            if (n_args == 0) {
+                stage_words(chip, &chip->warm_start, 1);
+                return ESP_OK;
+            }
+            if (n_args != 1) return ESP_FAIL;
+            chip->warm_start = args[0];
+            return ESP_OK;
+        case 0x6181:  /* VOC algorithm state */
+            if (n_args == 0) {
+                stage_bytes(chip, chip->voc_state, SEN55_VOC_STATE_SIZE);
+                return ESP_OK;
+            }
+            if (n_args != SEN55_VOC_STATE_SIZE / 2) return ESP_FAIL;
+            for (size_t i = 0; i < n_args; i++) {
+                chip->voc_state[i * 2]     = (uint8_t)(args[i] >> 8);
+                chip->voc_state[i * 2 + 1] = (uint8_t)(args[i] & 0xFF);
+            }
+            chip->voc_state_restored = true;
+            return ESP_OK;
+        default:
+            break;
+    }
+    if (n_args != 0) return ESP_FAIL;
 
     switch (cmd) {
         case 0x0021:  /* start measurement */
@@ -164,6 +227,7 @@ static esp_err_t sen55_sim_on_write(void *ctx, const uint8_t *data, size_t len) 
         case 0xD304:  /* reset */
             chip->mode = SEN55_SIM_IDLE;
             walk_reset(chip);
+            volatile_config_reset(chip);
             return ESP_OK;
         default:
             return ESP_FAIL;

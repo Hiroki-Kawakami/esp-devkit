@@ -16,6 +16,9 @@
 #define SEN55_CMD_STOP             0x0104
 #define SEN55_CMD_DATA_READY       0x0202
 #define SEN55_CMD_READ_VALUES      0x03C4
+#define SEN55_CMD_TEMP_COMP        0x60B2
+#define SEN55_CMD_WARM_START       0x60C6
+#define SEN55_CMD_VOC_STATE        0x6181
 #define SEN55_CMD_FAN_CLEAN        0x5607
 #define SEN55_CMD_READ_SERIAL      0xD033
 #define SEN55_CMD_READ_STATUS      0xD206
@@ -108,6 +111,64 @@ esp_err_t sen55_read(sen55_t *sensor, sen55_data_t *out) {
     out->temperature = dec_int(w[5], 200.0f);
     out->voc_index   = dec_int(w[6], 10.0f);
     out->nox_index   = dec_int(w[7], 10.0f);
+    return ESP_OK;
+}
+
+esp_err_t sen55_get_voc_state(sen55_t *sensor, uint8_t out[SEN55_VOC_STATE_SIZE]) {
+    if (!sensor || !out) return ESP_ERR_INVALID_ARG;
+    esp_err_t err = sensirion_write_cmd(sensor->i2c_dev, SEN55_CMD_VOC_STATE);
+    if (err != ESP_OK) return err;
+    vTaskDelay(pdMS_TO_TICKS(20));
+    return sensirion_read_bytes(sensor->i2c_dev, out, SEN55_VOC_STATE_SIZE);
+}
+
+esp_err_t sen55_set_voc_state(sen55_t *sensor, const uint8_t state[SEN55_VOC_STATE_SIZE]) {
+    if (!sensor || !state) return ESP_ERR_INVALID_ARG;
+    uint16_t words[SEN55_VOC_STATE_SIZE / 2];
+    for (size_t i = 0; i < SEN55_VOC_STATE_SIZE / 2; i++) {
+        words[i] = (uint16_t)((state[i * 2] << 8) | state[i * 2 + 1]);
+    }
+    esp_err_t err = sensirion_write_cmd_words(sensor->i2c_dev, SEN55_CMD_VOC_STATE, words,
+                                             SEN55_VOC_STATE_SIZE / 2);
+    if (err != ESP_OK) return err;
+    vTaskDelay(pdMS_TO_TICKS(20));
+    return ESP_OK;
+}
+
+esp_err_t sen55_get_temp_compensation(sen55_t *sensor, sen55_temp_compensation_t *out) {
+    if (!sensor || !out) return ESP_ERR_INVALID_ARG;
+    uint16_t w[3];
+    esp_err_t err = sensirion_cmd_read(sensor->i2c_dev, SEN55_CMD_TEMP_COMP, 20, w, 3);
+    if (err != ESP_OK) return err;
+    out->offset_c        = (int16_t)w[0] / 200.0f;
+    out->slope           = (int16_t)w[1] / 10000.0f;
+    out->time_constant_s = w[2];
+    return ESP_OK;
+}
+
+esp_err_t sen55_set_temp_compensation(sen55_t *sensor, const sen55_temp_compensation_t *params) {
+    if (!sensor || !params) return ESP_ERR_INVALID_ARG;
+    const uint16_t w[3] = {
+        (uint16_t)(int16_t)lroundf(params->offset_c * 200.0f),
+        (uint16_t)(int16_t)lroundf(params->slope * 10000.0f),
+        params->time_constant_s,
+    };
+    esp_err_t err = sensirion_write_cmd_words(sensor->i2c_dev, SEN55_CMD_TEMP_COMP, w, 3);
+    if (err != ESP_OK) return err;
+    vTaskDelay(pdMS_TO_TICKS(20));
+    return ESP_OK;
+}
+
+esp_err_t sen55_get_warm_start(sen55_t *sensor, uint16_t *out_value) {
+    if (!sensor || !out_value) return ESP_ERR_INVALID_ARG;
+    return sensirion_cmd_read(sensor->i2c_dev, SEN55_CMD_WARM_START, 20, out_value, 1);
+}
+
+esp_err_t sen55_set_warm_start(sen55_t *sensor, uint16_t value) {
+    if (!sensor) return ESP_ERR_INVALID_ARG;
+    esp_err_t err = sensirion_write_cmd_words(sensor->i2c_dev, SEN55_CMD_WARM_START, &value, 1);
+    if (err != ESP_OK) return err;
+    vTaskDelay(pdMS_TO_TICKS(20));
     return ESP_OK;
 }
 

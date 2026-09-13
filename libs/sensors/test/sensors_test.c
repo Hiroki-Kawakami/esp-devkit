@@ -6,7 +6,9 @@
  * chip emulators over the idf_compat virtual I2C bus. Covers the Sensirion
  * framing/CRC, create-time probing (present/absent), the mode state machines
  * with their idle-only command rules, the data-ready cadence (read clears it),
- * warm-up NANs, and value round-trips through the wire encoding via
+ * warm-up NANs, the volatile SEN55 parameters (round-trip, effect on the next
+ * start, loss on reset) against the SCD40's settings that survive in its own
+ * EEPROM, and value round-trips through the wire encoding via
  * *_sim_set_environment. Sleeps through real 1 s / 5 s measurement periods, so
  * the run takes ~10 s.
  */
@@ -92,8 +94,48 @@ static void test_sen55(i2c_master_bus_handle_t bus, sen55_sim_t *chip) {
     CHECK(isnan(air.nox_index));                  /* still inside the 10 s NOx warm-up */
     sen55_sim_set_environment(chip, NULL);
 
+    uint8_t voc_state[SEN55_VOC_STATE_SIZE];
+    CHECK(sen55_get_voc_state(sen, voc_state) == ESP_OK);  /* readable while measuring */
+    for (size_t i = 0; i < sizeof(voc_state); i++) CHECK(voc_state[i] == 0);
+
     CHECK(sen55_stop(sen) == ESP_OK);
     CHECK(sen55_fan_clean(sen) != ESP_OK);
+
+    const uint8_t saved[SEN55_VOC_STATE_SIZE] = { 1, 2, 3, 4, 5, 6, 7, 8 };
+    CHECK(sen55_set_voc_state(sen, saved) == ESP_OK);
+    CHECK(sen55_get_voc_state(sen, voc_state) == ESP_OK);
+    CHECK(memcmp(saved, voc_state, sizeof(saved)) == 0);
+
+    sen55_temp_compensation_t comp = { .offset_c = -1.5f, .slope = 0.02f, .time_constant_s = 30 };
+    CHECK(sen55_set_temp_compensation(sen, &comp) == ESP_OK);
+    memset(&comp, 0, sizeof(comp));
+    CHECK(sen55_get_temp_compensation(sen, &comp) == ESP_OK);
+    CHECK(fabsf(comp.offset_c + 1.5f) < 0.01f);
+    CHECK(fabsf(comp.slope - 0.02f) < 0.0001f);
+    CHECK(comp.time_constant_s == 30);
+
+    uint16_t warm_start = 1;
+    CHECK(sen55_get_warm_start(sen, &warm_start) == ESP_OK && warm_start == SEN55_WARM_START_COLD);
+    CHECK(sen55_set_warm_start(sen, SEN55_WARM_START_WARM) == ESP_OK);
+    CHECK(sen55_get_warm_start(sen, &warm_start) == ESP_OK && warm_start == SEN55_WARM_START_WARM);
+
+    CHECK(sen55_start(sen) == ESP_OK);
+    msleep(1100);
+    CHECK(sen55_read(sen, &air) == ESP_OK);
+    CHECK(!isnan(air.voc_index));   /* the restored state skipped the warm-up */
+    CHECK(isnan(air.nox_index));    /* NOx has no state to restore */
+
+    CHECK(sen55_reset(sen) == ESP_OK);            /* every parameter is volatile */
+    CHECK(sen55_get_voc_state(sen, voc_state) == ESP_OK);
+    for (size_t i = 0; i < sizeof(voc_state); i++) CHECK(voc_state[i] == 0);
+    CHECK(sen55_get_warm_start(sen, &warm_start) == ESP_OK && warm_start == SEN55_WARM_START_COLD);
+
+    CHECK(sen55_start(sen) == ESP_OK);
+    msleep(1100);
+    CHECK(sen55_read(sen, &air) == ESP_OK);
+    CHECK(isnan(air.voc_index));                  /* nothing restored: warm-up again */
+    CHECK(sen55_stop(sen) == ESP_OK);
+
     sen55_delete(sen);
     printf("sen55 ok\n");
 }
@@ -113,8 +155,19 @@ static void test_scd40(i2c_master_bus_handle_t bus, scd40_sim_t *chip) {
 
     int16_t correction = 99;
     CHECK(scd40_forced_recalibration(co2, 600, &correction) == ESP_OK && correction == 0);
-    CHECK(scd40_set_temperature_offset(co2, 4.0f) == ESP_OK);
+
+    float offset = 0.0f;
+    CHECK(scd40_get_temperature_offset(co2, &offset) == ESP_OK);
+    CHECK(fabsf(offset - 4.0f) < 0.01f);          /* chip default */
+    CHECK(scd40_set_temperature_offset(co2, 2.5f) == ESP_OK);
+    CHECK(scd40_get_temperature_offset(co2, &offset) == ESP_OK);
+    CHECK(fabsf(offset - 2.5f) < 0.01f);
+
+    uint16_t altitude = 1;
+    CHECK(scd40_get_altitude(co2, &altitude) == ESP_OK && altitude == 0);
     CHECK(scd40_set_altitude(co2, 100) == ESP_OK);
+    CHECK(scd40_get_altitude(co2, &altitude) == ESP_OK && altitude == 100);
+    CHECK(scd40_persist_settings(co2) == ESP_OK);  /* idle-only, EEPROM write */
 
     CHECK(scd40_stop(co2) == ESP_OK);             /* idle stop is a no-op */
     CHECK(scd40_start(co2) == ESP_OK);
