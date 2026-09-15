@@ -45,6 +45,11 @@ if(ESP_PLATFORM)
         REQUIRES bsp esp_lvgl_port
         PRIV_REQUIRES esp_driver_ppa harness)
 
+    # Link every member so strong overrides replace the common weak defaults; from a
+    # plain archive the linker stops at the first (weak) definition and never
+    # extracts the override.
+    idf_component_set_property(${COMPONENT_NAME} WHOLE_ARCHIVE ON)
+
     # Route every lv_async_call() through lvgl.cpp's __wrap_ version, which wakes
     # the esp_lvgl_port task so the queued call runs without waiting for an
     # unrelated indev/animation wakeup.
