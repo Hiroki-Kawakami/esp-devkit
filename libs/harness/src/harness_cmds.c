@@ -72,10 +72,11 @@ static const char *pixfmt_name(bsp_pixel_format_t f) {
 static bool cmd_info(int argc, const char *const *argv, void *user) {
     (void)argc; (void)argv; (void)user;
     const bsp_size_t size = bsp_display_get_size();
-    harness_reply("OK info %d %d %s %d %u %d",
+    harness_reply("OK info %d %d %s %d %u %d %d",
                   size.width, size.height, pixfmt_name(bsp_display_get_pixel_format()),
                   bsp_harness_touch_present() ? 1 : 0, (unsigned)bsp_button_count(),
-                  (bsp_display_get_caps() & BSP_DISPLAY_CAP_READBACK) ? 1 : 0);
+                  (bsp_display_get_caps() & BSP_DISPLAY_CAP_READBACK) ? 1 : 0,
+                  bsp_harness_imu_present() ? 1 : 0);
     return true;
 }
 
@@ -102,6 +103,27 @@ static bool cmd_btn(int argc, const char *const *argv, void *user) {
     else { harness_reply("ERR btn: down|up"); return true; }
     esp_err_t err = bsp_harness_button_inject((uint8_t)atoi(argv[1]), pressed);
     if (err != ESP_OK) { harness_reply("ERR btn: %s", esp_err_to_name(err)); return true; }
+    return true;
+}
+
+static bool cmd_imu(int argc, const char *const *argv, void *user) {
+    (void)user;
+    esp_err_t err;
+    if (argc == 2 && !strcmp(argv[1], "release")) {
+        err = bsp_harness_imu_inject(NULL);
+    } else if (argc == 4 || argc == 7) {
+        bsp_imu_sample_t sample = {
+            .accel = { (float)atof(argv[1]), (float)atof(argv[2]), (float)atof(argv[3]) },
+        };
+        if (argc == 7) {
+            sample.gyro = (bsp_vec3_t){ (float)atof(argv[4]), (float)atof(argv[5]), (float)atof(argv[6]) };
+        }
+        err = bsp_harness_imu_inject(&sample);
+    } else {
+        harness_reply("ERR imu: need ax ay az [gx gy gz] | release");
+        return true;
+    }
+    if (err != ESP_OK) harness_reply("ERR imu: %s", esp_err_to_name(err));
     return true;
 }
 
@@ -188,6 +210,7 @@ void harness_cmds_register(void) {
     harness_register("move", cmd_touch_down, NULL);
     harness_register("up",   cmd_touch_up,   NULL);
     harness_register("btn",  cmd_btn,        NULL);
+    harness_register("imu",  cmd_imu,        NULL);
     harness_register("idle", cmd_idle,       NULL);
     harness_register("snap", cmd_snap,       NULL);
 }

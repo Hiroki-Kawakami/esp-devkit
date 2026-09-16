@@ -3,8 +3,8 @@
 
 Runs a script of UI actions against either a simulator binary (stdin/stdout)
 or a board on its log console (pyserial), using the same line protocol on
-both. The firmware only exposes primitives (touch/button injection, an idle
-probe, a JPEG capture); timing and scripting live here.
+both. The firmware only exposes primitives (touch/button/IMU injection, an
+idle probe, a JPEG capture); timing and scripting live here.
 
     harness.py --sim path/to/simulator script.txt
     harness.py --port /dev/cu.usbserial-XXXX [--baud 921600] script.txt
@@ -18,6 +18,11 @@ Script: one command per line, '#' comments.
     move <x> <y> [id]
     up [id]                    release
     btn <id> [click|down|up]   physical button (default click)
+    imu <ax> <ay> <az> [<gx> <gy> <gz>]
+                               inject an IMU sample (panel axes, g / dps)
+    imu rot0|rot90|rot180|rot270|face-up|face-down
+                               inject a resting pose
+    imu release                back to the real sensor
     quit                       stop (implicit at end of script)
     <anything else>            passed through verbatim (app commands)
 """
@@ -109,6 +114,14 @@ class SerialLink:
 
 class Harness:
     TOUCH_HOLD_S = 0.08
+    IMU_POSES = {
+        "rot0": "0 -1 0",
+        "rot90": "-1 0 0",
+        "rot180": "0 1 0",
+        "rot270": "1 0 0",
+        "face-up": "0 0 -1",
+        "face-down": "0 0 1",
+    }
 
     def __init__(self, link, log_stream=None):
         self.link = link
@@ -154,7 +167,8 @@ class Harness:
     def info(self):
         p = self.cmd("info")
         return {"width": int(p[1]), "height": int(p[2]), "pixfmt": p[3],
-                "touch": p[4] == "1", "buttons": int(p[5]), "capture": p[6] == "1"}
+                "touch": p[4] == "1", "buttons": int(p[5]), "capture": p[6] == "1",
+                "imu": len(p) > 7 and p[7] == "1"}
 
     def down(self, x, y, tid=0):
         self.cmd(f"down {tid} {x} {y}")
@@ -179,6 +193,12 @@ class Harness:
             time.sleep(self.TOUCH_HOLD_S)
         else:
             self.cmd(f"btn {bid} {action}")
+
+    def imu(self, args):
+        if len(args) == 1 and args[0] in self.IMU_POSES:
+            self.cmd(f"imu {self.IMU_POSES[args[0]]}")
+        else:
+            self.cmd(" ".join(["imu", *args]))
 
     def idle(self):
         return self.cmd("idle")[1] == "1"
@@ -244,6 +264,8 @@ class Harness:
                 self.up(int(args[0]) if args else 0)
             elif cmd == "btn":
                 self.btn(int(args[0]), args[1] if len(args) > 1 else "click")
+            elif cmd == "imu":
+                self.imu(args)
             elif cmd == "quit":
                 return
             else:

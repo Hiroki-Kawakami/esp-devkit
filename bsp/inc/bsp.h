@@ -133,6 +133,18 @@ esp_err_t bsp_rtc_timer_clear(void);
 typedef void (*bsp_rtc_int_cb_t)(void *arg);
 esp_err_t bsp_rtc_set_int_cb(bsp_rtc_int_cb_t cb, void *arg);
 
+// MARK: IMU
+uint32_t  bsp_imu_get_caps(void);
+esp_err_t bsp_imu_configure(const bsp_imu_config_t *config, bsp_imu_config_t *out_actual) BSP_NONNULL(1);
+esp_err_t bsp_imu_get_config(bsp_imu_config_t *out) BSP_NONNULL(1);
+esp_err_t bsp_imu_read(bsp_imu_sample_t *out) BSP_NONNULL(1);
+
+typedef void (*bsp_imu_orientation_cb_t)(bsp_imu_orientation_t orientation, void *arg);
+void      bsp_imu_set_orientation_cb(bsp_imu_orientation_cb_t cb, void *arg);
+esp_err_t bsp_imu_set_orientation_enabled(bool enabled);
+bool      bsp_imu_get_orientation_enabled(void);
+bsp_imu_orientation_t bsp_imu_get_orientation(void);
+
 // MARK: SD Card
 typedef struct {
     bool    format_if_mount_failed;  /*!< default: false */

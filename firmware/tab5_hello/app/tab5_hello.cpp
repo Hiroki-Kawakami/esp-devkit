@@ -39,6 +39,34 @@ static void lvgl_init() {
 
 }
 
+static const char *orientation_name(bsp_imu_orientation_t orientation) {
+    switch (orientation) {
+        case BSP_IMU_ORIENTATION_ROTATION_0:   return "ROTATION_0";
+        case BSP_IMU_ORIENTATION_ROTATION_90:  return "ROTATION_90";
+        case BSP_IMU_ORIENTATION_ROTATION_180: return "ROTATION_180";
+        case BSP_IMU_ORIENTATION_ROTATION_270: return "ROTATION_270";
+        case BSP_IMU_ORIENTATION_FACE_UP:      return "FACE_UP";
+        case BSP_IMU_ORIENTATION_FACE_DOWN:    return "FACE_DOWN";
+        default:                               return "UNKNOWN";
+    }
+}
+
+static void imu_orientation_init() {
+    bsp_imu_set_orientation_cb([](bsp_imu_orientation_t orientation, void *) {
+        bsp_imu_sample_t sample = {};
+        if (bsp_imu_read(&sample) != ESP_OK) {
+            ESP_LOGI(TAG, "orientation: %s", orientation_name(orientation));
+            return;
+        }
+        ESP_LOGI(TAG, "orientation: %s accel=(%.2f, %.2f, %.2f)", orientation_name(orientation),
+                 sample.accel.x, sample.accel.y, sample.accel.z);
+    }, nullptr);
+    esp_err_t err = bsp_imu_set_orientation_enabled(true);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "imu orientation: %s", esp_err_to_name(err));
+    }
+}
+
 void app_entry() {
     bsp_config_t bsp_config = {};
     bsp_config.display.pixel_format = BSP_PIXEL_FORMAT_RGB565;
@@ -46,6 +74,7 @@ void app_entry() {
     bsp_config.dispatch.task_affinity = 1;
     bsp_init(&bsp_config);
     lvgl_init();
+    imu_orientation_init();
 
     lv_async_call([] {
         screen_manager.load(std::make_shared<HomeScreen>());

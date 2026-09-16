@@ -76,6 +76,8 @@ void sdl_panel_present(void);
  * mouse path when headless. */
 void sdl_panel_pump_input(void);
 
+bsp_rotation_t sdl_panel_get_view_rotation(void);
+
 #ifdef __cplusplus
 }
 #endif

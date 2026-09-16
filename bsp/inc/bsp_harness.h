@@ -32,6 +32,9 @@ void bsp_harness_touch_inject(const bsp_touch_point_t *points, int count);
  * as usual; event-only providers get DOWN/UP directly. */
 esp_err_t bsp_harness_button_inject(uint8_t id, bool pressed);
 
+bool      bsp_harness_imu_present(void);
+esp_err_t bsp_harness_imu_inject(const bsp_imu_sample_t *sample);
+
 /* Copy the panel-coordinate rect `area` of the shown image into `pixels`
  * (tightly packed, bsp_display_get_pixel_format(), rotation 0). Needs
  * BSP_DISPLAY_CAP_READBACK; ESP_ERR_NOT_SUPPORTED otherwise. Reading the SPI

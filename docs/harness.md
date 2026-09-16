@@ -11,14 +11,14 @@ JPEG of what the screen shows.
 
 | piece | what it is |
 |---|---|
-| `bsp/inc/bsp_harness.h` | BSP hooks: synthetic touch/button injection, panel readback (`CONFIG_BSP_HARNESS`) |
+| `bsp/inc/bsp_harness.h` | BSP hooks: synthetic touch/button/IMU injection, panel readback (`CONFIG_BSP_HARNESS`) |
 | `libs/harness` | the line protocol and its transport — IDF console on device, stdin/stdout on the host (`CONFIG_HARNESS`) |
 | `tools/harness/harness.py` | PC-side driver: runs a script, does the timing, writes captures |
 
 Injected input feeds the same paths real hardware does — a touch goes through
 the touch layer's event/snapshot delivery, a button level through the shared
-debounce/click state machine — so the app cannot tell a scripted input from a
-finger. Timing (`wait`, `settle`, `tap`) lives entirely on the PC side; the
+debounce/click state machine, an IMU sample through `bsp_imu_read` and the
+orientation tracker — so the app cannot tell a scripted input from a finger. Timing (`wait`, `settle`, `tap`) lives entirely on the PC side; the
 firmware only exposes primitives.
 
 ## Quick start
@@ -73,12 +73,20 @@ One command per line, `#` starts a comment, blank lines are ignored.
 | `move <x> <y> [id]` | same as `down`, for readability |
 | `up [id]` | release |
 | `btn <id> [click\|down\|up]` | physical button in the `bsp_button` id space, default `click` |
+| `imu <ax> <ay> <az> [<gx> <gy> <gz>]` | replace the IMU reading until `imu release` |
+| `imu rot0\|rot90\|rot180\|rot270\|face-up\|face-down` | resting pose matching that `bsp_imu_orientation_t` |
+| `imu release` | back to the board's sensor (the view rotation on the simulator) |
 | `quit` | stop the script (implicit at end of file) |
 | anything else | sent verbatim — app commands registered with `harness_register()` |
 
 `id` is the touch contact (default 0); use 1, 2, … for multi-touch gestures.
 Coordinates are **panel pixels** — the same space `capture` returns, whatever
 rotation the app's `DisplayManager` viewport uses.
+
+IMU values use panel axes — +X right, +Y down, +Z into the screen — with accel
+in g (+1 g pointing up at rest) and gyro in dps. The orientation tracker only
+commits a pose after ~300 ms, so `wait` before `settle` when a script expects
+the UI to rotate.
 
 `settle` needs three consecutive idle answers 50 ms apart; on timeout it warns
 on stderr and the script continues. `tap` and `btn click` hold for 80 ms.
@@ -123,7 +131,8 @@ a custom `partitions.csv` for this).
 ## What each target supports
 
 `info` reports panel size, pixel format, whether touch is present, the button
-count and whether `capture` works, so a script can check before it shoots.
+count, whether `capture` works and whether an IMU is present, so a script can
+check before it shoots.
 
 Capture needs a panel whose contents can be read back
 (`BSP_DISPLAY_CAP_READBACK`):
@@ -185,11 +194,13 @@ out of the log stream sharing the channel.
 
 ```
 ping                    -> #OK ping
-info                    -> #OK info <w> <h> <pixfmt> <touch> <buttons> <capture>
+info                    -> #OK info <w> <h> <pixfmt> <touch> <buttons> <capture> <imu>
 down <id> <x> <y>       -> #OK down      press / drag contact <id> (panel px)
 move <id> <x> <y>       -> #OK move
 up <id>                 -> #OK up
 btn <id> down|up        -> #OK btn
+imu <ax> <ay> <az> [<gx> <gy> <gz>] -> #OK imu
+imu release             -> #OK imu
 idle                    -> #OK idle 0|1
 snap [quality]          -> #OK snap <w> <h>, then #D <base64> lines, #END <bytes>
 quit                    -> #OK quit
@@ -209,6 +220,9 @@ and EOF on a piped stdin ends the run like `quit`.
   default. Use ids ≥ 1 for synthetic contacts you want to keep independent.
 - The `s` key saves a timestamped screenshot under `screenshots/`, through the
   same capture path as `snap`.
+- Boards with an IMU get a stand-in provider whose accel follows the `r`/`l`
+  view rotation, so rotating the window drives `bsp_imu_get_orientation`.
+  Headless runs keep the initial rotation; `imu` injection overrides it.
 - `libs/harness/src/harness.c` also compiles standalone into host unit tests
   that only need `harness_register` (see `libs/wifi/test/run.sh`).
 

@@ -11,7 +11,9 @@
 #include "bsp_touch.h"
 #include "bsp_dispatch.h"
 #include "bsp_audio.h"
+#include "bsp_imu.h"
 #include "sdl_panel.h"
+#include "imu_sim.h"
 #include "sdl_audio.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -37,6 +39,9 @@ esp_err_t bsp_init(const bsp_config_t *config) {
     if (err != ESP_OK) return err;
     bsp_display_set_active(display);
     bsp_touch_set_active(touch);
+
+    bsp_imu_t *imu = NULL;
+    if (imu_sim_create(&imu) == ESP_OK) bsp_imu_set_active(imu);
 
     bsp_audio_t *audio = NULL;
     esp_err_t audio_err = sdl_audio_create(NULL, &audio);  /* PCM | SPEAKER */

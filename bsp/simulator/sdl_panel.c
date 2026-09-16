@@ -119,6 +119,10 @@ static void rotate_window(int delta) {
     s_dirty = true;   /* re-present at the new size/orientation */
 }
 
+bsp_rotation_t sdl_panel_get_view_rotation(void) {
+    return (bsp_rotation_t)(s_window_rotation / 90);
+}
+
 /* Drain the SDL event queue: window close quits; s captures; r/l rotate the host
  * view; ESC quits. Touch is sampled from the mouse state in pump_input. */
 static void pump_events(void) {

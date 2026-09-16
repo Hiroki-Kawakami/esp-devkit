@@ -153,6 +153,35 @@ typedef enum {
     BSP_POWER_SWITCH_SENSOR,  /*!< external-sensor power rail */
 } bsp_power_switch_t;
 
+typedef struct { float x, y, z; } bsp_vec3_t;
+
+typedef enum {
+    BSP_IMU_CAP_ACCEL = 1 << 0,
+    BSP_IMU_CAP_GYRO  = 1 << 1,
+} bsp_imu_caps_t;
+
+typedef struct {
+    bsp_vec3_t accel;
+    bsp_vec3_t gyro;
+    int64_t    timestamp_us;
+} bsp_imu_sample_t;
+
+typedef struct {
+    uint16_t odr_hz;
+    uint16_t accel_range_g;
+    uint16_t gyro_range_dps;
+} bsp_imu_config_t;
+
+typedef enum {
+    BSP_IMU_ORIENTATION_UNKNOWN      = -1,
+    BSP_IMU_ORIENTATION_ROTATION_0   = BSP_ROTATION_0,
+    BSP_IMU_ORIENTATION_ROTATION_90  = BSP_ROTATION_90,
+    BSP_IMU_ORIENTATION_ROTATION_180 = BSP_ROTATION_180,
+    BSP_IMU_ORIENTATION_ROTATION_270 = BSP_ROTATION_270,
+    BSP_IMU_ORIENTATION_FACE_UP,
+    BSP_IMU_ORIENTATION_FACE_DOWN,
+} bsp_imu_orientation_t;
+
 typedef enum {
     BSP_AUDIO_CAP_PCM       = 1 << 0,  /*!< PCM playback path */
     BSP_AUDIO_CAP_TONE      = 1 << 1,  /*!< tone-only buzzer */

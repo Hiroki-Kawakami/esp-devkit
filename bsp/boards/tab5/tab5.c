@@ -20,6 +20,8 @@
 #include "pi4io.h"
 #include "bsp_dispatch.h"
 #include "bsp_sd.h"
+#include "bsp_imu.h"
+#include "bmi270.h"
 #include "sd_mmc.h"
 #include "sd_pwr_ctrl_by_on_chip_ldo.h"
 #include "tab5_panel.h"
@@ -35,6 +37,8 @@ static const char *TAG = "tab5";
 #define TAB5_PI4IOE2_ADDR 0x44
 
 #define TAB5_TOUCH_PIN_INT GPIO_NUM_23
+
+#define TAB5_IMU_ADDR     0x68
 
 #define TAB5_SD_PIN_CLK GPIO_NUM_43
 #define TAB5_SD_PIN_CMD GPIO_NUM_44
@@ -172,6 +176,18 @@ static esp_err_t audio_init(const bsp_config_t *config, i2c_master_bus_handle_t 
     return ESP_OK;
 }
 
+static esp_err_t imu_init(i2c_master_bus_handle_t bus) {
+    bsp_imu_t *imu = NULL;
+    esp_err_t err = bmi270_imu_create(&(bmi270_config_t){
+        .i2c_bus     = bus,
+        .i2c_address = TAB5_IMU_ADDR,
+        .axis_map    = { .x = -1, .y = -2, .z = 3 },
+    }, &imu);
+    if (err != ESP_OK) return err;
+    bsp_imu_set_active(imu);
+    return ESP_OK;
+}
+
 esp_err_t bsp_init(const bsp_config_t *config) {
     bsp_dispatch_configure(config ? config->dispatch.task_priority : 0,
                            config ? config->dispatch.task_affinity : -1);
@@ -200,6 +216,10 @@ esp_err_t bsp_init(const bsp_config_t *config) {
 
     if ((err = audio_init(config, i2c_bus)) != ESP_OK) {
         ESP_LOGW(TAG, "audio unavailable: %s", esp_err_to_name(err));
+    }
+
+    if ((err = imu_init(i2c_bus)) != ESP_OK) {
+        ESP_LOGW(TAG, "imu unavailable: %s", esp_err_to_name(err));
     }
     return ESP_OK;
 }

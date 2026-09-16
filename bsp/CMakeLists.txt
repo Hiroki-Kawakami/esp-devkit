@@ -21,6 +21,7 @@ set(BSP_COMMON_SRCS
     "src/bsp_button.c"
     "src/bsp_hotknot.c"
     "src/bsp_rtc.c"
+    "src/bsp_imu.c"
     "src/bsp_bus.c"
     "src/bsp_power.c"
     "src/bsp_led.c"
@@ -93,7 +94,7 @@ if(ESP_PLATFORM)
             ${BOARD_DEVICE_SRCS}
         INCLUDE_DIRS "inc"
         PRIV_INCLUDE_DIRS "inc_private" ${BOARD_DEVICE_PRIV_INCLUDE_DIRS}
-        PRIV_REQUIRES ${BOARD_DEVICE_PRIV_REQUIRES})
+        PRIV_REQUIRES esp_timer ${BOARD_DEVICE_PRIV_REQUIRES})
 
     # Enable Link Time Optimization
     target_compile_options(${COMPONENT_LIB} PRIVATE -flto)
@@ -109,6 +110,7 @@ else()
             "simulator/sdl_panel.c"
             "simulator/sd_redirect.c"
             "simulator/rtc_sim.c"
+            "simulator/imu_sim.c"
             "simulator/power_sim.c"
             "simulator/sdl_audio.c"
             "simulator/sim_button.c"
