@@ -89,7 +89,7 @@ static esp_err_t op_draw_bitmap(bsp_display_t *self, bsp_rect_t area, const void
         for (int r = 0; r < h; r++)
             memcpy(s->gram + (size_t)(y0 + r) * W + x0, src + (size_t)r * w, w);
     } else {
-        bsp_blit_rotated(s->gram, W, 1, area, pixels, rotation);
+        bsp_blit_rotated(s->gram, (bsp_size_t){ W, H }, self->format, area, pixels, rotation);
     }
 
     /* SEED updates GRAM only — the TCON's own on-glass tracking can't be seeded. */

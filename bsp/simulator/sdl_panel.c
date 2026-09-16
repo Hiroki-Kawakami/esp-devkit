@@ -278,7 +278,7 @@ static esp_err_t display_draw_bitmap(bsp_display_t *self, bsp_rect_t area, const
     uint8_t *target = has_fb ? s_fb[0] : s_glass;
     if (!target) return ESP_ERR_INVALID_STATE;
     if (rotation == BSP_ROTATION_0) blit_rect(target, area, pixels);
-    else bsp_blit_rotated(target, s_panel_w, s_bpp, area, pixels, rotation);
+    else bsp_blit_rotated(target, (bsp_size_t){ s_panel_w, s_panel_h }, s_format, area, pixels, rotation);
     s_present_src = target;
     s_dirty = true;
     return ESP_OK;
@@ -325,7 +325,7 @@ static esp_err_t display_draw_bitmap_epd(bsp_display_t *self, bsp_rect_t area, c
     (void)self;
     if (!s_gram) return ESP_ERR_INVALID_STATE;
     if (rotation == BSP_ROTATION_0) blit_rect(s_gram, area, pixels);
-    else bsp_blit_rotated(s_gram, s_panel_w, s_bpp, area, pixels, rotation);
+    else bsp_blit_rotated(s_gram, (bsp_size_t){ s_panel_w, s_panel_h }, s_format, area, pixels, rotation);
     if (s_epd_mode != BSP_EPD_MODE_NONE) epd_composite(area, s_epd_mode);
     return ESP_OK;
 }

@@ -34,7 +34,7 @@ constexpr int kPrimaryTouchId = 0;
 
 enum class DisplayRenderPath : uint8_t {
     Direct,
-    Bitmap,
+    Partial,
     Surface,
 };
 
@@ -117,6 +117,7 @@ struct DisplayManagerContext {
     bsp_epd_mode_t next_epd_mode = BSP_EPD_MODE_NONE;
     lv_area_t dirty = {};
 
+    size_t buffer_bytes = 0;
     lv_display_t *display = nullptr;
     lv_indev_t *indev = nullptr;
     lv_point_t input_point = {};
@@ -191,6 +192,12 @@ void clear_input_state(DisplayManagerContext &display) {
     display.input_down = false;
     display.input_armed = false;
     display.input_pending = false;
+}
+
+bsp_size_t derive_logical_size(bsp_size_t output_size, bsp_rotation_t rotation) {
+    return swaps_axes(rotation)
+        ? (bsp_size_t){output_size.height, output_size.width}
+        : output_size;
 }
 
 void update_scale(DisplayManagerContext &context) {
@@ -395,7 +402,7 @@ void refresh_epd(DisplayManagerContext &display, DisplayFlushContext &flush) {
 }
 
 void flush_framebuffer(DisplayManagerContext &display, DisplayFlushContext &flush) {
-    if (display.render_path == DisplayRenderPath::Surface && !flush.last) return;
+    if (display.render_path != DisplayRenderPath::Direct && !flush.last) return;
     if (flush.result != ESP_OK || !display.visible) return;
 
     int framebuffer_index = display.render_path == DisplayRenderPath::Direct &&
@@ -443,26 +450,56 @@ esp_err_t DisplayManager::create_display(const DisplayManagerConfig &config,
 
     bsp_size_t logical_size = config.viewport.logical_size;
     if (logical_size.width <= 0 || logical_size.height <= 0) {
-        logical_size = swaps_axes(config.viewport.rotation)
-            ? (bsp_size_t){output_area.size.height, output_area.size.width}
-            : output_area.size;
+        logical_size = derive_logical_size(output_area.size,
+                                           config.viewport.rotation);
     }
     if (logical_size.width <= 0 || logical_size.height <= 0) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    auto *context = new (std::nothrow) DisplayManagerContext;
-    if (!context) return ESP_ERR_NO_MEM;
-
     uint32_t caps = bsp_display_get_caps();
     bool has_framebuffer = caps & BSP_DISPLAY_CAP_FRAMEBUFFER;
     bool is_epd = caps & BSP_DISPLAY_CAP_EPD_REFRESH;
+    bool immediate = config.present_mode == DisplayPresentMode::Immediate;
     bool full_output = same_rect(output_area, full_panel_rect(panel_size));
     bool identity = full_output &&
         logical_size.width == panel_size.width &&
         logical_size.height == panel_size.height &&
         config.viewport.rotation == BSP_ROTATION_0;
 
+    DisplayRenderPath render_path;
+    switch (config.render_mode) {
+        case DisplayRenderMode::Direct:
+            if (!immediate || !has_framebuffer || !identity || is_epd) {
+                return ESP_ERR_NOT_SUPPORTED;
+            }
+            render_path = DisplayRenderPath::Direct;
+            break;
+        case DisplayRenderMode::Partial:
+            if (!immediate) return ESP_ERR_INVALID_ARG;
+            render_path = DisplayRenderPath::Partial;
+            break;
+        case DisplayRenderMode::Surface:
+            render_path = DisplayRenderPath::Surface;
+            break;
+        default:
+            if (immediate && has_framebuffer && identity && !is_epd) {
+                render_path = DisplayRenderPath::Direct;
+            } else if (immediate && (!has_framebuffer || is_epd)) {
+                render_path = DisplayRenderPath::Partial;
+            } else {
+                render_path = DisplayRenderPath::Surface;
+            }
+            break;
+    }
+    if (render_path == DisplayRenderPath::Surface && !has_framebuffer) {
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+
+    auto *context = new (std::nothrow) DisplayManagerContext;
+    if (!context) return ESP_ERR_NO_MEM;
+
+    context->render_path = render_path;
     context->panel_size = panel_size;
     context->logical_size = logical_size;
     context->output_area = output_area;
@@ -476,15 +513,10 @@ esp_err_t DisplayManager::create_display(const DisplayManagerConfig &config,
         delete context;
         return ESP_ERR_NOT_SUPPORTED;
     }
-    if (config.present_mode == DisplayPresentMode::Deferred && !has_framebuffer) {
-        delete context;
-        return ESP_ERR_NOT_SUPPORTED;
-    }
 
     size_t buffer_bytes = 0;
     lv_display_render_mode_t render_mode;
-    if (config.present_mode == DisplayPresentMode::Immediate &&
-        has_framebuffer && identity && !is_epd) {
+    if (render_path == DisplayRenderPath::Direct) {
         context->buffer0 = bsp_display_get_frame_buffer(0);
         if (!context->buffer0) {
             delete context;
@@ -494,10 +526,8 @@ esp_err_t DisplayManager::create_display(const DisplayManagerConfig &config,
         buffer_bytes = (size_t)logical_size.width * logical_size.height *
             context->bytes_per_pixel;
         render_mode = LV_DISPLAY_RENDER_MODE_DIRECT;
-        context->render_path = DisplayRenderPath::Direct;
         context->append(flush_framebuffer);
-    } else if (config.present_mode == DisplayPresentMode::Immediate &&
-               (!has_framebuffer || is_epd)) {
+    } else if (render_path == DisplayRenderPath::Partial) {
         if (!scale_is_one(*context)) {
             delete context;
             return ESP_ERR_NOT_SUPPORTED;
@@ -515,12 +545,19 @@ esp_err_t DisplayManager::create_display(const DisplayManagerConfig &config,
 
         buffer_bytes = (size_t)logical_size.width * lines *
             context->bytes_per_pixel;
+        /* Rotation re-slices the same budget by the new stride, so one row of
+         * the long edge is the floor. */
+        size_t long_edge_bytes = (size_t)(logical_size.width > logical_size.height
+            ? logical_size.width
+            : logical_size.height) * context->bytes_per_pixel;
+        if (buffer_bytes < long_edge_bytes) buffer_bytes = long_edge_bytes;
+        buffer_bytes = (buffer_bytes + 63) & ~(size_t)63;
         uint32_t memory_caps = config.buffer.memory_caps
             ? config.buffer.memory_caps
-            : MALLOC_CAP_DEFAULT;
-        context->buffer0 = heap_caps_aligned_alloc(4, buffer_bytes, memory_caps);
+            : (has_framebuffer ? MALLOC_CAP_SPIRAM : MALLOC_CAP_DEFAULT);
+        context->buffer0 = heap_caps_aligned_alloc(64, buffer_bytes, memory_caps);
         if (count == 2 && context->buffer0) {
-            context->buffer1 = heap_caps_aligned_alloc(4, buffer_bytes, memory_caps);
+            context->buffer1 = heap_caps_aligned_alloc(64, buffer_bytes, memory_caps);
         }
         if (!context->buffer0 || (count == 2 && !context->buffer1)) {
             if (context->buffer0) heap_caps_free(context->buffer0);
@@ -529,12 +566,13 @@ esp_err_t DisplayManager::create_display(const DisplayManagerConfig &config,
             return ESP_ERR_NO_MEM;
         }
         render_mode = LV_DISPLAY_RENDER_MODE_PARTIAL;
-        context->render_path = DisplayRenderPath::Bitmap;
         context->append(map_flush_area);
         context->append(draw_bitmap);
         if (is_epd) {
             context->append(accumulate_dirty);
             context->append(refresh_epd);
+        } else if (has_framebuffer) {
+            context->append(flush_framebuffer);
         }
     } else {
         buffer_bytes = (size_t)logical_size.width * logical_size.height *
@@ -549,13 +587,13 @@ esp_err_t DisplayManager::create_display(const DisplayManagerConfig &config,
         }
         std::memset(context->buffer0, 0, buffer_bytes);
         render_mode = LV_DISPLAY_RENDER_MODE_DIRECT;
-        context->render_path = DisplayRenderPath::Surface;
-        if (config.present_mode == DisplayPresentMode::Immediate) {
+        if (immediate) {
             context->append(composite_immediate);
             context->append(flush_framebuffer);
         }
     }
     context->append(flush_ready);
+    context->buffer_bytes = buffer_bytes;
 
     context->display = lv_display_create(logical_size.width, logical_size.height);
     if (!context->display) {
@@ -621,25 +659,53 @@ esp_err_t DisplayManager::set_rotation(lv_display_t *display,
     DisplayManagerContext *context = context_for(display);
     if (!context) return ESP_ERR_INVALID_ARG;
 
-    auto touch_mutex = static_cast<SemaphoreHandle_t>(touch_mutex_);
-    if (touch_mutex) xSemaphoreTake(touch_mutex, portMAX_DELAY);
     if (context->render_path == DisplayRenderPath::Direct &&
         rotation != BSP_ROTATION_0) {
-        if (touch_mutex) xSemaphoreGive(touch_mutex);
         return ESP_ERR_NOT_SUPPORTED;
     }
 
+    auto touch_mutex = static_cast<SemaphoreHandle_t>(touch_mutex_);
+    if (touch_mutex) xSemaphoreTake(touch_mutex, portMAX_DELAY);
+
     bsp_rotation_t previous = context->rotation;
+    bsp_size_t previous_size = context->logical_size;
+    /* A scaling viewport keeps the resolution it was given; an unscaled one
+     * follows the rotation. */
+    bool unscaled = scale_is_one(*context);
     context->rotation = rotation;
+    if (unscaled) {
+        context->logical_size = derive_logical_size(context->output_area.size,
+                                                    rotation);
+    }
     update_scale(*context);
-    if (context->render_path == DisplayRenderPath::Bitmap &&
+    if (context->render_path == DisplayRenderPath::Partial &&
         !scale_is_one(*context)) {
         context->rotation = previous;
+        context->logical_size = previous_size;
         update_scale(*context);
         if (touch_mutex) xSemaphoreGive(touch_mutex);
         return ESP_ERR_NOT_SUPPORTED;
     }
+    bsp_size_t logical_size = context->logical_size;
     if (touch_mutex) xSemaphoreGive(touch_mutex);
+
+    if (rotation == previous) return ESP_OK;
+
+    if (logical_size.width != previous_size.width ||
+        logical_size.height != previous_size.height) {
+        lv_display_set_resolution(display, logical_size.width,
+                                  logical_size.height);
+        /* The draw buffers carry the resolution's stride, so they have to be
+         * handed back after the swap. */
+        lv_display_set_buffers(display, context->buffer0, context->buffer1,
+                               context->buffer_bytes,
+                               context->render_path == DisplayRenderPath::Partial
+                                   ? LV_DISPLAY_RENDER_MODE_PARTIAL
+                                   : LV_DISPLAY_RENDER_MODE_DIRECT);
+    } else {
+        lv_obj_t *screen = lv_display_get_screen_active(display);
+        if (screen) lv_obj_invalidate(screen);
+    }
     return ESP_OK;
 }
 
@@ -705,7 +771,7 @@ esp_err_t DisplayManager::compose(lv_display_t *display,
     if (!context) return ESP_ERR_INVALID_ARG;
 
     if (!context->visible) return ESP_OK;
-    if (context->render_path == DisplayRenderPath::Bitmap) return ESP_OK;
+    if (context->render_path == DisplayRenderPath::Partial) return ESP_OK;
     if (context->render_path != DisplayRenderPath::Surface) {
         return ESP_ERR_NOT_SUPPORTED;
     }

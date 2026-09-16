@@ -56,7 +56,10 @@ struct bsp_display {
      * control. Distinct from set_brightness (the backlight rail). */
     esp_err_t (*set_power)(bsp_display_t *self, bsp_display_power_t state);
 
-    /* host-side framebuffer fast path — NULL when the panel has no host FB */
+    /* host-side framebuffer fast path — NULL when the panel has no host FB.
+     * Such a driver's draw_bitmap writes the presented framebuffer rather than
+     * the panel, so partial chunks accumulate in one buffer however many the
+     * panel has, and flush is what puts them on the glass. */
     void   ** (*get_framebuffers)(bsp_display_t *self);
     esp_err_t (*flush)(bsp_display_t *self, int fb_index);
 
@@ -79,9 +82,11 @@ bsp_display_t *bsp_display_get_active(void);
  * bsp_init() calls this once after creating its display provider. */
 void bsp_display_set_active(bsp_display_t *display);
 
-/* Shared rotated blit for copy-based backends (EPD GRAM, SPI glass): write the
- * source pixels into the panel-coordinate rect `area`, un-rotating by `rotation`.
- * `dst_stride_px` is the destination's full row width in pixels; `px_bytes` the
- * bytes per pixel. rotation == BSP_ROTATION_0 callers use a plain row copy instead. */
-void bsp_blit_rotated(uint8_t *dst, int dst_stride_px, size_t px_bytes,
+/* Shared rotated blit for copy-based backends (EPD GRAM, SPI glass, host
+ * framebuffers): write the source pixels into the destination-coordinate rect
+ * `area`, un-rotating by `rotation`. `dst_size` is the whole destination picture
+ * and `format` its pixel format; BSP_ROTATION_0 degenerates to a plain row copy.
+ * Runs on the PPA where the SoC has one and the destination is eligible (RGB
+ * format, cache-line aligned, large enough), else on the CPU. */
+void bsp_blit_rotated(void *dst, bsp_size_t dst_size, bsp_pixel_format_t format,
                       bsp_rect_t area, const void *pixels, bsp_rotation_t rotation);

@@ -20,6 +20,21 @@ enum class DisplayPresentMode : uint8_t {
     Deferred,
 };
 
+/* How LVGL's rendering reaches the panel.
+ *   Auto    - derived from the BSP capabilities and the viewport.
+ *   Direct  - LVGL renders straight into the panel framebuffer. Cheapest, but
+ *             the viewport must match the panel and set_rotation is rejected.
+ *   Partial - LVGL renders chunks into small buffers that are blitted (and
+ *             un-rotated) into the panel. Immediate only.
+ *   Surface - LVGL renders into a full offscreen surface that is composited
+ *             into the panel framebuffer. Needs a framebuffer. */
+enum class DisplayRenderMode : uint8_t {
+    Auto,
+    Direct,
+    Partial,
+    Surface,
+};
+
 struct DisplayViewportConfig {
     /* Empty size uses the whole BSP panel. Coordinates are panel-native. */
     bsp_rect_t output_area = {};
@@ -40,6 +55,7 @@ struct DisplayBufferConfig {
 struct DisplayManagerConfig {
     DisplayViewportConfig viewport;
     DisplayPresentMode present_mode = DisplayPresentMode::Immediate;
+    DisplayRenderMode render_mode = DisplayRenderMode::Auto;
     DisplayBufferConfig buffer;
     bool make_default = true;
 };
@@ -61,7 +77,8 @@ public:
     esp_err_t create_display(const DisplayManagerConfig &config,
                              lv_display_t **out_display);
 
-    /* Call these from the LVGL context or while holding the LVGL lock. */
+    /* Call these from the LVGL context or while holding the LVGL lock. When the
+     * viewport derives its logical size, rotation swaps the LVGL resolution. */
     esp_err_t set_rotation(lv_display_t *display, bsp_rotation_t rotation);
     esp_err_t set_epd_mode(lv_display_t *display, bsp_epd_mode_t mode,
                            bool once);

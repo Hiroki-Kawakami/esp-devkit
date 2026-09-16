@@ -54,10 +54,15 @@ esp_err_t mipi_dsi_send_init_cmds(esp_lcd_panel_io_handle_t io,
 static esp_err_t draw_bitmap(bsp_display_t *self, bsp_rect_t rect, const void *data,
                              bsp_rotation_t rotation) {
     mipi_dsi_lcd_t *lcd = (mipi_dsi_lcd_t *)self;
-    if (rotation != BSP_ROTATION_0) return ESP_ERR_NOT_SUPPORTED;
-    return esp_lcd_panel_draw_bitmap(lcd->panel,
-        bsp_rect_min_x(rect), bsp_rect_min_y(rect),
-        bsp_rect_max_x(rect), bsp_rect_max_y(rect), data);
+    uint8_t *fb = lcd->frame_buffers[lcd->shown];
+    if (!fb) return ESP_ERR_INVALID_STATE;
+    if (bsp_rect_min_x(rect) < 0 || bsp_rect_min_y(rect) < 0 ||
+        bsp_rect_max_x(rect) > self->size.width ||
+        bsp_rect_max_y(rect) > self->size.height) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    bsp_blit_rotated(fb, self->size, self->format, rect, data, rotation);
+    return ESP_OK;
 }
 
 static esp_err_t flush(bsp_display_t *self, int fb_index) {

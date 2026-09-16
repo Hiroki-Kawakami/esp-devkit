@@ -14,6 +14,8 @@
 
 static const char *TAG = "tab5_hello";
 
+static lv_display_t *s_display = nullptr;
+
 static void lvgl_init() {
     lvgl_port_cfg_t config = {
         .task_priority    = 4,
@@ -30,13 +32,12 @@ static void lvgl_init() {
     }
 
     DisplayManagerConfig display_config = {};
-    lv_display_t *disp = nullptr;
-    err = display_manager.create_display(display_config, &disp);
+    display_config.render_mode = DisplayRenderMode::Partial;
+    err = display_manager.create_display(display_config, &s_display);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "create_display: %s", esp_err_to_name(err));
         return;
     }
-
 }
 
 static const char *orientation_name(bsp_imu_orientation_t orientation) {
@@ -60,6 +61,20 @@ static void imu_orientation_init() {
         }
         ESP_LOGI(TAG, "orientation: %s accel=(%.2f, %.2f, %.2f)", orientation_name(orientation),
                  sample.accel.x, sample.accel.y, sample.accel.z);
+
+        if (orientation != BSP_IMU_ORIENTATION_ROTATION_0 &&
+            orientation != BSP_IMU_ORIENTATION_ROTATION_90 &&
+            orientation != BSP_IMU_ORIENTATION_ROTATION_180 &&
+            orientation != BSP_IMU_ORIENTATION_ROTATION_270) {
+            return;
+        }
+        auto rotation = static_cast<bsp_rotation_t>(orientation);
+        lv_async_call([rotation] {
+            esp_err_t err = display_manager.set_rotation(s_display, rotation);
+            if (err != ESP_OK) {
+                ESP_LOGW(TAG, "set_rotation: %s", esp_err_to_name(err));
+            }
+        });
     }, nullptr);
     esp_err_t err = bsp_imu_set_orientation_enabled(true);
     if (err != ESP_OK) {

@@ -169,7 +169,7 @@ static esp_err_t draw_bitmap(bsp_display_t *self, bsp_rect_t area, const void *p
             d->rotate_px = d->rotate_buf ? need : 0;
         }
         if (!d->rotate_buf) return ESP_ERR_NO_MEM;
-        bsp_blit_rotated((uint8_t *)d->rotate_buf, w, 2,
+        bsp_blit_rotated(d->rotate_buf, (bsp_size_t){ w, h }, self->format,
                          (bsp_rect_t){ {0, 0}, { w, h } }, pixels, rotation);
         src = d->rotate_buf;
     }
