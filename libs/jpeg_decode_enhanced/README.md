@@ -10,7 +10,8 @@ IDF 標準の `jpeg_decoder_process()` を置き換え、次の 2 つを提供�
   置けば PSRAM 帯域のボトルネックを回避できる。フルレンジ YUV→RGB 変換にも対応。
 - **Layer 2: PPA パイプライン** (`jpeg_ppa_pipeline.h`) — Layer 1 の
   ストリップを PPA SRM (scale / rotate / mirror) へ流し込み、デコードと
-  並行して出力フレームバッファへ合成する高レベル API。
+  並行して出力フレームバッファへ合成する高レベル API。PPA へは IDF の
+  `ppa_do_scale_rotate_mirror()` を通さず、ISR から 2D-DMA へ直接投入する。
 
 全 API は C 言語 (opaque handle + `esp_err_t`)。
 
@@ -35,9 +36,9 @@ JPEG codec ──TX: PSRAM 上の JPEG ストリーム──┐
                                              ▼
                     ストリップバッファ (利用者確保 1〜2 枚, SRAM or PSRAM)
                                              │
-                                             ▼  on_strip_done (ISR) → queue
-                                       PPA worker task
-                                             │  ppa_do_scale_rotate_mirror (blocking)
+                                             ▼  on_strip_done (ISR): PPA が空いていれば投入
+                                       PPA SRM (2D-DMA 直接投入)
+                                             │  PPA 完了 (ISR): release → 次のストリップを投入
                                              ▼
                                   出力フレームバッファ (PSRAM)
 ```
@@ -61,7 +62,7 @@ jpeg_ppa_pipeline_cfg_t cfg = {
     .rgb_order        = JPEG_DEC_RGB_ELEMENT_ORDER_BGR,
     .conv_std         = JPEG_YUV_RGB_CONV_STD_BT601,
     .yuv_full_range   = true,                      // MJPEG はフルレンジ
-    .worker_core      = 0,                         // -1 = affinity なし
+    .timeout_ms       = 0,                         // 0 = 200 ms
 };
 jpeg_ppa_pipeline_handle_t pipe;
 ESP_ERROR_CHECK(jpeg_ppa_pipeline_new(&cfg, &pipe));
@@ -85,11 +86,16 @@ ESP_ERROR_CHECK(jpeg_ppa_pipeline_process(pipe, jpeg, jpeg_size, &out, &t, NULL)
 // 戻った時点で全ストリップの PPA 書き込みまで完了している
 ```
 
-リソース (ストリップバッファ・JPEG エンジン・PPA クライアント・worker task) は
+リソース (ストリップバッファ・JPEG エンジン・PPA クライアント) は
 `new` 時に固定。**回転・スケール・ミラー・クロップ・出力位置は
 `process()` ごとに自由に変えられる**。入力 JPEG のサイズも毎フレーム
 異なってよく (ヘッダから自動検出)、ストリップ高さはフレームごとに決まる。
 ストリップバッファは `del` するまで保持し、`del` 後に利用者が解放する。
+
+`process()` の間は PPA SRM エンジンを占有する。同じアプリ内の
+`ppa_do_scale_rotate_mirror()` (ディスプレイの回転など) はその間待たされ、
+最大 1 フレームぶん遅れる。PPA の blend / fill は影響を受けない
+(2D-DMA チャネルが空くまで待つだけ)。
 
 ### Layer 1: ストリップを自分で消費する
 
@@ -228,9 +234,13 @@ ESP32-P4 では **PSRAM だけでなく Internal SRAM もキャッシュ越し**
   になり、ログに `strip consumer stalled after N/M strips` と出る。
 - 壊れた JPEG (ヘッダ破損など) やバッファに 16 行入らない幅のフレームは
   DMA 開始前に `ESP_ERR_INVALID_STATE` / `ESP_ERR_INVALID_SIZE` で弾く。
-- Layer 2 はデコードエラー時に worker の残作業を精算してから返るので、
-  次の `process()` はクリーンな状態から始まる。PPA 個別ストリップの
-  エラーも `process()` の戻り値に伝播する。
+- Layer 2 はデコードエラー時に未処理ストリップを精算し、PPA に投入済みの
+  1 本の完了を待ってから返るので、次の `process()` はクリーンな状態から
+  始まる。PPA 個別ストリップのエラーも `process()` の戻り値に伝播する。
+- デコード後 `timeout_ms` 以内に PPA が終わらなければ投入中の 2D-DMA
+  トランザクションを強制終了して `ESP_ERR_TIMEOUT`。強制終了できなかった
+  (2D-DMA のキューに残っていた) 場合、以降の `process()` は
+  `ESP_ERR_INVALID_STATE` を返す。
 
 ## チューニング指針 (Tab5 / ESP32-P4 rev1.0 での実測)
 
@@ -238,19 +248,21 @@ ESP32-P4 では **PSRAM だけでなく Internal SRAM もキャッシュ越し**
 
 | 構成 | SRAM | 1 フレーム |
 |---|---|---|
-| 16 行 × 2 枚 (Internal) | 120 KiB | 17.4 ms |
-| 16 行 × 5 本 (旧実装の推奨) | 300 KiB | 17.4 ms |
-| 32 行 × 2 枚 | 240 KiB | 15.8 ms |
-| 16 行 × 1 枚 | 60 KiB | 29.5〜30.6 ms |
+| 16 行 × 2 枚 (Internal) | 120 KiB | 16.4 ms (IDF の PPA API 経由だと 18.4 ms) |
+| 16 行 × 1 枚 | 60 KiB | 28.3 ms (同 30.5 ms) |
+| 16 行 × 5 本 (旧実装の推奨, IDF の PPA API 経由) | 300 KiB | 17.4 ms |
+| 32 行 × 2 枚 (同上) | 240 KiB | 15.8 ms |
 
-- **3 枚以上にしても速くならない**。律速は PPA (1 ストリップ ≒ 360 µs、JPEG は
-  ≒ 270 µs) で、2 枚あればデコードと PPA の並列化は効き切る。
+- **3 枚以上にしても速くならない**。律速は PPA (1 ストリップ ≒ 300 µs + ソフト処理、
+  JPEG は ≒ 270 µs) で、2 枚あればデコードと PPA の並列化は効き切る。
 - **PPA SRM は 16 行単位のマクロブロックで処理する** (rev1.x は 16×16 固定)。
   4〜16 行はどれも ≒ 300 µs、17〜32 行は ≒ 590 µs (1280 幅)。8 行ストリップは
   PPA の仕事量が 16 行の倍になり 34 ms/フレームに落ちる。rev3 以降は
   マクロブロックの既定が 32×32 なので要再計測。
-- PPA 呼び出しごとのソフト処理 (検証・msync・2D-DMA 接続) は ≒ 60 µs で、
-  上の 360 µs の 2 割弱。
+- `ppa_do_scale_rotate_mirror()` 1 回のソフト処理 (検証・msync・キュー・
+  タスク起床・2D-DMA 接続) は ≒ 60 µs。Layer 2 の直接投入では検証と
+  出力 msync をフレーム 1 回にまとめ、ISR から連鎖投入するので ≒ 23 µs
+  (残りは 2D-DMA のチャネル確保と接続)。
 - 中間を RGB565 にすると速度は同じで、出力が RGB565 かつ等倍なら
   RGB888 中間と出力がビット一致する (メモリは 2/3)。
 
@@ -287,23 +299,49 @@ ESP32-P4 では **PSRAM だけでなく Internal SRAM もキャッシュ越し**
    有効化は全フレームを壊すリスクがある。消費側の停滞はタイムアウト時に
    `isr_next_strip == chain_tail + 1` (リンク済み descriptor を全消費して
    未スプライスの所で停止) というシグネチャで事後診断している。
-8. `release_strip()` のスプライス + append は `frame_active` フラグで
+8. **ISR から実行される経路 (Layer 2 のストリップ投入、`release_strip()`、
+   descriptor 書き込み) は IRAM に置く**。flash 上に置くと、2D-DMA ISR 内で
+   キャッシュラインの境界をまたいだ命令フェッチが `Illegal instruction` で
+   落ちることがあった (ESP32-P4 rev1.0 / IDF v6.1、数百フレームに 1 回)。
+   IDF の 2D-DMA 操作関数は `CONFIG_DMA2D_OPERATION_FUNC_IN_IRAM` 無効
+   (flash 配置) のままでも再現しなかった。
+9. `release_strip()` のスプライス + append は `frame_active` フラグで
    ゲートしたスピンロック内で行う。エラーパスでは `dma2d_force_end` の前に
    ゲートを閉じるので、遅れてきた release が解放済み (他用途に再割当て
    されたかもしれない) チャネルを叩くことはない。正常フレームでは EOF 時点で
    全スプライトが完了済みなのでゲートの影響はない。
 
+### PPA SRM 直接投入 (`src/ppa_srm_fast.c`)
+
+`ppa_srm_transaction_on_picked()` と同じレジスタ設定 (YUV444 入力の 2D-DMA CSC、
+DIG-734 回避の `bypass_mb_order` を含む) を行うが、フレーム単位で
+検証・倍率の量子化・dscr-port ブロックサイズを済ませておき、ストリップごとには
+descriptor 2 個の書き込みと `dma2d_enqueue()` だけを行う。
+
+- 他の SRM クライアントとの排他は **PPA ドライバ内部のエンジンセマフォ**
+  (`ppa_priv.h` の `ppa_engine_t.sem`) をフレームの間保持して行う。
+  PM ロックも同様に保持する。
+- IDF のドライバは「セマフォ保持中 = 実行中のトランザクションがあり、その完了
+  ISR がエンジンキューを捌く」前提。non-blocking クライアントがフレーム中に
+  キューに積んだトランザクションはそのままでは誰も開始しないので、
+  `end_frame` でキューを確認し、あればセマフォを保持したまま代わりに
+  `dma2d_enqueue()` する (`ppa_transaction_done_cb()` と同じ手順)。
+- ストリップバッファの入力側 cache sync は行わない (DMA しか書かないため)。
+  出力バッファの M2C invalidate はフレームの前後に 1 回ずつ。
+- ホスト版 (`ppa_srm_fast_host.c`) は `idf_compat` の PPA シムを同期的に呼ぶ。
+
 ### IDF バージョン依存
 
-`jpeg_private.h` (engine 構造体・ヘッダパーサ・ディスクリプタテーブル) と
+`jpeg_private.h` (engine 構造体・ヘッダパーサ・ディスクリプタテーブル)、
+`ppa_priv.h` (PPA クライアント/エンジン構造体) と
 `esp_private/dma2d.h` という **ESP-IDF の非公開ヘッダに依存**する。
-構造体レイアウトが変わると黙って壊れるため、`jpeg_decode_enhanced.c` に
-`ESP_IDF_VERSION` ガードがあり、検証済みは **v6.0.x〜v6.1.x**。別バージョンへ
+構造体レイアウトが変わると黙って壊れるため、`jpeg_decode_enhanced.c` と
+`ppa_srm_fast.c` に `ESP_IDF_VERSION` ガードがあり、検証済みは **v6.0.x〜v6.1.x**。別バージョンへ
 移行する際は private 構造体のレイアウトを照合してから
 `JPEG_DECODE_ENHANCED_SKIP_IDF_VERSION_CHECK` を定義する。
 
-`esp_driver_jpeg` をコンポーネントごと差し替える (override) 方式は
-意図的に採っていない。
+`esp_driver_jpeg` / `esp_driver_ppa` をコンポーネントごと差し替える (override)
+方式は意図的に採っていない。
 
 v5.4 → v6.0 で対応した非公開 API の変更点:
 

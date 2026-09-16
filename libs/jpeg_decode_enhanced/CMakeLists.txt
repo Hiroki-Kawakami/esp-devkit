@@ -12,7 +12,9 @@ endif()
 # jpeg_decode_enhanced — strip-pipelined HW JPEG decode + PPA (device) with a
 # host (simulator) backend so the same public API compiles for both targets.
 #
-# Layer 2 (jpeg_ppa_pipeline.c) is hardware-agnostic and shared by both targets.
+# Layer 2 (jpeg_ppa_pipeline.c) is hardware-agnostic and shared by both targets;
+# its PPA submission path is target-specific (ppa_srm_fast.c drives 2D-DMA
+# directly, ppa_srm_fast_host.c goes through the idf_compat PPA shim).
 # Layer 1 is target-specific: the device build uses the 2D-DMA strip decoder
 # (jpeg_decode_enhanced.c, reaches into esp_driver_jpeg private structs); the
 # simulator uses a whole-frame CPU decode backed by image_framework
@@ -26,6 +28,7 @@ if(ESP_PLATFORM)
         SRCS
             "src/jpeg_decode_enhanced.c"
             "src/jpeg_ppa_pipeline.c"
+            "src/ppa_srm_fast.c"
         INCLUDE_DIRS "include"
         REQUIRES esp_driver_jpeg esp_driver_ppa esp_driver_dma esp_hal_jpeg
         PRIV_REQUIRES hal esp_mm esp_hw_support esp_pm driver)
@@ -40,11 +43,17 @@ if(ESP_PLATFORM)
     target_include_directories(${COMPONENT_LIB} PRIVATE
         "$ENV{IDF_PATH}/components/esp_driver_jpeg"
         "$ENV{IDF_PATH}/components/esp_driver_jpeg/private")
+
+    # ppa_srm_fast.c takes the PPA driver's SRM engine lock, which lives in
+    # esp_driver_ppa's private ppa_priv.h (same version guard applies).
+    idf_component_get_property(ppa_dir esp_driver_ppa COMPONENT_DIR)
+    target_include_directories(${COMPONENT_LIB} PRIVATE "${ppa_dir}/src")
 else()
     idf_component_register(
         SRCS
             "src/jpeg_decode_enhanced_host.c"
             "src/jpeg_ppa_pipeline.c"
+            "src/ppa_srm_fast_host.c"
         INCLUDE_DIRS "include"
         REQUIRES image_framework)
 endif()

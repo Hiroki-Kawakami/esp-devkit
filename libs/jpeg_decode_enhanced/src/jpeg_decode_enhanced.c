@@ -320,7 +320,7 @@ static void s_compute_dma_blocks(jpeg_enh_strip_decoder_handle_t h)
 
 // suc_eof=0 on every descriptor: the JPEG-DMA bridge drives SUC_EOF off the
 // JPEG hardware's frame-done signal, matching IDF's own decoder.
-static void s_fill_strip_descriptor(jpeg_enh_strip_decoder_handle_t h, uint32_t strip_idx)
+static IRAM_ATTR void s_fill_strip_descriptor(jpeg_enh_strip_decoder_handle_t h, uint32_t strip_idx)
 {
     jpeg_dec_header_info_t *hi = h->engine->header_info;
     dma2d_descriptor_t *d = s_strip_desc(h, strip_idx);
@@ -909,7 +909,8 @@ out:
     return err;
 }
 
-esp_err_t jpeg_enh_strip_decoder_release_strip(jpeg_enh_strip_decoder_handle_t h, uint32_t strip_idx)
+// IRAM: called from the Layer 2 PPA-done ISR (see jpeg_ppa_pipeline.c).
+IRAM_ATTR esp_err_t jpeg_enh_strip_decoder_release_strip(jpeg_enh_strip_decoder_handle_t h, uint32_t strip_idx)
 {
     if (!h || !h->ring_count) return ESP_ERR_INVALID_ARG;
     // The buffer strip_idx used is next needed by strip strip_idx + ring_count;

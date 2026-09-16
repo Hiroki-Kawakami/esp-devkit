@@ -7,7 +7,7 @@
  * Decodes a JPEG into caller-owned strip buffers (Layer 1) and pushes each
  * strip through PPA SRM into a destination frame buffer as soon as it lands,
  * in parallel with the decode of subsequent strips. Resources (strip buffers,
- * JPEG engine, PPA client, worker task) are fixed at creation; everything
+ * JPEG engine, PPA client) are fixed at creation; everything
  * about the transform — rotation, scale, mirror, crop, output placement —
  * can change per frame.
  *
@@ -48,10 +48,8 @@ typedef struct {
     jpeg_dec_rgb_element_order_t rgb_order;/*!< Element order of the decoded strips (RGB modes) */
     jpeg_yuv_rgb_conv_std_t conv_std;     /*!< BT601 or BT709 for the decode-side YUV->RGB CSC */
     bool yuv_full_range;                  /*!< Full-range (JFIF) decode matrix; see jpeg_enh_decode_cfg_t */
-
-    uint32_t worker_stack_size;           /*!< PPA worker task stack (0 = 4096) */
-    uint32_t worker_priority;             /*!< PPA worker task priority (0 = 17) */
-    int worker_core;                      /*!< PPA worker core affinity (0 / 1 / -1 = no affinity) */
+    uint32_t timeout_ms;                  /*!< Per-frame decode timeout, and the wait for the last PPA
+                                               strips after decode (0 = 200 ms) */
 } jpeg_ppa_pipeline_cfg_t;
 
 typedef struct {
@@ -91,8 +89,8 @@ typedef struct {
 } jpeg_ppa_output_t;
 
 /**
- * @brief Create the pipeline: strip decoder (Layer 1), PPA SRM client and
- *        worker task. The strip buffers stay owned by the caller.
+ * @brief Create the pipeline: strip decoder (Layer 1) and PPA SRM client.
+ *        The strip buffers stay owned by the caller.
  */
 esp_err_t jpeg_ppa_pipeline_new(const jpeg_ppa_pipeline_cfg_t *cfg,
                                 jpeg_ppa_pipeline_handle_t *out_handle);
@@ -107,6 +105,8 @@ esp_err_t jpeg_ppa_pipeline_del(jpeg_ppa_pipeline_handle_t handle);
  *        Blocks until every strip has been pushed through PPA.
  *
  * Pixels of the output picture outside the rendered rect are left untouched.
+ * The PPA SRM engine is held for the whole frame: other PPA SRM clients
+ * (ppa_do_scale_rotate_mirror) wait until this returns.
  *
  * @param transform NULL = identity (full image, no rotation/scale, origin 0,0)
  * @param info      Optional; receives the frame geometry

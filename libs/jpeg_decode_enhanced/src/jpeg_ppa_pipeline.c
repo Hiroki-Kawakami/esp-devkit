@@ -6,18 +6,17 @@
  *
  * Each jpeg_ppa_pipeline_process() call pushes a single JPEG frame through:
  *   1) strip-decode into the strip buffers (Layer 1, in the calling thread)
- *   2) per-strip PPA SRM into the destination frame buffer (worker task)
+ *   2) per-strip PPA SRM into the destination frame buffer
  *
- * The strip decoder fires on_strip_done from ISR; each strip event is
- * forwarded to a dedicated PPA worker task via a queue. The worker calls
- * ppa_do_scale_rotate_mirror() in BLOCKING mode (which only blocks the
- * worker, not the decode thread) and then releases the strip so the chained
- * DMA can reuse its buffer for a later strip of the same image.
+ * Strips are pumped entirely from ISR context: the strip-done callback
+ * submits the strip to PPA when it is idle (otherwise parks it), and the PPA
+ * done callback releases the finished strip and submits the next parked one.
+ * The decoder stalls while every strip buffer is unreleased, so at most
+ * MAX_PARKED strips are ever parked.
  *
  * Wait-for-frame: the decode call returns once the JPEG hardware reports
- * RX_EOF, but the last few PPA strips may still be in flight; process()
- * blocks on all_done_sem (released by the worker after the final strip)
- * before returning.
+ * RX_EOF, but the last PPA strips may still be in flight; process() blocks on
+ * all_done (given after the final strip) before returning.
  *
  * Strip placement: the per-frame transform is resolved in the on_frame_start
  * callback (decode-thread context, before any strip arrives) into integer
@@ -29,35 +28,33 @@
 
 #include <string.h>
 #include "jpeg_ppa_pipeline.h"
+#include "ppa_srm_fast.h"
 #include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#ifdef ESP_PLATFORM
+#include "esp_attr.h"
+#else
+#define IRAM_ATTR
+#endif
 
 static const char *TAG = "jpeg_ppa";
 
-#define DEFAULT_WORKER_STACK  4096
-#define DEFAULT_WORKER_PRIO   17
+#define DEFAULT_TIMEOUT_MS    200
 #define SCALE_FRAG_MAX        16        // PPA scale quantization: 1/16 steps
-#define ABORT_DRAIN_TIMEOUT   pdMS_TO_TICKS(1000)
-
-// Poison strip_idx that tells the worker task to exit.
-#define WORKER_EXIT_MARKER    UINT32_MAX
+#define MAX_PARKED            2
 
 struct jpeg_ppa_pipeline_s {
     jpeg_ppa_pipeline_cfg_t cfg;
     jpeg_enh_strip_decoder_handle_t decoder;
-    ppa_client_handle_t ppa_client;
-
-    QueueHandle_t worker_queue;          // jpeg_enh_strip_event_t items
+    ppa_srm_fast_handle_t srm;
     SemaphoreHandle_t all_done;
-    SemaphoreHandle_t worker_joined;
-    TaskHandle_t worker_task;
+    TickType_t timeout;
+    bool broken;                         // an SRM submission could not be cancelled
 
     // Per-frame state, written by process()/on_frame_start before any strip
-    // event can reach the worker, read-only afterwards.
+    // arrives, read-only afterwards.
     struct {
         jpeg_enh_frame_info_t frame;
         jpeg_ppa_output_t out;           // buffer_size resolved
@@ -67,11 +64,19 @@ struct jpeg_ppa_pipeline_s {
         uint32_t scaled_w;               // crop.w scaled by fx (output px)
         uint32_t scaled_h;               // crop.h scaled by fy (output px)
         uint32_t ext_w, ext_h;           // scaled crop extent after rotation
-        bool valid;                      // on_frame_start completed
+        bool valid;                      // on_frame_start completed (SRM engine held)
     } cur;
+
+    // Strip pump, guarded by lock
+    portMUX_TYPE lock;
+    jpeg_enh_strip_event_t parked[MAX_PARKED];
+    uint32_t parked_head, parked_count;
+    bool busy;                           // a strip is in PPA
+    uint32_t busy_strip;
+    bool abort_frame;
+
     volatile uint32_t pending_strips;
     volatile esp_err_t frame_err;
-    volatile bool abort_frame;
 };
 
 static inline uint32_t s_scaled(uint32_t v, uint32_t f16) { return (uint32_t)(((uint64_t)v * f16) / SCALE_FRAG_MAX); }
@@ -174,27 +179,55 @@ static esp_err_t s_on_frame_start(const jpeg_enh_frame_info_t *info, void *user_
         return ESP_ERR_INVALID_ARG;
     }
 
+    ppa_srm_oper_config_t op = {
+        .in = {
+            .pic_w          = info->pic_w,
+            .block_offset_x = c.x,
+            .block_w        = c.w,
+            .srm_cm         = h->cfg.strip_color_mode,
+        },
+        .out = {
+            .buffer      = h->cur.out.buffer,
+            .buffer_size = h->cur.out.buffer_size,
+            .pic_w       = h->cur.out.pic_w,
+            .pic_h       = h->cur.out.pic_h,
+            .srm_cm      = h->cur.out.color_mode,
+            .yuv_range   = h->cur.out.yuv_range,
+            .yuv_std     = h->cur.out.yuv_std,
+        },
+        .rotation_angle = h->cur.t.rotation,
+        .scale_x        = h->cur.t.scale_x,
+        .scale_y        = h->cur.t.scale_y,
+        .mirror_x       = h->cur.t.mirror_x,
+        .mirror_y       = h->cur.t.mirror_y,
+        .rgb_swap       = h->cur.t.rgb_swap,
+        .byte_swap      = h->cur.t.byte_swap,
+    };
+    if (s_cm_is_yuv(h->cfg.strip_color_mode)) {
+        op.in.yuv_range = h->cfg.yuv_full_range ? PPA_COLOR_RANGE_FULL : PPA_COLOR_RANGE_LIMIT;
+        op.in.yuv_std   = (h->cfg.conv_std == JPEG_YUV_RGB_CONV_STD_BT709)
+                          ? PPA_COLOR_CONV_STD_RGB_YUV_BT709 : PPA_COLOR_CONV_STD_RGB_YUV_BT601;
+    }
+    esp_err_t err = ppa_srm_fast_begin_frame(h->srm, &op);
+    if (err != ESP_OK) return err;
+
     h->cur.valid = true;
     h->pending_strips = info->strip_count;
     return ESP_OK;
 }
 
 // -----------------------------------------------------------------------------
-// Strip handoff (ISR) and PPA worker
+// Strip pump (ISR context on device, process() thread on host)
+//
+// Everything reachable from here stays in IRAM: flash code run from the
+// 2D-DMA ISR occasionally faulted with "Illegal instruction" on the first
+// fetch of a new cache line (ESP32-P4 rev1.0, IDF v6.1).
 // -----------------------------------------------------------------------------
-
-static bool s_on_strip_done_isr(const jpeg_enh_strip_event_t *evt, void *user_ctx)
-{
-    jpeg_ppa_pipeline_handle_t h = (jpeg_ppa_pipeline_handle_t)user_ctx;
-    BaseType_t hp = pdFALSE;
-    xQueueSendFromISR(h->worker_queue, evt, &hp);
-    return hp == pdTRUE;
-}
 
 // Map strip rows [a_rel, b_rel) (crop-relative) through scale+rotation+mirror
 // into the output rect for this strip's PPA op.
-static void s_strip_out_rect(jpeg_ppa_pipeline_handle_t h, uint32_t a_rel, uint32_t b_rel,
-                             uint32_t *out_x, uint32_t *out_y)
+static IRAM_ATTR void s_strip_out_rect(jpeg_ppa_pipeline_handle_t h, uint32_t a_rel, uint32_t b_rel,
+                                       uint32_t *out_x, uint32_t *out_y)
 {
     uint32_t A = s_scaled(a_rel, h->cur.fy);
     uint32_t B = s_scaled(b_rel, h->cur.fy);
@@ -229,80 +262,105 @@ static void s_strip_out_rect(jpeg_ppa_pipeline_handle_t h, uint32_t a_rel, uint3
     *out_y = h->cur.t.out_offset_y + y;
 }
 
-static esp_err_t s_process_strip(jpeg_ppa_pipeline_handle_t h, const jpeg_enh_strip_event_t *evt)
+static IRAM_ATTR void s_set_frame_err(jpeg_ppa_pipeline_handle_t h, esp_err_t err)
+{
+    if (h->frame_err == ESP_OK) h->frame_err = err;
+}
+
+// Submit the strip's crop band to PPA. ESP_ERR_NOT_FOUND = nothing to render.
+static IRAM_ATTR esp_err_t s_submit_strip(jpeg_ppa_pipeline_handle_t h, const jpeg_enh_strip_event_t *evt)
 {
     const jpeg_ppa_rect_t *c = &h->cur.crop;
-
-    // Intersect this strip's valid rows with the crop band.
     uint32_t a_abs = c->y > evt->y_offset ? c->y : evt->y_offset;
     uint32_t strip_end = evt->y_offset + evt->rows;
     uint32_t crop_end = c->y + c->h;
     uint32_t b_abs = strip_end < crop_end ? strip_end : crop_end;
-    if (b_abs <= a_abs) return ESP_OK;  // strip entirely outside the crop
+    if (b_abs <= a_abs) return ESP_ERR_NOT_FOUND;
 
-    ppa_srm_oper_config_t op = { 0 };
-    op.in.buffer         = evt->buffer;
-    op.in.pic_w          = h->cur.frame.pic_w;
-    op.in.pic_h          = evt->padded_rows;
-    op.in.block_offset_x = c->x;
-    op.in.block_w        = c->w;
-    op.in.block_offset_y = a_abs - evt->y_offset;
-    op.in.block_h        = b_abs - a_abs;
-    op.in.srm_cm         = h->cfg.strip_color_mode;
-    if (s_cm_is_yuv(h->cfg.strip_color_mode)) {
-        op.in.yuv_range = h->cfg.yuv_full_range ? PPA_COLOR_RANGE_FULL : PPA_COLOR_RANGE_LIMIT;
-        op.in.yuv_std   = (h->cfg.conv_std == JPEG_YUV_RGB_CONV_STD_BT709)
-                          ? PPA_COLOR_CONV_STD_RGB_YUV_BT709 : PPA_COLOR_CONV_STD_RGB_YUV_BT601;
-    }
-
-    op.out.buffer      = h->cur.out.buffer;
-    op.out.buffer_size = h->cur.out.buffer_size;
-    op.out.pic_w       = h->cur.out.pic_w;
-    op.out.pic_h       = h->cur.out.pic_h;
-    op.out.srm_cm      = h->cur.out.color_mode;
-    op.out.yuv_range   = h->cur.out.yuv_range;
-    op.out.yuv_std     = h->cur.out.yuv_std;
-    s_strip_out_rect(h, a_abs - c->y, b_abs - c->y,
-                     &op.out.block_offset_x, &op.out.block_offset_y);
-
-    op.rotation_angle = h->cur.t.rotation;
-    op.scale_x        = h->cur.t.scale_x;
-    op.scale_y        = h->cur.t.scale_y;
-    op.mirror_x       = h->cur.t.mirror_x;
-    op.mirror_y       = h->cur.t.mirror_y;
-    op.rgb_swap       = h->cur.t.rgb_swap;
-    op.byte_swap      = h->cur.t.byte_swap;
-    op.mode           = PPA_TRANS_MODE_BLOCKING;
-
-    return ppa_do_scale_rotate_mirror(h->ppa_client, &op);
+    uint32_t out_x, out_y;
+    s_strip_out_rect(h, a_abs - c->y, b_abs - c->y, &out_x, &out_y);
+    return ppa_srm_fast_submit(h->srm, evt->buffer, evt->padded_rows,
+                               a_abs - evt->y_offset, b_abs - a_abs, out_x, out_y);
 }
 
-static void s_worker_entry(void *arg)
+static IRAM_ATTR bool s_finish_strip(jpeg_ppa_pipeline_handle_t h, uint32_t strip_idx)
 {
-    jpeg_ppa_pipeline_handle_t h = (jpeg_ppa_pipeline_handle_t)arg;
+    jpeg_enh_strip_decoder_release_strip(h->decoder, strip_idx);
+    if (__atomic_sub_fetch(&h->pending_strips, 1, __ATOMIC_ACQ_REL) != 0) return false;
+    BaseType_t hp = pdFALSE;
+    xSemaphoreGiveFromISR(h->all_done, &hp);
+    return hp == pdTRUE;
+}
+
+// Called with busy already claimed for evt. Keeps submitting until a strip
+// is in flight or nothing is parked.
+static IRAM_ATTR bool s_pump(jpeg_ppa_pipeline_handle_t h, jpeg_enh_strip_event_t evt)
+{
+    bool yield = false;
     while (true) {
-        jpeg_enh_strip_event_t evt;
-        if (xQueueReceive(h->worker_queue, &evt, portMAX_DELAY) != pdTRUE) continue;
-        if (evt.strip_idx == WORKER_EXIT_MARKER) break;
+        h->busy_strip = evt.strip_idx;
+        esp_err_t err = s_submit_strip(h, &evt);
+        if (err == ESP_OK) return yield;
+        if (err != ESP_ERR_NOT_FOUND) s_set_frame_err(h, err);
+        yield |= s_finish_strip(h, evt.strip_idx);
 
-        if (!h->abort_frame) {
-            esp_err_t err = s_process_strip(h, &evt);
-            if (err != ESP_OK) {
-                ESP_LOGW(TAG, "ppa strip %lu err=%s", (unsigned long)evt.strip_idx, esp_err_to_name(err));
-                if (h->frame_err == ESP_OK) h->frame_err = err;
-            }
+        portENTER_CRITICAL_ISR(&h->lock);
+        bool more = !h->abort_frame && h->parked_count > 0;
+        if (more) {
+            evt = h->parked[h->parked_head];
+            h->parked_head = (h->parked_head + 1) % MAX_PARKED;
+            h->parked_count--;
+        } else {
+            h->busy = false;
         }
+        portEXIT_CRITICAL_ISR(&h->lock);
+        if (!more) return yield;
+    }
+}
 
-        // Free this strip's buffer for later strips of the same frame
-        // (no-op for the trailing strips and on aborted frames).
-        jpeg_enh_strip_decoder_release_strip(h->decoder, evt.strip_idx);
-
-        if (__atomic_sub_fetch(&h->pending_strips, 1, __ATOMIC_ACQ_REL) == 0) {
-            xSemaphoreGive(h->all_done);
+static IRAM_ATTR bool s_on_strip_done(const jpeg_enh_strip_event_t *evt, void *user_ctx)
+{
+    jpeg_ppa_pipeline_handle_t h = (jpeg_ppa_pipeline_handle_t)user_ctx;
+    bool overflow = false;
+    portENTER_CRITICAL_ISR(&h->lock);
+    bool start = !h->abort_frame && !h->busy;
+    if (start) {
+        h->busy = true;
+    } else if (!h->abort_frame) {
+        if (h->parked_count < MAX_PARKED) {
+            h->parked[(h->parked_head + h->parked_count) % MAX_PARKED] = *evt;
+            h->parked_count++;
+        } else {
+            overflow = true;
         }
     }
-    xSemaphoreGive(h->worker_joined);
-    vTaskDelete(NULL);
+    portEXIT_CRITICAL_ISR(&h->lock);
+    if (start) return s_pump(h, *evt);
+    if (overflow) {
+        s_set_frame_err(h, ESP_ERR_INVALID_STATE);
+        return s_finish_strip(h, evt->strip_idx);
+    }
+    return false;
+}
+
+static IRAM_ATTR bool s_on_srm_done(void *ctx)
+{
+    jpeg_ppa_pipeline_handle_t h = (jpeg_ppa_pipeline_handle_t)ctx;
+    bool yield = s_finish_strip(h, h->busy_strip);
+
+    jpeg_enh_strip_event_t next;
+    portENTER_CRITICAL_ISR(&h->lock);
+    bool more = !h->abort_frame && h->parked_count > 0;
+    if (more) {
+        next = h->parked[h->parked_head];
+        h->parked_head = (h->parked_head + 1) % MAX_PARKED;
+        h->parked_count--;
+    } else {
+        h->busy = false;
+    }
+    portEXIT_CRITICAL_ISR(&h->lock);
+    if (more) yield |= s_pump(h, next);
+    return yield;
 }
 
 // -----------------------------------------------------------------------------
@@ -323,22 +381,17 @@ esp_err_t jpeg_ppa_pipeline_new(const jpeg_ppa_pipeline_cfg_t *cfg,
     jpeg_ppa_pipeline_handle_t h = heap_caps_calloc(1, sizeof(*h), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     if (!h) return ESP_ERR_NO_MEM;
     h->cfg = *cfg;
+    h->lock = (portMUX_TYPE)portMUX_INITIALIZER_UNLOCKED;
+    uint32_t timeout_ms = cfg->timeout_ms ? cfg->timeout_ms : DEFAULT_TIMEOUT_MS;
+    h->timeout = pdMS_TO_TICKS(timeout_ms);
 
-    // The decoder stalls while both buffers are unreleased, so at most two
-    // strips plus the exit marker are ever queued.
-    h->worker_queue = xQueueCreate(3, sizeof(jpeg_enh_strip_event_t));
     h->all_done = xSemaphoreCreateBinary();
-    h->worker_joined = xSemaphoreCreateBinary();
-    if (!h->worker_queue || !h->all_done || !h->worker_joined) {
+    if (!h->all_done) {
         jpeg_ppa_pipeline_del(h);
         return ESP_ERR_NO_MEM;
     }
 
-    ppa_client_config_t pcfg = {
-        .oper_type = PPA_OPERATION_SRM,
-        .max_pending_trans_num = 1,
-    };
-    esp_err_t err = ppa_register_client(&pcfg, &h->ppa_client);
+    esp_err_t err = ppa_srm_fast_new(s_on_srm_done, h, &h->srm);
     if (err != ESP_OK) { jpeg_ppa_pipeline_del(h); return err; }
 
     jpeg_enh_strip_decoder_cfg_t dcfg = {
@@ -350,21 +403,13 @@ esp_err_t jpeg_ppa_pipeline_new(const jpeg_ppa_pipeline_cfg_t *cfg,
         },
         .strip_bufs       = { cfg->strip_bufs[0], cfg->strip_bufs[1] },
         .strip_buf_size   = cfg->strip_buf_size,
+        .timeout_ms       = timeout_ms,
         .on_frame_start   = s_on_frame_start,
-        .on_strip_done    = s_on_strip_done_isr,
+        .on_strip_done    = s_on_strip_done,
         .user_ctx         = h,
     };
     err = jpeg_enh_strip_decoder_new(&dcfg, &h->decoder);
     if (err != ESP_OK) { jpeg_ppa_pipeline_del(h); return err; }
-
-    uint32_t stack = cfg->worker_stack_size ? cfg->worker_stack_size : DEFAULT_WORKER_STACK;
-    uint32_t prio  = cfg->worker_priority ? cfg->worker_priority : DEFAULT_WORKER_PRIO;
-    BaseType_t core = cfg->worker_core < 0 ? tskNO_AFFINITY : cfg->worker_core;
-    if (xTaskCreatePinnedToCore(s_worker_entry, "jpeg_ppa_w", stack, h, prio,
-                                &h->worker_task, core) != pdPASS) {
-        jpeg_ppa_pipeline_del(h);
-        return ESP_ERR_NO_MEM;
-    }
 
     *out_handle = h;
     return ESP_OK;
@@ -373,17 +418,9 @@ esp_err_t jpeg_ppa_pipeline_new(const jpeg_ppa_pipeline_cfg_t *cfg,
 esp_err_t jpeg_ppa_pipeline_del(jpeg_ppa_pipeline_handle_t h)
 {
     if (!h) return ESP_OK;
-    if (h->worker_task) {
-        jpeg_enh_strip_event_t stop = { .strip_idx = WORKER_EXIT_MARKER };
-        xQueueSend(h->worker_queue, &stop, portMAX_DELAY);
-        xSemaphoreTake(h->worker_joined, portMAX_DELAY);
-        h->worker_task = NULL;
-    }
-    if (h->decoder)      { jpeg_enh_strip_decoder_del(h->decoder); h->decoder = NULL; }
-    if (h->ppa_client)   { ppa_unregister_client(h->ppa_client); h->ppa_client = NULL; }
-    if (h->worker_queue) { vQueueDelete(h->worker_queue); h->worker_queue = NULL; }
-    if (h->all_done)     { vSemaphoreDelete(h->all_done); h->all_done = NULL; }
-    if (h->worker_joined){ vSemaphoreDelete(h->worker_joined); h->worker_joined = NULL; }
+    if (h->decoder)  { jpeg_enh_strip_decoder_del(h->decoder); h->decoder = NULL; }
+    if (h->srm)      { ppa_srm_fast_del(h->srm); h->srm = NULL; }
+    if (h->all_done) { vSemaphoreDelete(h->all_done); h->all_done = NULL; }
     heap_caps_free(h);
     return ESP_OK;
 }
@@ -396,6 +433,7 @@ esp_err_t jpeg_ppa_pipeline_process(jpeg_ppa_pipeline_handle_t h,
 {
     if (!h || !h->decoder || !jpeg_data || !out || !out->buffer) return ESP_ERR_INVALID_ARG;
     if (out->pic_w == 0 || out->pic_h == 0) return ESP_ERR_INVALID_ARG;
+    if (h->broken) return ESP_ERR_INVALID_STATE;
 
     h->cur.valid = false;
     h->cur.out = *out;
@@ -409,32 +447,41 @@ esp_err_t jpeg_ppa_pipeline_process(jpeg_ppa_pipeline_handle_t h,
     h->pending_strips = 0;
     h->frame_err = ESP_OK;
     h->abort_frame = false;
-    // Drain a stale completion (defensive; see the abort path below)
+    h->busy = false;
+    h->parked_head = h->parked_count = 0;
     xSemaphoreTake(h->all_done, 0);
 
     esp_err_t err = jpeg_enh_strip_decoder_process(h->decoder, (const uint8_t *)jpeg_data,
                                                    (uint32_t)jpeg_size, info);
+    if (!h->cur.valid) return err;
+
     if (err != ESP_OK) {
-        // Decode failed. Strips that never made it out of the decoder still
-        // count against pending_strips; settle the balance ourselves and wait
-        // for the worker to finish whatever was already queued, so the next
-        // process() starts from a clean slate.
+        // Decode failed: strips that never arrived or are still parked will
+        // never reach PPA; settle them and wait out the one in flight.
+        portENTER_CRITICAL(&h->lock);
         h->abort_frame = true;
-        if (h->cur.valid) {
-            uint32_t undelivered = h->cur.frame.strip_count
-                                   - jpeg_enh_strip_decoder_strips_delivered(h->decoder);
-            if (undelivered == 0 ||
-                __atomic_sub_fetch(&h->pending_strips, undelivered, __ATOMIC_ACQ_REL) != 0) {
-                if (xSemaphoreTake(h->all_done, ABORT_DRAIN_TIMEOUT) != pdTRUE) {
-                    ESP_LOGE(TAG, "worker did not drain after decode error");
-                }
-            }
+        uint32_t parked = h->parked_count;
+        h->parked_count = 0;
+        portEXIT_CRITICAL(&h->lock);
+        uint32_t settle = parked + h->cur.frame.strip_count
+                          - jpeg_enh_strip_decoder_strips_delivered(h->decoder);
+        if (settle && __atomic_sub_fetch(&h->pending_strips, settle, __ATOMIC_ACQ_REL) == 0) {
+            xSemaphoreGive(h->all_done);
         }
-        return err;
     }
 
-    // Wait for the PPA worker to finish the trailing strips before letting
-    // the caller touch the frame buffer.
-    xSemaphoreTake(h->all_done, portMAX_DELAY);
-    return h->frame_err;
+    if (xSemaphoreTake(h->all_done, h->timeout) != pdTRUE) {
+        ESP_LOGE(TAG, "PPA did not finish (%lu strips left)", (unsigned long)h->pending_strips);
+        portENTER_CRITICAL(&h->lock);
+        h->abort_frame = true;
+        portEXIT_CRITICAL(&h->lock);
+        if (ppa_srm_fast_abort(h->srm) != ESP_OK) h->broken = true;
+        if (err == ESP_OK) err = ESP_ERR_TIMEOUT;
+    }
+    ppa_srm_fast_end_frame(h->srm);
+    if (err == ESP_OK && h->frame_err != ESP_OK) {
+        ESP_LOGW(TAG, "ppa strip err=%s", esp_err_to_name(h->frame_err));
+        err = h->frame_err;
+    }
+    return err;
 }

@@ -159,7 +159,7 @@ esp_err_t jpeg_enh_strip_decoder_process(jpeg_enh_strip_decoder_handle_t handle,
  * @brief Tell the decoder that the consumer is done with strip_idx, so its
  *        buffer can be reused for a later strip of the same frame.
  *
- * Safe from any task context.
+ * Safe from task and ISR context.
  */
 esp_err_t jpeg_enh_strip_decoder_release_strip(jpeg_enh_strip_decoder_handle_t handle,
                                                uint32_t strip_idx);
