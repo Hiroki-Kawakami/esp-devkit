@@ -4,9 +4,9 @@
  *
  * jpeg_decode_enhanced — Layer 2: strip-pipelined JPEG decode + PPA SRM.
  *
- * Decodes a JPEG into a ring of strip buffers (Layer 1) and pushes each strip
- * through PPA SRM into a destination frame buffer as soon as it lands, in
- * parallel with the decode of subsequent strips. Resources (ring buffers,
+ * Decodes a JPEG into caller-owned strip buffers (Layer 1) and pushes each
+ * strip through PPA SRM into a destination frame buffer as soon as it lands,
+ * in parallel with the decode of subsequent strips. Resources (strip buffers,
  * JPEG engine, PPA client, worker task) are fixed at creation; everything
  * about the transform — rotation, scale, mirror, crop, output placement —
  * can change per frame.
@@ -16,8 +16,8 @@
  * the strips would overlap/gap. PPA quantizes scale factors to multiples of
  * 1/16 (and 1/8 for YUV420 output); jpeg_ppa_pipeline_process() validates
  * "(boundary row × quantized scale_y) is an integer" per frame and rejects
- * the transform otherwise. With the default strip_h_hint of 16 this is
- * satisfied for every scale factor.
+ * the transform otherwise. Strips are always 16-row multiples, so this only
+ * fails when in_crop.y × scale_y is not a whole row.
  */
 
 #pragma once
@@ -38,20 +38,16 @@ typedef struct jpeg_ppa_pipeline_s *jpeg_ppa_pipeline_handle_t;
  * @brief Pipeline resources configuration (fixed at creation).
  */
 typedef struct {
-    uint32_t max_pic_w;                   /*!< Largest input width to support */
-    uint32_t max_pic_h;                   /*!< Largest input height to support */
-    uint32_t strip_h_hint;                /*!< Strip height hint; see jpeg_enh_strip_decoder_cfg_t.
-                                               0 is not useful here (single strip = no pipelining). */
-    uint32_t ring_count;                  /*!< Strip ring depth; >= 2 for any pipelining benefit */
+    void *strip_bufs[2];                  /*!< Caller-owned strip buffers; see jpeg_enh_strip_decoder_cfg_t.
+                                               [1] NULL = no pipelining (decode and PPA alternate). */
+    size_t strip_buf_size;                /*!< Byte size of each strip buffer */
     ppa_srm_color_mode_t strip_color_mode;/*!< Intermediate strip pixel format. Determines the JPEG
                                                decode output and the PPA SRM input color mode.
-                                               RGB565 halves ring memory vs RGB888; YUV420 needs a
+                                               RGB565 needs 2/3 of the RGB888 memory; YUV420 needs a
                                                YUV420 source JPEG (no transcode in hardware). */
     jpeg_dec_rgb_element_order_t rgb_order;/*!< Element order of the decoded strips (RGB modes) */
     jpeg_yuv_rgb_conv_std_t conv_std;     /*!< BT601 or BT709 for the decode-side YUV->RGB CSC */
     bool yuv_full_range;                  /*!< Full-range (JFIF) decode matrix; see jpeg_enh_decode_cfg_t */
-    uint32_t strip_alloc_caps;            /*!< heap_caps for the ring buffers; 0 = internal DMA RAM.
-                                               MALLOC_CAP_SPIRAM trades speed for internal SRAM. */
 
     uint32_t worker_stack_size;           /*!< PPA worker task stack (0 = 4096) */
     uint32_t worker_priority;             /*!< PPA worker task priority (0 = 17) */
@@ -95,8 +91,8 @@ typedef struct {
 } jpeg_ppa_output_t;
 
 /**
- * @brief Create the pipeline: strip decoder (Layer 1), strip ring, PPA SRM
- *        client and worker task.
+ * @brief Create the pipeline: strip decoder (Layer 1), PPA SRM client and
+ *        worker task. The strip buffers stay owned by the caller.
  */
 esp_err_t jpeg_ppa_pipeline_new(const jpeg_ppa_pipeline_cfg_t *cfg,
                                 jpeg_ppa_pipeline_handle_t *out_handle);

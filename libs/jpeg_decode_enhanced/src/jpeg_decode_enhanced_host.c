@@ -11,8 +11,9 @@
  * and delivers it as ONE strip. That keeps the public API identical while the
  * shared Layer 2 (jpeg_ppa_pipeline.c) and app code compile and run unchanged.
  *
- * Host semantics (see README): strip_h_hint / ring_count are accepted but the
- * frame is always one strip (strip_count == 1); on_frame_start / on_strip_done
+ * Host semantics (see README): strip_bufs only select strip mode and are never
+ * written; the frame is always one strip (strip_count == 1) decoded into a
+ * scratch buffer sized per frame; on_frame_start / on_strip_done
  * fire synchronously from the process() thread; release_strip / sync_strip_for_cpu
  * are no-ops. Only RGB565 / RGB888 output is supported (the panel is RGB).
  *
@@ -36,8 +37,9 @@ static const char *TAG = "jpeg_enh_host";
 struct jpeg_enh_strip_decoder_s {
     jpeg_enh_strip_decoder_cfg_t cfg;
     int out_bpp;                  // 2 (RGB565) or 3 (RGB888); 0 = unsupported format
-    void *strip_buf;              // whole-frame scratch (ring mode only)
-    size_t strip_buf_size;
+    bool strip_mode;
+    void *scratch;                // whole-frame decode target in strip mode
+    size_t scratch_size;
     jpeg_enh_frame_info_t frame;  // geometry of the most recent frame
     uint32_t strips_delivered;
 };
@@ -77,7 +79,8 @@ static void s_pack_row(const uint8_t *src, int sch, uint32_t w,
     }
 }
 
-// Decode the whole JPEG into dst (dst_capacity bytes) and fill h->frame.
+// Decode the whole JPEG into dst (dst_capacity bytes), or into the scratch
+// buffer grown to fit when dst is NULL, and fill h->frame.
 static esp_err_t s_decode(jpeg_enh_strip_decoder_handle_t h,
                           const uint8_t *bit_stream, uint32_t stream_size,
                           uint8_t *dst, size_t dst_capacity)
@@ -104,14 +107,17 @@ static esp_err_t s_decode(jpeg_enh_strip_decoder_handle_t h,
     int sch = imgf_pixfmt_bpp(spf);
     if (sch != 1 && sch != 3) { err = ESP_ERR_NOT_SUPPORTED; goto done; }
 
-    if (w > h->cfg.max_pic_w || hgt > h->cfg.max_pic_h) {
-        ESP_LOGE(TAG, "picture %ux%u exceeds configured max %ux%u",
-                 (unsigned)w, (unsigned)hgt,
-                 (unsigned)h->cfg.max_pic_w, (unsigned)h->cfg.max_pic_h);
-        err = ESP_ERR_INVALID_SIZE;
-        goto done;
-    }
     size_t need = (size_t)w * hgt * h->out_bpp;
+    if (!dst) {
+        if (need > h->scratch_size) {
+            void *grown = realloc(h->scratch, need);
+            if (!grown) { err = ESP_ERR_NO_MEM; goto done; }
+            h->scratch = grown;
+            h->scratch_size = need;
+        }
+        dst = h->scratch;
+        dst_capacity = h->scratch_size;
+    }
     if (need > dst_capacity) { err = ESP_ERR_INVALID_SIZE; goto done; }
 
     bool bgr = (h->cfg.decode.rgb_order == JPEG_DEC_RGB_ELEMENT_ORDER_BGR);
@@ -146,9 +152,9 @@ esp_err_t jpeg_enh_strip_decoder_new(const jpeg_enh_strip_decoder_cfg_t *cfg,
                                      jpeg_enh_strip_decoder_handle_t *out_handle)
 {
     if (!cfg || !out_handle) return ESP_ERR_INVALID_ARG;
-    if (cfg->max_pic_w == 0 || cfg->max_pic_h == 0) return ESP_ERR_INVALID_ARG;
-    bool strip_mode = cfg->ring_count > 0;
-    if (strip_mode && !cfg->on_strip_done) return ESP_ERR_INVALID_ARG;
+    if (!cfg->strip_bufs[0] && cfg->strip_bufs[1]) return ESP_ERR_INVALID_ARG;
+    bool strip_mode = cfg->strip_bufs[0] != NULL;
+    if (strip_mode && (!cfg->on_strip_done || cfg->strip_buf_size == 0)) return ESP_ERR_INVALID_ARG;
 
     int obpp = s_out_bpp(cfg->decode.output_format);
     if (obpp == 0) {
@@ -160,12 +166,7 @@ esp_err_t jpeg_enh_strip_decoder_new(const jpeg_enh_strip_decoder_cfg_t *cfg,
     if (!h) return ESP_ERR_NO_MEM;
     h->cfg = *cfg;
     h->out_bpp = obpp;
-
-    if (strip_mode) {
-        h->strip_buf_size = (size_t)cfg->max_pic_w * cfg->max_pic_h * obpp;
-        h->strip_buf = malloc(h->strip_buf_size);
-        if (!h->strip_buf) { free(h); return ESP_ERR_NO_MEM; }
-    }
+    h->strip_mode = strip_mode;
 
     *out_handle = h;
     return ESP_OK;
@@ -174,7 +175,7 @@ esp_err_t jpeg_enh_strip_decoder_new(const jpeg_enh_strip_decoder_cfg_t *cfg,
 esp_err_t jpeg_enh_strip_decoder_del(jpeg_enh_strip_decoder_handle_t h)
 {
     if (!h) return ESP_OK;
-    free(h->strip_buf);
+    free(h->scratch);
     free(h);
     return ESP_OK;
 }
@@ -184,10 +185,10 @@ esp_err_t jpeg_enh_strip_decoder_process(jpeg_enh_strip_decoder_handle_t h,
                                          jpeg_enh_frame_info_t *info)
 {
     if (!h || !bit_stream || !stream_size) return ESP_ERR_INVALID_ARG;
-    if (!h->strip_buf) return ESP_ERR_INVALID_STATE;  // ring_count = 0 handle
+    if (!h->strip_mode) return ESP_ERR_INVALID_STATE;
 
     h->strips_delivered = 0;
-    esp_err_t err = s_decode(h, bit_stream, stream_size, h->strip_buf, h->strip_buf_size);
+    esp_err_t err = s_decode(h, bit_stream, stream_size, NULL, 0);
     if (err != ESP_OK) return err;
 
     if (info) *info = h->frame;
@@ -199,7 +200,7 @@ esp_err_t jpeg_enh_strip_decoder_process(jpeg_enh_strip_decoder_handle_t h,
     if (h->cfg.on_strip_done) {
         jpeg_enh_strip_event_t e = {
             .strip_idx   = 0,
-            .buffer      = h->strip_buf,
+            .buffer      = h->scratch,
             .y_offset    = 0,
             .rows        = h->frame.origin_h,
             .padded_rows = h->frame.pic_h,
@@ -231,7 +232,7 @@ esp_err_t jpeg_enh_decoder_process(jpeg_enh_strip_decoder_handle_t h,
 esp_err_t jpeg_enh_strip_decoder_release_strip(jpeg_enh_strip_decoder_handle_t h, uint32_t strip_idx)
 {
     (void)strip_idx;
-    if (!h || !h->strip_buf) return ESP_ERR_INVALID_ARG;
+    if (!h || !h->strip_mode) return ESP_ERR_INVALID_ARG;
     return ESP_OK;  // no backpressure on the host (whole-frame decode)
 }
 
@@ -245,9 +246,4 @@ esp_err_t jpeg_enh_strip_decoder_sync_strip_for_cpu(jpeg_enh_strip_decoder_handl
 uint32_t jpeg_enh_strip_decoder_strips_delivered(jpeg_enh_strip_decoder_handle_t h)
 {
     return h ? h->strips_delivered : 0;
-}
-
-size_t jpeg_enh_strip_decoder_strip_buffer_size(jpeg_enh_strip_decoder_handle_t h)
-{
-    return h ? h->strip_buf_size : 0;
 }

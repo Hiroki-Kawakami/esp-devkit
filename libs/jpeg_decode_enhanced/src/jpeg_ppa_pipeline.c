@@ -5,14 +5,14 @@
  * jpeg_decode_enhanced — Layer 2 implementation.
  *
  * Each jpeg_ppa_pipeline_process() call pushes a single JPEG frame through:
- *   1) strip-decode into the ring buffers (Layer 1, in the calling thread)
+ *   1) strip-decode into the strip buffers (Layer 1, in the calling thread)
  *   2) per-strip PPA SRM into the destination frame buffer (worker task)
  *
  * The strip decoder fires on_strip_done from ISR; each strip event is
  * forwarded to a dedicated PPA worker task via a queue. The worker calls
  * ppa_do_scale_rotate_mirror() in BLOCKING mode (which only blocks the
  * worker, not the decode thread) and then releases the strip so the chained
- * DMA can recycle its ring slot for a later strip of the same image.
+ * DMA can reuse its buffer for a later strip of the same image.
  *
  * Wait-for-frame: the decode call returns once the JPEG hardware reports
  * RX_EOF, but the last few PPA strips may still be in flight; process()
@@ -147,13 +147,12 @@ static esp_err_t s_on_frame_start(const jpeg_enh_frame_info_t *info, void *user_
     }
 
     // Strips tile the output along the scaled y axis, so every interior strip
-    // boundary must land on a whole output row once scaled. (Always true for
-    // strip heights that are multiples of 16.)
+    // boundary must land on a whole output row once scaled.
     for (uint32_t k = c.y / info->strip_h + 1; (uint64_t)k * info->strip_h < c.y + c.h; k++) {
         uint32_t rel = k * info->strip_h - c.y;
         if ((rel * h->cur.fy) % SCALE_FRAG_MAX != 0) {
             ESP_LOGE(TAG, "strip boundary %lu x scale %lu/16 is not a whole output row; "
-                          "adjust scale_y, in_crop.y or strip_h_hint",
+                          "adjust scale_y or in_crop.y",
                      (unsigned long)rel, (unsigned long)h->cur.fy);
             return ESP_ERR_INVALID_ARG;
         }
@@ -294,8 +293,8 @@ static void s_worker_entry(void *arg)
             }
         }
 
-        // Free this strip's ring slot for later strips of the same frame
-        // (no-op for the trailing ring_count strips and on aborted frames).
+        // Free this strip's buffer for later strips of the same frame
+        // (no-op for the trailing strips and on aborted frames).
         jpeg_enh_strip_decoder_release_strip(h->decoder, evt.strip_idx);
 
         if (__atomic_sub_fetch(&h->pending_strips, 1, __ATOMIC_ACQ_REL) == 0) {
@@ -314,7 +313,7 @@ esp_err_t jpeg_ppa_pipeline_new(const jpeg_ppa_pipeline_cfg_t *cfg,
                                 jpeg_ppa_pipeline_handle_t *out_handle)
 {
     if (!cfg || !out_handle) return ESP_ERR_INVALID_ARG;
-    if (cfg->ring_count == 0) return ESP_ERR_INVALID_ARG;
+    if (!cfg->strip_bufs[0]) return ESP_ERR_INVALID_ARG;
     jpeg_dec_output_format_t jpeg_fmt = s_jpeg_out_for_strip_cm(cfg->strip_color_mode);
     if ((int)jpeg_fmt == -1) {
         ESP_LOGE(TAG, "unsupported strip color mode 0x%lx", (unsigned long)cfg->strip_color_mode);
@@ -325,10 +324,9 @@ esp_err_t jpeg_ppa_pipeline_new(const jpeg_ppa_pipeline_cfg_t *cfg,
     if (!h) return ESP_ERR_NO_MEM;
     h->cfg = *cfg;
 
-    // Worst-case strips per frame: max_pic_h padded to MCU rows, divided by
-    // the smallest possible strip height (one 8-row MCU).
-    uint32_t max_strips = (cfg->max_pic_h + 15) / 16 * 16 / 8 + 1;
-    h->worker_queue = xQueueCreate(max_strips, sizeof(jpeg_enh_strip_event_t));
+    // The decoder stalls while both buffers are unreleased, so at most two
+    // strips plus the exit marker are ever queued.
+    h->worker_queue = xQueueCreate(3, sizeof(jpeg_enh_strip_event_t));
     h->all_done = xSemaphoreCreateBinary();
     h->worker_joined = xSemaphoreCreateBinary();
     if (!h->worker_queue || !h->all_done || !h->worker_joined) {
@@ -336,11 +334,9 @@ esp_err_t jpeg_ppa_pipeline_new(const jpeg_ppa_pipeline_cfg_t *cfg,
         return ESP_ERR_NO_MEM;
     }
 
-    // PPA SRM client: queue depth = ring_count keeps the strip decoder
-    // backpressure simple.
     ppa_client_config_t pcfg = {
         .oper_type = PPA_OPERATION_SRM,
-        .max_pending_trans_num = cfg->ring_count,
+        .max_pending_trans_num = 1,
     };
     esp_err_t err = ppa_register_client(&pcfg, &h->ppa_client);
     if (err != ESP_OK) { jpeg_ppa_pipeline_del(h); return err; }
@@ -352,11 +348,8 @@ esp_err_t jpeg_ppa_pipeline_new(const jpeg_ppa_pipeline_cfg_t *cfg,
             .conv_std       = cfg->conv_std,
             .yuv_full_range = cfg->yuv_full_range,
         },
-        .max_pic_w        = cfg->max_pic_w,
-        .max_pic_h        = cfg->max_pic_h,
-        .strip_h_hint     = cfg->strip_h_hint,
-        .ring_count       = cfg->ring_count,
-        .strip_alloc_caps = cfg->strip_alloc_caps,
+        .strip_bufs       = { cfg->strip_bufs[0], cfg->strip_bufs[1] },
+        .strip_buf_size   = cfg->strip_buf_size,
         .on_frame_start   = s_on_frame_start,
         .on_strip_done    = s_on_strip_done_isr,
         .user_ctx         = h,

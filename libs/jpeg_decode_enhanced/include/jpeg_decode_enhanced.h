@@ -5,12 +5,17 @@
  * jpeg_decode_enhanced — Layer 1: strip-pipelined JPEG hardware decode.
  *
  * Replays the bulk of ESP-IDF's jpeg_decoder_process() flow but writes the
- * decoded raster into a ring of strip buffers via linked 2D-DMA RX
- * descriptors. Each finished strip fires on_strip_done() from ISR context so
- * a downstream consumer (PPA, CPU, ...) can start processing it immediately,
- * in parallel with the decode of subsequent strips. Backpressure works by
- * splicing descriptors back into the chain only after the consumer releases
- * the corresponding ring slot (jpeg_enh_strip_decoder_release_strip).
+ * decoded raster into one or two caller-owned strip buffers via linked 2D-DMA
+ * RX descriptors. Each finished strip fires on_strip_done() from ISR context
+ * so a downstream consumer (PPA, CPU, ...) can start processing it
+ * immediately, in parallel with the decode of subsequent strips. Backpressure
+ * works by splicing descriptors back into the chain only after the consumer
+ * releases the corresponding buffer (jpeg_enh_strip_decoder_release_strip).
+ *
+ * Strip layout is chosen per frame from the buffer size and the frame width:
+ * the tallest multiple of 16 rows that fits one buffer, capped so that two
+ * buffers still split the frame. A frame whose width leaves room for fewer
+ * than 16 rows fails with ESP_ERR_INVALID_SIZE.
  *
  * Also provides a whole-frame convenience API (jpeg_enh_decoder_process)
  * that decodes into a single caller-supplied buffer — useful when only the
@@ -21,8 +26,8 @@
  *  - Strip boundaries must lie on JPEG MCU-row boundaries. The 2D-DMA RX
  *    reorder unit works on macro blocks matching the JPEG sampling (8 rows
  *    for YUV444/YUV422/GRAY, 16 rows for YUV420), and one MCU row cannot
- *    span two descriptors/buffers. strip_h_hint is therefore rounded to a
- *    multiple of the frame's MCU height at process time.
+ *    span two descriptors/buffers. The 16-row strip unit is a multiple of
+ *    every MCU height.
  *  - The decoded raster width is the MCU-padded width (frame_info.pic_w);
  *    rows are stored contiguously at that width (no stride control).
  */
@@ -62,7 +67,7 @@ typedef struct {
     uint32_t origin_h;     /*!< Real image height from the SOF header */
     uint8_t mcu_w;         /*!< MCU width in pixels (8 or 16) */
     uint8_t mcu_h;         /*!< MCU height in pixels (8 or 16) */
-    uint32_t strip_h;      /*!< Effective strip height chosen for this frame (multiple of mcu_h) */
+    uint32_t strip_h;      /*!< Strip height chosen for this frame (multiple of 16) */
     uint32_t strip_count;  /*!< Number of strips this frame (last one may be shorter) */
 } jpeg_enh_frame_info_t;
 
@@ -71,7 +76,7 @@ typedef struct {
  */
 typedef struct {
     uint32_t strip_idx;    /*!< 0 .. strip_count-1 */
-    void *buffer;          /*!< Ring buffer now holding the decoded strip */
+    void *buffer;          /*!< Strip buffer now holding the decoded strip */
     uint32_t y_offset;     /*!< First row of this strip in decoded-raster coordinates */
     uint32_t rows;         /*!< Valid image rows in this strip (clipped to origin_h) */
     uint32_t padded_rows;  /*!< Rows the decoder actually wrote (MCU aligned, >= rows) */
@@ -102,17 +107,13 @@ typedef esp_err_t (*jpeg_enh_frame_start_cb_t)(const jpeg_enh_frame_info_t *info
 typedef struct {
     jpeg_enh_decode_cfg_t decode;     /*!< Pixel format / color conversion */
 
-    uint32_t max_pic_w;               /*!< Largest decoded-raster width to support (sizes the strip buffers) */
-    uint32_t max_pic_h;               /*!< Largest decoded-raster height to support (sizes the descriptor chain) */
-    uint32_t strip_h_hint;            /*!< Desired strip height in rows; rounded down to the frame's MCU height
-                                           at process time (minimum one MCU row). 0 = single strip covering the
-                                           whole image. */
-    uint32_t ring_count;              /*!< Number of strip ring buffers. 0 = no strip mode (whole-frame API only). */
-    uint32_t strip_alloc_caps;        /*!< heap_caps for the internally-allocated strip buffers.
-                                           0 = MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL (fast path).
-                                           Pass MALLOC_CAP_SPIRAM to keep the ring in PSRAM — slower, but frees
-                                           internal SRAM; cache maintenance is handled internally (see
-                                           jpeg_enh_strip_decoder_sync_strip_for_cpu for CPU consumers). */
+    void *strip_bufs[2];              /*!< Caller-owned strip buffers, kept until del().
+                                           [0] NULL = no strip mode (whole-frame API only).
+                                           [1] NULL = single buffer: decode and consumer alternate (slower).
+                                           Each must be 2D-DMA accessible (internal DMA RAM or PSRAM, types may
+                                           differ) and aligned to 64 bytes / the cache line. Internal RAM is
+                                           the fast path; PSRAM saves internal SRAM. */
+    size_t strip_buf_size;            /*!< Byte size of each strip buffer (both the same) */
 
     int intr_priority;                /*!< JPEG engine interrupt priority (0 = default) */
     uint32_t timeout_ms;              /*!< Decode timeout (0 = 200 ms) */
@@ -125,17 +126,16 @@ typedef struct {
 typedef struct jpeg_enh_strip_decoder_s *jpeg_enh_strip_decoder_handle_t;
 
 /**
- * @brief Acquire the JPEG hardware and allocate strip-mode resources.
+ * @brief Acquire the JPEG hardware and the 2D-DMA descriptors.
  *
- * Internally grabs the IDF JPEG decoder engine (DMA pool, codec mutex, ISR)
- * and allocates the descriptor chain plus, when ring_count > 0, the strip
- * ring buffers.
+ * Internally grabs the IDF JPEG decoder engine (DMA pool, codec mutex, ISR).
+ * The strip buffers are only borrowed; their cache lines are purged here.
  */
 esp_err_t jpeg_enh_strip_decoder_new(const jpeg_enh_strip_decoder_cfg_t *cfg,
                                      jpeg_enh_strip_decoder_handle_t *out_handle);
 
 /**
- * @brief Release the decoder and all internally-allocated buffers.
+ * @brief Release the decoder. The caller frees the strip buffers afterwards.
  */
 esp_err_t jpeg_enh_strip_decoder_del(jpeg_enh_strip_decoder_handle_t handle);
 
@@ -145,11 +145,9 @@ esp_err_t jpeg_enh_strip_decoder_del(jpeg_enh_strip_decoder_handle_t handle);
  * Blocks until the JPEG hardware signals end-of-frame. While running,
  * on_strip_done fires from ISR context for each strip. The consumer must call
  * jpeg_enh_strip_decoder_release_strip() for every strip once done with its
- * buffer, or the chained DMA stalls and the frame fails with ESP_ERR_TIMEOUT
- * (logged as a ring underrun).
+ * buffer, or the chained DMA stalls and the frame fails with ESP_ERR_TIMEOUT.
  *
- * The image may be any size up to (max_pic_w, max_pic_h); geometry is
- * re-derived from the header every frame.
+ * Geometry and strip layout are re-derived from the header every frame.
  *
  * @param info Optional; receives this frame's geometry.
  */
@@ -159,7 +157,7 @@ esp_err_t jpeg_enh_strip_decoder_process(jpeg_enh_strip_decoder_handle_t handle,
 
 /**
  * @brief Tell the decoder that the consumer is done with strip_idx, so its
- *        ring slot can be reused for a later strip of the same frame.
+ *        buffer can be reused for a later strip of the same frame.
  *
  * Safe from any task context.
  */
@@ -169,9 +167,9 @@ esp_err_t jpeg_enh_strip_decoder_release_strip(jpeg_enh_strip_decoder_handle_t h
 /**
  * @brief Prepare a strip buffer for CPU reads.
  *
- * When the strip ring lives in PSRAM the CPU data cache may hold stale lines
- * for the buffer region; this invalidates them. No-op for internal-RAM rings
- * (not cached on ESP32-P4) and for pure DMA consumers like PPA.
+ * The CPU data cache may hold stale lines for the buffer region (internal
+ * RAM is cached on ESP32-P4 as well as PSRAM); this invalidates them. Pure
+ * DMA consumers like PPA don't need it.
  * Call it from task context before CPU-reading a strip, never from ISR.
  */
 esp_err_t jpeg_enh_strip_decoder_sync_strip_for_cpu(jpeg_enh_strip_decoder_handle_t handle,
@@ -182,11 +180,6 @@ esp_err_t jpeg_enh_strip_decoder_sync_strip_for_cpu(jpeg_enh_strip_decoder_handl
  *        most recent frame. Useful for consumer-side cleanup after an error.
  */
 uint32_t jpeg_enh_strip_decoder_strips_delivered(jpeg_enh_strip_decoder_handle_t handle);
-
-/**
- * @brief Byte size of each internally-allocated strip ring buffer.
- */
-size_t jpeg_enh_strip_decoder_strip_buffer_size(jpeg_enh_strip_decoder_handle_t handle);
 
 /**
  * @brief Whole-frame convenience decode: parse + decode one JPEG into a single
@@ -200,7 +193,7 @@ size_t jpeg_enh_strip_decoder_strip_buffer_size(jpeg_enh_strip_decoder_handle_t 
  * Required capacity is pic_w * pic_h * bits_per_pixel / 8 for the MCU-padded
  * size, rounded up to the cache line for PSRAM buffers.
  *
- * Works on any handle, including ring_count = 0 ones.
+ * Works on any handle, including ones without strip buffers.
  */
 esp_err_t jpeg_enh_decoder_process(jpeg_enh_strip_decoder_handle_t handle,
                                    const uint8_t *bit_stream, uint32_t stream_size,
