@@ -50,6 +50,22 @@ lv_color_format_t lv_color_format(bsp_pixel_format_t format) {
     }
 }
 
+bool bsp_pixel_format(lv_color_format_t format, bsp_pixel_format_t *out) {
+    switch (format) {
+        case LV_COLOR_FORMAT_L8:
+            *out = BSP_PIXEL_FORMAT_L8;
+            return true;
+        case LV_COLOR_FORMAT_RGB565:
+            *out = BSP_PIXEL_FORMAT_RGB565;
+            return true;
+        case LV_COLOR_FORMAT_RGB888:
+            *out = BSP_PIXEL_FORMAT_RGB888;
+            return true;
+        default:
+            return false;
+    }
+}
+
 bsp_rect_t full_panel_rect(bsp_size_t size) {
     return {{0, 0}, size};
 }
@@ -108,7 +124,8 @@ struct DisplayManagerContext {
     bsp_size_t logical_size = {};
     bsp_rect_t output_area = {};
     bsp_rotation_t rotation = BSP_ROTATION_0;
-    bsp_pixel_format_t format = BSP_PIXEL_FORMAT_RGB565;
+    bsp_pixel_format_t color_format = BSP_PIXEL_FORMAT_RGB565;
+    bsp_pixel_format_t panel_format = BSP_PIXEL_FORMAT_RGB565;
     float scale_x = 1.0f;
     float scale_y = 1.0f;
 
@@ -329,6 +346,16 @@ ppa_srm_rotation_angle_t ppa_rotation(bsp_rotation_t rotation) {
 }
 #endif
 
+bool convertible(bsp_pixel_format_t from, bsp_pixel_format_t to) {
+    if (from == to) return true;
+#ifdef DISPLAY_MANAGER_USE_PPA
+    ppa_srm_color_mode_t mode;
+    return ppa_format(from, &mode) && ppa_format(to, &mode);
+#else
+    return false;
+#endif
+}
+
 esp_err_t composite_surface(DisplayManagerContext &display, void *framebuffer) {
     if (display.render_path != DisplayRenderPath::Surface ||
         !display.buffer0 || !framebuffer) {
@@ -336,8 +363,10 @@ esp_err_t composite_surface(DisplayManagerContext &display, void *framebuffer) {
     }
 
 #ifdef DISPLAY_MANAGER_USE_PPA
-    ppa_srm_color_mode_t format;
-    if (ppa_format(display.format, &format)) {
+    ppa_srm_color_mode_t in_format;
+    ppa_srm_color_mode_t out_format;
+    if (ppa_format(display.color_format, &in_format) &&
+        ppa_format(display.panel_format, &out_format)) {
         auto client = static_cast<ppa_client_handle_t>(display.ppa_srm);
         if (!client) {
             ppa_client_config_t config = {};
@@ -353,15 +382,16 @@ esp_err_t composite_surface(DisplayManagerContext &display, void *framebuffer) {
         operation.in.pic_h = display.logical_size.height;
         operation.in.block_w = display.logical_size.width;
         operation.in.block_h = display.logical_size.height;
-        operation.in.srm_cm = format;
+        operation.in.srm_cm = in_format;
         operation.out.buffer = framebuffer;
         operation.out.buffer_size = (uint32_t)display.panel_size.width *
-            display.panel_size.height * display.bytes_per_pixel;
+            display.panel_size.height *
+            bsp_pixel_format_bytes(display.panel_format);
         operation.out.pic_w = display.panel_size.width;
         operation.out.pic_h = display.panel_size.height;
         operation.out.block_offset_x = display.output_area.origin.x;
         operation.out.block_offset_y = display.output_area.origin.y;
-        operation.out.srm_cm = format;
+        operation.out.srm_cm = out_format;
         operation.rotation_angle = ppa_rotation(display.rotation);
         operation.scale_x = display.scale_x;
         operation.scale_y = display.scale_y;
@@ -370,6 +400,9 @@ esp_err_t composite_surface(DisplayManagerContext &display, void *framebuffer) {
     }
 #endif
 
+    if (display.color_format != display.panel_format) {
+        return ESP_ERR_NOT_SUPPORTED;
+    }
     composite_cpu(display, framebuffer);
     return ESP_OK;
 }
@@ -473,6 +506,14 @@ esp_err_t DisplayManager::create_display(const DisplayManagerConfig &config,
         return ESP_ERR_INVALID_ARG;
     }
 
+    bsp_pixel_format_t panel_format = bsp_display_get_pixel_format();
+    bsp_pixel_format_t color_format = panel_format;
+    if (config.color_format != LV_COLOR_FORMAT_UNKNOWN &&
+        !bsp_pixel_format(config.color_format, &color_format)) {
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+    bool converted = color_format != panel_format;
+
     uint32_t caps = bsp_display_get_caps();
     bool has_framebuffer = caps & BSP_DISPLAY_CAP_FRAMEBUFFER;
     bool is_epd = caps & BSP_DISPLAY_CAP_EPD_REFRESH;
@@ -499,7 +540,9 @@ esp_err_t DisplayManager::create_display(const DisplayManagerConfig &config,
             render_path = DisplayRenderPath::Surface;
             break;
         default:
-            if (immediate && has_framebuffer && identity && !is_epd) {
+            if (converted) {
+                render_path = DisplayRenderPath::Surface;
+            } else if (immediate && has_framebuffer && identity && !is_epd) {
                 render_path = DisplayRenderPath::Direct;
             } else if (immediate && (!has_framebuffer || is_epd)) {
                 render_path = DisplayRenderPath::Partial;
@@ -511,6 +554,10 @@ esp_err_t DisplayManager::create_display(const DisplayManagerConfig &config,
     if (render_path == DisplayRenderPath::Surface && !has_framebuffer) {
         return ESP_ERR_NOT_SUPPORTED;
     }
+    if (converted && (render_path != DisplayRenderPath::Surface ||
+                      !convertible(color_format, panel_format))) {
+        return ESP_ERR_NOT_SUPPORTED;
+    }
 
     auto *context = new (std::nothrow) DisplayManagerContext;
     if (!context) return ESP_ERR_NO_MEM;
@@ -520,8 +567,9 @@ esp_err_t DisplayManager::create_display(const DisplayManagerConfig &config,
     context->logical_size = logical_size;
     context->output_area = output_area;
     context->rotation = config.viewport.rotation;
-    context->format = bsp_display_get_pixel_format();
-    context->bytes_per_pixel = bsp_pixel_format_bytes(context->format);
+    context->color_format = color_format;
+    context->panel_format = panel_format;
+    context->bytes_per_pixel = bsp_pixel_format_bytes(color_format);
     context->epd_enabled = is_epd;
     update_scale(*context);
 
@@ -553,8 +601,8 @@ esp_err_t DisplayManager::create_display(const DisplayManagerConfig &config,
                 break;
         }
         buffers_valid = buffers_valid &&
-            buffer_aligned(buffers[0], context->format) &&
-            buffer_aligned(buffers[1], context->format);
+            buffer_aligned(buffers[0], color_format) &&
+            buffer_aligned(buffers[1], color_format);
     }
     if (!buffers_valid) {
         delete context;
@@ -658,7 +706,7 @@ esp_err_t DisplayManager::create_display(const DisplayManagerConfig &config,
     }
 
     lv_display_set_color_format(context->display,
-                                lv_color_format(context->format));
+                                lv_color_format(color_format));
     lv_display_set_buffers(context->display, context->buffer0, context->buffer1,
                            buffer_bytes, render_mode);
     lv_display_set_user_data(context->display, context);

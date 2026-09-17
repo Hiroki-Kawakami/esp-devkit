@@ -62,6 +62,7 @@ struct DisplayManagerConfig {
     DisplayViewportConfig viewport;
     DisplayPresentMode present_mode = DisplayPresentMode::Immediate;
     DisplayRenderMode render_mode = DisplayRenderMode::Auto;
+    lv_color_format_t color_format = LV_COLOR_FORMAT_UNKNOWN;
     DisplayBufferConfig buffer;
     bool make_default = true;
 };
