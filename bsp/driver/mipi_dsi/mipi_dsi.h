@@ -36,7 +36,10 @@ typedef struct {
     uint8_t            fb_num;       /*!< 0 selects one framebuffer; maximum is 3 */
     gpio_num_t         backlight_gpio; /*!< NC disables backlight control */
 
-    float                  lane_bit_rate_mbps;
+    struct {
+        float rgb565;
+        float rgb888;
+    } lane_bit_rate_mbps;
     float                  dpi_clock_freq_mhz;
     esp_lcd_video_timing_t video_timing; /*!< h_size/v_size are replaced by size */
 

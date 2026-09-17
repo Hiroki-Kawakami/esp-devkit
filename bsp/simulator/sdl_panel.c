@@ -76,6 +76,9 @@ static bool s_headless;
  * sdl_panel_present() on the main thread. */
 static bool s_dirty;
 
+static SDL_mutex *s_fb_mtx;
+static bool       s_texture_stale;
+
 static bsp_display_t s_display;
 static bsp_touch_t   s_touch;
 
@@ -300,6 +303,42 @@ static esp_err_t display_flush(bsp_display_t *self, int fb_index) {
     return ESP_OK;
 }
 
+static esp_err_t display_reconfigure(bsp_display_t *self, bsp_pixel_format_t format,
+                                     uint8_t fb_num) {
+    if (format != BSP_PIXEL_FORMAT_RGB565 && format != BSP_PIXEL_FORMAT_RGB888) {
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+    if (fb_num > SDL_PANEL_MAX_FB) return ESP_ERR_INVALID_ARG;
+    if (fb_num == 0) fb_num = (uint8_t)s_fb_num;
+    if (format == s_format && fb_num == s_fb_num) return ESP_OK;
+
+    const size_t bytes = (size_t)s_panel_w * s_panel_h * bsp_pixel_format_bytes(format);
+    uint8_t *fbs[SDL_PANEL_MAX_FB] = {0};
+    for (int i = 0; i < fb_num; i++) {
+        fbs[i] = calloc(1, bytes);
+        if (!fbs[i]) {
+            for (int j = 0; j < i; j++) free(fbs[j]);
+            return ESP_ERR_NO_MEM;
+        }
+    }
+
+    SDL_LockMutex(s_fb_mtx);
+    for (int i = 0; i < SDL_PANEL_MAX_FB; i++) {
+        free(s_fb[i]);
+        s_fb[i] = fbs[i];
+        s_fb_ptrs[i] = fbs[i];
+    }
+    s_fb_num = fb_num;
+    s_present_src = s_fb[0];
+    s_format = format;
+    s_bpp = bsp_pixel_format_bytes(format);
+    self->format = format;
+    s_texture_stale = true;
+    s_dirty = true;
+    SDL_UnlockMutex(s_fb_mtx);
+    return ESP_OK;
+}
+
 /* MARK: bsp_display vtable — EPD */
 
 /* Composite an area of GRAM onto the glass. Phase 1: a straight copy regardless
@@ -389,7 +428,11 @@ static esp_err_t touch_deinit(bsp_touch_t *self) {
  * the panel's own format -- the same bytes present() uploads. */
 static esp_err_t display_read_bitmap(bsp_display_t *self, bsp_rect_t area, void *pixels) {
     (void)self;
-    if (!s_present_src) return ESP_ERR_INVALID_STATE;
+    SDL_LockMutex(s_fb_mtx);
+    if (!s_present_src) {
+        SDL_UnlockMutex(s_fb_mtx);
+        return ESP_ERR_INVALID_STATE;
+    }
     const size_t row_bytes = (size_t)area.size.width * s_bpp;
     uint8_t *dst = pixels;
     for (int r = 0; r < area.size.height; r++) {
@@ -397,6 +440,7 @@ static esp_err_t display_read_bitmap(bsp_display_t *self, bsp_rect_t area, void 
                s_present_src + ((size_t)(area.origin.y + r) * s_panel_w + area.origin.x) * s_bpp,
                row_bytes);
     }
+    SDL_UnlockMutex(s_fb_mtx);
     return ESP_OK;
 }
 
@@ -462,6 +506,7 @@ esp_err_t sdl_panel_create(const sdl_panel_config_t *config,
     s_format    = config->format;
     s_headless  = getenv("SIMULATOR_HEADLESS") != NULL;
     s_touch_mtx = SDL_CreateMutex();  /* guards the touch snapshot (cross-thread) */
+    s_fb_mtx    = SDL_CreateMutex();
 
     SDL_SetMainReady();
     /* Headless still needs the SDL timer (LVGL's tick source is SDL_GetTicks)
@@ -511,6 +556,7 @@ esp_err_t sdl_panel_create(const sdl_panel_config_t *config,
     s_display.clear            = NULL;
     s_display.wait_draw        = NULL;
     s_display.read_bitmap      = display_read_bitmap;
+    s_display.reconfigure      = NULL;
 
     switch (config->type) {
     case BSP_DISPLAY_TYPE_RGB:
@@ -528,6 +574,7 @@ esp_err_t sdl_panel_create(const sdl_panel_config_t *config,
         s_display.set_power        = display_set_power;
         s_display.get_framebuffers = display_get_framebuffers;
         s_display.flush            = display_flush;
+        s_display.reconfigure      = display_reconfigure;
         break;
     }
     case BSP_DISPLAY_TYPE_SPI_EPD:
@@ -576,7 +623,20 @@ esp_err_t sdl_panel_create(const sdl_panel_config_t *config,
 
 void sdl_panel_present(void) {
     if (s_headless || !s_texture || !s_dirty || !s_present_src) return;
+    SDL_LockMutex(s_fb_mtx);
     s_dirty = false;
+
+    if (s_texture_stale) {
+        s_texture_stale = false;
+        SDL_DestroyTexture(s_texture);
+        s_texture = SDL_CreateTexture(s_renderer, sdl_texture_format(s_format),
+                                      SDL_TEXTUREACCESS_STREAMING, s_panel_w, s_panel_h);
+        if (!s_texture) {
+            fprintf(stderr, "SDL_CreateTexture: %s\n", SDL_GetError());
+            SDL_UnlockMutex(s_fb_mtx);
+            return;
+        }
+    }
 
     if (s_format == BSP_PIXEL_FORMAT_L8) {
         size_t n = (size_t)s_panel_w * s_panel_h;
@@ -611,6 +671,7 @@ void sdl_panel_present(void) {
     SDL_RenderCopyEx(s_renderer, s_texture, NULL, &dst,
                      (double)s_window_rotation, &center, SDL_FLIP_NONE);
     SDL_RenderPresent(s_renderer);
+    SDL_UnlockMutex(s_fb_mtx);
 }
 
 void sdl_panel_pump_input(void) {

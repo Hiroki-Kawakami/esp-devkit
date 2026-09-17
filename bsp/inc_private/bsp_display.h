@@ -71,6 +71,11 @@ struct bsp_display {
     void   ** (*get_framebuffers)(bsp_display_t *self);
     esp_err_t (*flush)(bsp_display_t *self, int fb_index);
 
+    /* pixel format / framebuffer count change — NULL when fixed at create.
+     * fb_num 0 keeps the current count. */
+    esp_err_t (*reconfigure)(bsp_display_t *self, bsp_pixel_format_t format,
+                             uint8_t fb_num);
+
     /* EPD refresh control — NULL on non-EPD panels */
     esp_err_t (*set_epd_mode)(bsp_display_t *self, bsp_epd_mode_t mode);
     esp_err_t (*refresh)(bsp_display_t *self, bsp_rect_t area, bsp_epd_mode_t mode);

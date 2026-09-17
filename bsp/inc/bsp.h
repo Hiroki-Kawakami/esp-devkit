@@ -81,6 +81,12 @@ void bsp_display_wait_draw(void);
 void *bsp_display_get_frame_buffer(int fb_index);
 void bsp_display_flush(int fb_index);
 
+/* Rebuilds the panel pipeline in `pixel_format` with `fb_num` framebuffers
+ * (0 keeps the current count). Every framebuffer and pixel format obtained
+ * earlier is invalid afterwards: stop everything that draws to the panel before
+ * calling, and re-read both before drawing again. */
+esp_err_t bsp_display_reconfigure(bsp_pixel_format_t pixel_format, uint8_t fb_num);
+
 // EPD-only: no-op on non-EPD panels. refresh honors `area`; OR
 // BSP_EPD_MODE_ALL into the mode to drive every pixel of the area (ghost
 // clear). clear blanks the whole panel to white (the known-baseline reset).

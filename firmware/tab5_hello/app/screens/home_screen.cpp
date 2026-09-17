@@ -4,6 +4,19 @@
  */
 
 #include "home_screen.hpp"
+#include "format_test_screen.hpp"
+
+static constexpr int kCycleSwitches = 40;
+static constexpr uint32_t kCyclePeriodMs = 1500;
+
+static lv_obj_t *add_button(lv_obj_t *parent, const char *text) {
+    auto button = lv_button_create(parent);
+    lv_obj_set_width(button, LV_PCT(100));
+    auto title = lv_label_create(button);
+    lv_obj_center(title);
+    lv_label_set_text(title, text);
+    return button;
+}
 
 void HomeScreen::build() {
     createNavigation("HomeScreen");
@@ -13,11 +26,7 @@ void HomeScreen::build() {
     lv_obj_set_style_text_font(label, &lv_font_montserrat_48, 0);
     lv_obj_set_style_text_color(label, lv_color_black(), 0);
 
-    auto button = lv_button_create(contents_);
-    lv_obj_set_width(button, LV_PCT(100));
-    auto title = lv_label_create(button);
-    lv_obj_center(title);
-    lv_label_set_text(title, "Open Modal");
+    auto button = add_button(contents_, "Open Modal");
     lv_obj_add_event_fn(button, LV_EVENT_CLICKED, [this](lv_event_t*){
         auto modal = lv_modal_open(root_);
         lv_modal_title_create(modal, "Modal Title");
@@ -27,4 +36,22 @@ void HomeScreen::build() {
         });
     });
 
+    auto format_test = add_button(contents_, "Pixel Format Test");
+    lv_obj_add_event_fn(format_test, LV_EVENT_CLICKED, [](lv_event_t*){
+        screen_manager.push(std::make_shared<FormatTestScreen>());
+    });
+
+    auto format_cycle = add_button(contents_, "Pixel Format Cycle");
+    lv_obj_add_event_fn(format_cycle, LV_EVENT_CLICKED, [](lv_event_t*){
+        static int tick;
+        tick = 0;
+        auto timer = lv_timer_create([](lv_timer_t *) {
+            if (tick++ % 2) {
+                screen_manager.pop();
+            } else {
+                screen_manager.push(std::make_shared<FormatTestScreen>());
+            }
+        }, kCyclePeriodMs, nullptr);
+        lv_timer_set_repeat_count(timer, kCycleSwitches);
+    });
 }

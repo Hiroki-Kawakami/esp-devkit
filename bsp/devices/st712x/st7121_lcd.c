@@ -28,7 +28,7 @@ esp_err_t st7121_lcd_create(const st7121_config_t *config, bsp_display_t **out) 
         .pixel_format       = config->pixel_format,
         .fb_num             = config->fb_num,
         .backlight_gpio     = config->backlight_gpio,
-        .lane_bit_rate_mbps = 965,
+        .lane_bit_rate_mbps = { .rgb565 = 965, .rgb888 = 965 },
         .dpi_clock_freq_mhz = 70,
         .video_timing = {
             .hsync_pulse_width = 2,

@@ -279,6 +279,14 @@ void bsp_display_flush(int fb_index) {
     s_display->flush(s_display, fb_index);
 }
 
+esp_err_t bsp_display_reconfigure(bsp_pixel_format_t pixel_format, uint8_t fb_num) {
+    if (!s_display || !s_display->reconfigure) return ESP_ERR_NOT_SUPPORTED;
+    bsp_display_wait_draw();
+    esp_err_t err = s_display->reconfigure(s_display, pixel_format, fb_num);
+    bsp_display_set_active(s_display);
+    return err;
+}
+
 void bsp_display_set_epd_mode(bsp_epd_mode_t mode) {
     if (s_display && s_display->set_epd_mode) s_display->set_epd_mode(s_display, mode);
 }

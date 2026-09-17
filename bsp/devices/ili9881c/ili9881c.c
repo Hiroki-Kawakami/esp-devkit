@@ -33,7 +33,7 @@ esp_err_t ili9881c_lcd_create(const ili9881c_config_t *config, bsp_display_t **o
         .pixel_format       = config->pixel_format,
         .fb_num             = config->fb_num,
         .backlight_gpio     = config->backlight_gpio,
-        .lane_bit_rate_mbps = config->pixel_format == BSP_PIXEL_FORMAT_RGB888 ? 870 : 800,
+        .lane_bit_rate_mbps = { .rgb565 = 800, .rgb888 = 870 },
         .dpi_clock_freq_mhz = 75,
         .video_timing = {
             .hsync_pulse_width = 40,
