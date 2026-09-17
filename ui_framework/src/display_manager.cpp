@@ -102,7 +102,7 @@ struct DisplayManagerContext {
     uint8_t input_down : 1 = false;
     uint8_t input_armed : 1 = false;
     uint8_t input_pending : 1 = false;
-    uint8_t : 1;
+    uint8_t owns_buffers : 1 = false;
 
     bsp_size_t panel_size = {};
     bsp_size_t logical_size = {};
@@ -138,6 +138,16 @@ struct DisplayManagerContext {
 };
 
 namespace {
+
+void free_owned_buffers(DisplayManagerContext &context) {
+    if (!context.owns_buffers) return;
+    heap_caps_free(context.buffer0);
+    if (context.buffer1) heap_caps_free(context.buffer1);
+}
+
+bool buffer_aligned(void *buffer, bsp_pixel_format_t format) {
+    return !buffer || lv_draw_buf_align(buffer, lv_color_format(format)) == buffer;
+}
 
 bool point_inside(const DisplayManagerContext &display,
                   const bsp_touch_point_t &point) {
@@ -514,6 +524,37 @@ esp_err_t DisplayManager::create_display(const DisplayManagerConfig &config,
         return ESP_ERR_NOT_SUPPORTED;
     }
 
+    void *const *buffers = config.buffer.buffers;
+    bool external = buffers[0];
+    size_t long_edge_bytes = (size_t)(logical_size.width > logical_size.height
+        ? logical_size.width
+        : logical_size.height) * context->bytes_per_pixel;
+    size_t surface_bytes = (size_t)logical_size.width * logical_size.height *
+        context->bytes_per_pixel;
+    bool buffers_valid = !buffers[1] || external;
+    if (external) {
+        switch (render_path) {
+            case DisplayRenderPath::Direct:
+                buffers_valid = false;
+                break;
+            case DisplayRenderPath::Partial:
+                buffers_valid = buffers_valid &&
+                    config.buffer.buffer_size >= long_edge_bytes;
+                break;
+            case DisplayRenderPath::Surface:
+                buffers_valid = buffers_valid && !buffers[1] &&
+                    config.buffer.buffer_size >= surface_bytes;
+                break;
+        }
+        buffers_valid = buffers_valid &&
+            buffer_aligned(buffers[0], context->format) &&
+            buffer_aligned(buffers[1], context->format);
+    }
+    if (!buffers_valid) {
+        delete context;
+        return ESP_ERR_INVALID_ARG;
+    }
+
     size_t buffer_bytes = 0;
     lv_display_render_mode_t render_mode;
     if (render_path == DisplayRenderPath::Direct) {
@@ -533,37 +574,40 @@ esp_err_t DisplayManager::create_display(const DisplayManagerConfig &config,
             return ESP_ERR_NOT_SUPPORTED;
         }
 
-        int lines = config.buffer.lines > 0
-            ? config.buffer.lines
-            : logical_size.height / 4;
-        if (lines < 1) lines = 1;
-        int count = config.buffer.count > 0
-            ? config.buffer.count
-            : (is_epd ? 1 : 2);
-        if (count < 1) count = 1;
-        if (count > 2) count = 2;
+        if (external) {
+            buffer_bytes = config.buffer.buffer_size;
+            context->buffer0 = buffers[0];
+            context->buffer1 = buffers[1];
+        } else {
+            int lines = config.buffer.lines > 0
+                ? config.buffer.lines
+                : logical_size.height / 4;
+            if (lines < 1) lines = 1;
+            int count = config.buffer.count > 0
+                ? config.buffer.count
+                : (is_epd ? 1 : 2);
+            if (count < 1) count = 1;
+            if (count > 2) count = 2;
 
-        buffer_bytes = (size_t)logical_size.width * lines *
-            context->bytes_per_pixel;
-        /* Rotation re-slices the same budget by the new stride, so one row of
-         * the long edge is the floor. */
-        size_t long_edge_bytes = (size_t)(logical_size.width > logical_size.height
-            ? logical_size.width
-            : logical_size.height) * context->bytes_per_pixel;
-        if (buffer_bytes < long_edge_bytes) buffer_bytes = long_edge_bytes;
-        buffer_bytes = (buffer_bytes + 63) & ~(size_t)63;
-        uint32_t memory_caps = config.buffer.memory_caps
-            ? config.buffer.memory_caps
-            : (has_framebuffer ? MALLOC_CAP_SPIRAM : MALLOC_CAP_DEFAULT);
-        context->buffer0 = heap_caps_aligned_alloc(64, buffer_bytes, memory_caps);
-        if (count == 2 && context->buffer0) {
-            context->buffer1 = heap_caps_aligned_alloc(64, buffer_bytes, memory_caps);
-        }
-        if (!context->buffer0 || (count == 2 && !context->buffer1)) {
-            if (context->buffer0) heap_caps_free(context->buffer0);
-            if (context->buffer1) heap_caps_free(context->buffer1);
-            delete context;
-            return ESP_ERR_NO_MEM;
+            buffer_bytes = (size_t)logical_size.width * lines *
+                context->bytes_per_pixel;
+            /* Rotation re-slices the same budget by the new stride, so one row
+             * of the long edge is the floor. */
+            if (buffer_bytes < long_edge_bytes) buffer_bytes = long_edge_bytes;
+            buffer_bytes = (buffer_bytes + 63) & ~(size_t)63;
+            uint32_t memory_caps = has_framebuffer ? MALLOC_CAP_SPIRAM
+                                                   : MALLOC_CAP_DEFAULT;
+            context->owns_buffers = true;
+            context->buffer0 = heap_caps_aligned_alloc(64, buffer_bytes, memory_caps);
+            if (count == 2 && context->buffer0) {
+                context->buffer1 = heap_caps_aligned_alloc(64, buffer_bytes, memory_caps);
+            }
+            if (!context->buffer0 || (count == 2 && !context->buffer1)) {
+                if (context->buffer0) heap_caps_free(context->buffer0);
+                if (context->buffer1) heap_caps_free(context->buffer1);
+                delete context;
+                return ESP_ERR_NO_MEM;
+            }
         }
         render_mode = LV_DISPLAY_RENDER_MODE_PARTIAL;
         context->append(map_flush_area);
@@ -575,17 +619,20 @@ esp_err_t DisplayManager::create_display(const DisplayManagerConfig &config,
             context->append(flush_framebuffer);
         }
     } else {
-        buffer_bytes = (size_t)logical_size.width * logical_size.height *
-            context->bytes_per_pixel;
-        uint32_t memory_caps = config.buffer.memory_caps
-            ? config.buffer.memory_caps
-            : MALLOC_CAP_DEFAULT;
-        context->buffer0 = heap_caps_aligned_alloc(64, buffer_bytes, memory_caps);
-        if (!context->buffer0) {
-            delete context;
-            return ESP_ERR_NO_MEM;
+        if (external) {
+            buffer_bytes = config.buffer.buffer_size;
+            context->buffer0 = buffers[0];
+        } else {
+            buffer_bytes = surface_bytes;
+            context->owns_buffers = true;
+            context->buffer0 = heap_caps_aligned_alloc(64, buffer_bytes,
+                                                       MALLOC_CAP_SPIRAM);
+            if (!context->buffer0) {
+                delete context;
+                return ESP_ERR_NO_MEM;
+            }
         }
-        std::memset(context->buffer0, 0, buffer_bytes);
+        std::memset(context->buffer0, 0, surface_bytes);
         render_mode = LV_DISPLAY_RENDER_MODE_DIRECT;
         if (immediate) {
             context->append(composite_immediate);
@@ -597,10 +644,7 @@ esp_err_t DisplayManager::create_display(const DisplayManagerConfig &config,
 
     context->display = lv_display_create(logical_size.width, logical_size.height);
     if (!context->display) {
-        if (context->render_path != DisplayRenderPath::Direct) {
-            heap_caps_free(context->buffer0);
-            if (context->buffer1) heap_caps_free(context->buffer1);
-        }
+        free_owned_buffers(*context);
         delete context;
         return ESP_ERR_NO_MEM;
     }
@@ -617,10 +661,7 @@ esp_err_t DisplayManager::create_display(const DisplayManagerConfig &config,
         touch_mutex_ = xSemaphoreCreateMutex();
         if (!touch_mutex_) {
             lv_display_delete(context->display);
-            if (context->render_path != DisplayRenderPath::Direct) {
-                heap_caps_free(context->buffer0);
-                if (context->buffer1) heap_caps_free(context->buffer1);
-            }
+            free_owned_buffers(*context);
             delete context;
             return ESP_ERR_NO_MEM;
         }
@@ -630,10 +671,7 @@ esp_err_t DisplayManager::create_display(const DisplayManagerConfig &config,
     context->indev = lv_indev_create();
     if (!context->indev) {
         lv_display_delete(context->display);
-        if (context->render_path != DisplayRenderPath::Direct) {
-            heap_caps_free(context->buffer0);
-            if (context->buffer1) heap_caps_free(context->buffer1);
-        }
+        free_owned_buffers(*context);
         delete context;
         return ESP_ERR_NO_MEM;
     }
@@ -651,6 +689,39 @@ esp_err_t DisplayManager::create_display(const DisplayManagerConfig &config,
     if (is_epd) bsp_display_set_epd_mode(BSP_EPD_MODE_NONE);
 
     *out_display = context->display;
+    return ESP_OK;
+}
+
+esp_err_t DisplayManager::delete_display(lv_display_t *display) {
+    DisplayManagerContext *context = context_for(display);
+    if (!context) return ESP_ERR_INVALID_ARG;
+
+    auto touch_mutex = static_cast<SemaphoreHandle_t>(touch_mutex_);
+    if (touch_mutex) xSemaphoreTake(touch_mutex, portMAX_DELAY);
+    uint8_t slot = kMaxDisplays;
+    for (uint8_t i = 0; i < kMaxDisplays; ++i) {
+        if (displays_[i] == context) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < kMaxDisplays) {
+        displays_[slot] = nullptr;
+        release_input_locked(*context);
+    }
+    if (touch_mutex) xSemaphoreGive(touch_mutex);
+    if (slot == kMaxDisplays) return ESP_ERR_INVALID_ARG;
+
+    /* lv_display_delete only detaches indevs. */
+    lv_indev_delete(context->indev);
+    lv_display_delete(context->display);
+#ifdef DISPLAY_MANAGER_USE_PPA
+    if (context->ppa_srm) {
+        ppa_unregister_client(static_cast<ppa_client_handle_t>(context->ppa_srm));
+    }
+#endif
+    free_owned_buffers(*context);
+    delete context;
     return ESP_OK;
 }
 
@@ -723,31 +794,37 @@ esp_err_t DisplayManager::set_epd_mode(lv_display_t *display,
     return ESP_OK;
 }
 
-esp_err_t DisplayManager::set_visible(lv_display_t *display, bool visible) {
-    DisplayManagerContext *context = context_for(display);
-    if (!context) return ESP_ERR_INVALID_ARG;
-
-    bool reset_input = false;
-    auto touch_mutex = static_cast<SemaphoreHandle_t>(touch_mutex_);
-    if (touch_mutex) xSemaphoreTake(touch_mutex, portMAX_DELAY);
-    bool was_visible = context->visible;
-    context->visible = visible;
-    if (active_touch_display_ == context && !visible) {
+bool DisplayManager::release_input_locked(DisplayManagerContext &context) {
+    bool reset_input = context.input_down || context.input_armed ||
+        context.input_pending;
+    if (active_touch_display_ == &context) {
         active_touch_display_ = nullptr;
         outside_touch_active_ = false;
         reset_input = true;
     }
-    if (!visible && (context->input_down || context->input_armed ||
-                     context->input_pending)) {
-        reset_input = true;
-    }
-    if (!visible) {
-        clear_input_state(*context);
-    }
+    clear_input_state(context);
+    return reset_input;
+}
+
+esp_err_t DisplayManager::set_visible(lv_display_t *display, bool visible) {
+    DisplayManagerContext *context = context_for(display);
+    if (!context) return ESP_ERR_INVALID_ARG;
+    if (context->visible == visible) return ESP_OK;
+
+    /* Areas invalidated before this point would still render on the next
+     * refresh, so they are drawn out while the display is still shown. */
+    if (!visible) lv_refr_now(display);
+
+    bool reset_input = false;
+    auto touch_mutex = static_cast<SemaphoreHandle_t>(touch_mutex_);
+    if (touch_mutex) xSemaphoreTake(touch_mutex, portMAX_DELAY);
+    context->visible = visible;
+    if (!visible) reset_input = release_input_locked(*context);
     if (touch_mutex) xSemaphoreGive(touch_mutex);
 
     if (reset_input) lv_indev_reset(context->indev, nullptr);
-    if (visible && !was_visible) {
+    lv_display_enable_invalidation(display, visible);
+    if (visible) {
         lv_obj_t *screen = lv_display_get_screen_active(display);
         if (screen) lv_obj_invalidate(screen);
     }

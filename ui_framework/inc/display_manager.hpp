@@ -46,10 +46,16 @@ struct DisplayViewportConfig {
 };
 
 struct DisplayBufferConfig {
+    /* Caller-owned draw buffers, aligned for LVGL. Partial takes one or two,
+     * each holding at least one row of the viewport's long edge; Surface takes
+     * one holding the whole logical area. Null lets DisplayManager allocate
+     * them from lines/count. */
+    void *buffers[2] = {};
+    size_t buffer_size = 0;
+
     /* Zero values select DisplayManager defaults. */
     int lines = 0;
     int count = 0;
-    uint32_t memory_caps = 0;
 };
 
 struct DisplayManagerConfig {
@@ -76,13 +82,14 @@ public:
      * testing prefers the most recently created visible display. */
     esp_err_t create_display(const DisplayManagerConfig &config,
                              lv_display_t **out_display);
+    esp_err_t delete_display(lv_display_t *display);
 
     /* Call these from the LVGL context or while holding the LVGL lock. When the
      * viewport derives its logical size, rotation swaps the LVGL resolution. */
     esp_err_t set_rotation(lv_display_t *display, bsp_rotation_t rotation);
     esp_err_t set_epd_mode(lv_display_t *display, bsp_epd_mode_t mode,
                            bool once);
-    /* Direct displays still render into the physical framebuffer while hidden. */
+    /* A hidden display does not render, so its draw buffers stay untouched. */
     esp_err_t set_visible(lv_display_t *display, bool visible);
 
     /* Touches outside every visible display viewport are delivered in raw
@@ -103,6 +110,7 @@ private:
     static void touch_event_cb(const bsp_touch_point_t *points, int count,
                                void *arg);
     static void input_dispatch_cb(void *arg);
+    bool release_input_locked(DisplayManagerContext &context);
     DisplayManagerContext *context_for(lv_display_t *display) const {
         if (!display) return nullptr;
         return static_cast<DisplayManagerContext *>(

@@ -31,8 +31,23 @@ static void lvgl_init() {
         return;
     }
 
+    bsp_size_t panel = bsp_display_get_size();
+    size_t long_edge = panel.width > panel.height ? panel.width : panel.height;
+    size_t buffer_size = long_edge * 24 *
+        bsp_pixel_format_bytes(bsp_display_get_pixel_format());
+
     DisplayManagerConfig display_config = {};
     display_config.render_mode = DisplayRenderMode::Partial;
+    display_config.buffer.buffer_size = buffer_size;
+    for (auto &buffer : display_config.buffer.buffers) {
+        buffer = heap_caps_aligned_alloc(64, buffer_size,
+                                         MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+        if (!buffer) {
+            ESP_LOGE(TAG, "partial buffer: no internal memory for %u bytes",
+                     (unsigned)buffer_size);
+            return;
+        }
+    }
     err = display_manager.create_display(display_config, &s_display);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "create_display: %s", esp_err_to_name(err));
