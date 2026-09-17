@@ -51,8 +51,8 @@ esp_err_t mipi_dsi_send_init_cmds(esp_lcd_panel_io_handle_t io,
     return ESP_OK;
 }
 
-static esp_err_t draw_bitmap(bsp_display_t *self, bsp_rect_t rect, const void *data,
-                             bsp_rotation_t rotation) {
+static esp_err_t draw(bsp_display_t *self, bsp_rect_t rect, const void *data,
+                      bsp_rotation_t rotation, bool async) {
     mipi_dsi_lcd_t *lcd = (mipi_dsi_lcd_t *)self;
     uint8_t *fb = lcd->frame_buffers[lcd->shown];
     if (!fb) return ESP_ERR_INVALID_STATE;
@@ -61,7 +61,23 @@ static esp_err_t draw_bitmap(bsp_display_t *self, bsp_rect_t rect, const void *d
         bsp_rect_max_y(rect) > self->size.height) {
         return ESP_ERR_INVALID_ARG;
     }
-    bsp_blit_rotated(fb, self->size, self->format, rect, data, rotation);
+    bsp_blit_rotated(fb, self->size, self->format, rect, data, rotation, async);
+    return ESP_OK;
+}
+
+static esp_err_t draw_bitmap(bsp_display_t *self, bsp_rect_t rect, const void *data,
+                             bsp_rotation_t rotation) {
+    return draw(self, rect, data, rotation, false);
+}
+
+static esp_err_t draw_bitmap_async(bsp_display_t *self, bsp_rect_t rect, const void *data,
+                                   bsp_rotation_t rotation) {
+    return draw(self, rect, data, rotation, true);
+}
+
+static esp_err_t wait_draw(bsp_display_t *self) {
+    (void)self;
+    bsp_blit_wait();
     return ESP_OK;
 }
 
@@ -171,16 +187,18 @@ esp_err_t mipi_dsi_lcd_create(const mipi_dsi_config_t *config, bsp_display_t **o
     if (!lcd) return ESP_ERR_NO_MEM;
 
     lcd->base = (bsp_display_t){
-        .type             = BSP_DISPLAY_TYPE_MIPI_DSI,
-        .size             = config->size,
-        .format           = config->pixel_format,
-        .draw_bitmap      = draw_bitmap,
-        .deinit           = deinit,
-        .set_brightness   = NULL,
-        .set_power        = set_power,
-        .get_framebuffers = get_framebuffers,
-        .flush            = flush,
-        .read_bitmap      = read_bitmap,
+        .type              = BSP_DISPLAY_TYPE_MIPI_DSI,
+        .size              = config->size,
+        .format            = config->pixel_format,
+        .draw_bitmap       = draw_bitmap,
+        .deinit            = deinit,
+        .draw_bitmap_async = draw_bitmap_async,
+        .wait_draw         = wait_draw,
+        .set_brightness    = NULL,
+        .set_power         = set_power,
+        .get_framebuffers  = get_framebuffers,
+        .flush             = flush,
+        .read_bitmap       = read_bitmap,
     };
     lcd->fb_num = config->fb_num ? config->fb_num : 1;
 

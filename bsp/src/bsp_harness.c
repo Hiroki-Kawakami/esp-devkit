@@ -27,6 +27,7 @@ esp_err_t bsp_harness_display_read(bsp_rect_t area, void *pixels) {
         area.origin.y + area.size.height > d->size.height) {
         return ESP_ERR_INVALID_ARG;
     }
+    bsp_blit_wait();
     return d->read_bitmap(d, area, pixels);
 }
 

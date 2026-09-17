@@ -37,7 +37,7 @@
  *   SEED mode    a draw adopts the pixels as the on-glass content (confirmed =
  *                target, IDLE, no drive). Create does not clear the panel, so
  *                the caller clears or seeds before trusting diff refreshes.
- *   wait_idle    blocks until every in-flight waveform retires.
+ *   wait_draw    blocks until every in-flight waveform retires.
  *
  * The task runs a continuous frame loop while any pixel is in flight: each frame
  * it bumps the mod-64 frame counter, builds the 256-entry b1 tables, packs every
@@ -529,7 +529,7 @@ static esp_err_t op_set_epd_mode(bsp_display_t *self, bsp_epd_mode_t mode) {
 
 /* Reads each pixel's target gray (what was drawn) rather than the confirmed
  * on-glass value, so a capture right after a draw shows the intended frame;
- * the two agree once wait_idle returns. */
+ * the two agree once wait_draw returns. */
 static esp_err_t op_read_bitmap(bsp_display_t *self, bsp_rect_t area, void *pixels) {
     epd_t *s = (epd_t *)self;
     uint8_t *dst = pixels;
@@ -603,7 +603,7 @@ static esp_err_t op_refresh(bsp_display_t *self, bsp_rect_t area, bsp_epd_mode_t
     return ESP_OK;
 }
 
-static esp_err_t op_wait_idle(bsp_display_t *self) {
+static esp_err_t op_wait_draw(bsp_display_t *self) {
     epd_t *s = (epd_t *)self;
     xSemaphoreTake(s->mtx, portMAX_DELAY);
     while (s->active_px) wait_retire(s);
@@ -749,7 +749,7 @@ esp_err_t epd_ll_create(const epd_ll_config_t *cfg, bsp_display_t **out_display)
     s->base.set_epd_mode = op_set_epd_mode;
     s->base.refresh      = op_refresh;
     s->base.clear        = op_clear;
-    s->base.wait_idle    = op_wait_idle;
+    s->base.wait_draw    = op_wait_draw;
     s->base.read_bitmap  = op_read_bitmap;
     s->mode              = BSP_EPD_MODE_NONE;
     s->width             = cfg->width;

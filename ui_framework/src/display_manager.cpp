@@ -383,6 +383,12 @@ void draw_bitmap(DisplayManagerContext &display, DisplayFlushContext &flush) {
     bsp_display_draw_bitmap(bsp_rect(flush.area), flush.pixels, display.rotation);
 }
 
+void draw_bitmap_async(DisplayManagerContext &display, DisplayFlushContext &flush) {
+    if (flush.result != ESP_OK || !display.visible) return;
+    bsp_display_draw_bitmap_async(bsp_rect(flush.area), flush.pixels,
+                                  display.rotation);
+}
+
 void accumulate_dirty(DisplayManagerContext &display, DisplayFlushContext &flush) {
     if (flush.result != ESP_OK || !display.visible) return;
     if (!display.dirty_valid) {
@@ -611,7 +617,9 @@ esp_err_t DisplayManager::create_display(const DisplayManagerConfig &config,
         }
         render_mode = LV_DISPLAY_RENDER_MODE_PARTIAL;
         context->append(map_flush_area);
-        context->append(draw_bitmap);
+        /* LVGL renders the next chunk into the other buffer once flush_ready
+         * returns, so only a second buffer lets the blit run behind it. */
+        context->append(context->buffer1 ? draw_bitmap_async : draw_bitmap);
         if (is_epd) {
             context->append(accumulate_dirty);
             context->append(refresh_epd);
@@ -712,6 +720,7 @@ esp_err_t DisplayManager::delete_display(lv_display_t *display) {
     if (touch_mutex) xSemaphoreGive(touch_mutex);
     if (slot == kMaxDisplays) return ESP_ERR_INVALID_ARG;
 
+    bsp_display_wait_draw();
     /* lv_display_delete only detaches indevs. */
     lv_indev_delete(context->indev);
     lv_display_delete(context->display);

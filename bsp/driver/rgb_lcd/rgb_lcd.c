@@ -25,8 +25,8 @@ typedef struct {
     void   *frame_buffers[BSP_DISPLAY_MAX_FRAME_BUFFERS];
 } rgb_lcd_t;
 
-static esp_err_t draw_bitmap(bsp_display_t *self, bsp_rect_t rect, const void *data,
-                             bsp_rotation_t rotation) {
+static esp_err_t draw(bsp_display_t *self, bsp_rect_t rect, const void *data,
+                      bsp_rotation_t rotation, bool async) {
     rgb_lcd_t *d = (rgb_lcd_t *)self;
     /* Fast path is the framebuffer flush; draw_bitmap is the partial fallback. */
     uint8_t *fb = d->frame_buffers[d->shown];
@@ -36,7 +36,23 @@ static esp_err_t draw_bitmap(bsp_display_t *self, bsp_rect_t rect, const void *d
         bsp_rect_max_y(rect) > self->size.height) {
         return ESP_ERR_INVALID_ARG;
     }
-    bsp_blit_rotated(fb, self->size, self->format, rect, data, rotation);
+    bsp_blit_rotated(fb, self->size, self->format, rect, data, rotation, async);
+    return ESP_OK;
+}
+
+static esp_err_t draw_bitmap(bsp_display_t *self, bsp_rect_t rect, const void *data,
+                             bsp_rotation_t rotation) {
+    return draw(self, rect, data, rotation, false);
+}
+
+static esp_err_t draw_bitmap_async(bsp_display_t *self, bsp_rect_t rect, const void *data,
+                                   bsp_rotation_t rotation) {
+    return draw(self, rect, data, rotation, true);
+}
+
+static esp_err_t wait_draw(bsp_display_t *self) {
+    (void)self;
+    bsp_blit_wait();
     return ESP_OK;
 }
 
@@ -101,15 +117,17 @@ esp_err_t rgb_lcd_create(const rgb_lcd_config_t *config, bsp_display_t **out) {
     if (!state) return ESP_ERR_NO_MEM;
 
     state->base = (bsp_display_t){
-        .type            = BSP_DISPLAY_TYPE_RGB,
-        .size            = config->size,
-        .format          = config->pixel_format,
-        .draw_bitmap     = draw_bitmap,
-        .deinit          = deinit,
-        .set_brightness  = set_brightness,
-        .get_framebuffers = get_framebuffers,
-        .flush           = flush,
-        .read_bitmap     = read_bitmap,
+        .type              = BSP_DISPLAY_TYPE_RGB,
+        .size              = config->size,
+        .format            = config->pixel_format,
+        .draw_bitmap       = draw_bitmap,
+        .deinit            = deinit,
+        .draw_bitmap_async = draw_bitmap_async,
+        .wait_draw         = wait_draw,
+        .set_brightness    = set_brightness,
+        .get_framebuffers  = get_framebuffers,
+        .flush             = flush,
+        .read_bitmap       = read_bitmap,
     };
     state->fb_num = config->fb_num > 0 ? config->fb_num : 1;
     if (state->fb_num > BSP_DISPLAY_MAX_FRAME_BUFFERS) {

@@ -89,7 +89,8 @@ static esp_err_t op_draw_bitmap(bsp_display_t *self, bsp_rect_t area, const void
         for (int r = 0; r < h; r++)
             memcpy(s->gram + (size_t)(y0 + r) * W + x0, src + (size_t)r * w, w);
     } else {
-        bsp_blit_rotated(s->gram, (bsp_size_t){ W, H }, self->format, area, pixels, rotation);
+        bsp_blit_rotated(s->gram, (bsp_size_t){ W, H }, self->format, area, pixels, rotation,
+                         false);
     }
 
     /* SEED updates GRAM only — the TCON's own on-glass tracking can't be seeded. */
@@ -99,7 +100,7 @@ static esp_err_t op_draw_bitmap(bsp_display_t *self, bsp_rect_t area, const void
     return ESP_OK;
 }
 
-static esp_err_t op_wait_idle(bsp_display_t *self) {
+static esp_err_t op_wait_draw(bsp_display_t *self) {
     it8951e_epd_t *s = (it8951e_epd_t *)self;
     return it8951e_wait_idle(s->epd, REFRESH_TIMEOUT_MS);
 }
@@ -256,7 +257,7 @@ esp_err_t it8951e_epd_create(const it8951e_epd_config_t *cfg, bsp_display_t **ou
     s->base.set_epd_mode = op_set_epd_mode;
     s->base.refresh      = op_refresh;
     s->base.clear        = op_clear;
-    s->base.wait_idle    = op_wait_idle;
+    s->base.wait_draw    = op_wait_draw;
     s->base.set_power    = op_set_power;   /* SLEEP always works; OFF needs a rail cb */
     s->base.read_bitmap  = op_read_bitmap;
     s->mode              = BSP_EPD_MODE_NONE;

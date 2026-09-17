@@ -123,7 +123,7 @@ static esp_err_t op_clear(bsp_display_t *self) {
     return gdey0154d67_update_full(s->epd, s->fb);
 }
 
-static esp_err_t op_wait_idle(bsp_display_t *self) {
+static esp_err_t op_wait_draw(bsp_display_t *self) {
     return gdey0154d67_wait_idle(((gdey0154d67_epd_t *)self)->epd, 0);
 }
 
@@ -184,7 +184,7 @@ esp_err_t gdey0154d67_epd_create(const gdey0154d67_epd_config_t *cfg, bsp_displa
     s->base.set_epd_mode = op_set_epd_mode;
     s->base.refresh      = op_refresh;
     s->base.clear        = op_clear;
-    s->base.wait_idle    = op_wait_idle;
+    s->base.wait_draw    = op_wait_draw;
     s->base.set_power    = op_set_power;
     s->base.read_bitmap  = op_read_bitmap;
     s->mode              = BSP_EPD_MODE_NONE;

@@ -15,6 +15,7 @@ straight into the `simulator` executable (one binary → no separate library).
 idf_compat/
   include/            shim headers (what shared code #includes)
     esp_err.h esp_log.h esp_check.h esp_timer.h esp_heap_caps.h esp_mac.h
+    esp_attr.h
     nvs.h nvs_flash.h
     driver/           jpeg_decode.h ppa.h i2c_master.h
     hal/              ppa_types.h color_types.h  (PPA type headers)
@@ -36,7 +37,8 @@ nothing is vendored. The same philosophy throughout: reimplement the API
 *contract* on host primitives, just enough for the simulator.
 
 - ESP-IDF APIs: `esp_err`, `esp_log`, `esp_check`, `esp_timer`, `esp_heap_caps`,
-  `esp_mac`, and a JSON-backed `nvs` / `nvs_flash`.
+  `esp_mac`, `esp_attr` (placement attributes, empty), and a JSON-backed
+  `nvs` / `nvs_flash`.
 - The FreeRTOS API (`freertos/*.h`) on native pthreads — see below.
 - `driver/jpeg_decode` — IDF JPEG decode engine API, backed by libjpeg.
 - `driver/ppa` — IDF PPA (Pixel-Processing Accelerator) API, a CPU impl — see below.

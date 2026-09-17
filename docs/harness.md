@@ -143,7 +143,7 @@ Capture needs a panel whose contents can be read back
 | Tab5 (MIPI-DSI) | last flushed framebuffer |
 | S31 Korvo (RGB LCD) | framebuffer |
 | Paper (IT8951E) | controller GRAM shadow, grayscale |
-| Paper S3 / LilyGo T5 (epd_ll) | the drawn target gray — matches the glass once `wait_idle` returns |
+| Paper S3 / LilyGo T5 (epd_ll) | the drawn target gray — matches the glass once `wait_draw` returns |
 | AirQ (GDEY0154D67) | 1 bpp framebuffer, expanded to gray |
 | Core / Core2 (ILI9342C) | `RAMRD` over SPI — see below |
 | CoreS3 (ILI9342C) | none: MISO is not wired on that board |

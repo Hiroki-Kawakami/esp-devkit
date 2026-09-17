@@ -76,6 +76,8 @@ bsp_rotation_t bsp_display_portrait(void);
  * bsp_display_set_brightness as needed. */
 esp_err_t bsp_display_set_power(bsp_display_power_t state);
 void bsp_display_draw_bitmap(bsp_rect_t area, const void *pixels, bsp_rotation_t rotation);
+void bsp_display_draw_bitmap_async(bsp_rect_t area, const void *pixels, bsp_rotation_t rotation);
+void bsp_display_wait_draw(void);
 void *bsp_display_get_frame_buffer(int fb_index);
 void bsp_display_flush(int fb_index);
 
@@ -86,9 +88,6 @@ void bsp_display_flush(int fb_index);
 void bsp_display_set_epd_mode(bsp_epd_mode_t mode);
 void bsp_display_refresh(bsp_rect_t area, bsp_epd_mode_t mode);
 void bsp_display_clear(void);
-
-/* Block until no panel update is in flight — the gate before cutting power. */
-void bsp_display_wait_idle(void);
 
 // MARK: Touch
 int bsp_touch_read(bsp_touch_point_t *points, uint8_t max_points);

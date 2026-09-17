@@ -23,8 +23,11 @@
  * the latest GRAM contents of `area` to the panel with an explicit one-shot mode
  * (it does not change the persistent mode); with BSP_EPD_MODE_ALL every pixel of
  * the area is driven, diff or not (ghost clear). clear blanks the whole panel to
- * white with the panel's clear waveform — the known-baseline reset. wait_idle
- * blocks until every in-flight panel update completes — the power-off gate.
+ * white with the panel's clear waveform — the known-baseline reset.
+ *
+ * draw_bitmap_async is the optional variant of draw_bitmap that may return
+ * before the pixels land (NULL = draw_bitmap). wait_draw blocks until every
+ * in-flight draw and panel update completes — the power-off gate.
  *
  * read_bitmap is the optional inverse of draw_bitmap (NULL when the panel has no
  * way to read its own contents): copy the panel-coordinate rect `area` into
@@ -49,6 +52,11 @@ struct bsp_display {
                              bsp_rotation_t rotation);
     esp_err_t (*deinit)(bsp_display_t *self);
 
+    /* deferred drawing — NULL when the driver never leaves a draw in flight */
+    esp_err_t (*draw_bitmap_async)(bsp_display_t *self, bsp_rect_t area, const void *pixels,
+                                   bsp_rotation_t rotation);
+    esp_err_t (*wait_draw)(bsp_display_t *self);
+
     /* backlight — NULL when the panel has no controllable backlight */
     esp_err_t (*set_brightness)(bsp_display_t *self, int brightness);
 
@@ -67,7 +75,6 @@ struct bsp_display {
     esp_err_t (*set_epd_mode)(bsp_display_t *self, bsp_epd_mode_t mode);
     esp_err_t (*refresh)(bsp_display_t *self, bsp_rect_t area, bsp_epd_mode_t mode);
     esp_err_t (*clear)(bsp_display_t *self);
-    esp_err_t (*wait_idle)(bsp_display_t *self);
 
     /* readback — NULL when the panel contents cannot be read */
     esp_err_t (*read_bitmap)(bsp_display_t *self, bsp_rect_t area, void *pixels);
@@ -87,6 +94,10 @@ void bsp_display_set_active(bsp_display_t *display);
  * `area`, un-rotating by `rotation`. `dst_size` is the whole destination picture
  * and `format` its pixel format; BSP_ROTATION_0 degenerates to a plain row copy.
  * Runs on the PPA where the SoC has one and the destination is eligible (RGB
- * format, cache-line aligned, large enough), else on the CPU. */
+ * format, cache-line aligned, large enough), else on the CPU. With `async` an
+ * eligible blit returns once queued; `pixels` must then stay unchanged until
+ * the next blit or bsp_blit_wait(), each of which first waits for it. */
 void bsp_blit_rotated(void *dst, bsp_size_t dst_size, bsp_pixel_format_t format,
-                      bsp_rect_t area, const void *pixels, bsp_rotation_t rotation);
+                      bsp_rect_t area, const void *pixels, bsp_rotation_t rotation,
+                      bool async);
+void bsp_blit_wait(void);

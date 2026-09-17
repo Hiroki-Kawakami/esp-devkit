@@ -94,7 +94,7 @@ if(ESP_PLATFORM)
             ${BOARD_DEVICE_SRCS}
         INCLUDE_DIRS "inc"
         PRIV_INCLUDE_DIRS "inc_private" ${BOARD_DEVICE_PRIV_INCLUDE_DIRS}
-        PRIV_REQUIRES esp_timer esp_driver_ppa ${BOARD_DEVICE_PRIV_REQUIRES})
+        PRIV_REQUIRES esp_timer esp_driver_ppa esp_mm ${BOARD_DEVICE_PRIV_REQUIRES})
 
     # Enable Link Time Optimization
     target_compile_options(${COMPONENT_LIB} PRIVATE -flto)
