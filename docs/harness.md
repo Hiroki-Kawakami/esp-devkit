@@ -193,7 +193,7 @@ each; every reply is a single `#`-prefixed line, so a client can pick replies
 out of the log stream sharing the channel.
 
 ```
-ping                    -> #OK ping
+ping [token]            -> #OK ping [token]
 info                    -> #OK info <w> <h> <pixfmt> <touch> <buttons> <capture> <imu>
 down <id> <x> <y>       -> #OK down      press / drag contact <id> (panel px)
 move <id> <x> <y>       -> #OK move
@@ -205,6 +205,15 @@ idle                    -> #OK idle 0|1
 snap [quality]          -> #OK snap <w> <h>, then #D <base64> lines, #END <bytes>
 quit                    -> #OK quit
 ```
+
+Every `OK` reply names the command it answers, and `harness.py` stops with an
+error when it does not match, so a handler that replies itself should start
+with `OK <name>` too. `harness.py` sends `ping <token>` until it gets its own
+token back: opening a USB-Serial-JTAG port resets the board, and the pings sent
+during boot are answered late and together. Matching only the first `OK ping`
+would leave the stale ones to be read as the answers to the next commands.
+Firmware that predates the token answers a bare `OK ping`, which is still
+accepted.
 
 `snap` streams a JPEG of the whole panel, encoded one panel row at a time (peak
 memory is one row plus the encoder's working set, so it fits boards without

@@ -56,8 +56,9 @@ static void touch_set(int id, bool pressed, int x, int y) {
 }
 
 static bool cmd_ping(int argc, const char *const *argv, void *user) {
-    (void)argc; (void)argv; (void)user;
-    harness_reply("OK ping");
+    (void)user;
+    if (argc >= 2) harness_reply("OK ping %s", argv[1]);
+    else           harness_reply("OK ping");
     return true;
 }
 

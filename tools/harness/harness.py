@@ -152,16 +152,32 @@ class Harness:
         parts = reply.split()
         if not parts or parts[0] != "OK":
             raise HarnessError(f"{line!r} -> {reply}")
+        name = line.split()[0]
+        if len(parts) < 2 or parts[1] != name:
+            raise HarnessError(f"{line!r} -> {reply} (reply for another command)")
         return parts[1:]
 
     def wait_ready(self, timeout=20.0):
+        # Pings sent while the board boots are answered late and in a batch;
+        # the token tells the answer to the last ping from the stale ones.
         deadline = time.monotonic() + timeout
+        token = 0
         while time.monotonic() < deadline:
-            try:
-                self.cmd("ping", timeout=1.0)
-                return
-            except HarnessError:
-                continue
+            token += 1
+            self.link.send(f"ping {token}")
+            attempt_end = min(deadline, time.monotonic() + 1.0)
+            while True:
+                remaining = attempt_end - time.monotonic()
+                if remaining <= 0:
+                    break
+                try:
+                    parts = self._read_reply(remaining).split()
+                except HarnessError:
+                    break
+                if parts[:2] != ["OK", "ping"]:
+                    continue
+                if parts[2:] == [str(token)] or len(parts) == 2:
+                    return
         raise HarnessError("harness did not answer ping")
 
     def info(self):
