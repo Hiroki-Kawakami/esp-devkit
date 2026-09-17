@@ -101,6 +101,15 @@ esp_err_t jpeg_ppa_pipeline_new(const jpeg_ppa_pipeline_cfg_t *cfg,
 esp_err_t jpeg_ppa_pipeline_del(jpeg_ppa_pipeline_handle_t handle);
 
 /**
+ * @brief The Layer 1 decoder the pipeline drives. Owned by the pipeline and
+ *        valid until del(). Use it for jpeg_enh_decoder_process() when a frame
+ *        can land in its destination without PPA; never call
+ *        jpeg_enh_strip_decoder_process() on it, and never concurrently with
+ *        jpeg_ppa_pipeline_process().
+ */
+jpeg_enh_strip_decoder_handle_t jpeg_ppa_pipeline_get_decoder(jpeg_ppa_pipeline_handle_t handle);
+
+/**
  * @brief Decode one JPEG and render it into `out->buffer` with `transform`.
  *        Blocks until every strip has been pushed through PPA.
  *

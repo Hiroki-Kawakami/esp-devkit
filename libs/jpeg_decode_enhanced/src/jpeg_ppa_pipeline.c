@@ -52,6 +52,7 @@ struct jpeg_ppa_pipeline_s {
     SemaphoreHandle_t all_done;
     TickType_t timeout;
     bool broken;                         // an SRM submission could not be cancelled
+    bool in_process;                     // on_frame_start belongs to process(), not a whole-frame decode
 
     // Per-frame state, written by process()/on_frame_start before any strip
     // arrives, read-only afterwards.
@@ -126,6 +127,7 @@ static inline uint32_t s_cm_bits(ppa_srm_color_mode_t cm)
 static esp_err_t s_on_frame_start(const jpeg_enh_frame_info_t *info, void *user_ctx)
 {
     jpeg_ppa_pipeline_handle_t h = (jpeg_ppa_pipeline_handle_t)user_ctx;
+    if (!h->in_process) return ESP_OK;
     h->cur.frame = *info;
 
     // Resolve the input crop against the valid (non-padded) image area.
@@ -425,6 +427,11 @@ esp_err_t jpeg_ppa_pipeline_del(jpeg_ppa_pipeline_handle_t h)
     return ESP_OK;
 }
 
+jpeg_enh_strip_decoder_handle_t jpeg_ppa_pipeline_get_decoder(jpeg_ppa_pipeline_handle_t h)
+{
+    return h ? h->decoder : NULL;
+}
+
 esp_err_t jpeg_ppa_pipeline_process(jpeg_ppa_pipeline_handle_t h,
                                     const void *jpeg_data, size_t jpeg_size,
                                     const jpeg_ppa_output_t *out,
@@ -451,8 +458,10 @@ esp_err_t jpeg_ppa_pipeline_process(jpeg_ppa_pipeline_handle_t h,
     h->parked_head = h->parked_count = 0;
     xSemaphoreTake(h->all_done, 0);
 
+    h->in_process = true;
     esp_err_t err = jpeg_enh_strip_decoder_process(h->decoder, (const uint8_t *)jpeg_data,
                                                    (uint32_t)jpeg_size, info);
+    h->in_process = false;
     if (!h->cur.valid) return err;
 
     if (err != ESP_OK) {

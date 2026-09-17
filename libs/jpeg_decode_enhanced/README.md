@@ -97,6 +97,12 @@ ESP_ERROR_CHECK(jpeg_ppa_pipeline_process(pipe, jpeg, jpeg_size, &out, &t, NULL)
 最大 1 フレームぶん遅れる。PPA の blend / fill は影響を受けない
 (2D-DMA チャネルが空くまで待つだけ)。
 
+出力先と同じサイズ・無回転・等倍で PPA が要らないフレームは、
+`jpeg_ppa_pipeline_get_decoder()` で内部の Layer 1 ハンドルを取り出し、
+`jpeg_enh_decoder_process()` で出力バッファへ直接デコードできる。PPA を
+通さない分速く、JPEG エンジンを 2 つ持つ必要もない。`process()` と同時に
+呼ばないこと。
+
 ### Layer 1: ストリップを自分で消費する
 
 ```c
