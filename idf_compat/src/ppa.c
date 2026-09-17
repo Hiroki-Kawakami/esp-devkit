@@ -5,9 +5,12 @@
 //
 // Fidelity / limitations (the supported surface covers the RGB display formats):
 //   - Color modes: ARGB8888, RGB888, RGB565 for SRM in/out, blend bg/fg/out and
-//     fill out; blend foreground additionally supports A8 / A4. YUV420 / YUV444
-//     are NOT implemented and return ESP_ERR_NOT_SUPPORTED (the panel and the
-//     app's framebuffers are RGB565; add YUV here if a use case needs it).
+//     fill out; blend foreground additionally supports A8 / A4. SRM input also
+//     accepts YUV420 (O_UYY_E_VYY), converted to RGB honouring in.yuv_range /
+//     in.yuv_std with nearest (2x2) chroma upsampling before scaling/rotation;
+//     like the HW, odd YUV420 pic/block sizes or offsets are ESP_ERR_INVALID_ARG.
+//     Every other YUV / GRAY8 mode (and YUV420 as SRM output or in blend/fill)
+//     is NOT implemented and returns ESP_ERR_NOT_SUPPORTED.
 //   - SRM scaling uses bilinear interpolation (anti-aliased), matching the HW
 //     which interpolates rather than point-sampling; rotation is counter-clockwise,
 //     matching the PPA_SRM_ROTATION_ANGLE_* convention.
@@ -44,6 +47,7 @@ typedef enum {
     FMT_RGB565,
     FMT_A8,
     FMT_A4,
+    FMT_YUV420,
 } pix_fmt_t;
 
 // SRM / blend / fill color-mode enums all share the same FourCC values, so one
@@ -56,6 +60,7 @@ static pix_fmt_t fmt_of(uint32_t color_mode)
     case (uint32_t)PPA_SRM_COLOR_MODE_RGB565:   return FMT_RGB565;
     case (uint32_t)PPA_BLEND_COLOR_MODE_A8:     return FMT_A8;
     case (uint32_t)PPA_BLEND_COLOR_MODE_A4:     return FMT_A4;
+    case (uint32_t)PPA_SRM_COLOR_MODE_YUV420:   return FMT_YUV420;
     default:                                    return FMT_UNSUPPORTED;
     }
 }
@@ -136,6 +141,54 @@ static uint32_t get_pixel(const uint8_t *buf, uint32_t pic_w, pix_fmt_t fmt,
 
     if (rgb_swap) { uint8_t t = r; r = b; b = t; }
     return pack_argb(a, r, g, b);
+}
+
+static inline uint8_t clamp8(int v)
+{
+    return (uint8_t)(v < 0 ? 0 : (v > 255 ? 255 : v));
+}
+
+static uint8_t *yuv420_block_to_argb(const ppa_in_pic_blk_config_t *in, bool rgb_swap)
+{
+    int ky, kr, kgu, kgv, kb, yoff;
+    bool full = in->yuv_range == PPA_COLOR_RANGE_FULL;
+    bool bt709 = in->yuv_std == PPA_COLOR_CONV_STD_RGB_YUV_BT709;
+    if (full) {
+        ky = 4096; yoff = 0;
+        if (bt709) { kr = 6450; kgu = 767;  kgv = 1917; kb = 7601; }
+        else       { kr = 5743; kgu = 1410; kgv = 2925; kb = 7258; }
+    } else {
+        ky = 4768; yoff = 16;
+        if (bt709) { kr = 7344; kgu = 872;  kgv = 2183; kb = 8651; }
+        else       { kr = 6537; kgu = 1606; kgv = 3330; kb = 8262; }
+    }
+
+    uint32_t bw = in->block_w, bh = in->block_h;
+    uint8_t *dst = malloc((size_t)bw * bh * 4);
+    if (!dst) return NULL;
+    const uint8_t *src = (const uint8_t *)in->buffer;
+    size_t stride = (size_t)in->pic_w * 3 / 2;
+
+    for (uint32_t y = 0; y < bh; y++) {
+        uint32_t sy = in->block_offset_y + y;
+        const uint8_t *row = src + stride * sy;
+        const uint8_t *urow = src + stride * (sy & ~1u);
+        const uint8_t *vrow = urow + stride;
+        for (uint32_t x = 0; x < bw; x++) {
+            uint32_t sx = in->block_offset_x + x;
+            size_t base = (size_t)(sx >> 1) * 3;
+            int yy = (row[base + 1 + (sx & 1)] - yoff) * ky;
+            int u = urow[base] - 128;
+            int v = vrow[base] - 128;
+            uint8_t r = clamp8((yy + kr * v + 2048) >> 12);
+            uint8_t g = clamp8((yy - kgu * u - kgv * v + 2048) >> 12);
+            uint8_t b = clamp8((yy + kb * u + 2048) >> 12);
+            if (rgb_swap) { uint8_t t = r; r = b; b = t; }
+            uint8_t *p = dst + ((size_t)y * bw + x) * 4;
+            p[0] = b; p[1] = g; p[2] = r; p[3] = 255;
+        }
+    }
+    return dst;
 }
 
 static inline uint8_t lerp8(uint8_t a, uint8_t b, float t)
@@ -269,9 +322,10 @@ esp_err_t ppa_do_scale_rotate_mirror(ppa_client_handle_t ppa_client,
     pix_fmt_t infmt = fmt_of(cfg->in.srm_cm);
     pix_fmt_t outfmt = fmt_of(cfg->out.srm_cm);
     if (infmt == FMT_UNSUPPORTED || outfmt == FMT_UNSUPPORTED ||
-        infmt == FMT_A8 || infmt == FMT_A4 || outfmt == FMT_A8 || outfmt == FMT_A4) {
+        infmt == FMT_A8 || infmt == FMT_A4 || outfmt == FMT_A8 || outfmt == FMT_A4 ||
+        outfmt == FMT_YUV420) {
         ESP_LOGE(TAG, "SRM color mode not supported by the simulator (in=0x%lx out=0x%lx); "
-                      "only ARGB8888/RGB888/RGB565 are implemented",
+                      "only ARGB8888/RGB888/RGB565 (+ YUV420 input) are implemented",
                  (unsigned long)cfg->in.srm_cm, (unsigned long)cfg->out.srm_cm);
         return ESP_ERR_NOT_SUPPORTED;
     }
@@ -281,11 +335,34 @@ esp_err_t ppa_do_scale_rotate_mirror(ppa_client_handle_t ppa_client,
     if (!in || !out) return ESP_ERR_INVALID_ARG;
 
     uint32_t bw = cfg->in.block_w, bh = cfg->in.block_h;
+    uint32_t in_pic_w = cfg->in.pic_w;
+    uint32_t in_ox = cfg->in.block_offset_x, in_oy = cfg->in.block_offset_y;
+    bool byte_swap = cfg->byte_swap, rgb_swap = cfg->rgb_swap;
+    uint8_t *yuv_rgb = NULL;
+    if (infmt == FMT_YUV420) {
+        if ((cfg->in.pic_w | cfg->in.pic_h | bw | bh | in_ox | in_oy) & 1) {
+            ESP_LOGE(TAG, "YUV420 input does not support odd h/w/offset_x/offset_y");
+            return ESP_ERR_INVALID_ARG;
+        }
+        if (bw && bh) {
+            yuv_rgb = yuv420_block_to_argb(&cfg->in, rgb_swap);
+            if (!yuv_rgb) return ESP_ERR_NO_MEM;
+        }
+        in = yuv_rgb;
+        infmt = FMT_ARGB8888;
+        in_pic_w = bw;
+        in_ox = in_oy = 0;
+        byte_swap = rgb_swap = false;
+    }
     float sx = cfg->scale_x > 0 ? cfg->scale_x : 1.0f;
     float sy = cfg->scale_y > 0 ? cfg->scale_y : 1.0f;
     uint32_t sw = (uint32_t)lroundf(bw * sx);
     uint32_t sh = (uint32_t)lroundf(bh * sy);
-    if (sw == 0 || sh == 0 || bw == 0 || bh == 0) { invoke_done(ppa_client, cfg->user_data); return ESP_OK; }
+    if (sw == 0 || sh == 0 || bw == 0 || bh == 0) {
+        free(yuv_rgb);
+        invoke_done(ppa_client, cfg->user_data);
+        return ESP_OK;
+    }
 
     bool swap_wh = (cfg->rotation_angle == PPA_SRM_ROTATION_ANGLE_90 ||
                     cfg->rotation_angle == PPA_SRM_ROTATION_ANGLE_270);
@@ -318,9 +395,8 @@ esp_err_t ppa_do_scale_rotate_mirror(ppa_client_handle_t ppa_client,
             float fx = (px + 0.5f) / sx - 0.5f;
             float fy = (py + 0.5f) / sy - 0.5f;
 
-            uint32_t c = sample_bilinear(in, cfg->in.pic_w, infmt,
-                                         cfg->in.block_offset_x, cfg->in.block_offset_y,
-                                         bw, bh, fx, fy, cfg->byte_swap, cfg->rgb_swap, no_fix);
+            uint32_t c = sample_bilinear(in, in_pic_w, infmt, in_ox, in_oy,
+                                         bw, bh, fx, fy, byte_swap, rgb_swap, no_fix);
             uint8_t a = upd_alpha(A_(c), cfg->alpha_update_mode,
                                   cfg->alpha_fix_val, cfg->alpha_scale_ratio);
             c = pack_argb(a, R_(c), G_(c), B_(c));
@@ -333,6 +409,7 @@ esp_err_t ppa_do_scale_rotate_mirror(ppa_client_handle_t ppa_client,
         }
     }
 
+    free(yuv_rgb);
     invoke_done(ppa_client, cfg->user_data);
     return ESP_OK;
 }

@@ -102,9 +102,13 @@ values — v6.0 replaced the old `COLOR_TYPE_ID` scheme with `esp_color_fourcc_t
 so app code is source-portable across both targets.
 
 Supported: ARGB8888 / RGB888 / RGB565 (the RGB display formats) for SRM in/out,
-blend bg/fg/out and fill out, plus A8 / A4 blend foreground. **Not** implemented
-(return `ESP_ERR_NOT_SUPPORTED` / log): YUV420 / YUV444 color modes and blend
-color-keying. SRM scaling is bilinear (anti-aliased, like the HW) and rotation
+blend bg/fg/out and fill out, plus A8 / A4 blend foreground, plus YUV420
+(`O_UYY_E_VYY`) as SRM **input** — converted to RGB per `in.yuv_range` /
+`in.yuv_std` (BT.601 / BT.709, limited / full) with nearest 2x2 chroma
+upsampling, and rejecting odd sizes/offsets with `ESP_ERR_INVALID_ARG` like the
+real driver. **Not** implemented (return `ESP_ERR_NOT_SUPPORTED` / log): any YUV
+or GRAY8 output mode, the other YUV / GRAY8 input modes, YUV in blend/fill, and
+blend color-keying. SRM scaling is bilinear (anti-aliased, like the HW) and rotation
 is counter-clockwise (`PPA_SRM_ROTATION_ANGLE_*`). All ops run synchronously
 regardless of `PPA_TRANS_MODE_*`, firing `on_trans_done` inline; burst length /
 pending-transaction count / buffer alignment are accepted and ignored. Full
