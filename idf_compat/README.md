@@ -20,11 +20,12 @@ idf_compat/
     driver/           jpeg_decode.h ppa.h i2c_master.h
     hal/              ppa_types.h color_types.h  (PPA type headers)
     simulator/        sim-only APIs with no device counterpart: i2c_master_sim.h
+                      path_redirect.h
     freertos/         host FreeRTOS API: FreeRTOS.h task.h queue.h semphr.h
                       event_groups.h timers.h portmacro.h
   src/                shim implementations
     esp_err.c esp_timer.c esp_heap_caps.c esp_mac.c nvs.c jpeg_decode.c ppa.c
-    i2c_master.c
+    i2c_master.c path_redirect.c
     freertos_port.c freertos_task.c freertos_queue.c
     freertos_event_groups.c freertos_timers.c
     freertos_internal.h   (shared helpers; not part of the public API)
@@ -126,6 +127,17 @@ to `ESP_ERR_INVALID_STATE` on transfers and `ESP_ERR_NOT_FOUND` on probe, so
 driver create-time probing and app-level degradation behave as on device.
 Transfers are transaction-granular (no per-byte ACK, no timeouts, no 10-bit
 addressing); a per-bus mutex mirrors the real driver's bus lock.
+
+## Path redirect
+
+`simulator/path_redirect.h` maps device mount points (`/sdcard`, ...) onto host
+directories. `src/path_redirect.c` defines `opendir` / `open` / `fopen` / `stat`
+/ `rename` / `unlink` in the executable, so the statically linked calls resolve
+there and are forwarded to the real libc with the translated path. fd-based
+calls (`read`, `lseek`, `fstat`, `readdir`) need no translation. Anything that
+must appear under a device path (the BSP's simulated SD card, a simulated USB
+drive) registers through it; defining those libc symbols a second time elsewhere
+is a duplicate-symbol link error.
 
 ## FreeRTOS API (host, on pthreads)
 

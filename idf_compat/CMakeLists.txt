@@ -17,6 +17,7 @@ idf_component_register(
         "src/jpeg_decode.c"   # IDF JPEG decode engine API, backed by libjpeg
         "src/ppa.c"           # IDF PPA (scale/rotate/mirror/blend/fill), CPU impl
         "src/i2c_master.c"    # IDF i2c_master API, virtual bus of emulated chips
+        "src/path_redirect.c" # libc path overrides mapping mount points to host dirs
         # host FreeRTOS API on pthreads
         "src/freertos_port.c"
         "src/freertos_task.c"
