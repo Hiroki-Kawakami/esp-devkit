@@ -6,6 +6,8 @@
 #include "sd_mmc.h"
 #include <stdlib.h>
 #include <string.h>
+#include "soc/soc_caps.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_vfs.h"
 #include "esp_vfs_fat.h"
@@ -16,6 +18,7 @@ typedef struct {
     bsp_sd_t base;
     sd_mmc_config_t config;
     sdmmc_card_t *card;
+    void *bounce_buffer;
     char mount_point[ESP_VFS_PATH_MAX + 1];
     sd_pwr_ctrl_handle_t power;
     bool power_acquired;
@@ -32,6 +35,19 @@ static esp_err_t sd_mmc_use_borrowed_host(void) {
     return ESP_OK;
 }
 
+static esp_err_t sd_mmc_alloc_psram_bounce_buffer(const sdmmc_host_t *host, void **out) {
+#if SOC_SDMMC_PSRAM_DMA_CAPABLE
+    const size_t blocks = host->unaligned_multi_block_rw_max_chunk_size
+                          ? host->unaligned_multi_block_rw_max_chunk_size : 1;
+    *out = heap_caps_calloc(1, blocks * 512, MALLOC_CAP_SPIRAM | MALLOC_CAP_CACHE_ALIGNED);
+    return *out ? ESP_OK : ESP_ERR_NO_MEM;
+#else
+    (void)host;
+    (void)out;
+    return ESP_ERR_NOT_SUPPORTED;
+#endif
+}
+
 static esp_err_t sd_mmc_mount(bsp_sd_t *self, const char *mount_point,
                               const bsp_sd_mount_config_t *config) {
     sd_mmc_t *sd = (sd_mmc_t *)self;
@@ -43,14 +59,24 @@ static esp_err_t sd_mmc_mount(bsp_sd_t *self, const char *mount_point,
     if (!config) config = &defaults;
     if (config->max_freq_khz < 0) return ESP_ERR_INVALID_ARG;
 
+    sdmmc_host_t host = sd->config.host;
+    void *bounce_buffer = NULL;
+    if (config->psram_bounce_buffer) {
+        esp_err_t err = sd_mmc_alloc_psram_bounce_buffer(&host, &bounce_buffer);
+        if (err != ESP_OK) return err;
+        host.dma_aligned_buffer = bounce_buffer;
+    }
+
     if (!sd->power_acquired && sd->config.power_acquire) {
         esp_err_t err = sd->config.power_acquire(sd->config.power_context,
                                                   &sd->power);
-        if (err != ESP_OK) return err;
+        if (err != ESP_OK) {
+            free(bounce_buffer);
+            return err;
+        }
         sd->power_acquired = true;
     }
 
-    sdmmc_host_t host = sd->config.host;
     if (sd->config.host_lifecycle == SD_MMC_HOST_BORROWED) {
         host.init = sd_mmc_use_borrowed_host;
     }
@@ -69,9 +95,11 @@ static esp_err_t sd_mmc_mount(bsp_sd_t *self, const char *mount_point,
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_vfs_fat_sdmmc_mount: %s", esp_err_to_name(err));
         sd->card = NULL;
+        free(bounce_buffer);
         return err;
     }
 
+    sd->bounce_buffer = bounce_buffer;
     memcpy(sd->mount_point, mount_point, mount_point_len + 1);
     return ESP_OK;
 }
@@ -83,6 +111,8 @@ static esp_err_t sd_mmc_unmount(bsp_sd_t *self) {
     esp_err_t err = esp_vfs_fat_sdcard_unmount(sd->mount_point, sd->card);
     sd->card = NULL;
     sd->mount_point[0] = '\0';
+    free(sd->bounce_buffer);
+    sd->bounce_buffer = NULL;
     return err;
 }
 

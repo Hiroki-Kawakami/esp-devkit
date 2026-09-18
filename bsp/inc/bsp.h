@@ -155,6 +155,7 @@ typedef struct {
     bool    format_if_mount_failed;  /*!< default: false */
     uint8_t max_files;               /*!< open-file limit; 0 -> 5 */
     int     max_freq_khz;            /*!< 0 -> provider default */
+    bool    psram_bounce_buffer;     /*!< default: false */
 } bsp_sd_mount_config_t;
 
 esp_err_t bsp_sd_mount(const char *mount_point, const bsp_sd_mount_config_t *config);

@@ -32,6 +32,7 @@ static esp_err_t sd_spi_mount(bsp_sd_t *self, const char *mount_point,
     const bsp_sd_mount_config_t defaults = {0};
     if (!config) config = &defaults;
     if (config->max_freq_khz < 0) return ESP_ERR_INVALID_ARG;
+    if (config->psram_bounce_buffer) return ESP_ERR_NOT_SUPPORTED;
 
     if (sd->config.bus_lifecycle == SD_SPI_BUS_MANAGED) {
         esp_err_t err = spi_bus_initialize(sd->config.spi_host, &sd->config.bus_config,
