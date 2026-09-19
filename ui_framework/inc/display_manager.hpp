@@ -65,6 +65,7 @@ struct DisplayManagerConfig {
     lv_color_format_t color_format = LV_COLOR_FORMAT_UNKNOWN;
     DisplayBufferConfig buffer;
     bool make_default = true;
+    bool visible = true;
 };
 
 struct DisplayManagerContext;

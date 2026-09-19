@@ -75,6 +75,7 @@ jpeg_ppa_transform_t t = {
     // .mirror_x / .mirror_y / .rgb_swap / .byte_swap
     // .in_crop = {x, y, w, h}   入力空間クロップ (w/h=0 で全体)
     // .out_offset_x / .out_offset_y  出力先の左上座標
+    // .out_clip = {x, y, w, h}  出力空間のクリップ (w/h=0 でなし)
 };
 jpeg_ppa_output_t out = {
     .buffer     = framebuffer,
@@ -215,6 +216,16 @@ ESP_ERROR_CHECK(jpeg_enh_decoder_process(dec, jpeg, jpeg_size, buf, buf_size, &i
   失敗するのは `in_crop.y × scale_y` が整数にならない場合だけ。
 - 量子化の副作用として、スケール端数によっては出力の端に数 px の
   未描画帯が出る (例: 600 行 × 1.2 → 量子化 1.1875 → 712 行 ≠ 720)。
+- `out_clip` を指定すると、その矩形の外には一切書かない。中は clip なしと
+  同じ画素になるが、境界をまたぐソース画素は描かないため、境界沿いに
+  最大「スケール後の 1 ソース画素」未満 (YUV420 ストリップは偶数丸めで
+  2 ソース画素) の未描画帯が残る。strip の並ぶ軸 (入力 y) はストリップごとに、
+  直交する軸 (入力 x) はフレームごとに入力範囲を絞るので、clip 外の
+  ストリップは PPA に渡さない (デコード量は変わらない)。clip で途中から
+  始まるストリップは次のストリップ側の境界に揃えて置くので、内部に隙間は
+  できない。clip なしのときの出力は従来とビット一致 (`test/run.sh` で
+  HEAD と比較)、ISR で増えるのは比較数個だけ。YUV420 出力とは併用できない
+  (`ESP_ERR_NOT_SUPPORTED`)。
 - `mirror_x/y` の配置計算は「PPA のミラーは出力空間で作用する」前提。
   実機未検証 (要確認) なので、初使用時は向きを確認すること。
 

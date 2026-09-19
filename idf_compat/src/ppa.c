@@ -13,7 +13,8 @@
 //     is NOT implemented and returns ESP_ERR_NOT_SUPPORTED.
 //   - SRM scaling uses bilinear interpolation (anti-aliased), matching the HW
 //     which interpolates rather than point-sampling; rotation is counter-clockwise,
-//     matching the PPA_SRM_ROTATION_ANGLE_* convention.
+//     matching the PPA_SRM_ROTATION_ANGLE_* convention. Scales are quantized to
+//     1/16 and output sizes truncated, like the HW.
 //   - Blend is straight alpha-over compositing honouring the alpha-update modes;
 //     color-keying (bg_ck_en / fg_ck_en) is NOT implemented (a warning is logged
 //     once and plain alpha blending is performed).
@@ -313,6 +314,12 @@ esp_err_t ppa_client_register_event_callbacks(ppa_client_handle_t ppa_client,
 
 /* ---- SRM ----------------------------------------------------------------- */
 
+static uint32_t quantize_scale(float scale)
+{
+    uint32_t i = (uint32_t)scale;
+    return i * 16 + ((uint32_t)(scale * 16) & 15);
+}
+
 esp_err_t ppa_do_scale_rotate_mirror(ppa_client_handle_t ppa_client,
                                      const ppa_srm_oper_config_t *cfg)
 {
@@ -354,10 +361,12 @@ esp_err_t ppa_do_scale_rotate_mirror(ppa_client_handle_t ppa_client,
         in_ox = in_oy = 0;
         byte_swap = rgb_swap = false;
     }
-    float sx = cfg->scale_x > 0 ? cfg->scale_x : 1.0f;
-    float sy = cfg->scale_y > 0 ? cfg->scale_y : 1.0f;
-    uint32_t sw = (uint32_t)lroundf(bw * sx);
-    uint32_t sh = (uint32_t)lroundf(bh * sy);
+    uint32_t qx = quantize_scale(cfg->scale_x > 0 ? cfg->scale_x : 1.0f);
+    uint32_t qy = quantize_scale(cfg->scale_y > 0 ? cfg->scale_y : 1.0f);
+    float sx = qx / 16.0f;
+    float sy = qy / 16.0f;
+    uint32_t sw = bw * qx / 16;
+    uint32_t sh = bh * qy / 16;
     if (sw == 0 || sh == 0 || bw == 0 || bh == 0) {
         free(yuv_rgb);
         invoke_done(ppa_client, cfg->user_data);

@@ -65,7 +65,9 @@ struct jpeg_ppa_pipeline_s {
         uint32_t scaled_w;               // crop.w scaled by fx (output px)
         uint32_t scaled_h;               // crop.h scaled by fy (output px)
         uint32_t ext_w, ext_h;           // scaled crop extent after rotation
-        bool valid;                      // on_frame_start completed (SRM engine held)
+        uint32_t row0, row1;
+        uint32_t perp_off, perp_len;
+        bool valid;                     // on_frame_start completed (SRM engine held)
     } cur;
 
     // Strip pump, guarded by lock
@@ -124,6 +126,54 @@ static inline uint32_t s_cm_bits(ppa_srm_color_mode_t cm)
 // Per-frame transform resolution (decode-thread context, before strips flow)
 // -----------------------------------------------------------------------------
 
+static inline uint32_t s_unscale_ceil(uint32_t v, uint32_t f16) { return (v * SCALE_FRAG_MAX + f16 - 1) / f16; }
+static inline uint32_t s_unscale_floor(uint32_t v, uint32_t f16) { return v * SCALE_FRAG_MAX / f16; }
+
+static void s_resolve_clip(jpeg_ppa_pipeline_handle_t h, uint32_t *col0, uint32_t *col1)
+{
+    const jpeg_ppa_rect_t *k = &h->cur.t.out_clip;
+    const jpeg_ppa_rect_t *c = &h->cur.crop;
+    uint64_t ox = h->cur.t.out_offset_x, oy = h->cur.t.out_offset_y;
+    uint64_t x0 = k->x > ox ? k->x : ox;
+    uint64_t y0 = k->y > oy ? k->y : oy;
+    uint64_t x1 = (uint64_t)k->x + k->w < ox + h->cur.ext_w ? (uint64_t)k->x + k->w : ox + h->cur.ext_w;
+    uint64_t y1 = (uint64_t)k->y + k->h < oy + h->cur.ext_h ? (uint64_t)k->y + k->h : oy + h->cur.ext_h;
+    h->cur.row1 = h->cur.row0;
+    if (x1 <= x0 || y1 <= y0) return;
+
+    uint32_t ex0 = (uint32_t)(x0 - ox), ex1 = (uint32_t)(x1 - ox);
+    uint32_t ey0 = (uint32_t)(y0 - oy), ey1 = (uint32_t)(y1 - oy);
+    if (h->cur.t.mirror_x) { uint32_t t = h->cur.ext_w - ex1; ex1 = h->cur.ext_w - ex0; ex0 = t; }
+    if (h->cur.t.mirror_y) { uint32_t t = h->cur.ext_h - ey1; ey1 = h->cur.ext_h - ey0; ey0 = t; }
+
+    uint32_t sw = h->cur.scaled_w, sh = h->cur.scaled_h;
+    uint32_t u0, u1, v0, v1;
+    switch (h->cur.t.rotation) {
+    default:
+    case PPA_SRM_ROTATION_ANGLE_0:   u0 = ex0;      u1 = ex1;      v0 = ey0;      v1 = ey1;      break;
+    case PPA_SRM_ROTATION_ANGLE_90:  u0 = sw - ey1; u1 = sw - ey0; v0 = ex0;      v1 = ex1;      break;
+    case PPA_SRM_ROTATION_ANGLE_180: u0 = sw - ex1; u1 = sw - ex0; v0 = sh - ey1; v1 = sh - ey0; break;
+    case PPA_SRM_ROTATION_ANGLE_270: u0 = ey0;      u1 = ey1;      v0 = sh - ex1; v1 = sh - ex0; break;
+    }
+
+    uint32_t a = s_unscale_ceil(u0, h->cur.fx), b = s_unscale_floor(u1, h->cur.fx);
+    uint32_t r0 = s_unscale_ceil(v0, h->cur.fy), r1 = s_unscale_floor(v1, h->cur.fy);
+    if (b > c->w) b = c->w;
+    if (r1 > c->h) r1 = c->h;
+    if (h->cfg.strip_color_mode == PPA_SRM_COLOR_MODE_YUV420) {
+        if ((c->x + a) & 1) a++;
+        if ((c->x + b) & 1) b--;
+        if ((c->y + r0) & 1) r0++;
+        if ((c->y + r1) & 1) r1--;
+    }
+    if (b <= a || r1 <= r0 || s_scaled(b - a, h->cur.fx) == 0) return;
+
+    *col0 = a;
+    *col1 = b;
+    h->cur.row0 = c->y + r0;
+    h->cur.row1 = c->y + r1;
+}
+
 static esp_err_t s_on_frame_start(const jpeg_enh_frame_info_t *info, void *user_ctx)
 {
     jpeg_ppa_pipeline_handle_t h = (jpeg_ppa_pipeline_handle_t)user_ctx;
@@ -181,11 +231,27 @@ static esp_err_t s_on_frame_start(const jpeg_enh_frame_info_t *info, void *user_
         return ESP_ERR_INVALID_ARG;
     }
 
+    uint32_t col0 = 0, col1 = c.w;
+    h->cur.row0 = c.y;
+    h->cur.row1 = c.y + c.h;
+    if (h->cur.t.out_clip.w && h->cur.t.out_clip.h) {
+        if (yuv420_out) {
+            ESP_LOGE(TAG, "out_clip is not supported with YUV420 output");
+            return ESP_ERR_NOT_SUPPORTED;
+        }
+        s_resolve_clip(h, &col0, &col1);
+    }
+    uint32_t col_start = s_scaled(col0, h->cur.fx);
+    h->cur.perp_len = s_scaled(col1 - col0, h->cur.fx);
+    bool col_reversed = (h->cur.t.rotation == PPA_SRM_ROTATION_ANGLE_90 ||
+                         h->cur.t.rotation == PPA_SRM_ROTATION_ANGLE_180);
+    h->cur.perp_off = col_reversed ? h->cur.scaled_w - col_start - h->cur.perp_len : col_start;
+
     ppa_srm_oper_config_t op = {
         .in = {
             .pic_w          = info->pic_w,
-            .block_offset_x = c.x,
-            .block_w        = c.w,
+            .block_offset_x = c.x + col0,
+            .block_w        = col1 - col0,
             .srm_cm         = h->cfg.strip_color_mode,
         },
         .out = {
@@ -228,12 +294,12 @@ static esp_err_t s_on_frame_start(const jpeg_enh_frame_info_t *info, void *user_
 
 // Map strip rows [a_rel, b_rel) (crop-relative) through scale+rotation+mirror
 // into the output rect for this strip's PPA op.
-static IRAM_ATTR void s_strip_out_rect(jpeg_ppa_pipeline_handle_t h, uint32_t a_rel, uint32_t b_rel,
-                                       uint32_t *out_x, uint32_t *out_y)
+static IRAM_ATTR bool s_strip_out_rect(jpeg_ppa_pipeline_handle_t h, uint32_t a_rel, uint32_t b_rel,
+                                       bool clipped_start, uint32_t *out_x, uint32_t *out_y)
 {
-    uint32_t A = s_scaled(a_rel, h->cur.fy);
-    uint32_t B = s_scaled(b_rel, h->cur.fy);
-    uint32_t band = B - A;
+    uint32_t band = s_scaled(b_rel - a_rel, h->cur.fy);
+    if (band == 0) return false;
+    uint32_t A = clipped_start ? s_scaled(b_rel, h->cur.fy) - band : s_scaled(a_rel, h->cur.fy);
     uint32_t x, y, w, hgt;
 
     // Placement convention matches PPA hardware behaviour as observed on
@@ -242,16 +308,16 @@ static IRAM_ATTR void s_strip_out_rect(jpeg_ppa_pipeline_handle_t h, uint32_t a_
     switch (h->cur.t.rotation) {
     default:
     case PPA_SRM_ROTATION_ANGLE_0:
-        x = 0;                       y = A;                       w = h->cur.scaled_w; hgt = band;
+        x = h->cur.perp_off;                y = A;                              w = h->cur.perp_len; hgt = band;
         break;
     case PPA_SRM_ROTATION_ANGLE_90:
-        x = A;                       y = 0;                       w = band;            hgt = h->cur.scaled_w;
+        x = A;                              y = h->cur.perp_off;                w = band;            hgt = h->cur.perp_len;
         break;
     case PPA_SRM_ROTATION_ANGLE_180:
-        x = 0;                       y = h->cur.scaled_h - B;     w = h->cur.scaled_w; hgt = band;
+        x = h->cur.perp_off;                y = h->cur.scaled_h - A - band;     w = h->cur.perp_len; hgt = band;
         break;
     case PPA_SRM_ROTATION_ANGLE_270:
-        x = h->cur.scaled_h - B;     y = 0;                       w = band;            hgt = h->cur.scaled_w;
+        x = h->cur.scaled_h - A - band;     y = h->cur.perp_off;                w = band;            hgt = h->cur.perp_len;
         break;
     }
 
@@ -262,6 +328,7 @@ static IRAM_ATTR void s_strip_out_rect(jpeg_ppa_pipeline_handle_t h, uint32_t a_
 
     *out_x = h->cur.t.out_offset_x + x;
     *out_y = h->cur.t.out_offset_y + y;
+    return true;
 }
 
 static IRAM_ATTR void s_set_frame_err(jpeg_ppa_pipeline_handle_t h, esp_err_t err)
@@ -272,15 +339,17 @@ static IRAM_ATTR void s_set_frame_err(jpeg_ppa_pipeline_handle_t h, esp_err_t er
 // Submit the strip's crop band to PPA. ESP_ERR_NOT_FOUND = nothing to render.
 static IRAM_ATTR esp_err_t s_submit_strip(jpeg_ppa_pipeline_handle_t h, const jpeg_enh_strip_event_t *evt)
 {
-    const jpeg_ppa_rect_t *c = &h->cur.crop;
-    uint32_t a_abs = c->y > evt->y_offset ? c->y : evt->y_offset;
+    uint32_t a_abs = h->cur.row0 > evt->y_offset ? h->cur.row0 : evt->y_offset;
     uint32_t strip_end = evt->y_offset + evt->rows;
-    uint32_t crop_end = c->y + c->h;
-    uint32_t b_abs = strip_end < crop_end ? strip_end : crop_end;
+    uint32_t b_abs = strip_end < h->cur.row1 ? strip_end : h->cur.row1;
     if (b_abs <= a_abs) return ESP_ERR_NOT_FOUND;
 
     uint32_t out_x, out_y;
-    s_strip_out_rect(h, a_abs - c->y, b_abs - c->y, &out_x, &out_y);
+    uint32_t crop_y = h->cur.crop.y;
+    bool clipped_start = a_abs != evt->y_offset && a_abs != crop_y;
+    if (!s_strip_out_rect(h, a_abs - crop_y, b_abs - crop_y, clipped_start, &out_x, &out_y)) {
+        return ESP_ERR_NOT_FOUND;
+    }
     return ppa_srm_fast_submit(h->srm, evt->buffer, evt->padded_rows,
                                a_abs - evt->y_offset, b_abs - a_abs, out_x, out_y);
 }

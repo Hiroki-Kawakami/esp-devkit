@@ -73,6 +73,7 @@ typedef struct {
                                                Pixels outside origin_w/origin_h are always cropped. */
     uint32_t out_offset_x;                /*!< Top-left of the rendered rect in the output picture */
     uint32_t out_offset_y;
+    jpeg_ppa_rect_t out_clip;
 } jpeg_ppa_transform_t;
 
 /**

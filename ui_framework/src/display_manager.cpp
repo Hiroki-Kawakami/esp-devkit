@@ -712,6 +712,10 @@ esp_err_t DisplayManager::create_display(const DisplayManagerConfig &config,
     lv_display_set_user_data(context->display, context);
     lv_display_set_flush_cb(context->display, flush_cb);
     if (config.make_default) lv_display_set_default(context->display);
+    if (!config.visible) {
+        context->visible = false;
+        lv_display_enable_invalidation(context->display, false);
+    }
 
     if (!touch_mutex_) {
         touch_mutex_ = xSemaphoreCreateMutex();
