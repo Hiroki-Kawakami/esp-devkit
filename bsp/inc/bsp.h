@@ -16,7 +16,7 @@ extern "C" {
 typedef struct {
     struct {
         uint8_t            fb_num;        /*!< framebuffer count; 0 -> board default */
-        bsp_pixel_format_t pixel_format;  /*!< 0 -> board default */
+        bsp_pixel_format_t pixel_format;  /*!< DEFAULT -> board default */
     } display;
     struct {
         uint8_t task_priority;  /*!< refresh-task priority; 0 -> default (5) */
@@ -75,16 +75,22 @@ bsp_rotation_t bsp_display_portrait(void);
  * panel has no separable power control. Does not touch brightness -- pair with
  * bsp_display_set_brightness as needed. */
 esp_err_t bsp_display_set_power(bsp_display_power_t state);
-void bsp_display_draw_bitmap(bsp_rect_t area, const void *pixels, bsp_rotation_t rotation);
-void bsp_display_draw_bitmap_async(bsp_rect_t area, const void *pixels, bsp_rotation_t rotation);
+/* `format` is the layout of `pixels`; BSP_PIXEL_FORMAT_DEFAULT is the panel's
+ * own. Anything else is converted while drawing and needs
+ * BSP_DISPLAY_CAP_CONVERT, otherwise ESP_ERR_NOT_SUPPORTED. */
+esp_err_t bsp_display_draw_bitmap(bsp_rect_t area, const void *pixels,
+                                  bsp_pixel_format_t format, bsp_rotation_t rotation);
+esp_err_t bsp_display_draw_bitmap_async(bsp_rect_t area, const void *pixels,
+                                        bsp_pixel_format_t format, bsp_rotation_t rotation);
 void bsp_display_wait_draw(void);
 void *bsp_display_get_frame_buffer(int fb_index);
 void bsp_display_flush(int fb_index);
 
-/* Rebuilds the panel pipeline in `pixel_format` with `fb_num` framebuffers
- * (0 keeps the current count). Every framebuffer and pixel format obtained
- * earlier is invalid afterwards: stop everything that draws to the panel before
- * calling, and re-read both before drawing again. */
+/* Rebuilds the panel pipeline in `pixel_format` (BSP_PIXEL_FORMAT_DEFAULT keeps
+ * the current one) with `fb_num` framebuffers (0 keeps the current count).
+ * Every framebuffer and pixel format obtained earlier is invalid afterwards:
+ * stop everything that draws to the panel before calling, and re-read both
+ * before drawing again. */
 esp_err_t bsp_display_reconfigure(bsp_pixel_format_t pixel_format, uint8_t fb_num);
 
 // EPD-only: no-op on non-EPD panels. refresh honors `area`; OR

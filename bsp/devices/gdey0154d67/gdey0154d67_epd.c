@@ -83,9 +83,10 @@ static esp_err_t op_set_power(bsp_display_t *self, bsp_display_power_t state) {
 }
 
 static esp_err_t op_draw_bitmap(bsp_display_t *self, bsp_rect_t area, const void *pixels,
-                                bsp_rotation_t rotation) {
+                                bsp_pixel_format_t format, bsp_rotation_t rotation) {
     gdey0154d67_epd_t *s = (gdey0154d67_epd_t *)self;
     const uint8_t *src = pixels;
+    if (format != self->format) return ESP_ERR_NOT_SUPPORTED;
     const int x0 = area.origin.x, y0 = area.origin.y;
     const int w = area.size.width, h = area.size.height;
     if (x0 < 0 || y0 < 0 || x0 + w > PANEL_W || y0 + h > PANEL_H) return ESP_ERR_INVALID_ARG;

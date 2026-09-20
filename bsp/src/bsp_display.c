@@ -78,6 +78,11 @@ uint32_t bsp_display_get_caps(void) {
     if (s_display->read_bitmap) {
         caps |= BSP_DISPLAY_CAP_READBACK;
     }
+#ifdef BSP_DISPLAY_USE_PPA
+    if (s_display->convert) {
+        caps |= BSP_DISPLAY_CAP_CONVERT;
+    }
+#endif
     return caps;
 }
 
@@ -102,17 +107,24 @@ esp_err_t bsp_display_set_power(bsp_display_power_t state) {
     return ESP_ERR_NOT_SUPPORTED;
 }
 
-void bsp_display_draw_bitmap(bsp_rect_t area, const void *pixels, bsp_rotation_t rotation) {
-    if (s_display && s_display->draw_bitmap) s_display->draw_bitmap(s_display, area, pixels, rotation);
+esp_err_t bsp_display_draw_bitmap(bsp_rect_t area, const void *pixels,
+                                  bsp_pixel_format_t format, bsp_rotation_t rotation) {
+    if (!s_display || !s_display->draw_bitmap) return ESP_ERR_INVALID_STATE;
+    if (format == BSP_PIXEL_FORMAT_DEFAULT) format = s_display->format;
+    return s_display->draw_bitmap(s_display, area, pixels, format, rotation);
 }
 
-void bsp_display_draw_bitmap_async(bsp_rect_t area, const void *pixels, bsp_rotation_t rotation) {
-    if (!s_display) return;
+esp_err_t bsp_display_draw_bitmap_async(bsp_rect_t area, const void *pixels,
+                                        bsp_pixel_format_t format, bsp_rotation_t rotation) {
+    if (!s_display) return ESP_ERR_INVALID_STATE;
+    if (format == BSP_PIXEL_FORMAT_DEFAULT) format = s_display->format;
     if (s_display->draw_bitmap_async) {
-        s_display->draw_bitmap_async(s_display, area, pixels, rotation);
-    } else if (s_display->draw_bitmap) {
-        s_display->draw_bitmap(s_display, area, pixels, rotation);
+        return s_display->draw_bitmap_async(s_display, area, pixels, format, rotation);
     }
+    if (s_display->draw_bitmap) {
+        return s_display->draw_bitmap(s_display, area, pixels, format, rotation);
+    }
+    return ESP_ERR_INVALID_STATE;
 }
 
 static void blit_rotated_cpu(uint8_t *dst, int dst_stride_px, size_t px,
@@ -161,15 +173,21 @@ static IRAM_ATTR bool blit_done_cb(ppa_client_handle_t client, ppa_event_data_t 
     return woken == pdTRUE;
 }
 
-static bool blit_rotated_ppa(void *dst, bsp_size_t dst_size, bsp_pixel_format_t format,
-                             bsp_rect_t area, const void *pixels, bsp_rotation_t rotation,
-                             bool async) {
-    ppa_srm_color_mode_t color_mode;
-    if (!ppa_color_mode(format, &color_mode)) return false;
+static bool blit_rotated_ppa(void *dst, bsp_size_t dst_size, bsp_pixel_format_t dst_format,
+                             bsp_rect_t area, const void *pixels, bsp_pixel_format_t src_format,
+                             bsp_rotation_t rotation, bool async) {
+    ppa_srm_color_mode_t in_mode;
+    ppa_srm_color_mode_t out_mode;
+    if (!ppa_color_mode(src_format, &in_mode)) return false;
+    if (!ppa_color_mode(dst_format, &out_mode)) return false;
 
-    const size_t px = bsp_pixel_format_bytes(format);
+    const size_t px = bsp_pixel_format_bytes(dst_format);
     const size_t buffer_size = (size_t)dst_size.width * dst_size.height * px;
-    if ((size_t)area.size.width * area.size.height < PPA_MIN_PIXELS) return false;
+    /* A conversion has no CPU path to fall back to, so it skips the size floor. */
+    if (src_format == dst_format &&
+        (size_t)area.size.width * area.size.height < PPA_MIN_PIXELS) {
+        return false;
+    }
     if ((uintptr_t)dst % PPA_ALIGN_BYTES || buffer_size % PPA_ALIGN_BYTES) return false;
 
     if (!s_blit_done) {
@@ -193,7 +211,7 @@ static bool blit_rotated_ppa(void *dst, bsp_size_t dst_size, bsp_pixel_format_t 
             .buffer   = pixels,
             .pic_w    = transposed ? (uint32_t)area.size.height : (uint32_t)area.size.width,
             .pic_h    = transposed ? (uint32_t)area.size.width : (uint32_t)area.size.height,
-            .srm_cm   = color_mode,
+            .srm_cm   = in_mode,
         },
         .out = {
             .buffer          = dst,
@@ -202,7 +220,7 @@ static bool blit_rotated_ppa(void *dst, bsp_size_t dst_size, bsp_pixel_format_t 
             .pic_h           = (uint32_t)dst_size.height,
             .block_offset_x  = (uint32_t)area.origin.x,
             .block_offset_y  = (uint32_t)area.origin.y,
-            .srm_cm          = color_mode,
+            .srm_cm          = out_mode,
         },
         .rotation_angle = ppa_angle(rotation),
         .scale_x = 1.0f,
@@ -238,18 +256,21 @@ void bsp_blit_wait(void) {
 #endif
 }
 
-void bsp_blit_rotated(void *dst, bsp_size_t dst_size, bsp_pixel_format_t format,
-                      bsp_rect_t area, const void *pixels, bsp_rotation_t rotation,
-                      bool async) {
+esp_err_t bsp_blit_rotated(void *dst, bsp_size_t dst_size, bsp_pixel_format_t dst_format,
+                           bsp_rect_t area, const void *pixels, bsp_pixel_format_t src_format,
+                           bsp_rotation_t rotation, bool async) {
     bsp_blit_wait();
-    if (area.size.width <= 0 || area.size.height <= 0) return;
+    if (area.size.width <= 0 || area.size.height <= 0) return ESP_OK;
+    const bool convert = src_format != dst_format;
 #ifdef BSP_DISPLAY_USE_PPA
-    if ((async || rotation != BSP_ROTATION_0) &&
-        blit_rotated_ppa(dst, dst_size, format, area, pixels, rotation, async)) {
-        return;
+    if ((async || convert || rotation != BSP_ROTATION_0) &&
+        blit_rotated_ppa(dst, dst_size, dst_format, area, pixels, src_format, rotation, async)) {
+        return ESP_OK;
     }
 #endif
-    const size_t px = bsp_pixel_format_bytes(format);
+    if (convert) return ESP_ERR_NOT_SUPPORTED;
+
+    const size_t px = bsp_pixel_format_bytes(dst_format);
     if (rotation == BSP_ROTATION_0) {
         const size_t row_bytes = (size_t)area.size.width * px;
         for (int r = 0; r < area.size.height; r++) {
@@ -263,6 +284,7 @@ void bsp_blit_rotated(void *dst, bsp_size_t dst_size, bsp_pixel_format_t format,
 #if defined(BSP_DISPLAY_USE_PPA) && defined(ESP_PLATFORM)
     write_back(dst, dst_size, px, area);
 #endif
+    return ESP_OK;
 }
 
 void *bsp_display_get_frame_buffer(int fb_index) {
@@ -281,6 +303,7 @@ void bsp_display_flush(int fb_index) {
 
 esp_err_t bsp_display_reconfigure(bsp_pixel_format_t pixel_format, uint8_t fb_num) {
     if (!s_display || !s_display->reconfigure) return ESP_ERR_NOT_SUPPORTED;
+    if (pixel_format == BSP_PIXEL_FORMAT_DEFAULT) pixel_format = s_display->format;
     bsp_display_wait_draw();
     esp_err_t err = s_display->reconfigure(s_display, pixel_format, fb_num);
     bsp_display_set_active(s_display);

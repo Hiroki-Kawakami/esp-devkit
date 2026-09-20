@@ -275,14 +275,20 @@ static esp_err_t display_set_power(bsp_display_t *self, bsp_display_power_t stat
  * s_glass; for MIPI it is framebuffer 0 (draw_bitmap is the non-framebuffer
  * fallback path there — the usual MIPI path is flush). */
 static esp_err_t display_draw_bitmap(bsp_display_t *self, bsp_rect_t area, const void *pixels,
-                                     bsp_rotation_t rotation) {
+                                     bsp_pixel_format_t format, bsp_rotation_t rotation) {
     (void)self;
     const bool has_fb = (s_type == BSP_DISPLAY_TYPE_MIPI_DSI || s_type == BSP_DISPLAY_TYPE_RGB);
     uint8_t *target = has_fb ? s_fb[0] : s_glass;
     if (!target) return ESP_ERR_INVALID_STATE;
-    if (rotation == BSP_ROTATION_0) blit_rect(target, area, pixels);
-    else bsp_blit_rotated(target, (bsp_size_t){ s_panel_w, s_panel_h }, s_format, area, pixels,
-                          rotation, false);
+    /* On the device only the framebuffer path has a converting blit. */
+    if (format != s_format && !has_fb) return ESP_ERR_NOT_SUPPORTED;
+    if (rotation == BSP_ROTATION_0 && format == s_format) {
+        blit_rect(target, area, pixels);
+    } else {
+        esp_err_t err = bsp_blit_rotated(target, (bsp_size_t){ s_panel_w, s_panel_h }, s_format,
+                                         area, pixels, format, rotation, false);
+        if (err != ESP_OK) return err;
+    }
     s_present_src = target;
     s_dirty = true;
     return ESP_OK;
@@ -361,12 +367,13 @@ static void epd_composite(bsp_rect_t area, bsp_epd_mode_t mode) {
 }
 
 static esp_err_t display_draw_bitmap_epd(bsp_display_t *self, bsp_rect_t area, const void *pixels,
-                                         bsp_rotation_t rotation) {
+                                         bsp_pixel_format_t format, bsp_rotation_t rotation) {
     (void)self;
     if (!s_gram) return ESP_ERR_INVALID_STATE;
+    if (format != s_format) return ESP_ERR_NOT_SUPPORTED;
     if (rotation == BSP_ROTATION_0) blit_rect(s_gram, area, pixels);
     else bsp_blit_rotated(s_gram, (bsp_size_t){ s_panel_w, s_panel_h }, s_format, area, pixels,
-                          rotation, false);
+                          s_format, rotation, false);
     if (s_epd_mode != BSP_EPD_MODE_NONE) epd_composite(area, s_epd_mode);
     return ESP_OK;
 }
@@ -557,6 +564,7 @@ esp_err_t sdl_panel_create(const sdl_panel_config_t *config,
     s_display.wait_draw        = NULL;
     s_display.read_bitmap      = display_read_bitmap;
     s_display.reconfigure      = NULL;
+    s_display.convert          = false;
 
     switch (config->type) {
     case BSP_DISPLAY_TYPE_RGB:
@@ -575,6 +583,7 @@ esp_err_t sdl_panel_create(const sdl_panel_config_t *config,
         s_display.get_framebuffers = display_get_framebuffers;
         s_display.flush            = display_flush;
         s_display.reconfigure      = display_reconfigure;
+        s_display.convert          = true;
         break;
     }
     case BSP_DISPLAY_TYPE_SPI_EPD:

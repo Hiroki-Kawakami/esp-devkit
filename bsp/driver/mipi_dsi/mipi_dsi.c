@@ -53,7 +53,7 @@ esp_err_t mipi_dsi_send_init_cmds(esp_lcd_panel_io_handle_t io,
 }
 
 static esp_err_t draw(bsp_display_t *self, bsp_rect_t rect, const void *data,
-                      bsp_rotation_t rotation, bool async) {
+                      bsp_pixel_format_t format, bsp_rotation_t rotation, bool async) {
     mipi_dsi_lcd_t *lcd = (mipi_dsi_lcd_t *)self;
     uint8_t *fb = lcd->frame_buffers[lcd->shown];
     if (!fb) return ESP_ERR_INVALID_STATE;
@@ -62,18 +62,17 @@ static esp_err_t draw(bsp_display_t *self, bsp_rect_t rect, const void *data,
         bsp_rect_max_y(rect) > self->size.height) {
         return ESP_ERR_INVALID_ARG;
     }
-    bsp_blit_rotated(fb, self->size, self->format, rect, data, rotation, async);
-    return ESP_OK;
+    return bsp_blit_rotated(fb, self->size, self->format, rect, data, format, rotation, async);
 }
 
 static esp_err_t draw_bitmap(bsp_display_t *self, bsp_rect_t rect, const void *data,
-                             bsp_rotation_t rotation) {
-    return draw(self, rect, data, rotation, false);
+                             bsp_pixel_format_t format, bsp_rotation_t rotation) {
+    return draw(self, rect, data, format, rotation, false);
 }
 
 static esp_err_t draw_bitmap_async(bsp_display_t *self, bsp_rect_t rect, const void *data,
-                                   bsp_rotation_t rotation) {
-    return draw(self, rect, data, rotation, true);
+                                   bsp_pixel_format_t format, bsp_rotation_t rotation) {
+    return draw(self, rect, data, format, rotation, true);
 }
 
 static esp_err_t wait_draw(bsp_display_t *self) {
@@ -307,6 +306,7 @@ esp_err_t mipi_dsi_lcd_create(const mipi_dsi_config_t *config, bsp_display_t **o
         .type              = BSP_DISPLAY_TYPE_MIPI_DSI,
         .size              = config->size,
         .format            = config->pixel_format,
+        .convert           = true,
         .draw_bitmap       = draw_bitmap,
         .deinit            = deinit,
         .draw_bitmap_async = draw_bitmap_async,

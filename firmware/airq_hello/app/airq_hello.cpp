@@ -74,7 +74,7 @@ static void lvgl_init() {
         lv_area_t rot = *area;
         lv_display_rotate_area(disp, &rot);
         bsp_rect_t rect = { { rot.x1, rot.y1 }, { rot.x2 - rot.x1 + 1, rot.y2 - rot.y1 + 1 } };
-        bsp_display_draw_bitmap(rect, px_map, BSP_ROTATION_0);
+        bsp_display_draw_bitmap(rect, px_map, BSP_PIXEL_FORMAT_DEFAULT, BSP_ROTATION_0);
         if (lv_display_flush_is_last(disp)) {
             bsp_display_refresh({ { 0, 0 }, bsp_display_get_size() }, s_refresh_mode);
         }

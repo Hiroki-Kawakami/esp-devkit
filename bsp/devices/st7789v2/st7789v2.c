@@ -108,10 +108,11 @@ static void stream_pixels(st7789v2_t *d, const uint16_t *px, size_t count) {
 }
 
 static esp_err_t draw_bitmap(bsp_display_t *self, bsp_rect_t area, const void *pixels,
-                             bsp_rotation_t rotation) {
+                             bsp_pixel_format_t format, bsp_rotation_t rotation) {
     st7789v2_t *d = (st7789v2_t *)self;
     const int w = area.size.width, h = area.size.height;
     if (w <= 0 || h <= 0) return ESP_OK;
+    if (format != self->format) return ESP_ERR_NOT_SUPPORTED;
 
     const uint16_t *src = pixels;
     if (rotation != BSP_ROTATION_0) {
@@ -123,7 +124,7 @@ static esp_err_t draw_bitmap(bsp_display_t *self, bsp_rect_t area, const void *p
         }
         if (!d->rotate_buf) return ESP_ERR_NO_MEM;
         bsp_blit_rotated(d->rotate_buf, (bsp_size_t){ w, h }, self->format,
-                         (bsp_rect_t){ {0, 0}, { w, h } }, pixels, rotation, false);
+                         (bsp_rect_t){ {0, 0}, { w, h } }, pixels, self->format, rotation, false);
         src = d->rotate_buf;
     }
 

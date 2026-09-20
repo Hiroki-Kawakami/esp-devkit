@@ -356,6 +356,28 @@ bool convertible(bsp_pixel_format_t from, bsp_pixel_format_t to) {
 #endif
 }
 
+/* Surface composites the conversion itself; Partial hands it to the BSP blit. */
+bool format_supported(DisplayRenderPath path, bsp_pixel_format_t color_format,
+                      bsp_pixel_format_t panel_format, uint32_t caps) {
+    if (color_format == panel_format) return true;
+    if (!convertible(color_format, panel_format)) return false;
+    switch (path) {
+        case DisplayRenderPath::Surface: return caps & BSP_DISPLAY_CAP_FRAMEBUFFER;
+        case DisplayRenderPath::Partial: return caps & BSP_DISPLAY_CAP_CONVERT;
+        default:                         return false;
+    }
+}
+
+size_t chunk_floor_bytes(bsp_size_t logical_size, uint8_t bytes_per_pixel) {
+    return (size_t)(logical_size.width > logical_size.height
+        ? logical_size.width
+        : logical_size.height) * bytes_per_pixel;
+}
+
+size_t surface_bytes(bsp_size_t logical_size, uint8_t bytes_per_pixel) {
+    return (size_t)logical_size.width * logical_size.height * bytes_per_pixel;
+}
+
 esp_err_t composite_surface(DisplayManagerContext &display, void *framebuffer) {
     if (display.render_path != DisplayRenderPath::Surface ||
         !display.buffer0 || !framebuffer) {
@@ -413,13 +435,14 @@ void map_flush_area(DisplayManagerContext &display, DisplayFlushContext &flush) 
 
 void draw_bitmap(DisplayManagerContext &display, DisplayFlushContext &flush) {
     if (flush.result != ESP_OK || !display.visible) return;
-    bsp_display_draw_bitmap(bsp_rect(flush.area), flush.pixels, display.rotation);
+    flush.result = bsp_display_draw_bitmap(bsp_rect(flush.area), flush.pixels,
+                                           display.color_format, display.rotation);
 }
 
 void draw_bitmap_async(DisplayManagerContext &display, DisplayFlushContext &flush) {
     if (flush.result != ESP_OK || !display.visible) return;
-    bsp_display_draw_bitmap_async(bsp_rect(flush.area), flush.pixels,
-                                  display.rotation);
+    flush.result = bsp_display_draw_bitmap_async(bsp_rect(flush.area), flush.pixels,
+                                                 display.color_format, display.rotation);
 }
 
 void accumulate_dirty(DisplayManagerContext &display, DisplayFlushContext &flush) {
@@ -554,8 +577,7 @@ esp_err_t DisplayManager::create_display(const DisplayManagerConfig &config,
     if (render_path == DisplayRenderPath::Surface && !has_framebuffer) {
         return ESP_ERR_NOT_SUPPORTED;
     }
-    if (converted && (render_path != DisplayRenderPath::Surface ||
-                      !convertible(color_format, panel_format))) {
+    if (!format_supported(render_path, color_format, panel_format, caps)) {
         return ESP_ERR_NOT_SUPPORTED;
     }
 
@@ -580,11 +602,8 @@ esp_err_t DisplayManager::create_display(const DisplayManagerConfig &config,
 
     void *const *buffers = config.buffer.buffers;
     bool external = buffers[0];
-    size_t long_edge_bytes = (size_t)(logical_size.width > logical_size.height
-        ? logical_size.width
-        : logical_size.height) * context->bytes_per_pixel;
-    size_t surface_bytes = (size_t)logical_size.width * logical_size.height *
-        context->bytes_per_pixel;
+    size_t long_edge_bytes = chunk_floor_bytes(logical_size, context->bytes_per_pixel);
+    size_t surface_size = surface_bytes(logical_size, context->bytes_per_pixel);
     bool buffers_valid = !buffers[1] || external;
     if (external) {
         switch (render_path) {
@@ -597,7 +616,7 @@ esp_err_t DisplayManager::create_display(const DisplayManagerConfig &config,
                 break;
             case DisplayRenderPath::Surface:
                 buffers_valid = buffers_valid && !buffers[1] &&
-                    config.buffer.buffer_size >= surface_bytes;
+                    config.buffer.buffer_size >= surface_size;
                 break;
         }
         buffers_valid = buffers_valid &&
@@ -679,7 +698,7 @@ esp_err_t DisplayManager::create_display(const DisplayManagerConfig &config,
             buffer_bytes = config.buffer.buffer_size;
             context->buffer0 = buffers[0];
         } else {
-            buffer_bytes = surface_bytes;
+            buffer_bytes = surface_size;
             context->owns_buffers = true;
             context->buffer0 = heap_caps_aligned_alloc(64, buffer_bytes,
                                                        MALLOC_CAP_SPIRAM);
@@ -688,7 +707,7 @@ esp_err_t DisplayManager::create_display(const DisplayManagerConfig &config,
                 return ESP_ERR_NO_MEM;
             }
         }
-        std::memset(context->buffer0, 0, surface_bytes);
+        std::memset(context->buffer0, 0, surface_size);
         render_mode = LV_DISPLAY_RENDER_MODE_DIRECT;
         if (immediate) {
             context->append(composite_immediate);
@@ -838,6 +857,86 @@ esp_err_t DisplayManager::set_rotation(lv_display_t *display,
         lv_obj_t *screen = lv_display_get_screen_active(display);
         if (screen) lv_obj_invalidate(screen);
     }
+    return ESP_OK;
+}
+
+esp_err_t DisplayManager::set_color_format(lv_display_t *display,
+                                           lv_color_format_t color_format) {
+    DisplayManagerContext *context = context_for(display);
+    if (!context) return ESP_ERR_INVALID_ARG;
+
+    const uint32_t caps = bsp_display_get_caps();
+    const bsp_pixel_format_t panel_format = bsp_display_get_pixel_format();
+    bsp_pixel_format_t format = panel_format;
+    if (color_format != LV_COLOR_FORMAT_UNKNOWN &&
+        !bsp_pixel_format(color_format, &format)) {
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+    const uint8_t bytes_per_pixel = bsp_pixel_format_bytes(format);
+    if (bytes_per_pixel == 0) return ESP_ERR_NOT_SUPPORTED;
+    if (!format_supported(context->render_path, format, panel_format, caps)) {
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+
+    /* A queued blit still reads the draw buffers in the format it was issued in. */
+    bsp_display_wait_draw();
+
+    void *buffer0 = context->buffer0;
+    void *buffer1 = context->buffer1;
+    size_t buffer_bytes = context->buffer_bytes;
+
+    if (context->render_path == DisplayRenderPath::Direct) {
+        buffer0 = bsp_display_get_frame_buffer(0);
+        if (!buffer0) return ESP_ERR_INVALID_STATE;
+        buffer1 = bsp_display_get_frame_buffer(1);
+        buffer_bytes = surface_bytes(context->logical_size, bytes_per_pixel);
+    } else {
+        const size_t required = context->render_path == DisplayRenderPath::Partial
+            ? chunk_floor_bytes(context->logical_size, bytes_per_pixel)
+            : surface_bytes(context->logical_size, bytes_per_pixel);
+        if (required > buffer_bytes) {
+            if (!context->owns_buffers) return ESP_ERR_INVALID_SIZE;
+
+            const size_t bytes = (required + 63) & ~(size_t)63;
+            const uint32_t memory_caps = (caps & BSP_DISPLAY_CAP_FRAMEBUFFER)
+                ? MALLOC_CAP_SPIRAM
+                : MALLOC_CAP_DEFAULT;
+            void *grown0 = heap_caps_aligned_alloc(64, bytes, memory_caps);
+            void *grown1 = (grown0 && context->buffer1)
+                ? heap_caps_aligned_alloc(64, bytes, memory_caps)
+                : nullptr;
+            if (!grown0 || (context->buffer1 && !grown1)) {
+                if (grown0) heap_caps_free(grown0);
+                if (grown1) heap_caps_free(grown1);
+                return ESP_ERR_NO_MEM;
+            }
+
+            free_owned_buffers(*context);
+            buffer0 = grown0;
+            buffer1 = grown1;
+            buffer_bytes = bytes;
+            if (context->render_path == DisplayRenderPath::Surface) {
+                std::memset(buffer0, 0, required);
+            }
+        }
+    }
+
+    context->color_format = format;
+    context->panel_format = panel_format;
+    context->bytes_per_pixel = bytes_per_pixel;
+    context->buffer0 = buffer0;
+    context->buffer1 = buffer1;
+    context->buffer_bytes = buffer_bytes;
+
+    lv_display_set_color_format(display, lv_color_format(format));
+    lv_display_set_buffers(display, buffer0, buffer1, buffer_bytes,
+                           context->render_path == DisplayRenderPath::Partial
+                               ? LV_DISPLAY_RENDER_MODE_PARTIAL
+                               : LV_DISPLAY_RENDER_MODE_DIRECT);
+
+    /* Nothing that was drawn in the old format survives the switch. */
+    lv_obj_t *screen = lv_display_get_screen_active(display);
+    if (screen) lv_obj_invalidate(screen);
     return ESP_OK;
 }
 

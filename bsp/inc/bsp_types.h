@@ -46,9 +46,12 @@ typedef enum {
     BSP_DISPLAY_CAP_FRAMEBUFFER = 1 << 0,
     BSP_DISPLAY_CAP_EPD_REFRESH = 1 << 1,
     BSP_DISPLAY_CAP_READBACK    = 1 << 2,   /* bsp_harness_display_read available */
+    BSP_DISPLAY_CAP_CONVERT     = 1 << 3,   /* draw_bitmap converts a foreign pixel format */
 } bsp_display_caps_t;
 
 typedef enum {
+    /* Not a layout: asks the BSP for whatever it would pick on its own. */
+    BSP_PIXEL_FORMAT_DEFAULT,
     BSP_PIXEL_FORMAT_L8,
     BSP_PIXEL_FORMAT_RGB565,
     BSP_PIXEL_FORMAT_RGB888,

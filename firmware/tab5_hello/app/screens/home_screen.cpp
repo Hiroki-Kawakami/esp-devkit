@@ -5,6 +5,7 @@
 
 #include "home_screen.hpp"
 #include "format_test_screen.hpp"
+#include "render_format_screen.hpp"
 
 static constexpr int kCycleSwitches = 40;
 static constexpr uint32_t kCyclePeriodMs = 1500;
@@ -39,6 +40,11 @@ void HomeScreen::build() {
     auto format_test = add_button(contents_, "Pixel Format Test");
     lv_obj_add_event_fn(format_test, LV_EVENT_CLICKED, [](lv_event_t*){
         screen_manager.push(std::make_shared<FormatTestScreen>());
+    });
+
+    auto render_format = add_button(contents_, "Render Format Test");
+    lv_obj_add_event_fn(render_format, LV_EVENT_CLICKED, [](lv_event_t*){
+        screen_manager.push(std::make_shared<RenderFormatScreen>());
     });
 
     auto format_cycle = add_button(contents_, "Pixel Format Cycle");

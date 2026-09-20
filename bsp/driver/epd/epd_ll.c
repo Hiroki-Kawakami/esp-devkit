@@ -474,9 +474,10 @@ static esp_err_t seed_bitmap(epd_t *s, bsp_rect_t area, const uint8_t *src,
  * pixel mid-waveform toward a different gray) blocks and retries the walk --
  * the partial PENDING stamps are idempotent across retries. */
 static esp_err_t op_draw_bitmap(bsp_display_t *self, bsp_rect_t area, const void *pixels,
-                                bsp_rotation_t rotation) {
+                                bsp_pixel_format_t format, bsp_rotation_t rotation) {
     epd_t *s = (epd_t *)self;
     const uint8_t *src = pixels;
+    if (format != self->format) return ESP_ERR_NOT_SUPPORTED;
     const int W = s->width;
     const int x0 = area.origin.x, y0 = area.origin.y;
     const int w = area.size.width, h = area.size.height;

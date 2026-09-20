@@ -32,7 +32,7 @@ static void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
         { area->x1, area->y1 },
         { area->x2 - area->x1 + 1, area->y2 - area->y1 + 1 },
     };
-    bsp_display_draw_bitmap(rect, px_map, BSP_ROTATION_0);
+    bsp_display_draw_bitmap(rect, px_map, BSP_PIXEL_FORMAT_DEFAULT, BSP_ROTATION_0);
     lv_display_flush_ready(disp);
 }
 

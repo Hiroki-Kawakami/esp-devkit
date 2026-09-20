@@ -25,7 +25,8 @@ enum class DisplayPresentMode : uint8_t {
  *   Direct  - LVGL renders straight into the panel framebuffer. Cheapest, but
  *             the viewport must match the panel and set_rotation is rejected.
  *   Partial - LVGL renders chunks into small buffers that are blitted (and
- *             un-rotated) into the panel. Immediate only.
+ *             un-rotated) into the panel. Immediate only. A color_format other
+ *             than the panel's needs BSP_DISPLAY_CAP_CONVERT.
  *   Surface - LVGL renders into a full offscreen surface that is composited
  *             into the panel framebuffer. Needs a framebuffer. */
 enum class DisplayRenderMode : uint8_t {
@@ -91,6 +92,14 @@ public:
     esp_err_t set_rotation(lv_display_t *display, bsp_rotation_t rotation);
     esp_err_t set_epd_mode(lv_display_t *display, bsp_epd_mode_t mode,
                            bool once);
+    /* Switches the format LVGL renders in and rebinds the display to the panel's
+     * current one, keeping the UI. LV_COLOR_FORMAT_UNKNOWN follows the panel.
+     * Call this after every bsp_display_reconfigure: the panel format it was
+     * built against, and a Direct display's framebuffers, are stale until then.
+     * A format the panel does not share needs a converting path (Surface, or
+     * Partial on BSP_DISPLAY_CAP_CONVERT). */
+    esp_err_t set_color_format(lv_display_t *display,
+                               lv_color_format_t color_format = LV_COLOR_FORMAT_UNKNOWN);
     /* A hidden display does not render, so its draw buffers stay untouched. */
     esp_err_t set_visible(lv_display_t *display, bool visible);
 

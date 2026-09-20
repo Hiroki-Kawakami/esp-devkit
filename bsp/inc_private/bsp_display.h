@@ -7,7 +7,13 @@
  * pointers, and returns &state->base from its *_create(). The board then calls
  * through the members directly (single indirection: disp->op(disp, ...)).
  *
- * The portable base contract is draw_bitmap (blit a rectangle of pixels).
+ * The portable base contract is draw_bitmap (blit a rectangle of pixels). Its
+ * `format` is the layout of the source pixels, never BSP_PIXEL_FORMAT_DEFAULT
+ * (the common layer resolves that to the panel format first). A driver that
+ * only takes its own format returns ESP_ERR_NOT_SUPPORTED for anything else and
+ * leaves `convert` false; setting it advertises BSP_DISPLAY_CAP_CONVERT where
+ * the conversion hardware exists.
+ *
  * Host-side framebuffers (get_framebuffers + flush), a controllable backlight
  * (set_brightness), and a panel power state (set_power) are optional: a driver
  * leaves the corresponding pointer NULL when the panel has no such capability
@@ -46,15 +52,16 @@ struct bsp_display {
     bsp_display_type_t  type;
     bsp_size_t          size;
     bsp_pixel_format_t  format;
+    bool                convert;   /* draw_bitmap hands a foreign `format` to bsp_blit_rotated */
 
     /* portable base contract (always non-NULL) */
     esp_err_t (*draw_bitmap)(bsp_display_t *self, bsp_rect_t area, const void *pixels,
-                             bsp_rotation_t rotation);
+                             bsp_pixel_format_t format, bsp_rotation_t rotation);
     esp_err_t (*deinit)(bsp_display_t *self);
 
     /* deferred drawing — NULL when the driver never leaves a draw in flight */
     esp_err_t (*draw_bitmap_async)(bsp_display_t *self, bsp_rect_t area, const void *pixels,
-                                   bsp_rotation_t rotation);
+                                   bsp_pixel_format_t format, bsp_rotation_t rotation);
     esp_err_t (*wait_draw)(bsp_display_t *self);
 
     /* backlight — NULL when the panel has no controllable backlight */
@@ -97,12 +104,16 @@ void bsp_display_set_active(bsp_display_t *display);
 /* Shared rotated blit for copy-based backends (EPD GRAM, SPI glass, host
  * framebuffers): write the source pixels into the destination-coordinate rect
  * `area`, un-rotating by `rotation`. `dst_size` is the whole destination picture
- * and `format` its pixel format; BSP_ROTATION_0 degenerates to a plain row copy.
- * Runs on the PPA where the SoC has one and the destination is eligible (RGB
- * format, cache-line aligned, large enough), else on the CPU. With `async` an
- * eligible blit returns once queued; `pixels` must then stay unchanged until
- * the next blit or bsp_blit_wait(), each of which first waits for it. */
-void bsp_blit_rotated(void *dst, bsp_size_t dst_size, bsp_pixel_format_t format,
-                      bsp_rect_t area, const void *pixels, bsp_rotation_t rotation,
-                      bool async);
+ * and `dst_format` its pixel format; BSP_ROTATION_0 degenerates to a plain row
+ * copy. Runs on the PPA where the SoC has one and the destination is eligible
+ * (RGB format, cache-line aligned, large enough), else on the CPU. With `async`
+ * an eligible blit returns once queued; `pixels` must then stay unchanged until
+ * the next blit or bsp_blit_wait(), each of which first waits for it.
+ *
+ * A `src_format` other than `dst_format` is converted, which only the PPA can
+ * do: ESP_ERR_NOT_SUPPORTED when it is unavailable or either format is outside
+ * its RGB modes. */
+esp_err_t bsp_blit_rotated(void *dst, bsp_size_t dst_size, bsp_pixel_format_t dst_format,
+                           bsp_rect_t area, const void *pixels, bsp_pixel_format_t src_format,
+                           bsp_rotation_t rotation, bool async);
 void bsp_blit_wait(void);

@@ -26,7 +26,7 @@ typedef struct {
 } rgb_lcd_t;
 
 static esp_err_t draw(bsp_display_t *self, bsp_rect_t rect, const void *data,
-                      bsp_rotation_t rotation, bool async) {
+                      bsp_pixel_format_t format, bsp_rotation_t rotation, bool async) {
     rgb_lcd_t *d = (rgb_lcd_t *)self;
     /* Fast path is the framebuffer flush; draw_bitmap is the partial fallback. */
     uint8_t *fb = d->frame_buffers[d->shown];
@@ -36,18 +36,17 @@ static esp_err_t draw(bsp_display_t *self, bsp_rect_t rect, const void *data,
         bsp_rect_max_y(rect) > self->size.height) {
         return ESP_ERR_INVALID_ARG;
     }
-    bsp_blit_rotated(fb, self->size, self->format, rect, data, rotation, async);
-    return ESP_OK;
+    return bsp_blit_rotated(fb, self->size, self->format, rect, data, format, rotation, async);
 }
 
 static esp_err_t draw_bitmap(bsp_display_t *self, bsp_rect_t rect, const void *data,
-                             bsp_rotation_t rotation) {
-    return draw(self, rect, data, rotation, false);
+                             bsp_pixel_format_t format, bsp_rotation_t rotation) {
+    return draw(self, rect, data, format, rotation, false);
 }
 
 static esp_err_t draw_bitmap_async(bsp_display_t *self, bsp_rect_t rect, const void *data,
-                                   bsp_rotation_t rotation) {
-    return draw(self, rect, data, rotation, true);
+                                   bsp_pixel_format_t format, bsp_rotation_t rotation) {
+    return draw(self, rect, data, format, rotation, true);
 }
 
 static esp_err_t wait_draw(bsp_display_t *self) {
@@ -120,6 +119,7 @@ esp_err_t rgb_lcd_create(const rgb_lcd_config_t *config, bsp_display_t **out) {
         .type              = BSP_DISPLAY_TYPE_RGB,
         .size              = config->size,
         .format            = config->pixel_format,
+        .convert           = true,
         .draw_bitmap       = draw_bitmap,
         .deinit            = deinit,
         .draw_bitmap_async = draw_bitmap_async,
