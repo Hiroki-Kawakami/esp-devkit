@@ -416,7 +416,59 @@ static void test_pixfmt_bpp(void) {
     CHECK(imgf_pixfmt_bpp(IMGF_PIX_GRAY8) == 1);
     CHECK(imgf_pixfmt_bpp(IMGF_PIX_RGB888) == 3);
     CHECK(imgf_pixfmt_bpp(IMGF_PIX_RGB565) == 2);
+    CHECK(imgf_pixfmt_bpp(IMGF_PIX_BGR888) == 3);
     CHECK(imgf_pixfmt_bpp(IMGF_PIX_INHERIT) == 0);
+}
+
+static void test_resize_rgb888_to_bgr888(void) {
+    const uint8_t src[6] = {10, 20, 30, 40, 50, 60};
+    uint8_t dst[6] = {0};
+    imgf_resize_opts_t o = {0};
+    o.target_w = 2; o.target_h = 1; o.fit = IMGF_FIT_STRETCH;
+    o.dst_pixfmt = IMGF_PIX_BGR888;
+    CHECK(imgf_resize_buffer(src, 2, 1, 6, IMGF_PIX_RGB888, dst, 6, &o) == IMGF_OK);
+    CHECK(dst[0] == 30 && dst[1] == 20 && dst[2] == 10);
+    CHECK(dst[3] == 60 && dst[4] == 50 && dst[5] == 40);
+
+    uint8_t back[6] = {0};
+    o.dst_pixfmt = IMGF_PIX_RGB888;
+    CHECK(imgf_resize_buffer(dst, 2, 1, 6, IMGF_PIX_BGR888, back, 6, &o) == IMGF_OK);
+    CHECK(memcmp(back, src, sizeof src) == 0);
+}
+
+static void test_jpeg_encode_bgr888_matches_rgb888(void) {
+    uint8_t rgb[8 * 8 * 3];
+    uint8_t bgr[8 * 8 * 3];
+    for (int i = 0; i < 8 * 8; i++) {
+        rgb[3 * i + 0] = (uint8_t)(i * 3);
+        rgb[3 * i + 1] = (uint8_t)(255 - i);
+        rgb[3 * i + 2] = (uint8_t)(i | 0x20);
+        bgr[3 * i + 0] = rgb[3 * i + 2];
+        bgr[3 * i + 1] = rgb[3 * i + 1];
+        bgr[3 * i + 2] = rgb[3 * i + 0];
+    }
+
+    imgf_jpege_opts_t opts = {0};
+    opts.quality = 90;
+    uint8_t out_rgb[4096], out_bgr[4096];
+    size_t len_rgb = 0, len_bgr = 0;
+
+    for (int pass = 0; pass < 2; pass++) {
+        const uint8_t *rows = pass == 0 ? rgb : bgr;
+        imgf_err_t err = IMGF_OK;
+        imgf_encoder_t *enc = imgf_jpege_create(8, 8,
+            pass == 0 ? IMGF_PIX_RGB888 : IMGF_PIX_BGR888, &opts, &err);
+        CHECK(enc != NULL && err == IMGF_OK);
+        CHECK(imgf_encoder_bind_buffer(enc, pass == 0 ? out_rgb : out_bgr, 4096) == IMGF_OK);
+        for (int y = 0; y < 8; y++) {
+            CHECK(imgf_encoder_push_row(enc, rows + (size_t)y * 8 * 3) == 1);
+        }
+        CHECK(imgf_encoder_finish(enc, pass == 0 ? &len_rgb : &len_bgr) == IMGF_OK);
+        imgf_encoder_destroy(enc);
+    }
+
+    CHECK(len_rgb == len_bgr && len_rgb > 0);
+    CHECK(memcmp(out_rgb, out_bgr, len_rgb) == 0);
 }
 
 static void test_resize_compute_dst(void) {
@@ -1637,6 +1689,8 @@ int main(void) {
     test_png_signature_only();
 
     test_pixfmt_bpp();
+    test_resize_rgb888_to_bgr888();
+    test_jpeg_encode_bgr888_matches_rgb888();
     test_resize_compute_dst();
     test_resize_identity_gray();
     test_resize_downscale_gray_2x();

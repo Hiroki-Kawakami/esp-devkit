@@ -130,6 +130,7 @@ typedef struct {
     int      bitcnt;
 
     bool     input_565;
+    bool     input_bgr;
 
     uint8_t *dst;
     size_t   dst_cap;
@@ -462,6 +463,10 @@ static void absorb_row(jpege_t *j, const uint8_t *src) {
                 r = (v >> 11) & 0x1F; r = (r << 3) | (r >> 2);
                 g = (v >>  5) & 0x3F; g = (g << 2) | (g >> 4);
                 b =  v        & 0x1F; b = (b << 3) | (b >> 2);
+            } else if (j->input_bgr) {
+                b = src[3 * x + 0];
+                g = src[3 * x + 1];
+                r = src[3 * x + 2];
             } else {
                 r = src[3 * x + 0];
                 g = src[3 * x + 1];
@@ -610,7 +615,7 @@ imgf_encoder_t *imgf_jpege_create(uint16_t width, uint16_t height,
         return NULL;
     }
     if (input_pf != IMGF_PIX_GRAY8 && input_pf != IMGF_PIX_RGB888 &&
-        input_pf != IMGF_PIX_RGB565) {
+        input_pf != IMGF_PIX_RGB565 && input_pf != IMGF_PIX_BGR888) {
         if (out_err) *out_err = IMGF_ERR_UNSUPPORTED;
         return NULL;
     }
@@ -626,6 +631,7 @@ imgf_encoder_t *imgf_jpege_create(uint16_t width, uint16_t height,
     j->height   = height;
     j->n_comp   = (input_pf == IMGF_PIX_GRAY8) ? 1 : 3;
     j->input_565 = (input_pf == IMGF_PIX_RGB565);
+    j->input_bgr = (input_pf == IMGF_PIX_BGR888);
     resolve_subsample(j->n_comp, opts->subsample, &j->sub_h, &j->sub_v);
     j->mcu_w = 8 * j->sub_h;
     j->mcu_h = 8 * j->sub_v;

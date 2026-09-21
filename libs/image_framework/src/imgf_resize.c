@@ -16,6 +16,7 @@
  * pipeline (Gray<->RGB888<->RGB565 in any combination).
  */
 
+#include "imgf_alloc.h"
 #include "imgf_resize.h"
 
 #include <math.h>
@@ -36,6 +37,7 @@ struct imgf_resizer {
     int sw, sh, dw, dh;
     imgf_pixfmt_t src_pf, dst_pf;
     int internal_ch;
+    uint32_t caps;
     int src_bpp, dst_bpp;
 
     /* horizontal mapping */
@@ -109,13 +111,22 @@ imgf_err_t imgf_resize_compute_dst(uint16_t src_w, uint16_t src_h,
     return IMGF_OK;
 }
 
+/* ---- allocation ------------------------------------------------------- */
+
+static void *rz_calloc(size_t count, size_t size, uint32_t caps) {
+    const size_t bytes = count * size;
+    void *p = imgf_alloc(bytes, caps);
+    if (p) memset(p, 0, bytes);
+    return p;
+}
+
 /* ---- table builders --------------------------------------------------- */
 
 static bool build_box_h(int s, int d, int **off_out, int **src_out,
-                        uint32_t **w_out, uint32_t **wsum_out) {
-    int *off = (int *)calloc((size_t)d + 1, sizeof(int));
-    int *src = (int *)calloc((size_t)d, sizeof(int));
-    uint32_t *wsum = (uint32_t *)calloc((size_t)d, sizeof(uint32_t));
+                        uint32_t **w_out, uint32_t **wsum_out, uint32_t caps) {
+    int *off = (int *)rz_calloc((size_t)d + 1, sizeof(int), caps);
+    int *src = (int *)rz_calloc((size_t)d, sizeof(int), caps);
+    uint32_t *wsum = (uint32_t *)rz_calloc((size_t)d, sizeof(uint32_t), caps);
     if (!off || !src || !wsum) goto fail;
 
     off[0] = 0;
@@ -130,7 +141,7 @@ static bool build_box_h(int s, int d, int **off_out, int **src_out,
         src[x] = sx0;
         off[x + 1] = off[x] + (sx1 - sx0);
     }
-    uint32_t *w = (uint32_t *)calloc((size_t)off[d], sizeof(uint32_t));
+    uint32_t *w = (uint32_t *)rz_calloc((size_t)off[d], sizeof(uint32_t), caps);
     if (!w) goto fail;
     for (int x = 0; x < d; x++) {
         double fx0 = (double)x * s / d;
@@ -151,15 +162,19 @@ static bool build_box_h(int s, int d, int **off_out, int **src_out,
     *off_out = off; *src_out = src; *w_out = w; *wsum_out = wsum;
     return true;
 fail:
-    free(off); free(src); free(wsum);
+    imgf_free(off); imgf_free(src); imgf_free(wsum);
     return false;
 }
 
-static bool build_bilinear(int s, int d, int **lo_out, int **hi_out, uint32_t **blend_out) {
-    int *lo = (int *)calloc((size_t)d, sizeof(int));
-    int *hi = (int *)calloc((size_t)d, sizeof(int));
-    uint32_t *blend = (uint32_t *)calloc((size_t)d, sizeof(uint32_t));
-    if (!lo || !hi || !blend) { free(lo); free(hi); free(blend); return false; }
+static bool build_bilinear(int s, int d, int **lo_out, int **hi_out, uint32_t **blend_out,
+                           uint32_t caps) {
+    int *lo = (int *)rz_calloc((size_t)d, sizeof(int), caps);
+    int *hi = (int *)rz_calloc((size_t)d, sizeof(int), caps);
+    uint32_t *blend = (uint32_t *)rz_calloc((size_t)d, sizeof(uint32_t), caps);
+    if (!lo || !hi || !blend) {
+        imgf_free(lo); imgf_free(hi); imgf_free(blend);
+        return false;
+    }
 
     for (int x = 0; x < d; x++) {
         double xs;
@@ -204,11 +219,12 @@ static void unpack_row(const uint8_t *src, uint16_t *dst, int w,
             dst[3 * i + 1] = g;
             dst[3 * i + 2] = g;
         }
-    } else if (src_pf == IMGF_PIX_RGB888) {
+    } else if (src_pf == IMGF_PIX_RGB888 || src_pf == IMGF_PIX_BGR888) {
+        const int r = src_pf == IMGF_PIX_BGR888 ? 2 : 0;
         for (int i = 0; i < w; i++) {
-            dst[3 * i + 0] = src[3 * i + 0];
+            dst[3 * i + 0] = src[3 * i + r];
             dst[3 * i + 1] = src[3 * i + 1];
-            dst[3 * i + 2] = src[3 * i + 2];
+            dst[3 * i + 2] = src[3 * i + (2 - r)];
         }
     } else {  /* RGB565 (host-endian uint16) */
         const uint16_t *s = (const uint16_t *)src;
@@ -236,11 +252,12 @@ static void pack_row(const uint16_t *src, uint8_t *dst, int w,
             int y = (r * LUMA_R_Q8 + g * LUMA_G_Q8 + b * LUMA_B_Q8 + 128) >> 8;
             dst[i] = clamp8(y);
         }
-    } else if (dst_pf == IMGF_PIX_RGB888) {
+    } else if (dst_pf == IMGF_PIX_RGB888 || dst_pf == IMGF_PIX_BGR888) {
+        const int r = dst_pf == IMGF_PIX_BGR888 ? 2 : 0;
         for (int i = 0; i < w; i++) {
-            dst[3 * i + 0] = clamp8((int)src[3 * i + 0]);
+            dst[3 * i + r] = clamp8((int)src[3 * i + 0]);
             dst[3 * i + 1] = clamp8((int)src[3 * i + 1]);
-            dst[3 * i + 2] = clamp8((int)src[3 * i + 2]);
+            dst[3 * i + (2 - r)] = clamp8((int)src[3 * i + 2]);
         }
     } else {  /* RGB565 */
         uint16_t *d = (uint16_t *)dst;
@@ -344,13 +361,13 @@ static int v_consume_bilinear_advance(imgf_resizer_t *r, int sy) {
 
 static void resizer_free(imgf_resizer_t *r) {
     if (!r) return;
-    free(r->h_off);    free(r->h_src);    free(r->h_w);    free(r->h_wsum);
-    free(r->h_lo);     free(r->h_hi);     free(r->h_blend);
-    free(r->v_lo);     free(r->v_hi);     free(r->v_blend);
-    free(r->irow);     free(r->hrow);
-    free(r->hrow_prev); free(r->blend_tmp);
-    free(r->vacc);     free(r->pending);
-    free(r);
+    imgf_free(r->h_off);     imgf_free(r->h_src);  imgf_free(r->h_w);  imgf_free(r->h_wsum);
+    imgf_free(r->h_lo);      imgf_free(r->h_hi);   imgf_free(r->h_blend);
+    imgf_free(r->v_lo);      imgf_free(r->v_hi);   imgf_free(r->v_blend);
+    imgf_free(r->irow);      imgf_free(r->hrow);
+    imgf_free(r->hrow_prev); imgf_free(r->blend_tmp);
+    imgf_free(r->vacc);      imgf_free(r->pending);
+    imgf_free(r);
 }
 
 imgf_resizer_t *imgf_resizer_create(uint16_t src_w, uint16_t src_h,
@@ -361,7 +378,8 @@ imgf_resizer_t *imgf_resizer_create(uint16_t src_w, uint16_t src_h,
     if (!opts) opts = &kZero;
 
     if (src_w == 0 || src_h == 0 ||
-        (src_pf != IMGF_PIX_GRAY8 && src_pf != IMGF_PIX_RGB888 && src_pf != IMGF_PIX_RGB565)) {
+        (src_pf != IMGF_PIX_GRAY8 && src_pf != IMGF_PIX_RGB888 && src_pf != IMGF_PIX_RGB565 &&
+         src_pf != IMGF_PIX_BGR888)) {
         if (out_err) *out_err = IMGF_ERR_INVALID_ARG;
         return NULL;
     }
@@ -371,13 +389,15 @@ imgf_resizer_t *imgf_resizer_create(uint16_t src_w, uint16_t src_h,
     if (e != IMGF_OK) { if (out_err) *out_err = e; return NULL; }
 
     imgf_pixfmt_t dst_pf = opts->dst_pixfmt == IMGF_PIX_INHERIT ? src_pf : opts->dst_pixfmt;
-    if (dst_pf != IMGF_PIX_GRAY8 && dst_pf != IMGF_PIX_RGB888 && dst_pf != IMGF_PIX_RGB565) {
+    if (dst_pf != IMGF_PIX_GRAY8 && dst_pf != IMGF_PIX_RGB888 && dst_pf != IMGF_PIX_RGB565 &&
+        dst_pf != IMGF_PIX_BGR888) {
         if (out_err) *out_err = IMGF_ERR_INVALID_ARG;
         return NULL;
     }
 
-    imgf_resizer_t *r = (imgf_resizer_t *)calloc(1, sizeof *r);
+    imgf_resizer_t *r = (imgf_resizer_t *)rz_calloc(1, sizeof *r, opts->alloc_caps);
     if (!r) { if (out_err) *out_err = IMGF_ERR_OOM; return NULL; }
+    r->caps = opts->alloc_caps;
 
     r->sw = src_w; r->sh = src_h;
     r->dw = dw16;  r->dh = dh16;
@@ -392,24 +412,26 @@ imgf_resizer_t *imgf_resizer_create(uint16_t src_w, uint16_t src_h,
     r->v_acc_dst_y = 0;
 
     size_t dim = (size_t)r->dw * r->internal_ch;
-    r->irow = (uint16_t *)calloc((size_t)r->sw * r->internal_ch, sizeof(uint16_t));
-    r->hrow = (uint16_t *)calloc(dim, sizeof(uint16_t));
+    r->irow = (uint16_t *)rz_calloc((size_t)r->sw * r->internal_ch, sizeof(uint16_t), r->caps);
+    r->hrow = (uint16_t *)rz_calloc(dim, sizeof(uint16_t), r->caps);
     if (!r->irow || !r->hrow) goto oom;
 
     if (r->h_up) {
-        if (!build_bilinear(r->sw, r->dw, &r->h_lo, &r->h_hi, &r->h_blend)) goto oom;
+        if (!build_bilinear(r->sw, r->dw, &r->h_lo, &r->h_hi, &r->h_blend, r->caps)) goto oom;
     } else {
-        if (!build_box_h(r->sw, r->dw, &r->h_off, &r->h_src, &r->h_w, &r->h_wsum)) goto oom;
+        if (!build_box_h(r->sw, r->dw, &r->h_off, &r->h_src, &r->h_w, &r->h_wsum, r->caps)) {
+            goto oom;
+        }
     }
 
     if (r->v_up) {
-        if (!build_bilinear(r->sh, r->dh, &r->v_lo, &r->v_hi, &r->v_blend)) goto oom;
-        r->hrow_prev = (uint16_t *)calloc(dim, sizeof(uint16_t));
-        r->blend_tmp = (uint16_t *)calloc(dim, sizeof(uint16_t));
+        if (!build_bilinear(r->sh, r->dh, &r->v_lo, &r->v_hi, &r->v_blend, r->caps)) goto oom;
+        r->hrow_prev = (uint16_t *)rz_calloc(dim, sizeof(uint16_t), r->caps);
+        r->blend_tmp = (uint16_t *)rz_calloc(dim, sizeof(uint16_t), r->caps);
         if (!r->hrow_prev || !r->blend_tmp) goto oom;
     } else {
-        r->vacc = (uint64_t *)calloc(dim, sizeof(uint64_t));
-        r->pending = (uint8_t *)calloc((size_t)r->dw * r->dst_bpp, 1);
+        r->vacc = (uint64_t *)rz_calloc(dim, sizeof(uint64_t), r->caps);
+        r->pending = (uint8_t *)rz_calloc((size_t)r->dw * r->dst_bpp, 1, r->caps);
         if (!r->vacc || !r->pending) goto oom;
     }
 

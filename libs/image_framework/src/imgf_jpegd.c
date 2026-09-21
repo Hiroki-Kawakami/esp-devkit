@@ -346,7 +346,12 @@ static imgf_err_t setup(jpegd_t *d, const imgf_decode_opts_t *opts) {
     d->band_w = d->mcus_per_row * d->blk * d->hmax;
     d->band_h = d->blk * d->vmax;
     size_t band_bytes = (size_t)d->band_w * d->band_h * d->out_ch;
-    d->band = band_bytes <= 96 * 1024 ? (uint8_t *)imgf_alloc_internal(band_bytes) : NULL;
+    /* Internal RAM is the fast place for the band, but only when the caller
+       left the choice open: an explicit alloc_caps is a memory budget. */
+    d->band = NULL;
+    if (!d->alloc_caps && band_bytes <= 96 * 1024) {
+        d->band = (uint8_t *)imgf_alloc_internal(band_bytes);
+    }
     if (!d->band) d->band = (uint8_t *)imgf_alloc(band_bytes, d->alloc_caps);
     if (!d->band) return IMGF_ERR_OOM;
 

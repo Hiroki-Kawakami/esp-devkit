@@ -36,12 +36,14 @@ typedef enum {
     IMGF_PIX_GRAY8,
     IMGF_PIX_RGB888,
     IMGF_PIX_RGB565,        /* host-endian uint16; LCD/DMA-side byte order is caller's job */
+    IMGF_PIX_BGR888,
 } imgf_pixfmt_t;
 
 static inline int imgf_pixfmt_bpp(imgf_pixfmt_t pf) {
     switch (pf) {
         case IMGF_PIX_GRAY8:  return 1;
         case IMGF_PIX_RGB888: return 3;
+        case IMGF_PIX_BGR888: return 3;
         case IMGF_PIX_RGB565: return 2;
         default:              return 0;
     }
