@@ -276,15 +276,122 @@ static void test_jpeg_truncated_header(void) {
     imgf_decoder_destroy(d);
 }
 
-static void test_jpeg_progressive_unsupported(void) {
-    /* SOI + SOF2 (progressive) marker + segment length: the parser reads the
-     * length before dispatching, so the bytes after the length aren't needed —
-     * non-baseline SOF returns UNSUPPORTED before any segment body is read. */
-    const uint8_t progressive[] = { 0xFF, 0xD8, 0xFF, 0xC2, 0x00, 0x0B };
+static void test_jpeg_unsupported_sof(void) {
+    /* SOI + SOF9 (arithmetic-coded) marker + segment length: the parser reads
+     * the length before dispatching, so the bytes after the length aren't
+     * needed — an SOF the decoder cannot read returns UNSUPPORTED before any
+     * segment body is read. */
+    const uint8_t arithmetic[] = { 0xFF, 0xD8, 0xFF, 0xC9, 0x00, 0x0B };
     imgf_buffer_source_t st;
     imgf_err_t err;
-    imgf_decoder_t *d = open_jpeg(progressive, sizeof progressive, &st, NULL, &err);
+    imgf_decoder_t *d = open_jpeg(arithmetic, sizeof arithmetic, &st, NULL, &err);
     CHECK(err == IMGF_ERR_UNSUPPORTED);
+    imgf_decoder_destroy(d);
+}
+
+static void test_jpeg_progressive_gray(void) {
+    imgf_buffer_source_t st;
+    imgf_err_t err;
+    imgf_decoder_t *d = open_jpeg(kJpgProgGraySplit, sizeof kJpgProgGraySplit, &st, NULL, &err);
+    CHECK(err == IMGF_OK);
+    CHECK(imgf_decoder_width(d) == 16);
+    CHECK(imgf_decoder_height(d) == 16);
+    CHECK(imgf_decoder_pixfmt(d) == IMGF_PIX_GRAY8);
+    uint8_t row[16];
+    int rows = 0;
+    while (imgf_decoder_next_row(d, row)) {
+        CHECK(near_value(row[2], 40, 25));
+        CHECK(near_value(row[13], 220, 25));
+        rows++;
+    }
+    CHECK(rows == 16);
+    imgf_decoder_destroy(d);
+}
+
+static void test_jpeg_progressive_rgb(void) {
+    imgf_buffer_source_t st;
+    imgf_err_t err;
+    imgf_decoder_t *d = open_jpeg(kJpgProgRgbRed, sizeof kJpgProgRgbRed, &st, NULL, &err);
+    CHECK(err == IMGF_OK);
+    CHECK(imgf_decoder_pixfmt(d) == IMGF_PIX_RGB888);
+    uint8_t row[16 * 3];
+    CHECK(imgf_decoder_next_row(d, row));
+    CHECK(near_value(row[0], 220, 20));
+    CHECK(near_value(row[1], 30, 25));
+    CHECK(near_value(row[2], 30, 25));
+    imgf_decoder_destroy(d);
+}
+
+/* libjpeg quantizes the same coefficients either way, so the two encodings of
+ * one picture must come out of the decoder identical, down to the byte. */
+static void test_jpeg_progressive_matches_baseline(void) {
+    imgf_buffer_source_t st_b, st_p;
+    imgf_err_t err_b, err_p;
+    imgf_decoder_t *b = open_jpeg(kJpgGrad, sizeof kJpgGrad, &st_b, NULL, &err_b);
+    imgf_decoder_t *p = open_jpeg(kJpgProgGrad, sizeof kJpgProgGrad, &st_p, NULL, &err_p);
+    CHECK(err_b == IMGF_OK && err_p == IMGF_OK);
+    CHECK(imgf_decoder_width(p) == 37 && imgf_decoder_height(p) == 23);
+    CHECK(imgf_decoder_width(b) == imgf_decoder_width(p));
+    CHECK(imgf_decoder_height(b) == imgf_decoder_height(p));
+
+    uint8_t row_b[37 * 3], row_p[37 * 3];
+    int rows = 0;
+    while (imgf_decoder_next_row(b, row_b)) {
+        CHECK(imgf_decoder_next_row(p, row_p));
+        CHECK(memcmp(row_b, row_p, sizeof row_b) == 0);
+        rows++;
+    }
+    CHECK(rows == 23);
+    CHECK(!imgf_decoder_next_row(p, row_p));
+    imgf_decoder_destroy(b);
+    imgf_decoder_destroy(p);
+}
+
+static void test_jpeg_progressive_restart(void) {
+    imgf_buffer_source_t st_b, st_p;
+    imgf_err_t err_b, err_p;
+    imgf_decoder_t *b = open_jpeg(kJpgGrad, sizeof kJpgGrad, &st_b, NULL, &err_b);
+    imgf_decoder_t *p = open_jpeg(kJpgProgGradRst, sizeof kJpgProgGradRst, &st_p, NULL, &err_p);
+    CHECK(err_b == IMGF_OK && err_p == IMGF_OK);
+    uint8_t row_b[37 * 3], row_p[37 * 3];
+    int rows = 0;
+    while (imgf_decoder_next_row(b, row_b)) {
+        CHECK(imgf_decoder_next_row(p, row_p));
+        CHECK(memcmp(row_b, row_p, sizeof row_b) == 0);
+        rows++;
+    }
+    CHECK(rows == 23);
+    imgf_decoder_destroy(b);
+    imgf_decoder_destroy(p);
+}
+
+static void test_jpeg_progressive_downscale(void) {
+    imgf_decode_opts_t opts = {0};
+    opts.target_w = 8;
+    opts.target_h = 8;
+    imgf_buffer_source_t st;
+    imgf_err_t err;
+    imgf_decoder_t *d = open_jpeg(kJpgProgGrad, sizeof kJpgProgGrad, &st, &opts, &err);
+    CHECK(err == IMGF_OK);
+    CHECK(imgf_decoder_width(d) < 37 && imgf_decoder_width(d) >= 8);
+    uint8_t row[37 * 3];
+    int rows = 0;
+    while (imgf_decoder_next_row(d, row)) rows++;
+    CHECK(rows == imgf_decoder_height(d));
+    imgf_decoder_destroy(d);
+}
+
+/* A progressive stream cut short still holds a whole (coarser) picture: the
+ * scans that did arrive refine every block, so all rows are served. */
+static void test_jpeg_progressive_truncated(void) {
+    imgf_buffer_source_t st;
+    imgf_err_t err;
+    imgf_decoder_t *d = open_jpeg(kJpgProgGrad, (sizeof kJpgProgGrad) / 2, &st, NULL, &err);
+    CHECK(err == IMGF_OK);
+    uint8_t row[37 * 3];
+    int rows = 0;
+    while (imgf_decoder_next_row(d, row)) rows++;
+    CHECK(rows == 23);
     imgf_decoder_destroy(d);
 }
 
@@ -1678,7 +1785,13 @@ int main(void) {
     test_jpeg_rgb_red();
     test_jpeg_decode_time_downscale();
     test_jpeg_truncated_header();
-    test_jpeg_progressive_unsupported();
+    test_jpeg_unsupported_sof();
+    test_jpeg_progressive_gray();
+    test_jpeg_progressive_rgb();
+    test_jpeg_progressive_matches_baseline();
+    test_jpeg_progressive_restart();
+    test_jpeg_progressive_downscale();
+    test_jpeg_progressive_truncated();
 
     test_png_gray();
     test_png_rgb();

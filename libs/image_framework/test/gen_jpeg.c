@@ -1,6 +1,6 @@
 /*
- * Generates jpeg_fixtures.h: small baseline JPEGs (built with libjpeg) used by
- * the host tests to exercise the in-tree JPEG decoder. JPEG is lossy, so the
+ * Generates jpeg_fixtures.h: small baseline and progressive JPEGs (built with
+ * libjpeg) used by the host tests to exercise the in-tree JPEG decoder. JPEG is lossy, so the
  * tests assert dimensions + approximate pixel values, not exact bytes.
  * Regenerate: cc gen_jpeg.c $(pkg-config --cflags --libs libjpeg) -o gen && ./gen > jpeg_fixtures.h
  */
@@ -16,8 +16,9 @@ static void emit(const char *name, const unsigned char *data, unsigned long len)
     printf("\n};\n\n");
 }
 
-static void make(const char *name, int w, int h, int nc, J_COLOR_SPACE cs,
-                 int subsample, const unsigned char *pixels, int quality) {
+static void make_mode(const char *name, int w, int h, int nc, J_COLOR_SPACE cs,
+                      int subsample, const unsigned char *pixels, int quality,
+                      int progressive, int restart_interval) {
     struct jpeg_compress_struct cinfo;
     struct jpeg_error_mgr jerr;
     cinfo.err = jpeg_std_error(&jerr);
@@ -31,6 +32,8 @@ static void make(const char *name, int w, int h, int nc, J_COLOR_SPACE cs,
     cinfo.in_color_space = cs;
     jpeg_set_defaults(&cinfo);
     jpeg_set_quality(&cinfo, quality, TRUE);
+    if (progressive) jpeg_simple_progression(&cinfo);
+    cinfo.restart_interval = restart_interval;
     if (cs == JCS_RGB && subsample) {  // force 4:2:0 to exercise chroma upsample
         cinfo.comp_info[0].h_samp_factor = 2;
         cinfo.comp_info[0].v_samp_factor = 2;
@@ -48,6 +51,16 @@ static void make(const char *name, int w, int h, int nc, J_COLOR_SPACE cs,
     emit(name, buf, len);
     free(buf);
     jpeg_destroy_compress(&cinfo);
+}
+
+static void make(const char *name, int w, int h, int nc, J_COLOR_SPACE cs,
+                 int subsample, const unsigned char *pixels, int quality) {
+    make_mode(name, w, h, nc, cs, subsample, pixels, quality, 0, 0);
+}
+
+static void make_prog(const char *name, int w, int h, int nc, J_COLOR_SPACE cs,
+                      int subsample, const unsigned char *pixels, int quality) {
+    make_mode(name, w, h, nc, cs, subsample, pixels, quality, 1, 0);
 }
 
 int main(void) {
@@ -73,6 +86,29 @@ int main(void) {
     unsigned char big[64 * 64];
     for (int i = 0; i < 64 * 64; i++) big[i] = 100;
     make("kJpgGrayBig", 64, 64, 1, JCS_GRAYSCALE, 0, big, 95);
+
+    // Progressive (SOF2) twins: same pixels, libjpeg's default scan script.
+    make_prog("kJpgProgGraySplit", 16, 16, 1, JCS_GRAYSCALE, 0, split, 95);
+    make_prog("kJpgProgRgbRed", 16, 16, 3, JCS_RGB, 1, red, 95);
+
+    // 37x23 gradient, 4:2:0 progressive: odd size (partial MCUs) plus AC
+    // scans over a picture with real high-frequency content. Emitted baseline
+    // as well so the test can assert both paths agree.
+    unsigned char grad[37 * 23 * 3];
+    for (int y = 0; y < 23; y++) {
+        for (int x = 0; x < 37; x++) {
+            unsigned char *p = grad + (y * 37 + x) * 3;
+            p[0] = (unsigned char)(x * 7);
+            p[1] = (unsigned char)(y * 11);
+            p[2] = (unsigned char)((x * y) & 0xFF);
+        }
+    }
+    make("kJpgGrad", 37, 23, 3, JCS_RGB, 1, grad, 90);
+    make_prog("kJpgProgGrad", 37, 23, 3, JCS_RGB, 1, grad, 90);
+
+    // Same again with a restart marker every MCU, which in a progressive
+    // stream also resets the end-of-band run.
+    make_mode("kJpgProgGradRst", 37, 23, 3, JCS_RGB, 1, grad, 90, 1, 1);
 
     return 0;
 }

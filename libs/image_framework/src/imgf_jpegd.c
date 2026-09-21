@@ -2,9 +2,14 @@
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 Hiroki Kawakami
  *
- * Baseline JPEG decoder. Pulls bytes from imgf_breader_t and serves rows
- * top-to-bottom; decodes one MCU row at a time into a band buffer with an
- * AAN-prescaled fast IDCT and per-block sub-sampled IDCT (1/N for N in 2..8).
+ * JPEG decoder. Pulls bytes from imgf_breader_t and serves rows top-to-bottom;
+ * decodes one MCU row at a time into a band buffer with an AAN-prescaled fast
+ * IDCT and per-block sub-sampled IDCT (1/N for N in 2..8).
+ *
+ * Baseline streams one scan and never holds more than a band. Progressive
+ * streams cannot: every scan refines the whole frame, so the coefficients of
+ * the whole image are decoded into per-component arrays on the first row
+ * request and the band is then filled from them, one MCU row at a time.
  */
 
 #include <math.h>
@@ -36,6 +41,9 @@ typedef struct {
     int id, h, v, tq;
     int td, ta;
     int dcpred;
+    int bw, bh;      /* coefficient grid, padded to whole MCUs */
+    int nbw, nbh;    /* blocks that actually cover the image */
+    int16_t *coeff;  /* progressive only: bw*bh blocks, natural order */
 } jpegd_comp_t;
 
 typedef struct {
@@ -57,6 +65,13 @@ typedef struct {
     jpegd_huff_t dc[4];
     jpegd_huff_t ac[4];
     int      restart_interval;
+
+    uint8_t  progressive;
+    uint8_t  prog_ready;
+    int      scan_ncomp;
+    int      scan_comp[3];
+    int      ss, se, ah, al;
+    int      eobrun;
 
     int      scale;
     int      blk;
@@ -248,6 +263,9 @@ static bool parse_dht(jpegd_t *d, int len) {
                 t->valptr[l]  = k;
                 t->mincode[l] = code;
                 code += t->bits[l];
+                /* An over-subscribed table has no valid codes left at this
+                   length; its mincode would index past the fast table. */
+                if (code > (1 << l)) return false;
                 t->maxcode[l] = code - 1;
                 k += t->bits[l];
             } else {
@@ -270,8 +288,9 @@ static bool parse_dht(jpegd_t *d, int len) {
     return true;
 }
 
-static imgf_err_t parse_sof(jpegd_t *d, int len) {
+static imgf_err_t parse_sof(jpegd_t *d, int len, int progressive) {
     (void)len;
+    d->progressive = (uint8_t)progressive;
     int prec = raw_byte(d);
     if (prec != 8) return IMGF_ERR_UNSUPPORTED;
     int h = u16(d), w = u16(d);
@@ -284,7 +303,7 @@ static imgf_err_t parse_sof(jpegd_t *d, int len) {
     d->hmax = d->vmax = 1;
     for (int i = 0; i < nc; i++) {
         int id = raw_byte(d), hv = raw_byte(d), tq = raw_byte(d);
-        if (id < 0 || hv < 0 || tq < 0) return IMGF_ERR_DECODE;
+        if (id < 0 || hv < 0 || tq < 0 || tq > 3) return IMGF_ERR_DECODE;
         d->comp[i].id = id;
         d->comp[i].h  = hv >> 4;
         d->comp[i].v  = hv & 0x0F;
@@ -300,7 +319,9 @@ static imgf_err_t parse_sof(jpegd_t *d, int len) {
 static imgf_err_t parse_sos(jpegd_t *d, int len) {
     (void)len;
     int ns = raw_byte(d);
-    if (ns != d->ncomp) return IMGF_ERR_UNSUPPORTED;
+    if (ns < 1 || ns > d->ncomp) return IMGF_ERR_DECODE;
+    if (!d->progressive && ns != d->ncomp) return IMGF_ERR_UNSUPPORTED;
+    d->scan_ncomp = ns;
     for (int i = 0; i < ns; i++) {
         int cs = raw_byte(d), td_ta = raw_byte(d);
         if (cs < 0 || td_ta < 0) return IMGF_ERR_DECODE;
@@ -308,13 +329,45 @@ static imgf_err_t parse_sos(jpegd_t *d, int len) {
         for (int j = 0; j < d->ncomp; j++)
             if (d->comp[j].id == cs) ci = j;
         if (ci < 0) return IMGF_ERR_DECODE;
+        d->scan_comp[i] = ci;
         d->comp[ci].td = td_ta >> 4;
         d->comp[ci].ta = td_ta & 0x0F;
     }
-    raw_byte(d);
-    raw_byte(d);
-    raw_byte(d);
+    int ss = raw_byte(d), se = raw_byte(d), ahal = raw_byte(d);
+    if (ss < 0 || se < 0 || ahal < 0) return IMGF_ERR_DECODE;
+    d->ss = ss;
+    d->se = se;
+    d->ah = ahal >> 4;
+    d->al = ahal & 0x0F;
+    if (d->progressive) {
+        if (d->se > 63 || d->ss > d->se) return IMGF_ERR_DECODE;
+        if (d->ss == 0 && d->se != 0) return IMGF_ERR_DECODE;
+        if (d->ss != 0 && ns != 1) return IMGF_ERR_DECODE;
+        if (d->ah > 13 || d->al > 13) return IMGF_ERR_DECODE;
+    }
+    /* A progressive scan only reads the table its spectral range asks for, and
+       encoders leave junk in the other selector. */
+    bool need_dc = !d->progressive || d->ss == 0;
+    bool need_ac = !d->progressive || d->se != 0;
+    for (int i = 0; i < ns; i++) {
+        const jpegd_comp_t *c = &d->comp[d->scan_comp[i]];
+        if ((need_dc && c->td > 3) || (need_ac && c->ta > 3)) return IMGF_ERR_DECODE;
+    }
     return IMGF_OK;
+}
+
+/* Folds the AAN prescale into the dequant tables. Progressive streams may
+ * redefine a quantization table between scans, so this runs again once every
+ * scan has been read. */
+static void build_aan_tables(jpegd_t *d) {
+    for (int i = 0; i < d->ncomp; i++) {
+        int tq = d->comp[i].tq;
+        for (int k = 0; k < 64; k++) {
+            int nat = kZigzag[k];
+            d->aan_qt[tq][nat] = (int)lround(
+                d->qt[tq][k] * kAanScale[nat >> 3] * kAanScale[nat & 7] * 4.0);
+        }
+    }
 }
 
 static imgf_err_t setup(jpegd_t *d, const imgf_decode_opts_t *opts) {
@@ -338,6 +391,14 @@ static imgf_err_t setup(jpegd_t *d, const imgf_decode_opts_t *opts) {
     d->mcus_per_row = (d->w + 8 * d->hmax - 1) / (8 * d->hmax);
     d->mcu_rows     = (d->h + 8 * d->vmax - 1) / (8 * d->vmax);
 
+    for (int i = 0; i < d->ncomp; i++) {
+        jpegd_comp_t *c = &d->comp[i];
+        c->bw  = d->mcus_per_row * c->h;
+        c->bh  = d->mcu_rows * c->v;
+        c->nbw = ((d->w * c->h + d->hmax - 1) / d->hmax + 7) / 8;
+        c->nbh = ((d->h * c->v + d->vmax - 1) / d->vmax + 7) / 8;
+    }
+
     d->base.width  = (uint16_t)((d->w + d->scale - 1) / d->scale);
     d->base.height = (uint16_t)((d->h + d->scale - 1) / d->scale);
     d->out_ch      = d->ncomp == 1 ? 1 : 3;
@@ -357,14 +418,7 @@ static imgf_err_t setup(jpegd_t *d, const imgf_decode_opts_t *opts) {
 
     for (int i = 0; i < d->ncomp; i++) d->comp[i].dcpred = 0;
 
-    for (int i = 0; i < d->ncomp; i++) {
-        int tq = d->comp[i].tq;
-        for (int k = 0; k < 64; k++) {
-            int nat = kZigzag[k];
-            d->aan_qt[tq][nat] = (int)lround(
-                d->qt[tq][k] * kAanScale[nat >> 3] * kAanScale[nat & 7] * 4.0);
-        }
-    }
+    build_aan_tables(d);
     return IMGF_OK;
 }
 
@@ -391,8 +445,8 @@ static imgf_err_t parse_header(jpegd_t *d, const imgf_decode_opts_t *opts) {
             if (!parse_dqt(d, len)) return IMGF_ERR_DECODE;
         } else if (marker == 0xC4) {
             if (!parse_dht(d, len)) return IMGF_ERR_DECODE;
-        } else if (marker == 0xC0) {
-            imgf_err_t e = parse_sof(d, len);
+        } else if (marker == 0xC0 || marker == 0xC2) {
+            imgf_err_t e = parse_sof(d, len, marker == 0xC2);
             if (e != IMGF_OK) return e;
             have_sof = true;
         } else if (marker == 0xDD) {
@@ -402,7 +456,8 @@ static imgf_err_t parse_header(jpegd_t *d, const imgf_decode_opts_t *opts) {
             imgf_err_t e = parse_sos(d, len);
             if (e != IMGF_OK) return e;
             break;
-        } else if ((marker >= 0xC1 && marker <= 0xCF) && marker != 0xC4 && marker != 0xC8) {
+        } else if ((marker >= 0xC1 && marker <= 0xCF) && marker != 0xC2 &&
+                   marker != 0xC4 && marker != 0xC8) {
             return IMGF_ERR_UNSUPPORTED;
         } else {
             if (!skip_bytes(d, len)) return IMGF_ERR_TRUNCATED;
@@ -552,19 +607,56 @@ static bool consume_restart(jpegd_t *d) {
     }
 }
 
-static void decode_mcu_row(jpegd_t *d) {
+typedef struct {
+    int vsh[3], hsh[3], cstride[3];
+    int mcu_w;
+} jpegd_mcu_map_t;
+
+static void mcu_map(jpegd_t *d, jpegd_mcu_map_t *m) {
+    for (int i = 0; i < d->ncomp; i++) {
+        m->vsh[i]     = d->comp[i].v == d->vmax ? 0 : 1;
+        m->hsh[i]     = d->comp[i].h == d->hmax ? 0 : 1;
+        m->cstride[i] = d->comp[i].h * d->blk;
+    }
+    m->mcu_w = d->blk * d->hmax;
+}
+
+/* Upsamples the per-component pixels in compbuf into the band, colour
+ * converting on the way. */
+static void emit_mcu(jpegd_t *d, const jpegd_mcu_map_t *m, int mx) {
+    int px0 = mx * m->mcu_w;
+    for (int py = 0; py < d->band_h; py++) {
+        uint8_t *out = d->band + ((size_t)py * d->band_w + px0) * d->out_ch;
+        const uint8_t *yr = d->compbuf[0] + (py >> m->vsh[0]) * m->cstride[0];
+        if (d->out_ch == 1) {
+            for (int px = 0; px < m->mcu_w; px++) *out++ = yr[px >> m->hsh[0]];
+        } else {
+            const uint8_t *cbr = d->compbuf[1] + (py >> m->vsh[1]) * m->cstride[1];
+            const uint8_t *crr = d->compbuf[2] + (py >> m->vsh[2]) * m->cstride[2];
+            for (int px = 0; px < m->mcu_w; px++) {
+                int y0 = yr[px >> m->hsh[0]];
+                int cb = cbr[px >> m->hsh[1]] - 128;
+                int cr = crr[px >> m->hsh[2]] - 128;
+                *out++ = clamp8(y0 + ((91881 * cr) >> 16));
+                *out++ = clamp8(y0 - ((22554 * cb + 46802 * cr) >> 16));
+                *out++ = clamp8(y0 + ((116130 * cb) >> 16));
+            }
+        }
+    }
+}
+
+static void band_row_extent(jpegd_t *d) {
     int base = d->mcu_row_idx * d->blk * d->vmax;
     d->band_valid_rows = d->blk * d->vmax;
     if (base + d->band_valid_rows > (int)d->base.height)
         d->band_valid_rows = (int)d->base.height - base;
+}
 
-    int vsh[3], hsh[3], cstride[3];
-    for (int i = 0; i < d->ncomp; i++) {
-        vsh[i]     = d->comp[i].v == d->vmax ? 0 : 1;
-        hsh[i]     = d->comp[i].h == d->hmax ? 0 : 1;
-        cstride[i] = d->comp[i].h * d->blk;
-    }
-    int mcu_w = d->blk * d->hmax;
+static void decode_mcu_row(jpegd_t *d) {
+    band_row_extent(d);
+
+    jpegd_mcu_map_t m;
+    mcu_map(d, &m);
 
     for (int mx = 0; mx < d->mcus_per_row && !d->err; mx++) {
         if (d->restart_interval && d->mcu_count > 0 && d->mcu_count % d->restart_interval == 0) {
@@ -578,27 +670,248 @@ static void decode_mcu_row(jpegd_t *d) {
                 for (int bx = 0; bx < c->h; bx++)
                     decode_block(d, ci, d->compbuf[ci] + (by * d->blk) * cb_w + bx * d->blk, cb_w);
         }
+        emit_mcu(d, &m, mx);
+        d->mcu_count++;
+    }
+    d->band_row = 0;
+    d->mcu_row_idx++;
+}
 
-        int px0 = mx * mcu_w;
-        for (int py = 0; py < d->band_h; py++) {
-            uint8_t *out = d->band + ((size_t)py * d->band_w + px0) * d->out_ch;
-            const uint8_t *yr = d->compbuf[0] + (py >> vsh[0]) * cstride[0];
-            if (d->out_ch == 1) {
-                for (int px = 0; px < mcu_w; px++) *out++ = yr[px >> hsh[0]];
+/* --- progressive ----------------------------------------------------------- */
+
+static void prog_dc_first(jpegd_t *d, jpegd_comp_t *c, int16_t *blk) {
+    int t = huffdecode(d, &d->dc[c->td]);
+    if (d->err) return;
+    c->dcpred += t ? receive_extend(d, t) : 0;
+    blk[0] = (int16_t)(c->dcpred * (1 << d->al));
+}
+
+static void prog_dc_refine(jpegd_t *d, int16_t *blk) {
+    if (getbit(d)) blk[0] |= (int16_t)(1 << d->al);
+}
+
+static void prog_ac_first(jpegd_t *d, jpegd_comp_t *c, int16_t *blk) {
+    if (d->eobrun > 0) { d->eobrun--; return; }
+    int k = d->ss;
+    do {
+        int rs = huffdecode(d, &d->ac[c->ta]);
+        if (d->err) return;
+        int r = rs >> 4, s = rs & 0x0F;
+        if (s == 0) {
+            if (r < 15) {
+                d->eobrun = (1 << r) - 1;
+                if (r) d->eobrun += getbits(d, r);
+                break;
+            }
+            k += 16;
+        } else {
+            k += r;
+            if (k > d->se) { d->err = 1; return; }
+            blk[kZigzag[k]] = (int16_t)(receive_extend(d, s) * (1 << d->al));
+            k++;
+        }
+    } while (k <= d->se);
+}
+
+/* Correction bits for coefficients already sent: every non-zero coefficient in
+ * the band takes one bit, and the run lengths only count the ones still zero. */
+static void prog_ac_refine(jpegd_t *d, jpegd_comp_t *c, int16_t *blk) {
+    const int p1 = 1 << d->al;
+    const int m1 = -p1;
+    int k = d->ss;
+
+    if (d->eobrun > 0) {
+        d->eobrun--;
+        for (; k <= d->se; k++) {
+            int16_t *p = &blk[kZigzag[k]];
+            if (*p && getbit(d) && (*p & p1) == 0) *p += (int16_t)(*p > 0 ? p1 : m1);
+        }
+        return;
+    }
+
+    do {
+        int rs = huffdecode(d, &d->ac[c->ta]);
+        if (d->err) return;
+        int r = rs >> 4, s = rs & 0x0F;
+        if (s == 0) {
+            if (r < 15) {
+                d->eobrun = (1 << r) - 1;
+                if (r) d->eobrun += getbits(d, r);
+                r = 64;  /* refine the rest of this block, then stop */
+            }
+        } else {
+            if (s != 1) { d->err = 1; return; }
+            s = getbit(d) ? p1 : m1;
+        }
+        while (k <= d->se) {
+            int16_t *p = &blk[kZigzag[k++]];
+            if (*p) {
+                if (getbit(d) && (*p & p1) == 0) *p += (int16_t)(*p > 0 ? p1 : m1);
             } else {
-                const uint8_t *cbr = d->compbuf[1] + (py >> vsh[1]) * cstride[1];
-                const uint8_t *crr = d->compbuf[2] + (py >> vsh[2]) * cstride[2];
-                for (int px = 0; px < mcu_w; px++) {
-                    int y0 = yr[px >> hsh[0]];
-                    int cb = cbr[px >> hsh[1]] - 128;
-                    int cr = crr[px >> hsh[2]] - 128;
-                    *out++ = clamp8(y0 + ((91881 * cr) >> 16));
-                    *out++ = clamp8(y0 - ((22554 * cb + 46802 * cr) >> 16));
-                    *out++ = clamp8(y0 + ((116130 * cb) >> 16));
+                if (r == 0) {
+                    if (s) *p = (int16_t)s;
+                    break;
+                }
+                r--;
+            }
+        }
+    } while (k <= d->se);
+}
+
+static void decode_block_prog(jpegd_t *d, jpegd_comp_t *c, int16_t *blk) {
+    if (d->ss == 0) {
+        if (d->ah == 0) prog_dc_first(d, c, blk);
+        else            prog_dc_refine(d, blk);
+    } else {
+        if (d->ah == 0) prog_ac_first(d, c, blk);
+        else            prog_ac_refine(d, c, blk);
+    }
+}
+
+static bool scan_restart(jpegd_t *d, uint32_t n) {
+    if (!d->restart_interval || n == 0 || n % (uint32_t)d->restart_interval) return true;
+    if (!consume_restart(d)) { d->err = 1; return false; }
+    for (int i = 0; i < d->ncomp; i++) d->comp[i].dcpred = 0;
+    d->eobrun = 0;
+    return true;
+}
+
+static void decode_scan(jpegd_t *d) {
+    d->bitbuf = 0;
+    d->bitcnt = 0;
+    d->eobrun = 0;
+    for (int i = 0; i < d->ncomp; i++) d->comp[i].dcpred = 0;
+
+    uint32_t n = 0;
+    if (d->scan_ncomp == 1) {
+        /* Non-interleaved: the scan walks the component's own block grid, so
+           the blocks padding the last MCU are not coded. */
+        jpegd_comp_t *c = &d->comp[d->scan_comp[0]];
+        for (int by = 0; by < c->nbh && !d->err; by++) {
+            for (int bx = 0; bx < c->nbw && !d->err; bx++) {
+                if (!scan_restart(d, n)) return;
+                decode_block_prog(d, c, c->coeff + ((size_t)by * c->bw + bx) * 64);
+                n++;
+            }
+        }
+        return;
+    }
+    for (int my = 0; my < d->mcu_rows && !d->err; my++) {
+        for (int mx = 0; mx < d->mcus_per_row && !d->err; mx++) {
+            if (!scan_restart(d, n)) return;
+            for (int i = 0; i < d->scan_ncomp; i++) {
+                jpegd_comp_t *c = &d->comp[d->scan_comp[i]];
+                for (int by = 0; by < c->v; by++)
+                    for (int bx = 0; bx < c->h; bx++)
+                        decode_block_prog(d, c,
+                            c->coeff + ((size_t)(my * c->v + by) * c->bw + mx * c->h + bx) * 64);
+            }
+            n++;
+        }
+    }
+}
+
+/* Next marker after a scan's entropy data: either the one the bit reader
+ * already ran into, or the next one in the stream. Restart markers left over
+ * from a short scan are skipped. Returns -1 at end of input. */
+static int next_marker(jpegd_t *d) {
+    for (;;) {
+        int m;
+        if (d->marker_pending) {
+            m = d->marker;
+            d->marker_pending = 0;
+        } else {
+            int b = raw_byte(d);
+            if (b < 0) return -1;
+            if (b != 0xFF) continue;
+            m = raw_byte(d);
+            while (m == 0xFF) m = raw_byte(d);
+            if (m < 0) return -1;
+            if (m == 0x00) continue;
+        }
+        if (m >= 0xD0 && m <= 0xD7) continue;
+        return m;
+    }
+}
+
+static imgf_err_t prog_alloc(jpegd_t *d) {
+    for (int i = 0; i < d->ncomp; i++) {
+        jpegd_comp_t *c = &d->comp[i];
+        size_t bytes = (size_t)c->bw * c->bh * 64 * sizeof(int16_t);
+        c->coeff = (int16_t *)imgf_alloc(bytes, d->alloc_caps);
+        if (!c->coeff) return IMGF_ERR_OOM;
+        memset(c->coeff, 0, bytes);
+    }
+    return IMGF_OK;
+}
+
+/* Reads every scan of the frame into the coefficient arrays. A stream that
+ * ends or goes bad part-way keeps what the scans so far refined: a coarse
+ * picture beats no picture. */
+static imgf_err_t prog_decode(jpegd_t *d) {
+    imgf_err_t err = prog_alloc(d);
+    if (err != IMGF_OK) return err;
+
+    bool more = true;
+    while (more) {
+        decode_scan(d);
+        if (d->err) break;
+        /* Tables may be redefined between scans; keep reading segments until
+           the next SOS says which coefficients the next scan carries. */
+        for (;;) {
+            int marker = next_marker(d);
+            if (marker < 0 || marker == 0xD9) { more = false; break; }
+            if (marker == 0x01) continue;
+            int len = u16(d);
+            if (len < 2) { more = false; break; }
+            len -= 2;
+            if (marker == 0xDA) {
+                if (parse_sos(d, len) != IMGF_OK) more = false;
+                break;
+            }
+            if (marker == 0xC4) {
+                if (!parse_dht(d, len)) { more = false; break; }
+            } else if (marker == 0xDB) {
+                if (!parse_dqt(d, len)) { more = false; break; }
+            } else if (marker == 0xDD) {
+                d->restart_interval = u16(d);
+            } else if (!skip_bytes(d, len)) {
+                more = false;
+                break;
+            }
+        }
+    }
+    d->err = 0;
+    build_aan_tables(d);
+    return IMGF_OK;
+}
+
+static void output_mcu_row_prog(jpegd_t *d) {
+    band_row_extent(d);
+
+    jpegd_mcu_map_t m;
+    mcu_map(d, &m);
+
+    for (int mx = 0; mx < d->mcus_per_row; mx++) {
+        for (int ci = 0; ci < d->ncomp; ci++) {
+            jpegd_comp_t *c = &d->comp[ci];
+            int cb_w = c->h * d->blk;
+            for (int by = 0; by < c->v; by++) {
+                for (int bx = 0; bx < c->h; bx++) {
+                    const int16_t *src = c->coeff +
+                        ((size_t)(d->mcu_row_idx * c->v + by) * c->bw + mx * c->h + bx) * 64;
+                    int coeff[64];
+                    bool ac = false;
+                    for (int i = 0; i < 64; i++) {
+                        coeff[i] = src[i];
+                        if (i && src[i]) ac = true;
+                    }
+                    idct_reduce(d, coeff, d->aan_qt[c->tq],
+                                d->compbuf[ci] + (by * d->blk) * cb_w + bx * d->blk, cb_w, ac);
                 }
             }
         }
-        d->mcu_count++;
+        emit_mcu(d, &m, mx);
     }
     d->band_row = 0;
     d->mcu_row_idx++;
@@ -621,10 +934,20 @@ static bool jpegd_next_row(imgf_decoder_t *base, uint8_t *dst) {
         if (base->last_error == IMGF_OK) base->last_error = IMGF_ERR_TRUNCATED;
         return false;
     }
+    if (d->progressive && !d->prog_ready) {
+        imgf_err_t err = prog_decode(d);
+        if (err != IMGF_OK) {
+            base->last_error = err;
+            d->err = 1;
+            return false;
+        }
+        d->prog_ready = 1;
+    }
     if (d->out_row >= base->height) return false;
     if (d->band_row >= d->band_valid_rows) {
         if (d->mcu_row_idx >= d->mcu_rows) return false;
-        decode_mcu_row(d);
+        if (d->progressive) output_mcu_row_prog(d);
+        else               decode_mcu_row(d);
         if (d->err) {
             base->last_error = IMGF_ERR_TRUNCATED;
             return false;
@@ -641,6 +964,7 @@ static void jpegd_destroy(imgf_decoder_t *base) {
     jpegd_t *d = (jpegd_t *)base;
     if (d->br_ready) imgf_breader_deinit(&d->br);
     if (d->band) imgf_free(d->band);
+    for (int i = 0; i < d->ncomp; i++) imgf_free(d->comp[i].coeff);
     free(d);
 }
 
