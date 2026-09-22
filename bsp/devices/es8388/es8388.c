@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "driver/i2s_std.h"
 
 static const char *TAG = "ES8388";
@@ -39,6 +40,23 @@ static const char *TAG = "ES8388";
 #define REG_DACCONTROL27 0x31
 
 #define DAC_MUTE_BIT     0x04    /* DACCONTROL3 bit2 */
+#define DACCONTROL3_BASE 0x32    /* DACSoftRamp on: mute/unmute ramps instead of stepping */
+#define DACPOWER_OFF     0xC0    /* DAC cores down, every output disabled */
+#define CHIPPOWER_DOWN   0xF3    /* everything down, including the DAC reference */
+#define CHIPPOWER_IDLE   0xF2    /* DAC reference up, DEM/STM held in reset */
+#define CHIPPOWER_ACTIVE 0xAA    /* DAC side running, ADC side down */
+
+#define CONTROL1_CHARGE  0x07    /* play mode, reference on, 5k Vmid divider */
+#define CONTROL1_RUN     0x05    /* play mode, reference on, 50k Vmid divider */
+#define CONTROL2_RUN     0x40    /* analog + ibias up, VREF buffer out of low power */
+
+/* Enabling an output driver is only silent if the pin is already sitting at
+ * Vmid (VROI holds it there through 1.5k while the driver is off) — so Vmid
+ * must have finished charging the board's decoupling capacitor first. Through
+ * the 50k divider that RC runs into the hundreds of ms; the 5k divider charges
+ * it in tens, so bring Vmid up on 5k and drop to 50k for running. */
+#define VMID_CHARGE_MS   100
+#define VMID_SETTLE_MS   30
 
 struct es8388_state {
     i2c_master_dev_handle_t i2c;
@@ -91,25 +109,37 @@ static i2s_data_bit_width_t to_bit_width(uint8_t bits) {
     }
 }
 
-/* DAC register bring-up; ends powered down + muted (silent until es8388_open). */
+/* DAC register bring-up, following the ES8388 User Guide's play-back start-up
+ * order (§10.3). The reference and Vmid come up here, once, and stay up for the
+ * life of the device — only the output drivers follow open/close. That split
+ * matters at both ends: enabling a driver is silent when the pin is already at
+ * Vmid (VROI holds it there through 1.5k), which needs Vmid settled, and the
+ * board cuts VSYS on a host reset, where a driver that is off lets the output
+ * decay through that same 1.5k instead of collapsing through the driver. */
 static esp_err_t codec_reset(es8388_t s) {
+    /* A host reset may leave the codec powered and already configured; Vmid is
+     * then up and its charge wait would be dead time. */
+    uint8_t control2 = 0;
+    const bool reference_up = reg_read(s, REG_CONTROL2, &control2) == ESP_OK &&
+                              control2 == CONTROL2_RUN;
+
     esp_err_t r = ESP_OK;
-    r |= reg_write(s, REG_DACCONTROL3, DAC_MUTE_BIT);   /* mute */
-    r |= reg_write(s, REG_CONTROL2,    0x50);
-    r |= reg_write(s, REG_CHIPPOWER,   0x00);           /* power up analog/DLL */
+    r |= reg_write(s, REG_DACCONTROL3, DACCONTROL3_BASE | DAC_MUTE_BIT);
+    r |= reg_write(s, REG_CHIPPOWER,   CHIPPOWER_IDLE);
+    r |= reg_write(s, REG_DACPOWER,    DACPOWER_OFF);
+    r |= reg_write(s, REG_MASTERMODE,  0x00);           /* I2S slave */
+    r |= reg_write(s, REG_DACCONTROL21, 0x80);          /* common LRCK, enable DAC path */
+    r |= reg_write(s, REG_CONTROL1,    reference_up ? CONTROL1_RUN : CONTROL1_CHARGE);
+    r |= reg_write(s, REG_CONTROL2,    CONTROL2_RUN);   /* analog + ibias up, VREF buffer normal */
     /* Disable the internal DLL to improve low sample rates (per reference). */
     r |= reg_write(s, 0x35, 0xA0);
     r |= reg_write(s, 0x37, 0xD0);
     r |= reg_write(s, 0x39, 0xD0);
-    r |= reg_write(s, REG_MASTERMODE,  0x00);           /* I2S slave */
-    r |= reg_write(s, REG_DACPOWER,    0xC0);           /* DAC + all outputs off */
-    r |= reg_write(s, REG_CONTROL1,    0x12);           /* play mode */
     r |= reg_write(s, REG_DACCONTROL1, 0x18);           /* 16-bit I2S */
     r |= reg_write(s, REG_DACCONTROL2, 0x02);           /* 256fs */
     r |= reg_write(s, REG_DACCONTROL16, 0x00);
     r |= reg_write(s, REG_DACCONTROL17, 0x90);          /* left DAC -> left mixer, 0 dB */
     r |= reg_write(s, REG_DACCONTROL20, 0x90);          /* right DAC -> right mixer, 0 dB */
-    r |= reg_write(s, REG_DACCONTROL21, 0x80);          /* common LRCK, enable DAC path */
     r |= reg_write(s, REG_DACCONTROL23, 0x00);          /* vroi = 0 */
     r |= reg_write(s, REG_DACCONTROL4, 0x00);           /* LDAC 0 dB */
     r |= reg_write(s, REG_DACCONTROL5, 0x00);           /* RDAC 0 dB */
@@ -118,6 +148,14 @@ static esp_err_t codec_reset(es8388_t s) {
     r |= reg_write(s, REG_DACCONTROL26, 0x1E);          /* LOUT2 0 dB */
     r |= reg_write(s, REG_DACCONTROL27, 0x1E);          /* ROUT2 0 dB */
     r |= reg_write(s, REG_ADCPOWER,    0xFF);           /* ADC unused: powered down */
+    if (r) return ESP_FAIL;
+
+    if (!reference_up) {
+        vTaskDelay(pdMS_TO_TICKS(VMID_CHARGE_MS));
+        r |= reg_write(s, REG_CONTROL1, CONTROL1_RUN);
+        vTaskDelay(pdMS_TO_TICKS(VMID_SETTLE_MS));
+    }
+    r |= reg_write(s, REG_CHIPPOWER,   CHIPPOWER_ACTIVE);
     return r ? ESP_FAIL : ESP_OK;
 }
 
@@ -240,26 +278,34 @@ err_free:
 esp_err_t es8388_deinit(es8388_t s) {
     if (!s) return ESP_ERR_INVALID_ARG;
     es8388_close(s);
+    reg_write(s, REG_CHIPPOWER, CHIPPOWER_DOWN);
     if (s->tx)  i2s_del_channel(s->tx);
     if (s->i2c) i2c_master_bus_rm_device(s->i2c);
     free(s);
     return ESP_OK;
 }
 
+/* Powering the drivers down first covers the reconfiguration of a stream that
+ * is already running — apply_format() stops the clock, and writing a DACPOWER
+ * that is already off costs nothing. */
 esp_err_t es8388_open(es8388_t s, uint32_t rate, uint8_t bits, uint8_t ch) {
     if (!s) return ESP_ERR_INVALID_ARG;
-    esp_err_t err = apply_format(s, rate, bits, ch);
+    esp_err_t err = reg_write(s, REG_DACPOWER, DACPOWER_OFF);
+    if (err != ESP_OK) return err;
+    err = apply_format(s, rate, bits, ch);
     if (err != ESP_OK) return err;
     err = reg_write(s, REG_DACPOWER, s->dac_outputs);
     if (err != ESP_OK) return err;
     return es8388_set_mute(s, s->mute);
 }
 
+/* The output drivers go down before the clocks do — see the invariants in the
+ * header. */
 esp_err_t es8388_close(es8388_t s) {
     if (!s) return ESP_ERR_INVALID_ARG;
     if (!s->enabled) return ESP_OK;
     esp_err_t err = es8388_set_mute(s, true);
-    err |= reg_write(s, REG_DACPOWER, 0x00);
+    err |= reg_write(s, REG_DACPOWER, DACPOWER_OFF);
     err |= i2s_channel_disable(s->tx);
     s->enabled = false;
     return err ? ESP_FAIL : ESP_OK;

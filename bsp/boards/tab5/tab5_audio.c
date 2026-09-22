@@ -107,8 +107,7 @@ esp_err_t tab5_audio_create(const tab5_audio_config_t *config, bsp_audio_t **out
         .ws_gpio     = GPIO_NUM_29,
         .dout_gpio   = GPIO_NUM_26,
         .din_gpio    = GPIO_NUM_28,
-        .dac_outputs = ES8388_OUT_LOUT1 | ES8388_OUT_ROUT1 |
-                       ES8388_OUT_LOUT2 | ES8388_OUT_ROUT2,  /* enable all DAC outs (HP right needs ROUT2) */
+        .dac_outputs = ES8388_OUT_LOUT1 | ES8388_OUT_ROUT1,
     }, &s->codec);
     if (err != ESP_OK) {
         free(s);

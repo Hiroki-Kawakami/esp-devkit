@@ -3,8 +3,24 @@
  * Copyright (c) 2026 Hiroki Kawakami
  *
  * ES8388 DAC-output driver: direct I2C register control plus a driver/i2s_std
- * TX channel. init() leaves the DAC powered down and muted — silent until
- * open(). Output routing is board-selectable via `dac_outputs`.
+ * TX channel. init() brings the analog reference and Vmid up once and leaves
+ * them up; the output drivers follow open()/close(). Output routing is
+ * board-selectable via `dac_outputs`.
+ *
+ * Two things measured on this codec constrain that split, and reordering it
+ * will be audible on headphones:
+ *
+ *  - The output drivers must only be powered while the I2S clock is running.
+ *    With no MCLK the DAC puts out full-scale noise, and the mute doesn't
+ *    cover it because its soft ramp is clocked by LRCK.
+ *  - Every driver power transition clicks, at a level the output volume
+ *    doesn't attenuate (so it is the amplifier's own turn-on step, not
+ *    anything upstream). None of the chip's anti-pop controls — SeqEn, VROI,
+ *    the soft ramp, the output attenuator — change it.
+ *
+ * So each open/close pair costs one audible click, and keeping playback quiet
+ * is a matter of how often the caller opens and closes, not of what this
+ * driver does in between.
  */
 
 #pragma once
@@ -18,10 +34,10 @@ extern "C" {
 #endif
 
 /* DACPOWER (reg 0x04) output-enable bits — OR together into dac_outputs. */
-#define ES8388_OUT_LOUT1 0x04
+#define ES8388_OUT_ROUT2 0x04
 #define ES8388_OUT_LOUT2 0x08
 #define ES8388_OUT_ROUT1 0x10
-#define ES8388_OUT_ROUT2 0x20
+#define ES8388_OUT_LOUT1 0x20
 
 typedef struct es8388_state *es8388_t;
 
