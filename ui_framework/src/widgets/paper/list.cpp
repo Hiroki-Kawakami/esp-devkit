@@ -288,7 +288,7 @@ lv_obj_t *lv_list_create(lv_obj_t *parent, ListDataSource *data_source) {
     lv_obj_remove_flag(status, LV_OBJ_FLAG_SCROLLABLE);
 
     state->status_label = lv_label_create(status);
-    lv_obj_set_style_text_font(state->status_label, lv_widgets_body_font(), 0);
+    lv_obj_set_font_role(state->status_label, LV_WIDGETS_FONT_BODY);
     lv_obj_center(state->status_label);
 
     state->previous_button = lv_button_create(status, LV_BUTTON_STYLE_PLAIN);

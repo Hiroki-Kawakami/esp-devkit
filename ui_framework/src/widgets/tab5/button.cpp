@@ -23,9 +23,10 @@ lv_style_t plain_outline_style, plain_pressed_style;
 
 void button_style_init() {
     if (style_initialized) return;
+    const lv_font_t *font = lv_widgets_resolved_font(LV_WIDGETS_FONT_BUTTON);
 
     lv_style_init(&base_style);
-    lv_style_set_text_font(&base_style, &lv_font_montserrat_20);
+    if (font) lv_style_set_text_font(&base_style, font);
     lv_style_set_radius(&base_style, 12);
     lv_style_set_pad_all(&base_style, 8);
 

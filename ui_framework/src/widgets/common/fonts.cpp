@@ -5,20 +5,20 @@
 
 #include "widgets/fonts.hpp"
 
-namespace {
-const lv_font_t *s_title_font;
-const lv_font_t *s_body_font;
-}  // namespace
-
-void lv_widgets_set_fonts(const lv_font_t *title, const lv_font_t *body) {
-    s_title_font = title;
-    s_body_font = body;
+__attribute__((weak)) const lv_font_t *lv_widgets_font(lv_widgets_font_role_t) {
+    return nullptr;
 }
 
-const lv_font_t *lv_widgets_title_font() {
-    return s_title_font ? s_title_font : &lv_font_montserrat_32;
+__attribute__((weak)) const lv_font_t *lv_widgets_default_font(lv_widgets_font_role_t) {
+    return nullptr;
 }
 
-const lv_font_t *lv_widgets_body_font() {
-    return s_body_font ? s_body_font : &lv_font_montserrat_24;
+const lv_font_t *lv_widgets_resolved_font(lv_widgets_font_role_t role) {
+    const lv_font_t *font = lv_widgets_font(role);
+    return font ? font : lv_widgets_default_font(role);
+}
+
+void lv_obj_set_font_role(lv_obj_t *obj, lv_widgets_font_role_t role) {
+    const lv_font_t *font = lv_widgets_resolved_font(role);
+    if (font) lv_obj_set_style_text_font(obj, font, 0);
 }

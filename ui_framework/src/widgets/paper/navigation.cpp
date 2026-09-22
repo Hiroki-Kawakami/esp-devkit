@@ -63,11 +63,11 @@ lv_obj_t *lv_navigation_back_create(lv_obj_t *parent, const char *title, std::fu
 
     auto icon = lv_label_create(button);
     lv_label_set_text(icon, LV_SYMBOL_LEFT);
-    lv_obj_set_style_text_font(icon, lv_widgets_title_font(), 0);
+    lv_obj_set_font_role(icon, LV_WIDGETS_FONT_ICON);
     lv_obj_set_style_pad_all(icon, 8, 0);
     auto label = lv_label_create(button);
     lv_label_set_text(label, title);
-    lv_obj_set_style_text_font(label, lv_widgets_title_font(), 0);
+    lv_obj_set_font_role(label, LV_WIDGETS_FONT_TITLE);
     lv_obj_set_user_data(button, label);
 
     return button;
@@ -80,7 +80,7 @@ lv_obj_t *lv_navigation_back_label(lv_obj_t *back) {
 lv_obj_t *lv_navigation_title_create(lv_obj_t *parent, const char *title) {
     lv_obj_t *label = lv_label_create(parent);
     lv_label_set_text(label, title);
-    lv_obj_set_style_text_font(label, lv_widgets_title_font(), 0);
+    lv_obj_set_font_role(label, LV_WIDGETS_FONT_TITLE);
     lv_obj_set_style_pad_hor(label, 16, 0);
     return label;
 }

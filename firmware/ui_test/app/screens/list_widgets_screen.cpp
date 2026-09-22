@@ -27,7 +27,7 @@ lv_obj_t *ListWidgetsScreen::createRow(lv_obj_t *parent) {
     lv_obj_set_style_pad_hor(row, 20, 0);
 
     lv_obj_t *label = lv_label_create(row);
-    lv_obj_set_style_text_font(label, lv_widgets_body_font(), 0);
+    lv_obj_set_font_role(label, LV_WIDGETS_FONT_BODY);
     lv_obj_align(label, LV_ALIGN_LEFT_MID, 0, 0);
     lv_obj_set_user_data(row, label);
     return row;

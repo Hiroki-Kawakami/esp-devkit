@@ -14,11 +14,12 @@ lv_style_t plain_button_style;
 
 void button_style_init() {
     if (style_initialized) return;
+    const lv_font_t *font = lv_widgets_resolved_font(LV_WIDGETS_FONT_BUTTON);
 
     lv_style_init(&default_button_style);
     lv_style_init(&default_button_pressed_style);
     lv_style_set_pad_all(&default_button_style, 8);
-    lv_style_set_text_font(&default_button_style, &lv_font_montserrat_20);
+    if (font) lv_style_set_text_font(&default_button_style, font);
     lv_style_set_border_width(&default_button_style, 1);
     lv_style_set_border_opa(&default_button_style, LV_OPA_COVER);
     lv_style_set_border_color(&default_button_style, lv_color_white());
@@ -29,7 +30,7 @@ void button_style_init() {
 
     lv_style_init(&plain_button_style);
     lv_style_set_pad_all(&plain_button_style, 8);
-    lv_style_set_text_font(&plain_button_style, &lv_font_montserrat_20);
+    if (font) lv_style_set_text_font(&plain_button_style, font);
     lv_style_set_border_width(&plain_button_style, 2);
     lv_style_set_border_opa(&plain_button_style, LV_OPA_COVER);
     lv_style_set_radius(&plain_button_style, 8);
