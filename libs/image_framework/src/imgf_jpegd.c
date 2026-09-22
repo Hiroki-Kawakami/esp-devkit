@@ -3,8 +3,10 @@
  * Copyright (c) 2026 Hiroki Kawakami
  *
  * JPEG decoder. Pulls bytes from imgf_breader_t and serves rows top-to-bottom;
- * decodes one MCU row at a time into a band buffer with an AAN-prescaled fast
- * IDCT and per-block sub-sampled IDCT (1/N for N in 2..8).
+ * decodes one MCU row at a time with a separable matrix IDCT and per-block
+ * sub-sampled IDCT (1/N for N in 2..8). The IDCT writes straight into a band
+ * of planar component samples; chroma upsampling and the colour conversion
+ * then run once per requested row, over the whole row at once.
  *
  * Baseline streams one scan and never holds more than a band. Progressive
  * streams cannot: every scan refines the whole frame, so the coefficients of
@@ -12,7 +14,6 @@
  * request and the band is then filled from them, one MCU row at a time.
  */
 
-#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -23,6 +24,7 @@
 #include "imgf_decoder.h"
 #include "imgf_decoder_internal.h"
 #include "imgf_jpegd.h"
+#include "imgf_pie.h"
 
 #define IMGF_JPEG_FAST_BITS 9
 #define IMGF_JPEG_FAST_SIZE (1 << IMGF_JPEG_FAST_BITS)
@@ -61,7 +63,7 @@ typedef struct {
     int      out_ch;
 
     uint16_t qt[4][64];
-    int      aan_qt[4][64];
+    uint16_t dqt[4][64];   /* quant tables in natural order */
     jpegd_huff_t dc[4];
     jpegd_huff_t ac[4];
     int      restart_interval;
@@ -79,8 +81,10 @@ typedef struct {
     int      mcu_rows;
     int      mcu_row_idx;
 
-    uint8_t *band;
-    int      band_w;
+    uint8_t *band;            /* one allocation, carved into plane[] */
+    uint8_t *plane[3];
+    int      pstride[3];
+    int      vsh[3], hsh[3];  /* band row/column -> plane row/column shift */
     int      band_h;
     int      band_valid_rows;
     int      band_row;
@@ -92,7 +96,6 @@ typedef struct {
     int      marker;
     uint32_t mcu_count;
 
-    uint8_t  compbuf[3][16 * 16];
     uint8_t  err;
 } jpegd_t;
 
@@ -102,103 +105,142 @@ static const uint8_t kZigzag[64] = {
     35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51,
     58, 59, 52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63};
 
-/* AAN per-frequency scale factors; folded into the dequant table so the fast
- * IDCT (jidctfst-style) needs no per-output scaling. */
-static const double kAanScale[8] = {
-    1.0, 1.387039845, 1.306562965, 1.175875602,
-    1.0, 0.785694958, 0.541196100, 0.275899379};
+/* Separable IDCT matrix, Q14: kIdctM[u][x] = c_u cos((2x+1)u.pi/16) / 2, so
+ * the two passes carry the 1/4 of the 2-D transform between them. A row's
+ * absolute sum is 43284, which keeps a 32-bit accumulator exact even when
+ * every input has saturated. */
+static const int16_t kIdctM[8][8] = {
+    {  5793,   5793,   5793,   5793,   5793,   5793,   5793,   5793},
+    {  8035,   6811,   4551,   1598,  -1598,  -4551,  -6811,  -8035},
+    {  7568,   3135,  -3135,  -7568,  -7568,  -3135,   3135,   7568},
+    {  6811,  -1598,  -8035,  -4551,   4551,   8035,   1598,  -6811},
+    {  5793,  -5793,  -5793,   5793,   5793,  -5793,  -5793,   5793},
+    {  4551,  -8035,   1598,   6811,  -6811,  -1598,   8035,  -4551},
+    {  3135,  -7568,   7568,  -3135,  -3135,   7568,  -7568,   3135},
+    {  1598,  -4551,   6811,  -8035,   8035,  -6811,   4551,  -1598},
+};
 
-static const int kFix1_082 = 277;
-static const int kFix1_414 = 362;
-static const int kFix1_847 = 473;
-static const int kFix2_613 = 669;
+/* The row pass keeps two fractional bits, which is what an integer
+ * intermediate costs in accuracy otherwise. */
+/* Matrices for the sub-sampled outputs: row u is the full block's basis
+ * function for frequency u, averaged over each output sample's 8/N inputs. All
+ * eight frequencies are kept, so the result is the box average of the full
+ * block rather than a truncation of it. */
+static const int16_t kIdctA4[8 * 4] = {
+      5793,   5793,   5793,   5793,
+      7423,   3075,  -3075,  -7423,
+      5352,  -5352,  -5352,   5352,
+      2607,  -6293,   6293,  -2607,
+         0,      0,      0,      0,
+     -1742,   4205,  -4205,   1742,
+     -2217,   2217,   2217,  -2217,
+     -1477,   -612,    612,   1477,
+};
+static const int16_t kIdctA2[8 * 2] = {
+      5793,   5793,
+      5249,  -5249,
+         0,      0,
+     -1843,   1843,
+         0,      0,
+      1232,  -1232,
+         0,      0,
+     -1044,   1044,
+};
+
+#define IDCT_PASS1_BITS 12
+#define IDCT_PASS2_BITS 16
 
 static inline uint8_t clamp8(int v) {
     return v < 0 ? 0 : (v > 255 ? 255 : (uint8_t)v);
 }
 
-static inline int imul(int v, int c) {
-    return (int)(((int64_t)v * c) >> 8);
+static inline int16_t sat16(int v) {
+    return v < -32768 ? (int16_t)-32768 : (v > 32767 ? (int16_t)32767 : (int16_t)v);
 }
 
-static inline int idescale(int x, int n) {
-    return (x + (1 << (n - 1))) >> n;
-}
-
-/* jidctfst (Arai-Agui-Nakajima). coeff: raw (un-dequantized) coefficients in
- * natural order; q: AAN-prescaled dequant table. Writes the level-shift-free
- * spatial block to `out`. */
-static void idct8x8_fast(const int *coeff, const int *q, int *out) {
-    int ws[64];
-    for (int c = 0; c < 8; c++) {
-        const int *in = coeff + c;
-        const int *qq = q + c;
-        if (!in[8] && !in[16] && !in[24] && !in[32] && !in[40] && !in[48] && !in[56]) {
-            int dc = in[0] * qq[0];
-            for (int r = 0; r < 8; r++) ws[c + r * 8] = dc;
+#if !IMGF_HAVE_PIE
+/* Spatial block from dequantized coefficients in natural order. rowmask bit v
+ * is set when row v has a non-zero coefficient; a clear bit contributes
+ * nothing, so skipping it is exact. */
+static void idct8x8(const int16_t *dqc, unsigned rowmask, int16_t *out) {
+    for (int v = 0; v < 8; v++) {
+        if (!(rowmask & (1u << v))) {
+            memset(out + v * 8, 0, 8 * sizeof(int16_t));
             continue;
         }
-        int tmp0 = in[0]  * qq[0];
-        int tmp1 = in[16] * qq[16];
-        int tmp2 = in[32] * qq[32];
-        int tmp3 = in[48] * qq[48];
-        int tmp10 = tmp0 + tmp2, tmp11 = tmp0 - tmp2;
-        int tmp13 = tmp1 + tmp3;
-        int tmp12 = imul(tmp1 - tmp3, kFix1_414) - tmp13;
-        tmp0 = tmp10 + tmp13;
-        tmp3 = tmp10 - tmp13;
-        tmp1 = tmp11 + tmp12;
-        tmp2 = tmp11 - tmp12;
-        int tmp4 = in[8]  * qq[8];
-        int tmp5 = in[24] * qq[24];
-        int tmp6 = in[40] * qq[40];
-        int tmp7 = in[56] * qq[56];
-        int z13 = tmp6 + tmp5, z10 = tmp6 - tmp5;
-        int z11 = tmp4 + tmp7, z12 = tmp4 - tmp7;
-        tmp7 = z11 + z13;
-        tmp11 = imul(z11 - z13, kFix1_414);
-        int z5 = imul(z10 + z12, kFix1_847);
-        tmp10 = imul(z12, kFix1_082) - z5;
-        tmp12 = imul(z10, -kFix2_613) + z5;
-        tmp6 = tmp12 - tmp7;
-        tmp5 = tmp11 - tmp6;
-        tmp4 = tmp10 + tmp5;
-        ws[c + 0 * 8] = tmp0 + tmp7;
-        ws[c + 7 * 8] = tmp0 - tmp7;
-        ws[c + 1 * 8] = tmp1 + tmp6;
-        ws[c + 6 * 8] = tmp1 - tmp6;
-        ws[c + 2 * 8] = tmp2 + tmp5;
-        ws[c + 5 * 8] = tmp2 - tmp5;
-        ws[c + 4 * 8] = tmp3 + tmp4;
-        ws[c + 3 * 8] = tmp3 - tmp4;
+        const int16_t *in = dqc + v * 8;
+        for (int x = 0; x < 8; x++) {
+            int acc = 1 << (IDCT_PASS1_BITS - 1);
+            for (int u = 0; u < 8; u++) acc += in[u] * kIdctM[u][x];
+            out[v * 8 + x] = sat16(acc >> IDCT_PASS1_BITS);
+        }
     }
-    for (int r = 0; r < 8; r++) {
-        const int *w = ws + r * 8;
-        int *o = out + r * 8;
-        int tmp10 = w[0] + w[4], tmp11 = w[0] - w[4];
-        int tmp13 = w[2] + w[6];
-        int tmp12 = imul(w[2] - w[6], kFix1_414) - tmp13;
-        int tmp0 = tmp10 + tmp13, tmp3 = tmp10 - tmp13;
-        int tmp1 = tmp11 + tmp12, tmp2 = tmp11 - tmp12;
-        int z13 = w[5] + w[3], z10 = w[5] - w[3];
-        int z11 = w[1] + w[7], z12 = w[1] - w[7];
-        int tmp7 = z11 + z13;
-        int tmp11b = imul(z11 - z13, kFix1_414);
-        int z5 = imul(z10 + z12, kFix1_847);
-        int tmp10b = imul(z12, kFix1_082) - z5;
-        int tmp12b = imul(z10, -kFix2_613) + z5;
-        int tmp6 = tmp12b - tmp7;
-        int tmp5 = tmp11b - tmp6;
-        int tmp4 = tmp10b + tmp5;
-        o[0] = idescale(tmp0 + tmp7, 5);
-        o[7] = idescale(tmp0 - tmp7, 5);
-        o[1] = idescale(tmp1 + tmp6, 5);
-        o[6] = idescale(tmp1 - tmp6, 5);
-        o[2] = idescale(tmp2 + tmp5, 5);
-        o[5] = idescale(tmp2 - tmp5, 5);
-        o[4] = idescale(tmp3 + tmp4, 5);
-        o[3] = idescale(tmp3 - tmp4, 5);
+    int16_t col[8];
+    for (int x = 0; x < 8; x++) {
+        for (int v = 0; v < 8; v++) col[v] = out[v * 8 + x];
+        for (int y = 0; y < 8; y++) {
+            int acc = 1 << (IDCT_PASS2_BITS - 1);
+            for (int v = 0; v < 8; v++) acc += col[v] * kIdctM[v][y];
+            out[y * 8 + x] = sat16(acc >> IDCT_PASS2_BITS);
+        }
     }
+}
+
+#endif
+
+static void idct8x8_u8(const int16_t *dqc, unsigned rowmask,
+                       uint8_t *dst, int stride) {
+#if IMGF_HAVE_PIE
+    imgf_k_prepare();
+    imgf_k_idct(dst, stride, dqc, (int)rowmask, imgf_idct_tab8);
+#else
+    int16_t sp[64];
+    idct8x8(dqc, rowmask, sp);
+    for (int y = 0; y < 8; y++)
+        for (int x = 0; x < 8; x++)
+            dst[y * stride + x] = clamp8(sp[y * 8 + x] + 128);
+#endif
+}
+
+/* n x n output, n in {2, 4}. Both passes run over all eight frequencies. */
+static void idct_nxn(const int16_t *dqc, unsigned rowmask, int n, const int16_t *a,
+                     uint8_t *dst, int stride) {
+#if IMGF_HAVE_PIE
+    (void)a;
+    uint8_t sp[64] __attribute__((aligned(16)));
+    imgf_k_prepare();
+    imgf_k_idct(sp, 8, dqc, (int)rowmask, n == 4 ? imgf_idct_tab4 : imgf_idct_tab2);
+    for (int y = 0; y < n; y++) memcpy(dst + (size_t)y * stride, sp + y * 8, (size_t)n);
+#else
+    int16_t t[8 * 4];
+    for (int v = 0; v < 8; v++) {
+        if (!(rowmask & (1u << v))) {
+            for (int x = 0; x < n; x++) t[v * n + x] = 0;
+            continue;
+        }
+        const int16_t *in = dqc + v * 8;
+        for (int x = 0; x < n; x++) {
+            int acc = 1 << (IDCT_PASS1_BITS - 1);
+            for (int u = 0; u < 8; u++) acc += in[u] * a[u * n + x];
+            t[v * n + x] = sat16(acc >> IDCT_PASS1_BITS);
+        }
+    }
+    for (int y = 0; y < n; y++) {
+        for (int x = 0; x < n; x++) {
+            int acc = 1 << (IDCT_PASS2_BITS - 1);
+            for (int v = 0; v < 8; v++) acc += t[v * n + x] * a[v * n + y];
+            dst[y * stride + x] = clamp8(sat16(acc >> IDCT_PASS2_BITS) + 128);
+        }
+    }
+#endif
+}
+
+/* The DC-only value, through the same two roundings as a full block so the
+ * shortcut cannot disagree with it. */
+static uint8_t idct_dc(int dc) {
+    int t = sat16((dc * kIdctM[0][0] + (1 << (IDCT_PASS1_BITS - 1))) >> IDCT_PASS1_BITS);
+    return clamp8(sat16((t * kIdctM[0][0] + (1 << (IDCT_PASS2_BITS - 1))) >> IDCT_PASS2_BITS)
+                  + 128);
 }
 
 /* --- header parsing -------------------------------------------------------- */
@@ -356,17 +398,12 @@ static imgf_err_t parse_sos(jpegd_t *d, int len) {
     return IMGF_OK;
 }
 
-/* Folds the AAN prescale into the dequant tables. Progressive streams may
- * redefine a quantization table between scans, so this runs again once every
- * scan has been read. */
-static void build_aan_tables(jpegd_t *d) {
+/* Quantization tables in natural order. Progressive streams may redefine one
+ * between scans, so this runs again once every scan has been read. */
+static void build_dq_tables(jpegd_t *d) {
     for (int i = 0; i < d->ncomp; i++) {
         int tq = d->comp[i].tq;
-        for (int k = 0; k < 64; k++) {
-            int nat = kZigzag[k];
-            d->aan_qt[tq][nat] = (int)lround(
-                d->qt[tq][k] * kAanScale[nat >> 3] * kAanScale[nat & 7] * 4.0);
-        }
+        for (int k = 0; k < 64; k++) d->dqt[tq][kZigzag[k]] = d->qt[tq][k];
     }
 }
 
@@ -404,9 +441,17 @@ static imgf_err_t setup(jpegd_t *d, const imgf_decode_opts_t *opts) {
     d->out_ch      = d->ncomp == 1 ? 1 : 3;
     d->base.pixfmt = d->ncomp == 1 ? IMGF_PIX_GRAY8 : IMGF_PIX_RGB888;
 
-    d->band_w = d->mcus_per_row * d->blk * d->hmax;
     d->band_h = d->blk * d->vmax;
-    size_t band_bytes = (size_t)d->band_w * d->band_h * d->out_ch;
+
+    size_t band_bytes = 0;
+    for (int i = 0; i < d->ncomp; i++) {
+        const jpegd_comp_t *c = &d->comp[i];
+        d->vsh[i]     = c->v == d->vmax ? 0 : 1;
+        d->hsh[i]     = c->h == d->hmax ? 0 : 1;
+        d->pstride[i] = d->mcus_per_row * c->h * d->blk;
+        band_bytes += (size_t)d->pstride[i] * (c->v * d->blk);
+    }
+    band_bytes += 16;   /* the SIMD colour conversion reads past the last row */
     /* Internal RAM is the fast place for the band, but only when the caller
        left the choice open: an explicit alloc_caps is a memory budget. */
     d->band = NULL;
@@ -415,10 +460,17 @@ static imgf_err_t setup(jpegd_t *d, const imgf_decode_opts_t *opts) {
     }
     if (!d->band) d->band = (uint8_t *)imgf_alloc(band_bytes, d->alloc_caps);
     if (!d->band) return IMGF_ERR_OOM;
+    {
+        uint8_t *p = d->band;
+        for (int i = 0; i < d->ncomp; i++) {
+            d->plane[i] = p;
+            p += (size_t)d->pstride[i] * (d->comp[i].v * d->blk);
+        }
+    }
 
     for (int i = 0; i < d->ncomp; i++) d->comp[i].dcpred = 0;
 
-    build_aan_tables(d);
+    build_dq_tables(d);
     return IMGF_OK;
 }
 
@@ -482,8 +534,29 @@ static int read_data_byte(jpegd_t *d) {
     return 0;
 }
 
+/* Tops the bit buffer up to at least 25 bits. The common case is four
+ * entropy-coded bytes sitting in the reader's window with no 0xFF among them,
+ * which goes straight into the buffer: pulling them one at a time through
+ * read_data_byte() and imgf_breader_byte() was the single hottest thing in the
+ * decoder. */
 static void fill_bits(jpegd_t *d, int n) {
-    while (d->bitcnt < n) {
+    if (d->bitcnt >= n) return;
+    imgf_breader_t *br = &d->br;
+    while (d->bitcnt <= 24) {
+        if (!d->marker_pending && br->pos + 4 <= br->len) {
+            const uint8_t *p = br->buf + br->pos;
+            const uint32_t w = ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+                               ((uint32_t)p[2] << 8) | p[3];
+            const uint32_t x = ~w;
+            if (!((x - 0x01010101u) & ~x & 0x80808080u)) {
+                const int k = (32 - d->bitcnt) >> 3;
+                d->bitbuf = k == 4 ? w
+                                   : (d->bitbuf << (k * 8)) | (w >> (32 - k * 8));
+                d->bitcnt += k * 8;
+                br->pos += (size_t)k;
+                continue;
+            }
+        }
         int b = read_data_byte(d);
         d->bitbuf = (d->bitbuf << 8) | (uint32_t)(b & 0xFF);
         d->bitcnt += 8;
@@ -526,49 +599,36 @@ static int huffdecode(jpegd_t *d, const jpegd_huff_t *h) {
     return huffdecode_slow(d, h);
 }
 
-static void idct_reduce(jpegd_t *d, const int *coeff, const int *q,
-                        uint8_t *dst, int dst_stride, bool ac) {
-    if (d->blk == 1) {
-        dst[0] = clamp8(((coeff[0] * q[0] + 16) >> 5) + 128);
-        return;
-    }
+/* One block into the band, at whatever size the decode was scaled to. dqc
+ * holds dequantized coefficients in natural order. */
+static void idct_reduce(jpegd_t *d, const int16_t *dqc, uint8_t *dst, int dst_stride,
+                        unsigned rowmask, bool ac) {
     if (!ac) {
-        int v = clamp8(((coeff[0] * q[0] + 16) >> 5) + 128);
+        const uint8_t v = idct_dc(dqc[0]);
         for (int oy = 0; oy < d->blk; oy++)
-            for (int ox = 0; ox < d->blk; ox++) dst[oy * dst_stride + ox] = (uint8_t)v;
+            for (int ox = 0; ox < d->blk; ox++) dst[oy * dst_stride + ox] = v;
         return;
     }
-
-    int spatial[64];
-    idct8x8_fast(coeff, q, spatial);
-    if (d->blk == 8) {
-        for (int y = 0; y < 8; y++)
-            for (int x = 0; x < 8; x++)
-                dst[y * dst_stride + x] = clamp8(spatial[y * 8 + x] + 128);
-        return;
-    }
-    int f = 8 / d->blk, area = f * f;
-    for (int oy = 0; oy < d->blk; oy++) {
-        for (int ox = 0; ox < d->blk; ox++) {
-            int sum = 0;
-            for (int yy = 0; yy < f; yy++)
-                for (int xx = 0; xx < f; xx++)
-                    sum += spatial[(oy * f + yy) * 8 + ox * f + xx];
-            dst[oy * dst_stride + ox] = clamp8(sum / area + 128);
-        }
+    switch (d->blk) {
+        case 8: idct8x8_u8(dqc, rowmask, dst, dst_stride); break;
+        case 4: idct_nxn(dqc, rowmask, 4, kIdctA4, dst, dst_stride); break;
+        case 2: idct_nxn(dqc, rowmask, 2, kIdctA2, dst, dst_stride); break;
+        default: dst[0] = idct_dc(dqc[0]); break;
     }
 }
 
 static void decode_block(jpegd_t *d, int ci, uint8_t *dst, int dst_stride) {
     jpegd_comp_t *c = &d->comp[ci];
-    int coeff[64];
-    memset(coeff, 0, sizeof coeff);
+    const uint16_t *q = d->dqt[c->tq];
+    int16_t dqc[64] __attribute__((aligned(16)));
+    memset(dqc, 0, sizeof dqc);
 
     int t = huffdecode(d, &d->dc[c->td]);
     int diff = t ? receive_extend(d, t) : 0;
     c->dcpred += diff;
-    coeff[0] = c->dcpred;
+    dqc[0] = sat16(c->dcpred * q[0]);
 
+    unsigned rowmask = 1;
     bool ac = false;
     int k = 1;
     while (k < 64) {
@@ -581,11 +641,13 @@ static void decode_block(jpegd_t *d, int ci, uint8_t *dst, int dst_stride) {
         }
         k += r;
         if (k >= 64) break;
-        coeff[kZigzag[k]] = receive_extend(d, s);
+        const int nat = kZigzag[k];
+        dqc[nat] = sat16(receive_extend(d, s) * q[nat]);
+        rowmask |= 1u << (nat >> 3);
         ac = true;
         k++;
     }
-    idct_reduce(d, coeff, d->aan_qt[c->tq], dst, dst_stride, ac);
+    idct_reduce(d, dqc, dst, dst_stride, rowmask, ac);
 }
 
 static bool consume_restart(jpegd_t *d) {
@@ -607,41 +669,39 @@ static bool consume_restart(jpegd_t *d) {
     }
 }
 
-typedef struct {
-    int vsh[3], hsh[3], cstride[3];
-    int mcu_w;
-} jpegd_mcu_map_t;
+/* One band row, upsampled and colour converted. The fixed-point constants are
+ * Q8 and the accumulation is single-rounding so that a SIMD version can match
+ * it exactly. */
+static void emit_row(jpegd_t *d, int py, uint8_t *dst) {
+    const uint8_t *yr = d->plane[0] + (size_t)(py >> d->vsh[0]) * d->pstride[0];
+    const int w = (int)d->base.width;
 
-static void mcu_map(jpegd_t *d, jpegd_mcu_map_t *m) {
-    for (int i = 0; i < d->ncomp; i++) {
-        m->vsh[i]     = d->comp[i].v == d->vmax ? 0 : 1;
-        m->hsh[i]     = d->comp[i].h == d->hmax ? 0 : 1;
-        m->cstride[i] = d->comp[i].h * d->blk;
+    if (d->out_ch == 1) {
+        memcpy(dst, yr, (size_t)w);
+        return;
     }
-    m->mcu_w = d->blk * d->hmax;
-}
 
-/* Upsamples the per-component pixels in compbuf into the band, colour
- * converting on the way. */
-static void emit_mcu(jpegd_t *d, const jpegd_mcu_map_t *m, int mx) {
-    int px0 = mx * m->mcu_w;
-    for (int py = 0; py < d->band_h; py++) {
-        uint8_t *out = d->band + ((size_t)py * d->band_w + px0) * d->out_ch;
-        const uint8_t *yr = d->compbuf[0] + (py >> m->vsh[0]) * m->cstride[0];
-        if (d->out_ch == 1) {
-            for (int px = 0; px < m->mcu_w; px++) *out++ = yr[px >> m->hsh[0]];
-        } else {
-            const uint8_t *cbr = d->compbuf[1] + (py >> m->vsh[1]) * m->cstride[1];
-            const uint8_t *crr = d->compbuf[2] + (py >> m->vsh[2]) * m->cstride[2];
-            for (int px = 0; px < m->mcu_w; px++) {
-                int y0 = yr[px >> m->hsh[0]];
-                int cb = cbr[px >> m->hsh[1]] - 128;
-                int cr = crr[px >> m->hsh[2]] - 128;
-                *out++ = clamp8(y0 + ((91881 * cr) >> 16));
-                *out++ = clamp8(y0 - ((22554 * cb + 46802 * cr) >> 16));
-                *out++ = clamp8(y0 + ((116130 * cb) >> 16));
-            }
-        }
+    const uint8_t *cbr = d->plane[1] + (size_t)(py >> d->vsh[1]) * d->pstride[1];
+    const uint8_t *crr = d->plane[2] + (size_t)(py >> d->vsh[2]) * d->pstride[2];
+    const int hsh1 = d->hsh[1], hsh2 = d->hsh[2];
+    int x = 0;
+#if IMGF_HAVE_PIE
+    if (hsh1 == hsh2 && (w >> 4) > 0) {
+        const int n = w >> 4;
+        imgf_k_prepare();
+        if (hsh1) imgf_k_ycc_rgb_h1(dst, yr, cbr, crr, n);
+        else      imgf_k_ycc_rgb_h0(dst, yr, cbr, crr, n);
+        x = n << 4;
+        dst += (size_t)x * 3;
+    }
+#endif
+    for (; x < w; x++) {
+        const int y0 = yr[x] << 8;
+        const int cb = cbr[x >> hsh1] - 128;
+        const int cr = crr[x >> hsh2] - 128;
+        *dst++ = clamp8((y0 + 359 * cr) >> 8);
+        *dst++ = clamp8((y0 - 88 * cb - 183 * cr) >> 8);
+        *dst++ = clamp8((y0 + 454 * cb) >> 8);
     }
 }
 
@@ -655,9 +715,6 @@ static void band_row_extent(jpegd_t *d) {
 static void decode_mcu_row(jpegd_t *d) {
     band_row_extent(d);
 
-    jpegd_mcu_map_t m;
-    mcu_map(d, &m);
-
     for (int mx = 0; mx < d->mcus_per_row && !d->err; mx++) {
         if (d->restart_interval && d->mcu_count > 0 && d->mcu_count % d->restart_interval == 0) {
             if (!consume_restart(d)) { d->err = 1; return; }
@@ -665,12 +722,13 @@ static void decode_mcu_row(jpegd_t *d) {
         }
         for (int ci = 0; ci < d->ncomp; ci++) {
             jpegd_comp_t *c = &d->comp[ci];
-            int cb_w = c->h * d->blk;
+            const int stride = d->pstride[ci];
+            uint8_t *base = d->plane[ci] + (size_t)mx * c->h * d->blk;
             for (int by = 0; by < c->v; by++)
                 for (int bx = 0; bx < c->h; bx++)
-                    decode_block(d, ci, d->compbuf[ci] + (by * d->blk) * cb_w + bx * d->blk, cb_w);
+                    decode_block(d, ci, base + (size_t)(by * d->blk) * stride + bx * d->blk,
+                                 stride);
         }
-        emit_mcu(d, &m, mx);
         d->mcu_count++;
     }
     d->band_row = 0;
@@ -890,36 +948,38 @@ static imgf_err_t prog_decode(jpegd_t *d) {
         }
     }
     d->err = 0;
-    build_aan_tables(d);
+    build_dq_tables(d);
     return IMGF_OK;
 }
 
 static void output_mcu_row_prog(jpegd_t *d) {
     band_row_extent(d);
 
-    jpegd_mcu_map_t m;
-    mcu_map(d, &m);
-
-    for (int mx = 0; mx < d->mcus_per_row; mx++) {
-        for (int ci = 0; ci < d->ncomp; ci++) {
-            jpegd_comp_t *c = &d->comp[ci];
-            int cb_w = c->h * d->blk;
-            for (int by = 0; by < c->v; by++) {
-                for (int bx = 0; bx < c->h; bx++) {
-                    const int16_t *src = c->rows[d->mcu_row_idx * c->v + by] +
-                                         (size_t)(mx * c->h + bx) * 64;
-                    int coeff[64];
-                    bool ac = false;
-                    for (int i = 0; i < 64; i++) {
-                        coeff[i] = src[i];
-                        if (i && src[i]) ac = true;
+    for (int ci = 0; ci < d->ncomp; ci++) {
+        jpegd_comp_t *c = &d->comp[ci];
+        const int stride = d->pstride[ci];
+        for (int by = 0; by < c->v; by++) {
+            const int16_t *row = c->rows[d->mcu_row_idx * c->v + by];
+            uint8_t *out = d->plane[ci] + (size_t)(by * d->blk) * stride;
+            const uint16_t *q = d->dqt[c->tq];
+            for (int bx = 0; bx < c->bw; bx++) {
+                const int16_t *src = row + (size_t)bx * 64;
+                int16_t dqc[64] __attribute__((aligned(16)));
+                unsigned rowmask = 1;
+                bool ac = false;
+                dqc[0] = sat16(src[0] * q[0]);
+                for (int i = 1; i < 64; i++) {
+                    if (src[i]) {
+                        dqc[i] = sat16(src[i] * q[i]);
+                        rowmask |= 1u << (i >> 3);
+                        ac = true;
+                    } else {
+                        dqc[i] = 0;
                     }
-                    idct_reduce(d, coeff, d->aan_qt[c->tq],
-                                d->compbuf[ci] + (by * d->blk) * cb_w + bx * d->blk, cb_w, ac);
                 }
+                idct_reduce(d, dqc, out + bx * d->blk, stride, rowmask, ac);
             }
         }
-        emit_mcu(d, &m, mx);
     }
     d->band_row = 0;
     d->mcu_row_idx++;
@@ -961,8 +1021,7 @@ static bool jpegd_next_row(imgf_decoder_t *base, uint8_t *dst) {
             return false;
         }
     }
-    memcpy(dst, d->band + (size_t)d->band_row * d->band_w * d->out_ch,
-           (size_t)base->width * d->out_ch);
+    emit_row(d, d->band_row, dst);
     d->band_row++;
     d->out_row++;
     return true;

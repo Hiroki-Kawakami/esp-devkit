@@ -19,16 +19,22 @@
 #include "imgf_alloc.h"
 #include "imgf_resize.h"
 
-#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include "imgf_alloc.h"
 #include "imgf_decoder.h"
+#include "imgf_pie.h"
 
 #define Q16             65536
+
+/* Fractional bits the horizontal pass hands to a box vertical pass. Rounding
+ * once per axis biases the result whenever both roundings land on a tie, which
+ * an integer ratio hits constantly; carrying four bits through defers the only
+ * rounding to the end. A bilinear vertical pass gets whole numbers, because it
+ * passes rows through untouched and would have to undo the scale again. */
+#define HROW_FRAC_BITS  4
 #define LUMA_R_Q8       54     /* BT.709 0.2126 * 256 */
 #define LUMA_G_Q8       183
 #define LUMA_B_Q8       19
@@ -37,15 +43,17 @@ struct imgf_resizer {
     int sw, sh, dw, dh;
     imgf_pixfmt_t src_pf, dst_pf;
     int internal_ch;
+    bool src_direct;        /* src rows are already the internal layout: skip irow */
     uint32_t caps;
     int src_bpp, dst_bpp;
 
     /* horizontal mapping */
     bool h_up;
+    int      h_shift;       /* hrow = (weighted sum + h_round) >> h_shift */
+    uint32_t h_round;
     int      *h_off;        /* dw+1 (downscale) */
     int      *h_src;        /* dw  (downscale) */
-    uint32_t *h_w;          /* off[dw] (downscale) */
-    uint32_t *h_wsum;       /* dw  (downscale) */
+    uint32_t *h_w;          /* off[dw] (downscale); each dst pixel's run sums to Q16 */
     int      *h_lo;         /* dw  (upscale) */
     int      *h_hi;         /* dw  (upscale) */
     uint32_t *h_blend;      /* dw  (upscale) Q16 weight on h_hi */
@@ -61,14 +69,25 @@ struct imgf_resizer {
     uint16_t *irow;         /* sw * internal_ch */
     uint16_t *hrow;         /* dw * internal_ch */
 
+    /* scratch a finished row is built in before pack_row. Never hrow: a src
+     * row that straddles a dst boundary is still needed for the next dst row
+     * after this one is packed. */
+    uint16_t *vtmp;         /* dw * internal_ch */
+
     /* upscale-v state */
     uint16_t *hrow_prev;    /* dw * internal_ch */
-    uint16_t *blend_tmp;    /* dw * internal_ch (interp scratch before pack) */
     int       v_ready_max;  /* highest dst_y whose v_hi <= last pushed src_y; -1 initially */
 
-    /* downscale-v state */
-    uint64_t *vacc;         /* dw * internal_ch */
-    uint64_t  vwsum;
+    /* downscale-v state. The dst row being accumulated spans
+     * [v_span_lo, v_span_hi) in units of 1/dh source rows, measured from the
+     * start of the src row about to be pushed. v_cum is how much of that span
+     * the pushes so far covered and v_wsum the Q16 weight it was charged, so
+     * the weights of one dst row telescope to exactly Q16 however many source
+     * rows it took. */
+    uint32_t *vacc;         /* dw * internal_ch */
+    int32_t   v_span_lo, v_span_hi;
+    uint32_t  v_cum;
+    uint32_t  v_wsum;
     int       v_acc_dst_y;  /* next dst_y being accumulated */
     uint8_t  *pending;      /* dw * dst_bpp, packed and ready */
     uint8_t   pending_avail;
@@ -93,17 +112,22 @@ imgf_err_t imgf_resize_compute_dst(uint16_t src_w, uint16_t src_h,
     if (opts->fit == IMGF_FIT_STRETCH) {
         if (tw <= 0 || th <= 0) return IMGF_ERR_INVALID_ARG;
         dw = tw; dh = th;
+    } else if (tw == 0 && th == 0) {
+        dw = sw; dh = sh;
     } else {
-        if (tw == 0 && th == 0) { dw = sw; dh = sh; }
-        else {
-            double rw = tw ? (double)tw / sw : 1e30;
-            double rh = th ? (double)th / sh : 1e30;
-            double r = rw < rh ? rw : rh;
-            int nw = (int)lround(sw * r);
-            int nh = (int)lround(sh * r);
-            dw = nw < 1 ? 1 : nw;
-            dh = nh < 1 ? 1 : nh;
+        /* The axis with the smaller target ratio sets the scale and keeps its
+         * target exactly; the other is rounded to it. Every product here is
+         * bounded by 65535 * 65535, so 32 bits are enough. */
+        bool by_w = th == 0 || (tw != 0 && (uint32_t)tw * sh <= (uint32_t)th * sw);
+        if (by_w) {
+            dw = tw;
+            dh = (int)(((uint32_t)sh * tw + sw / 2) / (uint32_t)sw);
+        } else {
+            dh = th;
+            dw = (int)(((uint32_t)sw * th + sh / 2) / (uint32_t)sh);
         }
+        if (dw < 1) dw = 1;
+        if (dh < 1) dh = 1;
     }
     if (dw > 0xFFFF || dh > 0xFFFF) return IMGF_ERR_TOO_LARGE;
     if (out_w) *out_w = (uint16_t)dw;
@@ -122,20 +146,21 @@ static void *rz_calloc(size_t count, size_t size, uint32_t caps) {
 
 /* ---- table builders --------------------------------------------------- */
 
+/* Box-area weights for one axis. Positions are kept in units of 1/d source
+ * pixels so the whole table is integer, and each dst pixel's weights are the
+ * differences of a Q16 prefix sum of its coverage: they add up to exactly Q16
+ * whatever the tap count, which is what lets the row pass finish with a shift
+ * instead of a divide. */
 static bool build_box_h(int s, int d, int **off_out, int **src_out,
-                        uint32_t **w_out, uint32_t **wsum_out, uint32_t caps) {
+                        uint32_t **w_out, uint32_t caps) {
     int *off = (int *)rz_calloc((size_t)d + 1, sizeof(int), caps);
     int *src = (int *)rz_calloc((size_t)d, sizeof(int), caps);
-    uint32_t *wsum = (uint32_t *)rz_calloc((size_t)d, sizeof(uint32_t), caps);
-    if (!off || !src || !wsum) goto fail;
+    if (!off || !src) goto fail;
 
     off[0] = 0;
     for (int x = 0; x < d; x++) {
-        double fx0 = (double)x * s / d;
-        double fx1 = (double)(x + 1) * s / d;
-        int sx0 = (int)fx0;
-        int sx1 = (int)ceil(fx1);
-        if (sx0 < 0) sx0 = 0;
+        int sx0 = (int)(((uint32_t)x * s) / (uint32_t)d);
+        int sx1 = (int)(((uint32_t)(x + 1) * s + d - 1) / (uint32_t)d);
         if (sx1 > s) sx1 = s;
         if (sx1 <= sx0) sx1 = sx0 + 1;
         src[x] = sx0;
@@ -144,25 +169,23 @@ static bool build_box_h(int s, int d, int **off_out, int **src_out,
     uint32_t *w = (uint32_t *)rz_calloc((size_t)off[d], sizeof(uint32_t), caps);
     if (!w) goto fail;
     for (int x = 0; x < d; x++) {
-        double fx0 = (double)x * s / d;
-        double fx1 = (double)(x + 1) * s / d;
-        int sx0 = src[x];
-        int cnt = off[x + 1] - off[x];
-        uint32_t ws = 0;
+        const uint32_t u0 = (uint32_t)x * s, u1 = (uint32_t)(x + 1) * s;
+        const int sx0 = src[x], cnt = off[x + 1] - off[x];
+        uint32_t cum = 0, wsum = 0;
         for (int i = 0; i < cnt; i++) {
-            double lo = fx0 > (double)(sx0 + i) ? fx0 : (double)(sx0 + i);
-            double hi = fx1 < (double)(sx0 + i + 1) ? fx1 : (double)(sx0 + i + 1);
-            uint32_t wi = (uint32_t)llround((hi - lo) * (double)Q16);
-            if (!wi) wi = 1;
-            w[off[x] + i] = wi;
-            ws += wi;
+            const uint32_t k0 = (uint32_t)(sx0 + i) * d, k1 = k0 + (uint32_t)d;
+            const uint32_t lo = u0 > k0 ? u0 : k0;
+            const uint32_t hi = u1 < k1 ? u1 : k1;
+            if (hi > lo) cum += hi - lo;
+            const uint32_t ws = (cum * Q16) / (uint32_t)s;
+            w[off[x] + i] = ws - wsum;
+            wsum = ws;
         }
-        wsum[x] = ws;
     }
-    *off_out = off; *src_out = src; *w_out = w; *wsum_out = wsum;
+    *off_out = off; *src_out = src; *w_out = w;
     return true;
 fail:
-    imgf_free(off); imgf_free(src); imgf_free(wsum);
+    imgf_free(off); imgf_free(src);
     return false;
 }
 
@@ -177,24 +200,16 @@ static bool build_bilinear(int s, int d, int **lo_out, int **hi_out, uint32_t **
     }
 
     for (int x = 0; x < d; x++) {
-        double xs;
-        if (s == 1) {
-            xs = 0.0;
-        } else if (d == 1) {
-            xs = (double)(s - 1) * 0.5;
-        } else {
-            xs = (double)x * (s - 1) / (d - 1);
-        }
-        int xl = (int)floor(xs);
-        if (xl < 0) xl = 0;
-        if (xl > s - 1) xl = s - 1;
-        int xh = xl + 1 < s ? xl + 1 : xl;
-        double frac = xs - xl;
-        if (frac < 0) frac = 0;
-        if (frac > 1) frac = 1;
+        /* Source position of dst x, as num/den. */
+        uint32_t num, den;
+        if (s == 1)      { num = 0;                 den = 1; }
+        else if (d == 1) { num = (uint32_t)(s - 1); den = 2; }
+        else             { num = (uint32_t)x * (uint32_t)(s - 1); den = (uint32_t)(d - 1); }
+        const int xl = (int)(num / den);
+        const uint32_t rem = num % den;
         lo[x] = xl;
-        hi[x] = xh;
-        blend[x] = (uint32_t)llround(frac * (double)Q16);
+        hi[x] = xl + 1 < s ? xl + 1 : xl;
+        blend[x] = (rem * Q16 + den / 2) / den;
     }
     *lo_out = lo; *hi_out = hi; *blend_out = blend;
     return true;
@@ -243,7 +258,16 @@ static void unpack_row(const uint8_t *src, uint16_t *dst, int w,
 static void pack_row(const uint16_t *src, uint8_t *dst, int w,
                      imgf_pixfmt_t dst_pf, int ch) {
     if (ch == 1) {
-        for (int i = 0; i < w; i++) dst[i] = clamp8((int)src[i]);
+        int i = 0;
+#if IMGF_HAVE_PIE
+        if (dst_pf == IMGF_PIX_GRAY8 && w >= 16) {
+            const int n = w >> 4;
+            imgf_k_prepare();
+            imgf_k_pack_bytes(dst, src, n);
+            i = n << 4;
+        }
+#endif
+        for (; i < w; i++) dst[i] = clamp8((int)src[i]);
         return;
     }
     if (dst_pf == IMGF_PIX_GRAY8) {
@@ -254,14 +278,32 @@ static void pack_row(const uint16_t *src, uint8_t *dst, int w,
         }
     } else if (dst_pf == IMGF_PIX_RGB888 || dst_pf == IMGF_PIX_BGR888) {
         const int r = dst_pf == IMGF_PIX_BGR888 ? 2 : 0;
-        for (int i = 0; i < w; i++) {
+        int i = 0;
+#if IMGF_HAVE_PIE
+        if (r == 0 && w * 3 >= 16) {
+            const int n = (w * 3) >> 4;
+            imgf_k_prepare();
+            imgf_k_pack_bytes(dst, src, n);
+            i = (n << 4) / 3;
+        }
+#endif
+        for (; i < w; i++) {
             dst[3 * i + r] = clamp8((int)src[3 * i + 0]);
             dst[3 * i + 1] = clamp8((int)src[3 * i + 1]);
             dst[3 * i + (2 - r)] = clamp8((int)src[3 * i + 2]);
         }
     } else {  /* RGB565 */
         uint16_t *d = (uint16_t *)dst;
-        for (int i = 0; i < w; i++) {
+        int i = 0;
+#if IMGF_HAVE_PIE
+        if (w >= 8) {
+            const int n = w >> 3;
+            imgf_k_prepare();
+            imgf_k_pack_rgb565(dst, src, n);
+            i = n << 3;
+        }
+#endif
+        for (; i < w; i++) {
             int r = clamp8((int)src[3 * i + 0]) >> 3;
             int g = clamp8((int)src[3 * i + 1]) >> 2;
             int b = clamp8((int)src[3 * i + 2]) >> 3;
@@ -272,76 +314,119 @@ static void pack_row(const uint16_t *src, uint8_t *dst, int w,
 
 /* ---- horizontal pass -------------------------------------------------- */
 
-static void hreduce_box(const uint16_t *irow, int ch, int dw, uint16_t *hrow,
-                        const int *off, const int *src, const uint32_t *w,
-                        const uint32_t *wsum) {
-    for (int x = 0; x < dw; x++) {
-        const uint32_t *wp = w + off[x];
-        const uint16_t *p  = irow + (size_t)src[x] * ch;
-        int cnt = off[x + 1] - off[x];
-        uint32_t ws = wsum[x];
-        for (int c = 0; c < ch; c++) {
-            uint64_t sum = 0;
-            for (int i = 0; i < cnt; i++) sum += (uint64_t)p[i * ch + c] * wp[i];
-            hrow[x * ch + c] = (uint16_t)(sum / ws);
-        }
-    }
+/* The two-tap case is the whole of any reduction under 2x and most of the taps
+ * of a larger one, so it is worth its own path: the general loop's bookkeeping
+ * costs about as much as the arithmetic. HREDUCE_BOX is instantiated for the
+ * 16-bit intermediate and, when the source rows already are the internal
+ * layout, for the source bytes themselves. */
+#define HREDUCE_BOX(name, type)                                                \
+static void name(const type *irow, int ch, int dw, uint16_t *hrow,             \
+                 const int *off, const int *src, const uint32_t *w,            \
+                 int shift, uint32_t round) {                                  \
+    for (int x = 0; x < dw; x++) {                                             \
+        const uint32_t *wp = w + off[x];                                       \
+        const type *p = irow + (size_t)src[x] * ch;                            \
+        const int cnt = off[x + 1] - off[x];                                   \
+        if (ch == 3) {                                                         \
+            uint32_t s0, s1, s2;                                               \
+            if (cnt == 2) {                                                    \
+                const uint32_t w0 = wp[0], w1 = wp[1];                         \
+                s0 = p[0] * w0 + p[3] * w1;                                    \
+                s1 = p[1] * w0 + p[4] * w1;                                    \
+                s2 = p[2] * w0 + p[5] * w1;                                    \
+            } else {                                                           \
+                s0 = s1 = s2 = 0;                                              \
+                for (int i = 0; i < cnt; i++) {                                \
+                    const uint32_t wi = wp[i];                                 \
+                    s0 += p[0] * wi;                                           \
+                    s1 += p[1] * wi;                                           \
+                    s2 += p[2] * wi;                                           \
+                    p += 3;                                                    \
+                }                                                              \
+            }                                                                  \
+            hrow[x * 3 + 0] = (uint16_t)((s0 + round) >> shift);               \
+            hrow[x * 3 + 1] = (uint16_t)((s1 + round) >> shift);               \
+            hrow[x * 3 + 2] = (uint16_t)((s2 + round) >> shift);               \
+        } else {                                                               \
+            uint32_t s0 = 0;                                                   \
+            for (int i = 0; i < cnt; i++) s0 += p[i] * wp[i];                  \
+            hrow[x] = (uint16_t)((s0 + round) >> shift);                       \
+        }                                                                      \
+    }                                                                          \
 }
 
-static void hexpand_bilinear(const uint16_t *irow, int ch, int dw, uint16_t *hrow,
-                             const int *lo, const int *hi, const uint32_t *blend) {
-    for (int x = 0; x < dw; x++) {
-        uint32_t b = blend[x];
-        uint32_t inv = Q16 - b;
-        const uint16_t *pl = irow + (size_t)lo[x] * ch;
-        const uint16_t *ph = irow + (size_t)hi[x] * ch;
-        for (int c = 0; c < ch; c++) {
-            uint64_t v = (uint64_t)pl[c] * inv + (uint64_t)ph[c] * b;
-            hrow[x * ch + c] = (uint16_t)(v >> 16);
-        }
-    }
+HREDUCE_BOX(hreduce_box,    uint16_t)
+HREDUCE_BOX(hreduce_box_u8, uint8_t)
+
+#define HEXPAND_BILINEAR(name, type)                                           \
+static void name(const type *irow, int ch, int dw, uint16_t *hrow,             \
+                 const int *lo, const int *hi, const uint32_t *blend,          \
+                 int shift, uint32_t round) {                                  \
+    for (int x = 0; x < dw; x++) {                                             \
+        const uint32_t b = blend[x], inv = Q16 - b;                            \
+        const type *pl = irow + (size_t)lo[x] * ch;                            \
+        const type *ph = irow + (size_t)hi[x] * ch;                            \
+        for (int c = 0; c < ch; c++)                                           \
+            hrow[x * ch + c] = (uint16_t)((pl[c] * inv + ph[c] * b + round) >> shift); \
+    }                                                                          \
 }
+
+HEXPAND_BILINEAR(hexpand_bilinear,    uint16_t)
+HEXPAND_BILINEAR(hexpand_bilinear_u8, uint8_t)
 
 /* ---- vertical pass ---------------------------------------------------- */
 
-/* Downscale-v: contribute the just-computed hrow at src_y to dst_y_acc.. and
- * finalize whichever dst rows it completes. Returns 1 if a new dst row was
- * packed into r->pending (downscale produces <= 1 newly-ready per push). */
-static int v_consume_box(imgf_resizer_t *r, int sy) {
-    int dim = r->dw * r->internal_ch;
-    double top = sy, bot = sy + 1.0;
+/* Charge the part of the src row now in hrow that falls inside the dst row
+ * being accumulated. The weight is the step of a Q16 prefix sum of the dst
+ * row's coverage, so however many src rows it takes they add up to exactly
+ * Q16 and the finalize below is a shift rather than a divide. */
+static void v_charge(imgf_resizer_t *r, int dim) {
+    const int32_t lo = r->v_span_lo > 0 ? r->v_span_lo : 0;
+    const int32_t hi = r->v_span_hi < r->dh ? r->v_span_hi : r->dh;
+    if (hi <= lo) return;
+    r->v_cum += (uint32_t)(hi - lo);
+    const uint32_t ws = (r->v_cum * Q16) / (uint32_t)r->sh;
+    const uint32_t wi = ws - r->v_wsum;
+    r->v_wsum = ws;
+    for (int i = 0; i < dim; i++) r->vacc[i] += r->hrow[i] * wi;
+}
+
+#define VOUT_SHIFT (16 + HROW_FRAC_BITS)
+
+static void v_finalize(imgf_resizer_t *r, int dim) {
+    for (int i = 0; i < dim; i++)
+        r->vtmp[i] = (uint16_t)((r->vacc[i] + (1u << (VOUT_SHIFT - 1))) >> VOUT_SHIFT);
+    pack_row(r->vtmp, r->pending, r->dw, r->dst_pf, r->internal_ch);
+    r->pending_avail = 1;
+    memset(r->vacc, 0, sizeof(uint32_t) * (size_t)dim);
+    r->v_acc_dst_y++;
+    r->v_span_lo = r->v_span_hi;
+    r->v_span_hi += r->sh;
+    r->v_cum = 0;
+    r->v_wsum = 0;
+}
+
+/* Downscale-v: give the just-computed hrow to the dst row being accumulated
+ * and finalize that row once this src row covers its end. A src row that
+ * straddles the boundary is split, so the second half starts the next dst row
+ * straight away. Returns 1 if a dst row was packed into r->pending; since a
+ * dst row is never shorter than a src row, at most one can complete per push.
+ * src_y is implicit: the span is kept relative to it and slid one src row per
+ * call. */
+static int v_consume_box(imgf_resizer_t *r) {
+    const int dim = r->dw * r->internal_ch;
     int produced = 0;
-    while (r->v_acc_dst_y < r->dh) {
-        int dy = r->v_acc_dst_y;
-        double vy0 = (double)dy * r->sh / r->dh;
-        double vy1 = (double)(dy + 1) * r->sh / r->dh;
-        double overlap = (bot < vy1 ? bot : vy1) - (top > vy0 ? top : vy0);
-        if (overlap > 0.0) {
-            uint64_t wi = (uint64_t)llround(overlap * (double)Q16);
-            if (!wi) wi = 1;
-            for (int i = 0; i < dim; i++)
-                r->vacc[i] += (uint64_t)r->hrow[i] * wi;
-            r->vwsum += wi;
-        }
-        if (vy1 <= bot + 1e-9) {
-            /* dst row dy fully covered — finalize */
-            uint64_t inv = ((uint64_t)1 << 32) / r->vwsum;
-            for (int i = 0; i < dim; i++) {
-                uint32_t avg = (uint32_t)((r->vacc[i] * inv + ((uint64_t)1 << 31)) >> 32);
-                if (avg > 65535) avg = 65535;
-                r->hrow[i] = (uint16_t)avg;   /* reuse hrow as finalized-row scratch */
-            }
-            pack_row(r->hrow, r->pending, r->dw, r->dst_pf, r->internal_ch);
-            r->pending_avail = 1;
-            memset(r->vacc, 0, sizeof(uint64_t) * (size_t)dim);
-            r->vwsum = 0;
-            r->v_acc_dst_y = dy + 1;
+
+    if (r->v_acc_dst_y < r->dh) {
+        v_charge(r, dim);
+        if (r->v_span_hi <= r->dh) {
+            v_finalize(r, dim);
             produced = 1;
-            break;   /* downscale produces <= 1 newly-ready per src row */
-        } else {
-            break;   /* current dst row needs more src rows */
+            if (r->v_acc_dst_y < r->dh) v_charge(r, dim);
         }
     }
+    r->v_span_lo -= r->dh;
+    r->v_span_hi -= r->dh;
     return produced;
 }
 
@@ -361,11 +446,11 @@ static int v_consume_bilinear_advance(imgf_resizer_t *r, int sy) {
 
 static void resizer_free(imgf_resizer_t *r) {
     if (!r) return;
-    imgf_free(r->h_off);     imgf_free(r->h_src);  imgf_free(r->h_w);  imgf_free(r->h_wsum);
+    imgf_free(r->h_off);     imgf_free(r->h_src);  imgf_free(r->h_w);
     imgf_free(r->h_lo);      imgf_free(r->h_hi);   imgf_free(r->h_blend);
     imgf_free(r->v_lo);      imgf_free(r->v_hi);   imgf_free(r->v_blend);
-    imgf_free(r->irow);      imgf_free(r->hrow);
-    imgf_free(r->hrow_prev); imgf_free(r->blend_tmp);
+    imgf_free(r->irow);      imgf_free(r->hrow);      imgf_free(r->vtmp);
+    imgf_free(r->hrow_prev);
     imgf_free(r->vacc);      imgf_free(r->pending);
     imgf_free(r);
 }
@@ -406,31 +491,40 @@ imgf_resizer_t *imgf_resizer_create(uint16_t src_w, uint16_t src_h,
     r->src_bpp = imgf_pixfmt_bpp(src_pf);
     r->dst_bpp = imgf_pixfmt_bpp(dst_pf);
     r->internal_ch = (src_pf == IMGF_PIX_GRAY8 && dst_pf == IMGF_PIX_GRAY8) ? 1 : 3;
+    /* The internal layout is R,G,B (or one grey channel), so these two source
+     * formats are already it and the 16-bit unpack is pure overhead. */
+    r->src_direct = (src_pf == IMGF_PIX_RGB888 && r->internal_ch == 3) ||
+                    (src_pf == IMGF_PIX_GRAY8  && r->internal_ch == 1);
     r->h_up = (r->dw > r->sw);
     r->v_up = (r->dh > r->sh);
+    r->h_shift = r->v_up ? 16 : 16 - HROW_FRAC_BITS;
+    r->h_round = 1u << (r->h_shift - 1);
     r->v_ready_max = -1;
     r->v_acc_dst_y = 0;
 
     size_t dim = (size_t)r->dw * r->internal_ch;
-    r->irow = (uint16_t *)rz_calloc((size_t)r->sw * r->internal_ch, sizeof(uint16_t), r->caps);
+    if (!r->src_direct) {
+        r->irow = (uint16_t *)rz_calloc((size_t)r->sw * r->internal_ch,
+                                        sizeof(uint16_t), r->caps);
+        if (!r->irow) goto oom;
+    }
     r->hrow = (uint16_t *)rz_calloc(dim, sizeof(uint16_t), r->caps);
-    if (!r->irow || !r->hrow) goto oom;
+    r->vtmp = (uint16_t *)rz_calloc(dim, sizeof(uint16_t), r->caps);
+    if (!r->hrow || !r->vtmp) goto oom;
 
     if (r->h_up) {
         if (!build_bilinear(r->sw, r->dw, &r->h_lo, &r->h_hi, &r->h_blend, r->caps)) goto oom;
     } else {
-        if (!build_box_h(r->sw, r->dw, &r->h_off, &r->h_src, &r->h_w, &r->h_wsum, r->caps)) {
-            goto oom;
-        }
+        if (!build_box_h(r->sw, r->dw, &r->h_off, &r->h_src, &r->h_w, r->caps)) goto oom;
     }
 
     if (r->v_up) {
         if (!build_bilinear(r->sh, r->dh, &r->v_lo, &r->v_hi, &r->v_blend, r->caps)) goto oom;
         r->hrow_prev = (uint16_t *)rz_calloc(dim, sizeof(uint16_t), r->caps);
-        r->blend_tmp = (uint16_t *)rz_calloc(dim, sizeof(uint16_t), r->caps);
-        if (!r->hrow_prev || !r->blend_tmp) goto oom;
+        if (!r->hrow_prev) goto oom;
     } else {
-        r->vacc = (uint64_t *)rz_calloc(dim, sizeof(uint64_t), r->caps);
+        r->vacc = (uint32_t *)rz_calloc(dim, sizeof(uint32_t), r->caps);
+        r->v_span_hi = r->sh;
         r->pending = (uint8_t *)rz_calloc((size_t)r->dw * r->dst_bpp, 1, r->caps);
         if (!r->vacc || !r->pending) goto oom;
     }
@@ -468,20 +562,30 @@ int imgf_resizer_push_row(imgf_resizer_t *r, const uint8_t *src_row) {
         r->hrow = tmp;
     }
 
-    unpack_row(src_row, r->irow, r->sw, r->src_pf, r->internal_ch);
-    if (r->h_up) {
-        hexpand_bilinear(r->irow, r->internal_ch, r->dw, r->hrow,
-                         r->h_lo, r->h_hi, r->h_blend);
+    if (r->src_direct) {
+        if (r->h_up) {
+            hexpand_bilinear_u8(src_row, r->internal_ch, r->dw, r->hrow,
+                                r->h_lo, r->h_hi, r->h_blend, r->h_shift, r->h_round);
+        } else {
+            hreduce_box_u8(src_row, r->internal_ch, r->dw, r->hrow,
+                           r->h_off, r->h_src, r->h_w, r->h_shift, r->h_round);
+        }
     } else {
-        hreduce_box(r->irow, r->internal_ch, r->dw, r->hrow,
-                    r->h_off, r->h_src, r->h_w, r->h_wsum);
+        unpack_row(src_row, r->irow, r->sw, r->src_pf, r->internal_ch);
+        if (r->h_up) {
+            hexpand_bilinear(r->irow, r->internal_ch, r->dw, r->hrow,
+                             r->h_lo, r->h_hi, r->h_blend, r->h_shift, r->h_round);
+        } else {
+            hreduce_box(r->irow, r->internal_ch, r->dw, r->hrow,
+                        r->h_off, r->h_src, r->h_w, r->h_shift, r->h_round);
+        }
     }
 
     int produced;
     if (r->v_up) {
         produced = v_consume_bilinear_advance(r, sy);
     } else {
-        produced = v_consume_box(r, sy);
+        produced = v_consume_box(r);
     }
     r->src_y_next = sy + 1;
     return produced;
@@ -507,11 +611,10 @@ bool imgf_resizer_pop_row(imgf_resizer_t *r, uint8_t *dst_row) {
             src = p_hi;
         } else {
             uint32_t inv = Q16 - blend;
-            for (int i = 0; i < dim; i++) {
-                uint64_t v = (uint64_t)p_lo[i] * inv + (uint64_t)p_hi[i] * blend;
-                r->blend_tmp[i] = (uint16_t)((v + (1u << 15)) >> 16);
-            }
-            src = r->blend_tmp;
+            for (int i = 0; i < dim; i++)
+                r->vtmp[i] = (uint16_t)((p_lo[i] * inv + p_hi[i] * blend +
+                                         Q16 / 2) >> 16);
+            src = r->vtmp;
         }
         pack_row(src, dst_row, r->dw, r->dst_pf, r->internal_ch);
         r->dst_y_next = dy + 1;
@@ -533,21 +636,20 @@ int imgf_resizer_finish(imgf_resizer_t *r) {
          * it became ready on the last push. Nothing to flush. */
         return 0;
     }
-    /* Downscale-v: any residual partial dst row needs to be flushed. */
+    /* Downscale-v: any residual partial dst row needs to be flushed. Its
+     * weights stopped short of Q16, so this one row pays for a divide. */
     if (r->v_acc_dst_y >= r->dh) return 0;
-    if (r->vwsum == 0) return 0;
+    if (r->v_wsum == 0) return 0;
     int dim = r->dw * r->internal_ch;
-    uint64_t inv = ((uint64_t)1 << 32) / r->vwsum;
-    for (int i = 0; i < dim; i++) {
-        uint32_t avg = (uint32_t)((r->vacc[i] * inv + ((uint64_t)1 << 31)) >> 32);
-        if (avg > 65535) avg = 65535;
-        r->hrow[i] = (uint16_t)avg;
-    }
-    pack_row(r->hrow, r->pending, r->dw, r->dst_pf, r->internal_ch);
+    const uint32_t den = r->v_wsum << HROW_FRAC_BITS;
+    for (int i = 0; i < dim; i++)
+        r->vtmp[i] = (uint16_t)((r->vacc[i] + den / 2) / den);
+    pack_row(r->vtmp, r->pending, r->dw, r->dst_pf, r->internal_ch);
     r->pending_avail = 1;
     r->v_acc_dst_y++;
-    memset(r->vacc, 0, sizeof(uint64_t) * (size_t)dim);
-    r->vwsum = 0;
+    memset(r->vacc, 0, sizeof(uint32_t) * (size_t)dim);
+    r->v_wsum = 0;
+    r->v_cum = 0;
     return 1;
 }
 
