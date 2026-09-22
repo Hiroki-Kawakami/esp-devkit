@@ -43,7 +43,7 @@ typedef struct {
     int dcpred;
     int bw, bh;      /* coefficient grid, padded to whole MCUs */
     int nbw, nbh;    /* blocks that actually cover the image */
-    int16_t *coeff;  /* progressive only: bw*bh blocks, natural order */
+    int16_t **rows;  /* progressive only: one bw-block row per entry */
 } jpegd_comp_t;
 
 typedef struct {
@@ -790,7 +790,7 @@ static void decode_scan(jpegd_t *d) {
         for (int by = 0; by < c->nbh && !d->err; by++) {
             for (int bx = 0; bx < c->nbw && !d->err; bx++) {
                 if (!scan_restart(d, n)) return;
-                decode_block_prog(d, c, c->coeff + ((size_t)by * c->bw + bx) * 64);
+                decode_block_prog(d, c, c->rows[by] + (size_t)bx * 64);
                 n++;
             }
         }
@@ -803,8 +803,8 @@ static void decode_scan(jpegd_t *d) {
                 jpegd_comp_t *c = &d->comp[d->scan_comp[i]];
                 for (int by = 0; by < c->v; by++)
                     for (int bx = 0; bx < c->h; bx++)
-                        decode_block_prog(d, c,
-                            c->coeff + ((size_t)(my * c->v + by) * c->bw + mx * c->h + bx) * 64);
+                        decode_block_prog(d, c, c->rows[my * c->v + by] +
+                                                    (size_t)(mx * c->h + bx) * 64);
             }
             n++;
         }
@@ -834,13 +834,21 @@ static int next_marker(jpegd_t *d) {
     }
 }
 
+/* One allocation per block row rather than one per component: a 5 Mpx frame
+ * wants 10 MB for its luma coefficients alone, and a heap that has the bytes
+ * free in total rarely has them in one piece. */
 static imgf_err_t prog_alloc(jpegd_t *d) {
     for (int i = 0; i < d->ncomp; i++) {
         jpegd_comp_t *c = &d->comp[i];
-        size_t bytes = (size_t)c->bw * c->bh * 64 * sizeof(int16_t);
-        c->coeff = (int16_t *)imgf_alloc(bytes, d->alloc_caps);
-        if (!c->coeff) return IMGF_ERR_OOM;
-        memset(c->coeff, 0, bytes);
+        size_t row_bytes = (size_t)c->bw * 64 * sizeof(int16_t);
+        c->rows = (int16_t **)imgf_alloc((size_t)c->bh * sizeof(int16_t *), d->alloc_caps);
+        if (!c->rows) return IMGF_ERR_OOM;
+        memset(c->rows, 0, (size_t)c->bh * sizeof(int16_t *));
+        for (int by = 0; by < c->bh; by++) {
+            c->rows[by] = (int16_t *)imgf_alloc(row_bytes, d->alloc_caps);
+            if (!c->rows[by]) return IMGF_ERR_OOM;
+            memset(c->rows[by], 0, row_bytes);
+        }
     }
     return IMGF_OK;
 }
@@ -898,8 +906,8 @@ static void output_mcu_row_prog(jpegd_t *d) {
             int cb_w = c->h * d->blk;
             for (int by = 0; by < c->v; by++) {
                 for (int bx = 0; bx < c->h; bx++) {
-                    const int16_t *src = c->coeff +
-                        ((size_t)(d->mcu_row_idx * c->v + by) * c->bw + mx * c->h + bx) * 64;
+                    const int16_t *src = c->rows[d->mcu_row_idx * c->v + by] +
+                                         (size_t)(mx * c->h + bx) * 64;
                     int coeff[64];
                     bool ac = false;
                     for (int i = 0; i < 64; i++) {
@@ -964,7 +972,12 @@ static void jpegd_destroy(imgf_decoder_t *base) {
     jpegd_t *d = (jpegd_t *)base;
     if (d->br_ready) imgf_breader_deinit(&d->br);
     if (d->band) imgf_free(d->band);
-    for (int i = 0; i < d->ncomp; i++) imgf_free(d->comp[i].coeff);
+    for (int i = 0; i < d->ncomp; i++) {
+        jpegd_comp_t *c = &d->comp[i];
+        if (!c->rows) continue;
+        for (int by = 0; by < c->bh; by++) imgf_free(c->rows[by]);
+        imgf_free(c->rows);
+    }
     free(d);
 }
 
