@@ -493,6 +493,26 @@ void flush_ready(DisplayManagerContext &, DisplayFlushContext &flush) {
     lv_display_flush_ready(flush.display);
 }
 
+void delete_indev(void *indev) {
+    lv_indev_delete(static_cast<lv_indev_t *>(indev));
+}
+
+/* A display deleted from a click handler takes the input device whose event is
+ * still being dispatched with it, and LVGL writes the press state back into it
+ * once the handler returns. Detaching the device stops any further read; the
+ * free waits for the event to unwind. */
+void release_indev(lv_indev_t *indev) {
+    if (!indev) return;
+    if (lv_indev_active() != indev) {
+        lv_indev_delete(indev);
+        return;
+    }
+    lv_indev_reset(indev, nullptr);
+    lv_indev_enable(indev, false);
+    lv_indev_set_user_data(indev, nullptr);
+    lv_async_call(delete_indev, indev);
+}
+
 } // namespace
 
 esp_err_t DisplayManager::create_display(const DisplayManagerConfig &config,
@@ -793,7 +813,7 @@ esp_err_t DisplayManager::delete_display(lv_display_t *display) {
 
     bsp_display_wait_draw();
     /* lv_display_delete only detaches indevs. */
-    lv_indev_delete(context->indev);
+    release_indev(context->indev);
     lv_display_delete(context->display);
 #ifdef DISPLAY_MANAGER_USE_PPA
     if (context->ppa_srm) {
