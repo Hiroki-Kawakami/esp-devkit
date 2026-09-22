@@ -15,6 +15,7 @@ static const char *TAG = "ES8388";
 #define ES8388_DEFAULT_ADDR   0x10   /* 7-bit */
 #define ES8388_I2C_HZ         100000
 #define ES8388_I2C_TIMEOUT_MS 100
+#define ES8388_DRAIN_TIMEOUT_MS 500
 
 #define REG_CONTROL1     0x00
 #define REG_CONTROL2     0x01
@@ -46,6 +47,7 @@ struct es8388_state {
     i2s_std_gpio_config_t gpio_cfg;
     uint8_t dac_outputs;
     bool enabled;
+    size_t ring_bytes;   /* total DMA buffer bytes of the current channel */
     uint32_t rate;
     uint8_t  bits;
     uint8_t  channels;
@@ -172,6 +174,8 @@ static esp_err_t apply_format(es8388_t s, uint32_t rate, uint8_t bits, uint8_t c
     if (err != ESP_OK) return err;
     err = i2s_channel_enable(s->tx);
     if (err != ESP_OK) return err;
+    i2s_chan_info_t info;
+    s->ring_bytes = i2s_channel_get_info(s->tx, &info) == ESP_OK ? info.total_dma_buf_size : 0;
     s->enabled = true;
     s->rate = rate; s->bits = bits; s->channels = ch;
     return ESP_OK;
@@ -266,6 +270,29 @@ esp_err_t es8388_write(es8388_t s, const void *data, size_t len) {
     if (!s->enabled) return ESP_ERR_INVALID_STATE;
     size_t written = 0;
     return i2s_channel_write(s->tx, data, len, &written, portMAX_DELAY);
+}
+
+/* i2s_channel_disable() leaves the DMA descriptor buffers holding whatever was
+ * queued but not yet sent, and i2s_std only reallocates them when the buffer
+ * size changes — so a stream that stops mid-playback and reopens at the same
+ * width replays that audio, the DMA restarting at descriptor 0. Writing one
+ * ring of silence before stopping fixes both halves: write() only returns a
+ * descriptor once the ISR has sent it, so a full ring written means everything
+ * queued before it has left the codec, and the ring is left holding zeros. */
+esp_err_t es8388_drain(es8388_t s) {
+    if (!s) return ESP_ERR_INVALID_ARG;
+    if (!s->enabled || !s->ring_bytes) return ESP_OK;
+    static const uint8_t silence[256] = {0};
+    size_t remain = s->ring_bytes;
+    while (remain > 0) {
+        const size_t take = remain < sizeof(silence) ? remain : sizeof(silence);
+        size_t written = 0;
+        esp_err_t err = i2s_channel_write(s->tx, silence, take, &written, ES8388_DRAIN_TIMEOUT_MS);
+        if (err != ESP_OK) return err;
+        if (written == 0) break;
+        remain -= written;
+    }
+    return ESP_OK;
 }
 
 esp_err_t es8388_set_volume(es8388_t s, int volume) {

@@ -32,6 +32,11 @@ static esp_err_t stream_write(bsp_audio_t *self, const void *data, size_t len) {
     return es8388_write(s->codec, data, len);
 }
 
+static esp_err_t stream_drain(bsp_audio_t *self) {
+    tab5_audio_state_t *s = (tab5_audio_state_t *)self;
+    return es8388_drain(s->codec);
+}
+
 static esp_err_t set_hw_volume(bsp_audio_t *self, int volume) {
     tab5_audio_state_t *s = (tab5_audio_state_t *)self;
     return es8388_set_volume(s->codec, volume);
@@ -115,6 +120,7 @@ esp_err_t tab5_audio_create(const tab5_audio_config_t *config, bsp_audio_t **out
     s->base.open                = stream_open;
     s->base.close               = stream_close;
     s->base.write               = stream_write;
+    s->base.drain               = stream_drain;
     s->base.set_hw_volume       = set_hw_volume;
     s->base.set_hw_mute         = set_hw_mute;
     s->base.set_speaker_enabled = set_speaker_enabled;

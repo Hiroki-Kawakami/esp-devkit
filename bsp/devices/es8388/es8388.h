@@ -43,6 +43,7 @@ esp_err_t es8388_deinit(es8388_t es8388);
 esp_err_t es8388_open(es8388_t es8388, uint32_t sample_rate, uint8_t bits_per_sample, uint8_t channels);
 esp_err_t es8388_close(es8388_t es8388);
 esp_err_t es8388_write(es8388_t es8388, const void *data, size_t len);
+esp_err_t es8388_drain(es8388_t es8388);  /*!< block until the queued audio has been sent */
 esp_err_t es8388_set_volume(es8388_t es8388, int volume);  /*!< 0..100, 0 mutes */
 esp_err_t es8388_set_mute(es8388_t es8388, bool mute);
 int       es8388_get_volume(es8388_t es8388);

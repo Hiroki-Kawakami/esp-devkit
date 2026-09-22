@@ -8,7 +8,8 @@
  * Manual stays flat; Disable has no DSP), amp arming (the speaker gate stays
  * off until the first open, then follows ON/AUTO/OFF + HP state), the
  * headphone insert callback, idempotent open/close (same format = no-op,
- * different format = provider re-open, close-while-closed = no-op), and the
+ * different format = provider re-open, close-while-closed = no-op, and every
+ * stop drains before muting and closing), and the
  * tone synth fallback (CAP_PCM without CAP_TONE) vs. direct CAP_TONE
  * forwarding.
  */
@@ -41,6 +42,9 @@ typedef struct {
     volatile bool open;
     volatile int  open_count;
     volatile int  close_count;
+    volatile int  drain_count;
+    volatile int  drain_at_close;   /* drain_count seen by the last close */
+    volatile bool drained_unmuted;  /* last drain ran before the hw mute */
 } stub_t;
 
 static esp_err_t st_open(bsp_audio_t *self, uint32_t r, uint8_t b, uint8_t c) {
@@ -54,6 +58,13 @@ static esp_err_t st_close(bsp_audio_t *self) {
     stub_t *s = (stub_t *)self;
     s->open = false;
     s->close_count++;
+    s->drain_at_close = s->drain_count;
+    return ESP_OK;
+}
+static esp_err_t st_drain(bsp_audio_t *self) {
+    stub_t *s = (stub_t *)self;
+    s->drain_count++;
+    s->drained_unmuted = !s->hw_muted;
     return ESP_OK;
 }
 static esp_err_t st_write(bsp_audio_t *self, const void *d, size_t l) {
@@ -91,6 +102,7 @@ static bsp_audio_t *make_stub(void) {
     s->base.open                = st_open;
     s->base.close               = st_close;
     s->base.write               = st_write;
+    s->base.drain               = st_drain;
     s->base.set_hw_volume       = st_set_hw_volume;
     s->base.set_hw_mute         = st_set_hw_mute;
     s->base.set_speaker_enabled = st_set_speaker_enabled;
@@ -238,11 +250,16 @@ static void test_idempotent_open_close(void) {
 
     CHECK(bsp_audio_open(22050, 16, 1) == ESP_OK, "format-change open");
     CHECK(s_stub.open_count == 2, "different format: provider open called again");
+    CHECK(s_stub.drain_count == 1, "format change drains the old stream first");
 
     CHECK(bsp_audio_close() == ESP_OK, "close");
     CHECK(s_stub.close_count == 1, "provider close called once");
+    CHECK(s_stub.drain_count == 2, "close drains the stream");
+    CHECK(s_stub.drain_at_close == 2, "drain runs before the provider close");
+    CHECK(s_stub.drained_unmuted, "drain runs before the hw mute");
     CHECK(bsp_audio_close() == ESP_OK, "close on a closed stream is a no-op");
     CHECK(s_stub.close_count == 1, "no-op close doesn't call the provider again");
+    CHECK(s_stub.drain_count == 2, "no-op close doesn't drain again");
 }
 
 /* ---- PCM-only stub (no TONE, no speaker/headphone): the tone synth fallback ---- */

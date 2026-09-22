@@ -148,6 +148,25 @@ static esp_err_t sa_write(bsp_audio_t *self, const void *data, size_t len) {
     return ESP_OK;
 }
 
+/* Same contract as the device: wait for what is queued to finish playing, so
+ * a close cuts nothing and the simulator paces stops like the board does. */
+static esp_err_t sa_drain(bsp_audio_t *self) {
+    sdl_audio_state_t *s = (sdl_audio_state_t *)self;
+    if (!s->stream_open) return ESP_OK;
+    const Uint64 deadline = SDL_GetTicks64() + SDL_AUDIO_HIGH_WATER_MS * 2;
+    if (s->dev) {
+        while (SDL_GetQueuedAudioSize(s->dev) > 0 && SDL_GetTicks64() < deadline) {
+            SDL_Delay(2);
+        }
+        return ESP_OK;
+    }
+    while (s->ns_queued_us > (SDL_GetTicks64() - s->ns_start_ms) * 1000u &&
+           SDL_GetTicks64() < deadline) {
+        SDL_Delay(2);
+    }
+    return ESP_OK;
+}
+
 static esp_err_t sa_set_hw_mute(bsp_audio_t *self, bool mute) {
     ((sdl_audio_state_t *)self)->hw_mute = mute;
     return ESP_OK;
@@ -298,6 +317,7 @@ esp_err_t sdl_audio_create(const sdl_audio_config_t *config, bsp_audio_t **out_a
         s->base.open                = sa_open;
         s->base.close               = sa_close;
         s->base.write               = sa_write;
+        s->base.drain               = sa_drain;
         s->base.set_hw_mute         = sa_set_hw_mute;
         s->base.set_speaker_enabled = sa_set_speaker_enabled;
     }

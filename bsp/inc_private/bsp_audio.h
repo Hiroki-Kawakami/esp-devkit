@@ -13,7 +13,8 @@
  * Click-free contract: the amp gate (set_speaker_enabled) only switches while
  * the DAC output is settled silence, and audible amplitude changes go through
  * the software gain fade — set_hw_volume / set_hw_mute are reserved for power
- * transitions where the output is already silent.
+ * transitions where the output is already silent. A provider that buffers
+ * ahead implements drain() so stopping a stream lands on silence.
  */
 
 #pragma once
@@ -41,6 +42,12 @@ struct bsp_audio {
     esp_err_t (*open)(bsp_audio_t *self, uint32_t sample_rate, uint8_t bits_per_sample, uint8_t channels);
     esp_err_t (*close)(bsp_audio_t *self);
     esp_err_t (*write)(bsp_audio_t *self, const void *data, size_t len);
+
+    /* Optional: block until everything already written has reached the output
+     * and leave the pipeline holding silence. Called before the format changes
+     * or the stream closes, so the clocks stop on silence rather than mid-
+     * waveform, and so buffered audio can't survive into the next open. */
+    esp_err_t (*drain)(bsp_audio_t *self);
 
     /* Optional; power-transition use only (see the click-free contract). */
     esp_err_t (*set_hw_volume)(bsp_audio_t *self, int volume);   /* 0..100 */

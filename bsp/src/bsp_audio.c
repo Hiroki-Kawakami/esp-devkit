@@ -302,9 +302,13 @@ static void stream_started(uint32_t rate, uint8_t bits, uint8_t ch) {
     }
 }
 
-/* Quiet the DAC before its clocks change: hw mute is the one silencing step
- * that doesn't depend on the app writing more buffers (a SW fade would). */
+/* Quiet the DAC before its clocks change: drain() plays out what the provider
+ * still has buffered, so the mute below lands on silence instead of cutting a
+ * waveform (and nothing survives to be replayed by the next open); hw mute is
+ * the one silencing step that doesn't depend on the app writing more buffers
+ * (a SW fade would). */
 static void stream_stopping(void) {
+    if (s_audio->drain) s_audio->drain(s_audio);
     if (s_audio->set_hw_mute) {
         s_audio->set_hw_mute(s_audio, true);
         vTaskDelay(pdMS_TO_TICKS(BSP_MUTE_SETTLE_MS));
