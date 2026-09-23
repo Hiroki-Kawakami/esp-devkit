@@ -53,9 +53,12 @@ static size_t             s_bpp = 2;          /* bytes per pixel of the panel fo
 static bsp_pixel_format_t s_format = BSP_PIXEL_FORMAT_RGB565;
 
 #define SDL_PANEL_MAX_FB BSP_DISPLAY_MAX_FRAME_BUFFERS
+/* Device framebuffers are cache-line aligned. */
+#define SDL_PANEL_FB_ALIGN 64
 static uint8_t *s_fb[SDL_PANEL_MAX_FB];       /* MIPI host framebuffers */
 static void    *s_fb_ptrs[SDL_PANEL_MAX_FB];
 static int      s_fb_num;
+static int      s_fb_shown;
 
 static uint8_t *s_glass;   /* on-glass image for SPI/EPD (also EPD composite target) */
 static uint8_t *s_gram;    /* EPD: written-but-maybe-unshown image */
@@ -269,16 +272,23 @@ static esp_err_t display_set_power(bsp_display_t *self, bsp_display_power_t stat
     return ESP_OK;  /* no panel rail on host */
 }
 
+static uint8_t *alloc_fb(size_t bytes) {
+    const size_t span = (bytes + SDL_PANEL_FB_ALIGN - 1) / SDL_PANEL_FB_ALIGN * SDL_PANEL_FB_ALIGN;
+    uint8_t *fb = aligned_alloc(SDL_PANEL_FB_ALIGN, span);
+    if (fb) memset(fb, 0, span);
+    return fb;
+}
+
 /* MARK: bsp_display vtable — SPI / MIPI direct draw */
 
 /* Blit straight to the presented buffer and mark it for present. For SPI that is
- * s_glass; for MIPI it is framebuffer 0 (draw_bitmap is the non-framebuffer
- * fallback path there — the usual MIPI path is flush). */
+ * s_glass; for MIPI it is the framebuffer on screen (draw_bitmap is the
+ * non-framebuffer fallback path there — the usual MIPI path is flush). */
 static esp_err_t display_draw_bitmap(bsp_display_t *self, bsp_rect_t area, const void *pixels,
                                      bsp_pixel_format_t format, bsp_rotation_t rotation) {
     (void)self;
     const bool has_fb = (s_type == BSP_DISPLAY_TYPE_MIPI_DSI || s_type == BSP_DISPLAY_TYPE_RGB);
-    uint8_t *target = has_fb ? s_fb[0] : s_glass;
+    uint8_t *target = has_fb ? s_fb[s_fb_shown] : s_glass;
     if (!target) return ESP_ERR_INVALID_STATE;
     /* On the device only the framebuffer path has a converting blit. */
     if (format != s_format && !has_fb) return ESP_ERR_NOT_SUPPORTED;
@@ -304,6 +314,7 @@ static void **display_get_framebuffers(bsp_display_t *self) {
 static esp_err_t display_flush(bsp_display_t *self, int fb_index) {
     (void)self;
     if (fb_index < 0 || fb_index >= s_fb_num) fb_index = 0;
+    s_fb_shown = fb_index;
     s_present_src = s_fb[fb_index];   /* no copy — present reads the FB directly */
     s_dirty = true;
     return ESP_OK;
@@ -321,7 +332,7 @@ static esp_err_t display_reconfigure(bsp_display_t *self, bsp_pixel_format_t for
     const size_t bytes = (size_t)s_panel_w * s_panel_h * bsp_pixel_format_bytes(format);
     uint8_t *fbs[SDL_PANEL_MAX_FB] = {0};
     for (int i = 0; i < fb_num; i++) {
-        fbs[i] = calloc(1, bytes);
+        fbs[i] = alloc_fb(bytes);
         if (!fbs[i]) {
             for (int j = 0; j < i; j++) free(fbs[j]);
             return ESP_ERR_NO_MEM;
@@ -335,6 +346,7 @@ static esp_err_t display_reconfigure(bsp_display_t *self, bsp_pixel_format_t for
         s_fb_ptrs[i] = fbs[i];
     }
     s_fb_num = fb_num;
+    s_fb_shown = 0;
     s_present_src = s_fb[0];
     s_format = format;
     s_bpp = bsp_pixel_format_bytes(format);
@@ -573,7 +585,7 @@ esp_err_t sdl_panel_create(const sdl_panel_config_t *config,
         if (fb_num > SDL_PANEL_MAX_FB) fb_num = SDL_PANEL_MAX_FB;
         s_fb_num = fb_num;
         for (int i = 0; i < fb_num; i++) {
-            s_fb[i] = calloc(1, panel_bytes);
+            s_fb[i] = alloc_fb(panel_bytes);
             if (!s_fb[i]) return ESP_ERR_NO_MEM;
             s_fb_ptrs[i] = s_fb[i];
         }
