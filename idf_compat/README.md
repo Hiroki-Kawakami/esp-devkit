@@ -15,7 +15,7 @@ straight into the `simulator` executable (one binary → no separate library).
 idf_compat/
   include/            shim headers (what shared code #includes)
     esp_err.h esp_log.h esp_check.h esp_timer.h esp_heap_caps.h esp_mac.h
-    esp_attr.h
+    esp_attr.h multi_heap.h
     nvs.h nvs_flash.h
     driver/           jpeg_decode.h ppa.h i2c_master.h
     hal/              ppa_types.h color_types.h  (PPA type headers)
@@ -24,7 +24,7 @@ idf_compat/
     freertos/         host FreeRTOS API: FreeRTOS.h task.h queue.h semphr.h
                       event_groups.h timers.h portmacro.h
   src/                shim implementations
-    esp_err.c esp_timer.c esp_heap_caps.c esp_mac.c nvs.c jpeg_decode.c ppa.c
+    esp_err.c esp_timer.c esp_heap_caps.c multi_heap.c esp_mac.c nvs.c jpeg_decode.c ppa.c
     i2c_master.c path_redirect.c
     freertos_port.c freertos_task.c freertos_queue.c
     freertos_event_groups.c freertos_timers.c
@@ -38,7 +38,7 @@ nothing is vendored. The same philosophy throughout: reimplement the API
 *contract* on host primitives, just enough for the simulator.
 
 - ESP-IDF APIs: `esp_err`, `esp_log`, `esp_check`, `esp_timer`, `esp_heap_caps`,
-  `esp_mac`, `esp_attr` (placement attributes, empty), and a JSON-backed
+  `multi_heap`, `esp_mac`, `esp_attr` (placement attributes, empty), and a JSON-backed
   `nvs` / `nvs_flash`.
 - The FreeRTOS API (`freertos/*.h`) on native pthreads — see below.
 - `driver/jpeg_decode` — IDF JPEG decode engine API, backed by libjpeg.

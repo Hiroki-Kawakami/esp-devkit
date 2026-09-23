@@ -12,6 +12,7 @@ idf_component_register(
         "src/esp_err.c"
         "src/esp_timer.c"
         "src/esp_heap_caps.c"
+        "src/multi_heap.c"    # IDF multi_heap on a caller-owned region, first fit
         "src/esp_mac.c"
         "src/nvs.c"
         "src/jpeg_decode.c"   # IDF JPEG decode engine API, backed by libjpeg
