@@ -29,14 +29,14 @@ esp_err_t st7123_lcd_create(const st7123_config_t *config, bsp_display_t **out) 
         .fb_num             = config->fb_num,
         .backlight_gpio     = config->backlight_gpio,
         .lane_bit_rate_mbps = { .rgb565 = 965, .rgb888 = 965 },
-        .dpi_clock_freq_mhz = 75,
+        .dpi_clock_freq_mhz = 74,
         .video_timing = {
             .hsync_pulse_width = 2,
             .hsync_back_porch  = 80,
             .hsync_front_porch = 40,
             .vsync_pulse_width = 2,
             .vsync_back_porch  = 8,
-            .vsync_front_porch = 220,
+            .vsync_front_porch = 196,
         },
         .panel_init = send_init_sequence,
     };
