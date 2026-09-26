@@ -1,0 +1,7 @@
+menu "esp_hosted_enhanced development"
+
+config DEV_C6_RECOVERY_GPIO
+    int "GPIO wired to the coprocessor's IO2"
+    default 14
+
+endmenu

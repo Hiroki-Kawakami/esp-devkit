@@ -1,0 +1,15 @@
+menu "Coprocessor"
+
+choice COPROCESSOR_BOARD
+    prompt "Board"
+    default COPROCESSOR_BOARD_TAB5
+
+config COPROCESSOR_BOARD_TAB5
+    bool "M5Stack Tab5 (on-board ESP32-C6)"
+
+config COPROCESSOR_BOARD_XIAO_ESP32C6
+    bool "Seeed XIAO ESP32C6 (jumper wired)"
+
+endchoice
+
+endmenu
