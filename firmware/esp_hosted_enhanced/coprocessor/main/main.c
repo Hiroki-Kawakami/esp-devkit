@@ -5,9 +5,11 @@
  * esp-hosted compatible Wi-Fi coprocessor over SDIO.
  */
 
+#include "bench.h"
 #include "board.h"
 #include "esp_event.h"
 #include "esp_log.h"
+#include "logfwd.h"
 #include "nvs_flash.h"
 #include "recovery.h"
 #include "rpc.h"
@@ -21,6 +23,7 @@ static void on_open_safe(void) {
 }
 
 void app_main(void) {
+    logfwd_init();
     bool safe = recovery_check();
     board_init();
 
@@ -34,12 +37,16 @@ void app_main(void) {
         ESP_ERROR_CHECK(esp_event_loop_create_default());
     }
 
+    if (!safe) bench_init();
     rpc_init(safe);
     serial_init(rpc_on_message);
     const transport_cbs_t cbs = {
         .on_sta = safe ? NULL : wifi_on_host_packet,
         .on_serial = serial_on_packet,
+        .on_test = safe ? NULL : bench_on_packet,
+        .on_log_enable = logfwd_enable,
         .on_open = safe ? on_open_safe : rpc_send_esp_init,
+        .ext_caps = HOSTED_EXT_CAP_LOG | (safe ? 0 : HOSTED_EXT_CAP_TEST),
     };
     ESP_ERROR_CHECK(transport_init(&cbs));
 }

@@ -5,6 +5,7 @@
 
 #include "host/transport.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #include "esp_heap_caps.h"
@@ -30,6 +31,9 @@
 
 #define EVT_READY          BIT0
 
+#define LOG_PREFIX         "[C6] "
+#define LOG_PREFIX_LEN     (sizeof(LOG_PREFIX) - 1)
+
 typedef struct {
     uint8_t *buf;
     size_t len;
@@ -48,9 +52,23 @@ static uint32_t s_tx_count;
 static uint32_t s_tokens;
 static bool s_started;
 static TaskHandle_t s_rx_task;
+static uint32_t s_ext_caps;
+static hosted_transport_rx_cb_t s_test_rx;
+static void *s_test_rx_arg;
+static char s_log_line[256] = LOG_PREFIX;
+static size_t s_log_len = LOG_PREFIX_LEN;
 
 static void *dma_alloc(size_t size) {
     return heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_CACHE_ALIGNED);
+}
+
+uint32_t hosted_transport_ext_caps(void) {
+    return s_ext_caps;
+}
+
+void hosted_transport_set_test_rx(hosted_transport_rx_cb_t cb, void *arg) {
+    s_test_rx_arg = arg;
+    s_test_rx = cb;
 }
 
 bool hosted_transport_ready(void) {
@@ -128,23 +146,41 @@ static void on_priv(const uint8_t *p, uint16_t len) {
     int chip = -1;
     int caps = -1;
     uint32_t version = 0;
+    uint32_t ext = 0;
     for (size_t pos = 2; pos + 2 <= 2u + p[1];) {
         uint8_t tag = p[pos], n = p[pos + 1];
         const uint8_t *v = &p[pos + 2];
         if (pos + 2 + n > 2u + p[1]) break;
         if (tag == HOSTED_TLV_CHIP_ID && n == 1) chip = v[0];
         if (tag == HOSTED_TLV_CAPABILITY && n == 1) caps = v[0];
+        if (tag == HOSTED_TLV_EXT_CAPS && n == 4) ext = v[0] | v[1] << 8 | v[2] << 16 | (uint32_t)v[3] << 24;
         if (tag == HOSTED_TLV_FW_VERSION && n == 4) version = v[0] | v[1] << 8 | v[2] << 16;
         pos += 2 + n;
     }
-    ESP_LOGI(TAG, "coprocessor chip 0x%02x, caps 0x%02x, firmware %u.%u.%u", chip, caps,
-             (unsigned)(version >> 16), (unsigned)((version >> 8) & 0xff), (unsigned)(version & 0xff));
+    ESP_LOGI(TAG, "coprocessor chip 0x%02x, caps 0x%02x, ext 0x%02x, firmware %u.%u.%u", chip, caps,
+             (unsigned)ext, (unsigned)(version >> 16), (unsigned)((version >> 8) & 0xff),
+             (unsigned)(version & 0xff));
+    s_ext_caps = ext;
     if (chip != CHIP_ID_C6) {
         ESP_LOGE(TAG, "unsupported coprocessor chip");
         return;
     }
     send_slave_config();
     xEventGroupSetBits(s_events, EVT_READY);
+}
+
+/* Whole lines only: a partial one left on the console would swallow the next
+ * line the host itself prints. */
+static void print_log(const uint8_t *p, size_t len) {
+    for (size_t i = 0; i < len; i++) {
+        if (s_log_len < sizeof(s_log_line) - 1) s_log_line[s_log_len++] = p[i];
+        if (p[i] == '\n' || s_log_len == sizeof(s_log_line) - 1) {
+            if (p[i] != '\n') s_log_line[s_log_len++] = '\n';
+            fwrite(s_log_line, 1, s_log_len, stdout);
+            fflush(stdout);
+            s_log_len = LOG_PREFIX_LEN;
+        }
+    }
 }
 
 static void dispatch_stream(const uint8_t *p, size_t len) {
@@ -166,6 +202,12 @@ static void dispatch_stream(const uint8_t *p, size_t len) {
             break;
         case HOSTED_IF_PRIV:
             on_priv(payload, h->len);
+            break;
+        case HOSTED_IF_TEST:
+            if (s_test_rx) s_test_rx(payload, h->len, s_test_rx_arg);
+            break;
+        case HOSTED_IF_LOG:
+            print_log(payload, h->len);
             break;
         default:
             break;
@@ -233,6 +275,7 @@ esp_err_t hosted_transport_start(void) {
         s_rx_bytes = 0;
         s_tx_count = 0;
         s_tokens = 0;
+        s_ext_caps = 0;
         esp_err_t err = hosted_sdio_connect(CONNECT_TIMEOUT_MS);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "coprocessor not responding: %s", esp_err_to_name(err));

@@ -25,7 +25,9 @@ CONFIG_ESP_HOSTED_ENHANCED_PIN_RESET=15
 
 `esp_wifi_init()` resets the coprocessor and brings the link up; the rest of
 the `esp_wifi` API maps to its RPCs. `inc/hosted_host.h` covers what lies
-beside that API: connecting without Wi-Fi, the firmware version and OTA.
+beside that API: connecting without Wi-Fi, the firmware version, OTA, and the
+coprocessor's extensions (log forwarding, the test channel) when it advertises
+them.
 
 Only the station interface is implemented; other `esp_wifi` calls return
 `ESP_ERR_NOT_SUPPORTED`.

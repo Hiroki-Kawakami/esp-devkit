@@ -54,3 +54,22 @@ esp_err_t hosted_host_ota_activate(void) {
     HOSTED_RPC_REQ_NOARGS(req, RPC_ID__Req_OTAActivate);
     return HOSTED_RPC_CALL_STATUS(req, resp_ota_activate, HOSTED_RPC_TIMEOUT_MS);
 }
+
+uint32_t hosted_host_ext_caps(void) {
+    return hosted_transport_ext_caps();
+}
+
+esp_err_t hosted_host_log_forward(bool enable) {
+    if (!(hosted_transport_ext_caps() & HOSTED_EXT_CAP_LOG)) return ESP_ERR_NOT_SUPPORTED;
+    const uint8_t ev[] = {HOSTED_PRIV_EVENT_EXT_CTRL, 3, HOSTED_TLV_CTRL_LOG, 1, enable};
+    return hosted_transport_send(HOSTED_IF_PRIV, 0, ev, sizeof(ev), portMAX_DELAY);
+}
+
+void hosted_host_set_test_rx(hosted_host_test_rx_t cb, void *arg) {
+    hosted_transport_set_test_rx(cb, arg);
+}
+
+esp_err_t hosted_host_test_send(const void *data, size_t len, uint32_t wait_ms) {
+    if (!(hosted_transport_ext_caps() & HOSTED_EXT_CAP_TEST)) return ESP_ERR_NOT_SUPPORTED;
+    return hosted_transport_send(HOSTED_IF_TEST, 0, data, len, pdMS_TO_TICKS(wait_ms));
+}

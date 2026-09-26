@@ -38,6 +38,7 @@ typedef enum {
     HOSTED_IF_HCI,
     HOSTED_IF_PRIV,
     HOSTED_IF_TEST,
+    HOSTED_IF_LOG = 8,
 } hosted_if_t;
 
 #define HOSTED_FLAG_MORE_FRAGMENT  (1 << 0)
@@ -78,6 +79,37 @@ typedef enum {
 } hosted_config_tlv_t;
 
 #define HOSTED_CAP_WLAN_SDIO  (1 << 0)
+
+/* Extensions, advertised in the INIT event; unknown tags are skipped by the
+ * stock host, and nothing below is sent until the host asks for it. */
+#define HOSTED_TLV_EXT_CAPS   0x30
+
+#define HOSTED_EXT_CAP_LOG    (1 << 0)
+#define HOSTED_EXT_CAP_TEST   (1 << 1)
+
+/* host -> slave PRIV event carrying extension controls */
+#define HOSTED_PRIV_EVENT_EXT_CTRL  0x23
+#define HOSTED_TLV_CTRL_LOG         0x01
+
+/* HOSTED_IF_TEST payload; the rest of the packet is filler. */
+typedef struct __attribute__((packed)) {
+    uint8_t cmd;
+    uint8_t reserved[3];
+    uint32_t seq;
+    uint32_t arg[3];
+} hosted_test_hdr_t;
+
+typedef enum {
+    HOSTED_TEST_DATA = 0,
+    HOSTED_TEST_SET_MODE,   /* arg0: hosted_test_mode_t, arg1: per-packet delay (us) */
+    HOSTED_TEST_STATS,      /* reply arg0: packets, arg1: bytes since SET_MODE */
+    HOSTED_TEST_SOURCE,     /* arg0: packet size, arg1: count */
+} hosted_test_cmd_t;
+
+typedef enum {
+    HOSTED_TEST_SINK = 0,
+    HOSTED_TEST_ECHO,
+} hosted_test_mode_t;
 
 #define HOSTED_SERIAL_TLV_EP    0x01
 #define HOSTED_SERIAL_TLV_DATA  0x02

@@ -85,8 +85,22 @@ static void send_init_event(void) {
     ev[n++] = 4;
     memcpy(&ev[n], &ver, 4);
     n += 4;
+    ev[n++] = HOSTED_TLV_EXT_CAPS;
+    ev[n++] = 4;
+    memcpy(&ev[n], &s_cbs.ext_caps, 4);
+    n += 4;
     ev[1] = n - 2;
     transport_send(HOSTED_IF_PRIV, 0, 0, ev, n, portMAX_DELAY);
+}
+
+static void on_priv(const uint8_t *p, uint16_t len) {
+    if (len < 2 || p[0] != HOSTED_PRIV_EVENT_EXT_CTRL || p[1] > len - 2) return;
+    for (size_t pos = 2; pos + 2 <= 2u + p[1] && pos + 2 + p[pos + 1] <= 2u + p[1];
+         pos += 2 + p[pos + 1]) {
+        if (p[pos] == HOSTED_TLV_CTRL_LOG && p[pos + 1] == 1 && s_cbs.on_log_enable) {
+            s_cbs.on_log_enable(p[pos + 2]);
+        }
+    }
 }
 
 static void ctrl_task(void *arg) {
@@ -126,6 +140,12 @@ static void rx_task(void *arg) {
                 break;
             case HOSTED_IF_SERIAL:
                 if (s_cbs.on_serial) s_cbs.on_serial(payload, len, h->flags);
+                break;
+            case HOSTED_IF_TEST:
+                if (s_cbs.on_test) s_cbs.on_test(payload, len);
+                break;
+            case HOSTED_IF_PRIV:
+                on_priv(payload, len);
                 break;
             default:
                 break;

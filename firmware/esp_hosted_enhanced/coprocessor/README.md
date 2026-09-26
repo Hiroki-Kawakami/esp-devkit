@@ -19,3 +19,14 @@ serves only the version and OTA requests. Each such boot is counted in the last
 flash sector (used only when no partition covers it); the 3rd in a row switches
 to the other OTA slot. Reaching the host clears the count, as does a normal
 boot.
+
+## Extensions
+
+Advertised in the INIT event (`HOSTED_TLV_EXT_CAPS`), used only when the host
+asks, so a stock host never sees them:
+
+- log channel: the log output is kept in a 4 KB ring from boot and forwarded
+  while the host has it enabled (safe mode included)
+- test channel: sinks, echoes or generates packets through the same buffers as
+  Wi-Fi data, optionally holding each received packet to act as a slow
+  consumer

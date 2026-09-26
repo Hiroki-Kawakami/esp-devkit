@@ -15,7 +15,10 @@
 typedef struct {
     void (*on_sta)(uint8_t *payload, uint16_t len);
     void (*on_serial)(const uint8_t *payload, uint16_t len, uint8_t flags);
+    void (*on_test)(const uint8_t *payload, uint16_t len);
+    void (*on_log_enable)(bool enable);
     void (*on_open)(void);
+    uint32_t ext_caps;
 } transport_cbs_t;
 
 esp_err_t transport_init(const transport_cbs_t *cbs);

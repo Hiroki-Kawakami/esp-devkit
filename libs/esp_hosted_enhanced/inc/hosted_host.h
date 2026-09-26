@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -27,6 +28,17 @@ esp_err_t hosted_host_ota_begin(void);
 esp_err_t hosted_host_ota_write(const void *data, size_t len);
 esp_err_t hosted_host_ota_end(void);
 esp_err_t hosted_host_ota_activate(void);
+
+/* HOSTED_EXT_CAP_* (hosted_wire.h) the coprocessor advertised. */
+uint32_t hosted_host_ext_caps(void);
+
+/* Coprocessor log lines appear on the host console prefixed with "[C6]". */
+esp_err_t hosted_host_log_forward(bool enable);
+
+/* Test channel (HOSTED_IF_TEST); `cb` runs on the transport rx task. */
+typedef void (*hosted_host_test_rx_t)(const uint8_t *data, size_t len, void *arg);
+void hosted_host_set_test_rx(hosted_host_test_rx_t cb, void *arg);
+esp_err_t hosted_host_test_send(const void *data, size_t len, uint32_t wait_ms);
 
 #ifdef __cplusplus
 }

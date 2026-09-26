@@ -18,6 +18,7 @@
 #include "esp_log.h"
 #include "harness.h"
 #include "netbench.hpp"
+#include "sdio_bench.hpp"
 #include "wifi_manager.hpp"
 
 namespace {
@@ -78,6 +79,7 @@ extern "C" void app_main() {
     ESP_ERROR_CHECK(bsp_init(nullptr));
     harness_register("wifi", cmd_wifi, nullptr);
     harness_register("heap", cmd_heap, nullptr);
+    sdio_bench_start();
     ESP_ERROR_CHECK(harness_start());
 
     s_int_free_at_main = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);

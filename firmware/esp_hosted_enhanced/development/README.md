@@ -11,11 +11,17 @@ nix develop -c ./run.sh xiao -p /dev/cu.usbmodemXXXX flash          # XIAO ESP32
 nix develop -c ./run.sh tab5 stock -p /dev/cu.usbmodemXXXX flash    # stock esp-hosted host
 nix develop -c python3 netbench.py --port /dev/cu.usbmodemXXXX --json result.json
 nix develop -c python3 c6flash.py --port /dev/cu.usbmodemXXXX image.bin
+nix develop -c python3 sdiobench.py --port /dev/cu.usbmodemXXXX --json result.json
 ```
 
 `netbench.py` reads the board's IP and heap figures over the harness console
 and measures from the PC, which must be able to reach the board's network. The
 board listens on TCP 5001 (sink), TCP 5002 (source) and UDP 5003 (echo).
+
+`sdiobench.py` measures the SDIO link alone over the test channel: throughput
+both ways, echo round trips, and host->coprocessor with a slow consumer (each
+packet held 1 ms) to exercise the backpressure. `--c6-log` forwards the
+coprocessor log. Both need the esp_hosted_enhanced host and coprocessor.
 
 `c6flash.py` streams an image through the esp-hosted OTA requests, so it works
 with the stock coprocessor firmware too. `--recovery` restarts the host with
