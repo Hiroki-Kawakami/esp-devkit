@@ -2,11 +2,13 @@
 
 M5Stack Tab5 firmware for developing the hosted Wi-Fi stack. It joins the
 network saved by `libs/wifi`, serves `netbench.py` and flashes the coprocessor
-for `c6flash.py`.
+for `c6flash.py`. The host is `libs/esp_hosted_enhanced` unless `stock` selects
+the esp-hosted component; each board/host pair builds in `esp32p4/build_<board>_<host>`.
 
 ```sh
-nix develop -c ./run.sh -p /dev/cu.usbmodemXXXX flash          # on-board C6
-nix develop -c ./run.sh xiao -p /dev/cu.usbmodemXXXX flash     # XIAO ESP32C6 on the M-Bus
+nix develop -c ./run.sh -p /dev/cu.usbmodemXXXX flash               # on-board C6
+nix develop -c ./run.sh xiao -p /dev/cu.usbmodemXXXX flash          # XIAO ESP32C6 on the M-Bus
+nix develop -c ./run.sh tab5 stock -p /dev/cu.usbmodemXXXX flash    # stock esp-hosted host
 nix develop -c python3 netbench.py --port /dev/cu.usbmodemXXXX --json result.json
 nix develop -c python3 c6flash.py --port /dev/cu.usbmodemXXXX image.bin
 ```

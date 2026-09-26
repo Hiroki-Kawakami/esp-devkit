@@ -10,15 +10,48 @@
 
 #include "driver/gpio.h"
 #include "esp_attr.h"
-#include "esp_hosted.h"
-#include "esp_hosted_ota.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "harness.h"
 #include "mbedtls/base64.h"
+#include "sdkconfig.h"
+
+#if CONFIG_ESP_HOSTED_ENHANCED_HOST
+#include "hosted_host.h"
+#else
+#include "esp_hosted.h"
+#include "esp_hosted_ota.h"
+#endif
 
 namespace {
+
+#if CONFIG_ESP_HOSTED_ENHANCED_HOST
+esp_err_t connect() { return hosted_host_connect(); }
+esp_err_t ota_begin() { return hosted_host_ota_begin(); }
+esp_err_t ota_write(const uint8_t* data, size_t len) { return hosted_host_ota_write(data, len); }
+esp_err_t ota_end() { return hosted_host_ota_end(); }
+esp_err_t ota_activate() { return hosted_host_ota_activate(); }
+esp_err_t fw_version(uint32_t* major, uint32_t* minor, uint32_t* patch) {
+    return hosted_host_fw_version(major, minor, patch);
+}
+#else
+esp_err_t connect() { return static_cast<esp_err_t>(esp_hosted_connect_to_slave()); }
+esp_err_t ota_begin() { return esp_hosted_slave_ota_begin(); }
+esp_err_t ota_write(const uint8_t* data, size_t len) {
+    return esp_hosted_slave_ota_write(const_cast<uint8_t*>(data), len);
+}
+esp_err_t ota_end() { return esp_hosted_slave_ota_end(); }
+esp_err_t ota_activate() { return esp_hosted_slave_ota_activate(); }
+esp_err_t fw_version(uint32_t* major, uint32_t* minor, uint32_t* patch) {
+    esp_hosted_coprocessor_fwver_t ver = {};
+    esp_err_t err = static_cast<esp_err_t>(esp_hosted_get_coprocessor_fwversion(&ver));
+    *major = ver.major1;
+    *minor = ver.minor1;
+    *patch = ver.patch1;
+    return err;
+}
+#endif
 
 const char* TAG = "c6_flash";
 constexpr uint32_t kRecoveryMagic = 0x52435659;
@@ -51,7 +84,7 @@ bool reply_err(const char* what, esp_err_t err) {
 
 bool flush() {
     if (s_fill == 0) return true;
-    esp_err_t err = esp_hosted_slave_ota_write(s_chunk, s_fill);
+    esp_err_t err = ota_write(s_chunk, s_fill);
     s_fill = 0;
     return err == ESP_OK || !reply_err("write", err);
 }
@@ -70,7 +103,7 @@ bool cmd_c6(int argc, const char* const* argv, void*) {
         hold_low(!strcmp(argv[2], "low"));
     } else if (!strcmp(sub, "begin")) {
         s_fill = 0;
-        return reply_err("begin", esp_hosted_slave_ota_begin());
+        return reply_err("begin", ota_begin());
     } else if (!strcmp(sub, "data") && argc == 3) {
         size_t n = 0;
         uint8_t bin[512];
@@ -88,17 +121,16 @@ bool cmd_c6(int argc, const char* const* argv, void*) {
         }
     } else if (!strcmp(sub, "end")) {
         if (!flush()) return true;
-        return reply_err("end", esp_hosted_slave_ota_end());
+        return reply_err("end", ota_end());
     } else if (!strcmp(sub, "activate")) {
-        esp_err_t err = esp_hosted_slave_ota_activate();
+        esp_err_t err = ota_activate();
         if (err == ESP_OK) hold_low(false);
         return reply_err("activate", err);
     } else if (!strcmp(sub, "ver")) {
-        esp_hosted_coprocessor_fwver_t ver = {};
-        esp_err_t err = static_cast<esp_err_t>(esp_hosted_get_coprocessor_fwversion(&ver));
+        uint32_t major = 0, minor = 0, patch = 0;
+        esp_err_t err = fw_version(&major, &minor, &patch);
         if (err != ESP_OK) return reply_err("ver", err);
-        harness_reply("OK c6 %u.%u.%u", (unsigned)ver.major1, (unsigned)ver.minor1,
-                      (unsigned)ver.patch1);
+        harness_reply("OK c6 %u.%u.%u", (unsigned)major, (unsigned)minor, (unsigned)patch);
     } else {
         return false;
     }
@@ -115,6 +147,6 @@ bool c6_flash_start() {
     }
     ESP_LOGW(TAG, "recovery: holding IO2 low");
     hold_low(true);
-    esp_hosted_connect_to_slave();
+    connect();
     return true;
 }

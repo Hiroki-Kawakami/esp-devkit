@@ -1,0 +1,45 @@
+menu "esp_hosted_enhanced"
+
+config ESP_HOSTED_ENHANCED_HOST
+    bool "Wi-Fi remote host over SDIO"
+    depends on ESP_WIFI_REMOTE_LIBRARY_CUSTOM
+    default y
+    help
+        Implement the esp_wifi_remote API against an esp-hosted 2.12
+        compatible coprocessor on an SDIO slot.
+
+if ESP_HOSTED_ENHANCED_HOST
+
+config ESP_HOSTED_ENHANCED_SDIO_SLOT
+    int "SDMMC slot"
+    default 1
+
+config ESP_HOSTED_ENHANCED_SDIO_FREQ_KHZ
+    int "SDIO clock (kHz)"
+    default 40000
+
+config ESP_HOSTED_ENHANCED_PIN_CLK
+    int "CLK GPIO"
+
+config ESP_HOSTED_ENHANCED_PIN_CMD
+    int "CMD GPIO"
+
+config ESP_HOSTED_ENHANCED_PIN_D0
+    int "D0 GPIO"
+
+config ESP_HOSTED_ENHANCED_PIN_D1
+    int "D1 GPIO"
+
+config ESP_HOSTED_ENHANCED_PIN_D2
+    int "D2 GPIO"
+
+config ESP_HOSTED_ENHANCED_PIN_D3
+    int "D3 GPIO"
+
+config ESP_HOSTED_ENHANCED_PIN_RESET
+    int "Coprocessor EN GPIO (-1: not wired)"
+    default -1
+
+endif
+
+endmenu
