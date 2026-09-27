@@ -9,8 +9,8 @@ The same API works with:
 
 - ESP32 targets that provide native Wi-Fi, using ESP-IDF's local `esp_wifi`
   implementation.
-- ESP32-P4 targets connected to a Wi-Fi coprocessor, using `esp-hosted` and
-  `esp_wifi_remote`.
+- ESP32-P4 targets connected to a Wi-Fi coprocessor, using the
+  `esp_wifi_remote` implementation in `libs/esp_hosted_enhanced`.
 - The desktop simulator, using a deterministic and scriptable fake backend.
 
 ## Adding the component to firmware
@@ -32,11 +32,10 @@ Include the public header from C++ code:
 #include "wifi_manager.hpp"
 ```
 
-On ESP32-P4, the component manifest adds `esp_hosted` and `esp_wifi_remote`
-automatically. The board firmware remains responsible for selecting and
-configuring the actual hosted transport, coprocessor target, pins, and related
-sdkconfig options. Native Wi-Fi targets do not pull in these remote-only
-dependencies.
+On ESP32-P4, the component requires `esp_hosted_enhanced`. The firmware
+selects it with `CONFIG_ESP_WIFI_REMOTE_LIBRARY_CUSTOM=y` and sets the SDIO
+pins; see `libs/esp_hosted_enhanced/README.md`. Native Wi-Fi targets do not
+pull in this remote-only dependency.
 
 ## Responsibilities
 
@@ -60,7 +59,7 @@ The build selects one implementation without changing the public API:
 | Target | Wi-Fi implementation | Station netif |
 | --- | --- | --- |
 | ESP32, ESP32-C2/C3/C5/C6/C61, ESP32-S2/S3 | Native `esp_wifi` | `esp_netif_create_default_wifi_sta()` |
-| ESP32-P4 | `esp_wifi_remote` over `esp-hosted` | Component-owned remote netif setup |
+| ESP32-P4 | `esp_wifi_remote` over `esp_hosted_enhanced` | Component-owned remote netif setup |
 | Desktop simulator | Scriptable fake | Not applicable |
 
 Unsupported device targets fail during CMake configuration instead of silently

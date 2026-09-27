@@ -48,6 +48,14 @@ static esp_err_t sd_mmc_alloc_psram_bounce_buffer(const sdmmc_host_t *host, void
 #endif
 }
 
+static void sd_mmc_host_lock(sd_mmc_t *sd) {
+    if (sd->config.host_lock) sd->config.host_lock();
+}
+
+static void sd_mmc_host_unlock(sd_mmc_t *sd) {
+    if (sd->config.host_unlock) sd->config.host_unlock();
+}
+
 static esp_err_t sd_mmc_mount(bsp_sd_t *self, const char *mount_point,
                               const bsp_sd_mount_config_t *config) {
     sd_mmc_t *sd = (sd_mmc_t *)self;
@@ -89,9 +97,11 @@ static esp_err_t sd_mmc_mount(bsp_sd_t *self, const char *mount_point,
         .allocation_unit_size = sd->config.allocation_unit_size,
     };
 
+    sd_mmc_host_lock(sd);
     esp_err_t err = esp_vfs_fat_sdmmc_mount(mount_point, &host,
                                              &sd->config.slot_config,
                                              &mount_config, &sd->card);
+    sd_mmc_host_unlock(sd);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_vfs_fat_sdmmc_mount: %s", esp_err_to_name(err));
         sd->card = NULL;
@@ -108,7 +118,9 @@ static esp_err_t sd_mmc_unmount(bsp_sd_t *self) {
     sd_mmc_t *sd = (sd_mmc_t *)self;
     if (!sd->card) return ESP_ERR_INVALID_STATE;
 
+    sd_mmc_host_lock(sd);
     esp_err_t err = esp_vfs_fat_sdcard_unmount(sd->mount_point, sd->card);
+    sd_mmc_host_unlock(sd);
     sd->card = NULL;
     sd->mount_point[0] = '\0';
     free(sd->bounce_buffer);
@@ -138,6 +150,7 @@ esp_err_t sd_mmc_create(const sd_mmc_config_t *config, bsp_sd_t **out_sd) {
     if (config->host_lifecycle != SD_MMC_HOST_BORROWED &&
         config->host_lifecycle != SD_MMC_HOST_MANAGED) return ESP_ERR_INVALID_ARG;
     if (!!config->power_acquire != !!config->power_release) return ESP_ERR_INVALID_ARG;
+    if (!!config->host_lock != !!config->host_unlock) return ESP_ERR_INVALID_ARG;
 
     sd_mmc_t *sd = calloc(1, sizeof(*sd));
     if (!sd) return ESP_ERR_NO_MEM;

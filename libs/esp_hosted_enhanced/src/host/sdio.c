@@ -59,15 +59,26 @@ static SemaphoreHandle_t s_lock;
 static sdmmc_desc_t *s_desc;
 static uint8_t *s_small;
 static bool s_polled;
+static bool s_card_ready;
+static int s_idf_depth;
+static uint32_t s_clock_div;
 
 static SemaphoreHandle_t lock(void) {
     if (!s_lock) {
         static portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
         portENTER_CRITICAL(&mux);
-        if (!s_lock) s_lock = xSemaphoreCreateMutexStatic(&s_lock_buf);
+        if (!s_lock) s_lock = xSemaphoreCreateRecursiveMutexStatic(&s_lock_buf);
         portEXIT_CRITICAL(&mux);
     }
     return s_lock;
+}
+
+static void take(void) {
+    xSemaphoreTakeRecursive(lock(), portMAX_DELAY);
+}
+
+static void give(void) {
+    xSemaphoreGiveRecursive(lock());
 }
 
 /* The IDF ISR would consume the completion events polled here, and would
@@ -83,13 +94,27 @@ static void set_polled(bool polled) {
 }
 
 void hosted_host_sdmmc_acquire(void) {
-    xSemaphoreTake(lock(), portMAX_DELAY);
-    if (s_polled) set_polled(false);
+    take();
+    if (s_idf_depth++ == 0 && s_polled) set_polled(false);
 }
 
+/* The host clock divider is shared by both slots and the IDF driver reprograms
+ * it per transaction for the slot it talks to; one IDF command here puts ours
+ * back before polling resumes. */
 void hosted_host_sdmmc_release(void) {
-    if (s_desc) set_polled(true);
-    xSemaphoreGive(lock());
+    if (s_idf_depth == 1 && s_card_ready && sdmmc_ll_get_clock_div(&SDMMC) != s_clock_div) {
+        uint8_t v;
+        sdmmc_io_read_byte(&s_card, 0, CCCR_FN_ENABLE, &v);
+    }
+    if (--s_idf_depth == 0 && s_card_ready) set_polled(true);
+    give();
+}
+
+esp_err_t hosted_host_sdmmc_init(void) {
+    hosted_host_sdmmc_acquire();
+    esp_err_t err = sdmmc_host_init();
+    hosted_host_sdmmc_release();
+    return err == ESP_ERR_INVALID_STATE ? ESP_OK : err;
 }
 
 esp_err_t hosted_host_sdmmc_do_transaction(int slot, sdmmc_command_t *cmd) {
@@ -209,21 +234,20 @@ esp_err_t hosted_sdio_init(void) {
     s_small = heap_caps_aligned_alloc(64, SMALL_LEN, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
     if (!s_desc || !s_small) return ESP_ERR_NO_MEM;
 
+    esp_err_t err = hosted_host_sdmmc_init();
+    if (err != ESP_OK) return err;
+    sdmmc_slot_config_t slot = SDMMC_SLOT_CONFIG_DEFAULT();
+    slot.width = 4;
+    slot.clk = CONFIG_ESP_HOSTED_ENHANCED_PIN_CLK;
+    slot.cmd = CONFIG_ESP_HOSTED_ENHANCED_PIN_CMD;
+    slot.d0 = CONFIG_ESP_HOSTED_ENHANCED_PIN_D0;
+    slot.d1 = CONFIG_ESP_HOSTED_ENHANCED_PIN_D1;
+    slot.d2 = CONFIG_ESP_HOSTED_ENHANCED_PIN_D2;
+    slot.d3 = CONFIG_ESP_HOSTED_ENHANCED_PIN_D3;
+    slot.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
     hosted_host_sdmmc_acquire();
-    esp_err_t err = sdmmc_host_init();
-    if (err == ESP_OK || err == ESP_ERR_INVALID_STATE) {
-        sdmmc_slot_config_t slot = SDMMC_SLOT_CONFIG_DEFAULT();
-        slot.width = 4;
-        slot.clk = CONFIG_ESP_HOSTED_ENHANCED_PIN_CLK;
-        slot.cmd = CONFIG_ESP_HOSTED_ENHANCED_PIN_CMD;
-        slot.d0 = CONFIG_ESP_HOSTED_ENHANCED_PIN_D0;
-        slot.d1 = CONFIG_ESP_HOSTED_ENHANCED_PIN_D1;
-        slot.d2 = CONFIG_ESP_HOSTED_ENHANCED_PIN_D2;
-        slot.d3 = CONFIG_ESP_HOSTED_ENHANCED_PIN_D3;
-        slot.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
-        err = sdmmc_host_init_slot(SLOT, &slot);
-    }
-    xSemaphoreGive(lock());
+    err = sdmmc_host_init_slot(SLOT, &slot);
+    hosted_host_sdmmc_release();
     return err;
 }
 
@@ -269,9 +293,12 @@ esp_err_t hosted_sdio_connect(uint32_t timeout_ms) {
     TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(timeout_ms);
     for (;;) {
         hosted_host_sdmmc_acquire();
+        s_card_ready = false;
         memset(&s_card, 0, sizeof(s_card));
         esp_err_t err = sdmmc_card_init(&host, &s_card);
         if (err == ESP_OK) err = fn_init();
+        s_clock_div = sdmmc_ll_get_clock_div(&SDMMC);
+        s_card_ready = err == ESP_OK;
         hosted_host_sdmmc_release();
         if (err == ESP_OK) return ESP_OK;
         ESP_LOGD(TAG, "card init: %s", esp_err_to_name(err));
@@ -285,52 +312,52 @@ esp_err_t hosted_sdio_wait_int(TickType_t wait) {
 }
 
 esp_err_t hosted_sdio_read_status(hosted_sdio_status_t *st) {
-    xSemaphoreTake(lock(), portMAX_DELAY);
+    take();
     esp_err_t err = cmd53(false, REG_TOKEN_RDATA, s_small, REG_PKT_LEN - REG_TOKEN_RDATA + 4);
     const uint32_t *r = (const uint32_t *)s_small;
     st->token = r[0];
     st->int_raw = r[(REG_INT_RAW - REG_TOKEN_RDATA) / 4];
     st->pkt_len = r[(REG_PKT_LEN - REG_TOKEN_RDATA) / 4];
-    xSemaphoreGive(lock());
+    give();
     return err;
 }
 
 esp_err_t hosted_sdio_clear_int(uint32_t bits) {
     esp_err_t err = ESP_OK;
-    xSemaphoreTake(lock(), portMAX_DELAY);
+    take();
     for (int i = 0; i < 4 && err == ESP_OK; i++) {
         uint8_t b = bits >> (8 * i);
         if (b) err = cmd52(true, REG_INT_CLR + i, b, NULL);
     }
-    xSemaphoreGive(lock());
+    give();
     return err;
 }
 
 esp_err_t hosted_sdio_read_token(uint32_t *token) {
-    xSemaphoreTake(lock(), portMAX_DELAY);
+    take();
     esp_err_t err = cmd53(false, REG_TOKEN_RDATA, s_small, sizeof(*token));
     *token = *(const uint32_t *)s_small;
-    xSemaphoreGive(lock());
+    give();
     return err;
 }
 
 esp_err_t hosted_sdio_notify(uint8_t bit) {
-    xSemaphoreTake(lock(), portMAX_DELAY);
+    take();
     esp_err_t err = cmd52(true, REG_H2S_INT, BIT(bit), NULL);
-    xSemaphoreGive(lock());
+    give();
     return err;
 }
 
 esp_err_t hosted_sdio_read(void *buf, size_t len) {
-    xSemaphoreTake(lock(), portMAX_DELAY);
+    take();
     esp_err_t err = cmd53(false, DATA_END_ADDR - len, buf, hosted_sdio_padded(len));
-    xSemaphoreGive(lock());
+    give();
     return err;
 }
 
 esp_err_t hosted_sdio_write(const void *buf, size_t len) {
-    xSemaphoreTake(lock(), portMAX_DELAY);
+    take();
     esp_err_t err = cmd53(true, DATA_END_ADDR - len, (void *)buf, hosted_sdio_padded(len));
-    xSemaphoreGive(lock());
+    give();
     return err;
 }

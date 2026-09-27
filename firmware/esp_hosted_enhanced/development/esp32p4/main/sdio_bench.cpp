@@ -11,10 +11,13 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <vector>
 
+#include "bsp.h"
+#include "esp_heap_caps.h"
 #include "esp_rom_sys.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -185,6 +188,104 @@ bool share(uint32_t count) {
     return true;
 }
 
+constexpr const char* kSdPath = "/sdcard/sdbench.bin";
+constexpr size_t kSdChunk = 16 * 1024;
+
+struct SdJob {
+    uint32_t kb;
+    esp_err_t err;
+    uint32_t write_us;
+    uint32_t read_us;
+    uint32_t bad;
+    std::atomic<bool> running;
+    SemaphoreHandle_t done;
+};
+
+void fill(uint32_t* w, size_t n, uint32_t base) {
+    for (size_t i = 0; i < n; i++) w[i] = (base + i) * 2654435761u;
+}
+
+esp_err_t sd_pass(SdJob* job, uint8_t* buf, uint8_t* ref) {
+    const size_t words = kSdChunk / 4;
+    const uint32_t chunks = job->kb * 1024 / kSdChunk;
+    FILE* f = fopen(kSdPath, "wb");
+    if (!f) return ESP_FAIL;
+    int64_t t0 = esp_timer_get_time();
+    for (uint32_t c = 0; c < chunks; c++) {
+        fill(reinterpret_cast<uint32_t*>(buf), words, c * words);
+        if (fwrite(buf, 1, kSdChunk, f) != kSdChunk) {
+            fclose(f);
+            return ESP_FAIL;
+        }
+    }
+    fclose(f);
+    job->write_us = esp_timer_get_time() - t0;
+
+    f = fopen(kSdPath, "rb");
+    if (!f) return ESP_FAIL;
+    t0 = esp_timer_get_time();
+    for (uint32_t c = 0; c < chunks; c++) {
+        if (fread(buf, 1, kSdChunk, f) != kSdChunk) {
+            fclose(f);
+            return ESP_FAIL;
+        }
+        fill(reinterpret_cast<uint32_t*>(ref), words, c * words);
+        if (memcmp(buf, ref, kSdChunk)) job->bad++;
+    }
+    fclose(f);
+    job->read_us = esp_timer_get_time() - t0;
+    remove(kSdPath);
+    return ESP_OK;
+}
+
+void sd_task(void* arg) {
+    auto* job = static_cast<SdJob*>(arg);
+    auto* buf = static_cast<uint8_t*>(heap_caps_malloc(kSdChunk, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA));
+    auto* ref = static_cast<uint8_t*>(malloc(kSdChunk));
+    job->err = buf && ref ? sd_pass(job, buf, ref) : ESP_ERR_NO_MEM;
+    free(buf);
+    free(ref);
+    job->running = false;
+    xSemaphoreGive(job->done);
+    vTaskDelete(nullptr);
+}
+
+bool sd(uint32_t kb) {
+    if (!bsp_sd_is_mounted()) {
+        esp_err_t err = bsp_sd_mount("/sdcard", nullptr);
+        if (err != ESP_OK) return reply_err("sd mount", err);
+    }
+    SdJob job;
+    job.kb = kb;
+    job.err = ESP_OK;
+    job.write_us = 0;
+    job.read_us = 0;
+    job.bad = 0;
+    job.running = true;
+    job.done = xSemaphoreCreateBinary();
+    esp_err_t err = control(HOSTED_TEST_SET_MODE, HOSTED_TEST_SINK, 0);
+    xTaskCreate(sd_task, "sd", 4096, &job, 5, nullptr);
+    auto* h = reinterpret_cast<hosted_test_hdr_t*>(s_pkt);
+    memset(h, 0, sizeof(*h));
+    h->cmd = HOSTED_TEST_DATA;
+    xSemaphoreTake(s_event, 0);
+    int64_t t0 = esp_timer_get_time();
+    for (uint32_t i = 0; job.running && err == ESP_OK; i++) {
+        h->seq = i;
+        err = hosted_host_test_send(s_pkt, HOSTED_MAX_PAYLOAD, kWaitMs);
+    }
+    int64_t us = esp_timer_get_time() - t0;
+    if (err == ESP_OK) err = control(HOSTED_TEST_STATS);
+    if (err == ESP_OK && xSemaphoreTake(s_event, pdMS_TO_TICKS(kWaitMs)) != pdTRUE) err = ESP_ERR_TIMEOUT;
+    xSemaphoreTake(job.done, portMAX_DELAY);
+    vSemaphoreDelete(job.done);
+    if (job.err != ESP_OK) return reply_err("sd", job.err);
+    if (err != ESP_OK) return reply_err("sd sink", err);
+    harness_reply("OK sdio sd %u %u %u %u %u %u", (unsigned)(kb * 1024), (unsigned)job.write_us,
+                  (unsigned)job.read_us, (unsigned)job.bad, (unsigned)s_stats_bytes.load(), (unsigned)us);
+    return true;
+}
+
 bool cmd_sdio(int argc, const char* const* argv, void*) {
     if (argc < 2) return false;
     const char* sub = argv[1];
@@ -199,6 +300,8 @@ bool cmd_sdio(int argc, const char* const* argv, void*) {
         return source(clamp_size(atoi(argv[2])), atoi(argv[3]));
     } else if (!strcmp(sub, "share") && argc == 3) {
         return share(atoi(argv[2]));
+    } else if (!strcmp(sub, "sd") && argc == 3) {
+        return sd(atoi(argv[2]));
     } else if (!strcmp(sub, "echo") && argc >= 4) {
         return echo(clamp_size(atoi(argv[2])), atoi(argv[3]), argc > 4 ? atoi(argv[4]) : 0);
     } else {

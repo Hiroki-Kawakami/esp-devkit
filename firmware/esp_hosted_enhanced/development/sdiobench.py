@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """SDIO link bench over the coprocessor test channel (no Wi-Fi involved).
 
-    sdiobench.py --port /dev/cu.usbmodemXXXX [--json out.json] [--c6-log]
+    sdiobench.py --port /dev/cu.usbmodemXXXX [--json out.json] [--c6-log] [--sd KB]
 
 Needs the esp_hosted_enhanced host and coprocessor firmware on both ends.
 """
@@ -29,6 +29,8 @@ def main():
     ap.add_argument("--port", required=True, help="host console (USB-Serial-JTAG)")
     ap.add_argument("--json", help="write the results here")
     ap.add_argument("--c6-log", action="store_true", help="forward and echo the coprocessor log")
+    ap.add_argument("--sd", type=int, metavar="KB",
+                    help="also write and verify KB on the SD card while streaming to the coprocessor")
     args = ap.parse_args()
 
     h, link = open_harness(args.port, sys.stderr if args.c6_log else None)
@@ -51,6 +53,11 @@ def main():
         results["sink_slow_consumer_mbps"] = mbps(int(p[2]), int(p[3]))
         p = h.cmd("sdio share 2000", timeout=60)
         results["share"] = {"idf_ok": int(p[2]), "idf_err": int(p[3]), "mbps": mbps(int(p[4]), int(p[5]))}
+        if args.sd:
+            p = h.cmd(f"sdio sd {args.sd}", timeout=300)
+            nbytes = int(p[2])
+            results["sd"] = {"write_mbps": mbps(nbytes, int(p[3])), "read_mbps": mbps(nbytes, int(p[4])),
+                             "bad_chunks": int(p[5]), "sdio_mbps": mbps(int(p[6]), int(p[7]))}
     finally:
         link.close()
 
@@ -65,6 +72,10 @@ def main():
     sh = results["share"]
     print(f"host->c6 while IDF commands share the controller: {sh['mbps']:.1f} Mbps, "
           f"IDF ok {sh['idf_ok']} err {sh['idf_err']}")
+    if "sd" in results:
+        sd = results["sd"]
+        print(f"SD card write {sd['write_mbps']:.1f} / read {sd['read_mbps']:.1f} Mbps "
+              f"(bad chunks {sd['bad_chunks']}) while host->c6 {sd['sdio_mbps']:.1f} Mbps")
 
     if args.json:
         with open(args.json, "w") as f:

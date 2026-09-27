@@ -26,6 +26,8 @@ typedef struct {
     sd_mmc_power_acquire_t power_acquire;
     sd_mmc_power_release_t power_release;
     void *power_context;
+    void (*host_lock)(void);
+    void (*host_unlock)(void);
 } sd_mmc_config_t;
 
 esp_err_t sd_mmc_create(const sd_mmc_config_t *config, bsp_sd_t **out_sd);

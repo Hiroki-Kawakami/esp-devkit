@@ -24,7 +24,7 @@ if(ESP_PLATFORM)
 
     set(WIFI_PLATFORM_REQUIRES esp_wifi)
     if(IDF_TARGET STREQUAL "esp32p4")
-        list(APPEND WIFI_PLATFORM_REQUIRES esp_wifi_remote)
+        list(APPEND WIFI_PLATFORM_REQUIRES esp_hosted_enhanced)
     endif()
 
     idf_component_register(

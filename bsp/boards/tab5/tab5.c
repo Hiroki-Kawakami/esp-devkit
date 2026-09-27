@@ -26,6 +26,9 @@
 #include "sd_pwr_ctrl_by_on_chip_ldo.h"
 #include "tab5_panel.h"
 #include "tab5_audio.h"
+#if CONFIG_ESP_HOSTED_ENHANCED_HOST
+#include "hosted_host.h"
+#endif
 
 static const char *TAG = "tab5";
 
@@ -134,6 +137,10 @@ static esp_err_t sd_init(void) {
     sdmmc_host_t host = SDMMC_HOST_DEFAULT();
     host.slot = SDMMC_HOST_SLOT_0;
     host.max_freq_khz = SDMMC_FREQ_HIGHSPEED;
+#if CONFIG_ESP_HOSTED_ENHANCED_HOST
+    host.init = hosted_host_sdmmc_init;
+    host.do_transaction = hosted_host_sdmmc_do_transaction;
+#endif
 
     sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
     slot_config.width = 4;
@@ -152,6 +159,10 @@ static esp_err_t sd_init(void) {
         .allocation_unit_size = 16 * 1024,
         .power_acquire = sd_power_acquire,
         .power_release = sd_power_release,
+#if CONFIG_ESP_HOSTED_ENHANCED_HOST
+        .host_lock = hosted_host_sdmmc_acquire,
+        .host_unlock = hosted_host_sdmmc_release,
+#endif
     };
     bsp_sd_t *sd = NULL;
     esp_err_t err = sd_mmc_create(&config, &sd);

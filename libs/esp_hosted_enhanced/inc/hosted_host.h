@@ -41,10 +41,11 @@ typedef void (*hosted_host_test_rx_t)(const uint8_t *data, size_t len, void *arg
 void hosted_host_set_test_rx(hosted_host_test_rx_t cb, void *arg);
 esp_err_t hosted_host_test_send(const void *data, size_t len, uint32_t wait_ms);
 
-/* The SDMMC controller is shared: another slot driven by the IDF sdmmc driver
- * must use this as its sdmmc_host_t.do_transaction, and bracket whatever else
- * touches the controller (slot init/deinit, clock changes) with
- * acquire/release. */
+/* The SDMMC controller is shared. Another slot driven by the IDF sdmmc driver
+ * uses these as its sdmmc_host_t.init and .do_transaction, and brackets
+ * whatever else touches the controller (mount, slot init/deinit, clock
+ * changes) with acquire/release, which nest. */
+esp_err_t hosted_host_sdmmc_init(void);
 esp_err_t hosted_host_sdmmc_do_transaction(int slot, sdmmc_command_t *cmd);
 void hosted_host_sdmmc_acquire(void);
 void hosted_host_sdmmc_release(void);

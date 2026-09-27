@@ -56,11 +56,15 @@ esp_err_t fw_version(uint32_t* major, uint32_t* minor, uint32_t* patch) {
 const char* TAG = "c6_flash";
 constexpr uint32_t kRecoveryMagic = 0x52435659;
 constexpr size_t kChunk = 4096;
+/* 1.x coprocessors never answer a larger OTAWrite, have no OTAActivate and
+ * switch the boot slot on OTAEnd. */
+constexpr size_t kLegacyChunk = 1400;
 constexpr gpio_num_t kRecoveryPin = static_cast<gpio_num_t>(CONFIG_DEV_C6_RECOVERY_GPIO);
 
 RTC_NOINIT_ATTR uint32_t s_recovery;
 uint8_t s_chunk[kChunk];
 size_t s_fill;
+bool s_legacy;
 
 void hold_low(bool low) {
     if (low) {
@@ -103,6 +107,8 @@ bool cmd_c6(int argc, const char* const* argv, void*) {
         hold_low(!strcmp(argv[2], "low"));
     } else if (!strcmp(sub, "begin")) {
         s_fill = 0;
+        uint32_t major = 0, minor = 0, patch = 0;
+        s_legacy = fw_version(&major, &minor, &patch) == ESP_OK && major == 1;
         return reply_err("begin", ota_begin());
     } else if (!strcmp(sub, "data") && argc == 3) {
         size_t n = 0;
@@ -113,17 +119,18 @@ bool cmd_c6(int argc, const char* const* argv, void*) {
             return false;
         }
         for (size_t off = 0; off < n;) {
-            size_t take = std::min(n - off, kChunk - s_fill);
+            const size_t chunk = s_legacy ? kLegacyChunk : kChunk;
+            size_t take = std::min(n - off, chunk - s_fill);
             memcpy(s_chunk + s_fill, bin + off, take);
             s_fill += take;
             off += take;
-            if (s_fill == kChunk && !flush()) return true;
+            if (s_fill == chunk && !flush()) return true;
         }
     } else if (!strcmp(sub, "end")) {
         if (!flush()) return true;
         return reply_err("end", ota_end());
     } else if (!strcmp(sub, "activate")) {
-        esp_err_t err = ota_activate();
+        esp_err_t err = s_legacy ? ESP_OK : ota_activate();
         if (err == ESP_OK) hold_low(false);
         return reply_err("activate", err);
     } else if (!strcmp(sub, "ver")) {

@@ -23,6 +23,7 @@ set(BOARD_DEVICE_PRIV_INCLUDE_DIRS
     "devices" "devices/ili9881c" "devices/st712x" "devices/gt911" "devices/pi4io"
     "devices/es8388" "devices/bmi270" "driver/mipi_dsi" "driver/sd_mmc")
 set(BOARD_DEVICE_PRIV_REQUIRES
-    driver esp_driver_ledc esp_driver_i2s esp_lcd vfs fatfs sdmmc esp_driver_sdmmc)
+    driver esp_driver_ledc esp_driver_i2s esp_lcd vfs fatfs sdmmc esp_driver_sdmmc
+    esp_hosted_enhanced)
 
 set(BOARD_SIM_SRCS "boards/tab5/tab5_sim.c")
