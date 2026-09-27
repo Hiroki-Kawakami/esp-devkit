@@ -5,6 +5,7 @@ Talks to the board over the harness console for its IP and heap figures, then
 measures from the PC over the LAN (the PC must reach the board's network):
 
     netbench.py --port /dev/cu.usbmodemXXXX [--seconds 10] [--json out.json]
+                [--udp] [--udp-rate MBPS]
 
 Tests, in order:
     latency idle    UDP echo RTT, one packet every --interval ms
@@ -12,6 +13,8 @@ Tests, in order:
     tcp up          board -> PC throughput (board source)
     latency + down  the same RTT probe while the downlink stream runs
     latency + up    ... while the uplink stream runs
+    udp down / up   with --udp: datagrams at --udp-rate (0: unpaced), received
+                    rate and loss
 """
 
 import argparse
@@ -30,6 +33,10 @@ from harness import Harness, HarnessError, SerialLink  # noqa: E402
 SINK_PORT = 5001
 SOURCE_PORT = 5002
 ECHO_PORT = 5003
+UDP_PORT = 5004
+UDP_SIZE = 1472
+UDP_DATA, UDP_RESET, UDP_REPORT, UDP_SEND = range(4)
+UDP_HDR = struct.Struct("<B3xIII")
 CHUNK = 64 * 1024
 
 
@@ -92,6 +99,87 @@ def tcp_up(ip, seconds):
     elapsed = time.monotonic() - t0
     s.close()
     return received * 8 / elapsed / 1e6
+
+
+def udp_report(s, ip):
+    for _ in range(10):
+        s.sendto(UDP_HDR.pack(UDP_REPORT, 0, 0, 0), (ip, UDP_PORT))
+        try:
+            while True:
+                cmd, a0, a1, a2 = UDP_HDR.unpack_from(s.recv(2048))
+                if cmd == UDP_REPORT:
+                    return a0, a1, a2
+        except socket.timeout:
+            pass
+    raise HarnessError("udp down: no report")
+
+
+def udp_down(ip, seconds, rate_mbps):
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.settimeout(0.3)
+    for _ in range(3):
+        s.sendto(UDP_HDR.pack(UDP_RESET, 0, 0, 0), (ip, UDP_PORT))
+    time.sleep(0.2)
+    payload = bytearray(UDP_SIZE)
+    UDP_HDR.pack_into(payload, 0, UDP_DATA, 0, 0, 0)
+    interval = UDP_SIZE * 8 / (rate_mbps * 1e6) if rate_mbps else 0
+    sent = 0
+    t0 = time.monotonic()
+    while True:
+        now = time.monotonic()
+        if now - t0 >= seconds:
+            break
+        if interval and now < t0 + sent * interval:
+            continue
+        try:
+            s.sendto(payload, (ip, UDP_PORT))
+            sent += 1
+        except OSError:
+            time.sleep(0.0005)
+    elapsed = time.monotonic() - t0
+    time.sleep(0.5)
+    packets, nbytes, span_us = udp_report(s, ip)
+    s.close()
+    return {"offered_mbps": sent * UDP_SIZE * 8 / elapsed / 1e6,
+            "mbps": nbytes * 8 / span_us if span_us else 0.0,
+            "sent": sent, "lost": sent - packets}
+
+
+def udp_up(ip, seconds, rate_mbps):
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
+    s.settimeout(2.0)
+    s.sendto(UDP_HDR.pack(UDP_SEND, int(seconds * 1000), UDP_SIZE, int(rate_mbps * 1000)),
+             (ip, UDP_PORT))
+    seen = set()
+    first = last = report = None
+    while True:
+        try:
+            data = s.recv(2048)
+        except socket.timeout:
+            break
+        cmd, a0, a1, a2 = UDP_HDR.unpack_from(data)
+        if cmd == UDP_REPORT:
+            report = (a0, a1)
+            break
+        last = time.monotonic()
+        first = first or last
+        seen.add(a0)
+    s.close()
+    if report is None or not seen:
+        raise HarnessError("udp up: no report")
+    span = last - first
+    return {"mbps": len(seen) * UDP_SIZE * 8 / span / 1e6 if span else 0.0,
+            "sent": report[0], "lost": report[0] - len(seen), "send_errors": report[1]}
+
+
+def fmt_udp(name, r):
+    s = f"{name:16s} {r['mbps']:5.1f} Mbps  lost {r['lost']}/{r['sent']}"
+    if "offered_mbps" in r:
+        s += f"  (offered {r['offered_mbps']:.1f} Mbps)"
+    if r.get("send_errors"):
+        s += f"  (send errors {r['send_errors']})"
+    return s
 
 
 def latency(ip, count, interval_ms, size):
@@ -177,6 +265,8 @@ def main():
     ap.add_argument("--size", type=int, default=64, help="probe payload bytes")
     ap.add_argument("--json", help="write the results here")
     ap.add_argument("--log", action="store_true", help="echo the board's log lines to stderr")
+    ap.add_argument("--udp", action="store_true", help="also measure UDP throughput")
+    ap.add_argument("--udp-rate", type=float, default=0.0, help="UDP offered rate (Mbps, 0: unpaced)")
     args = ap.parse_args()
 
     h, link = open_harness(args.port, sys.stderr if args.log else None)
@@ -192,6 +282,9 @@ def main():
         results["tcp_up_mbps"] = tcp_up(ip, args.seconds)
         results["latency_down"] = latency_under(tcp_down, ip, args.seconds, args)
         results["latency_up"] = latency_under(tcp_up, ip, args.seconds, args)
+        if args.udp:
+            results["udp_down"] = udp_down(ip, args.seconds, args.udp_rate)
+            results["udp_up"] = udp_up(ip, args.seconds, args.udp_rate)
         results["heap_after"] = heap(h)
     finally:
         link.close()
@@ -205,6 +298,9 @@ def main():
     print(fmt_lat("latency idle", results["latency_idle"]))
     print(fmt_lat("latency + down", results["latency_down"]))
     print(fmt_lat("latency + up", results["latency_up"]))
+    if args.udp:
+        print(fmt_udp("udp down", results["udp_down"]))
+        print(fmt_udp("udp up", results["udp_up"]))
 
     if args.json:
         with open(args.json, "w") as f:

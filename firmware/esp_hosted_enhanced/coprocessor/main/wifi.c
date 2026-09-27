@@ -13,6 +13,7 @@
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "transport.h"
 
@@ -66,6 +67,17 @@ static volatile bool s_connected;
 static volatile bool s_swallow_disconnect;
 static EventGroupHandle_t s_events;
 static wifi_event_sta_connected_t s_last_connected;
+static SemaphoreHandle_t s_tx_done;
+
+static void on_tx_done(uint8_t ifidx, uint8_t *data, uint16_t *data_len, bool ok) {
+    if (xPortInIsrContext()) {
+        BaseType_t woken = pdFALSE;
+        xSemaphoreGiveFromISR(s_tx_done, &woken);
+        portYIELD_FROM_ISR(woken);
+    } else {
+        xSemaphoreGive(s_tx_done);
+    }
+}
 
 static esp_err_t sta_rx(void *buffer, uint16_t len, void *eb) {
     if (transport_is_open()) {
@@ -78,9 +90,10 @@ static esp_err_t sta_rx(void *buffer, uint16_t len, void *eb) {
 /* Holding the SDIO buffer while the driver is out of TX buffers stalls the
  * host through the token count instead of dropping the frame. */
 void wifi_on_host_packet(uint8_t *frame, uint16_t len) {
-    for (int i = 0; s_connected && i < TX_RETRY_MS; i++) {
+    TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(TX_RETRY_MS);
+    while (s_connected && (int32_t)(deadline - xTaskGetTickCount()) > 0) {
         if (esp_wifi_internal_tx(WIFI_IF_STA, frame, len) != ESP_ERR_NO_MEM) return;
-        vTaskDelay(1);
+        xSemaphoreTake(s_tx_done, pdMS_TO_TICKS(2));
     }
 }
 
@@ -106,6 +119,7 @@ static void send_connected(const wifi_event_sta_connected_t *e) {
 static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data) {
     switch (id) {
     case WIFI_EVENT_STA_START:
+        esp_wifi_set_tx_done_cb(on_tx_done);
         break;
     case WIFI_EVENT_STA_CONNECTED:
         s_last_connected = *(wifi_event_sta_connected_t *)data;
@@ -184,6 +198,7 @@ void wifi_rpc_init(const Rpc *req, Rpc *resp) {
         err = esp_wifi_init(&cfg);
         if (err == ESP_OK) {
             s_events = xEventGroupCreate();
+            if (!s_tx_done) s_tx_done = xSemaphoreCreateBinary();
             esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, on_wifi_event, NULL);
             s_inited = true;
         }
