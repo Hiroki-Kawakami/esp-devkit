@@ -23,7 +23,8 @@ idf_component_register(
         "third_party/esp_hosted_rpc"
         "third_party/protobuf-c"
     PRIV_INCLUDE_DIRS "src"
-    PRIV_REQUIRES esp_driver_sdmmc sdmmc esp_driver_gpio esp_wifi esp_event esp_timer wpa_supplicant)
+    REQUIRES esp_driver_sdmmc
+    PRIV_REQUIRES sdmmc esp_driver_gpio esp_wifi esp_event esp_timer wpa_supplicant esp_mm esp_hal_sd)
 
 if(CONFIG_ESP_HOSTED_ENHANCED_HOST)
     # Strong overrides of the esp_wifi weak hooks must not lose to the weak

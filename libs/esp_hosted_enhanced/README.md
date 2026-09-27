@@ -31,3 +31,8 @@ them.
 
 Only the station interface is implemented; other `esp_wifi` calls return
 `ESP_ERR_NOT_SUPPORTED`.
+
+The host issues its SDIO commands directly on the SDMMC controller and polls
+them. Anything else on the same controller (an SD card on the other slot) must
+go through `hosted_host_sdmmc_do_transaction` and bracket its slot setup with
+`hosted_host_sdmmc_acquire/release`.

@@ -86,6 +86,8 @@ typedef enum {
 
 #define HOSTED_EXT_CAP_LOG    (1 << 0)
 #define HOSTED_EXT_CAP_TEST   (1 << 1)
+/* Several packets may share one host -> slave transfer (up to HOSTED_BUF_SIZE). */
+#define HOSTED_EXT_CAP_RX_AGGR (1 << 2)
 
 /* host -> slave PRIV event carrying extension controls */
 #define HOSTED_PRIV_EVENT_EXT_CTRL  0x23

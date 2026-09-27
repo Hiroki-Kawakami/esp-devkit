@@ -49,6 +49,8 @@ def main():
             results[f"echo_{size}_us"] = dict(zip(("p50", "p99", "max", "lost"), map(int, p[2:6])))
         p = h.cmd("sdio sink 1524 500 1000", timeout=60)
         results["sink_slow_consumer_mbps"] = mbps(int(p[2]), int(p[3]))
+        p = h.cmd("sdio share 2000", timeout=60)
+        results["share"] = {"idf_ok": int(p[2]), "idf_err": int(p[3]), "mbps": mbps(int(p[4]), int(p[5]))}
     finally:
         link.close()
 
@@ -60,6 +62,9 @@ def main():
               f"echo p50 {e['p50']} p99 {e['p99']} max {e['max']} us (lost {e['lost']})")
     print(f"host->c6 with a 1 ms/packet consumer: {results['sink_slow_consumer_mbps']:.1f} Mbps "
           f"(ceiling {1524 * 8 / 1000:.1f})")
+    sh = results["share"]
+    print(f"host->c6 while IDF commands share the controller: {sh['mbps']:.1f} Mbps, "
+          f"IDF ok {sh['idf_ok']} err {sh['idf_err']}")
 
     if args.json:
         with open(args.json, "w") as f:

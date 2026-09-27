@@ -20,7 +20,8 @@ board listens on TCP 5001 (sink), TCP 5002 (source) and UDP 5003 (echo).
 
 `sdiobench.py` measures the SDIO link alone over the test channel: throughput
 both ways, echo round trips, and host->coprocessor with a slow consumer (each
-packet held 1 ms) to exercise the backpressure. `--c6-log` forwards the
+packet held 1 ms) to exercise the backpressure, and a transfer while IDF sdmmc
+commands go through the shared-controller hook. `--c6-log` forwards the
 coprocessor log. Both need the esp_hosted_enhanced host and coprocessor.
 
 `c6flash.py` streams an image through the esp-hosted OTA requests, so it works

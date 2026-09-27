@@ -46,7 +46,7 @@ void app_main(void) {
         .on_test = safe ? NULL : bench_on_packet,
         .on_log_enable = logfwd_enable,
         .on_open = safe ? on_open_safe : rpc_send_esp_init,
-        .ext_caps = HOSTED_EXT_CAP_LOG | (safe ? 0 : HOSTED_EXT_CAP_TEST),
+        .ext_caps = HOSTED_EXT_CAP_LOG | HOSTED_EXT_CAP_RX_AGGR | (safe ? 0 : HOSTED_EXT_CAP_TEST),
     };
     ESP_ERROR_CHECK(transport_init(&cbs));
 }

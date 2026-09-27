@@ -22,6 +22,7 @@
 #include "harness.h"
 #include "hosted_host.h"
 #include "hosted_wire.h"
+#include "sd_protocol_defs.h"
 
 namespace {
 
@@ -135,6 +136,55 @@ bool echo(size_t size, uint32_t count, uint32_t gap_us) {
     return true;
 }
 
+struct ShareJob {
+    uint32_t count;
+    std::atomic<uint32_t> ok;
+    std::atomic<uint32_t> err;
+    SemaphoreHandle_t done;
+};
+
+void share_task(void* arg) {
+    auto* job = static_cast<ShareJob*>(arg);
+    for (uint32_t i = 0; i < job->count; i++) {
+        sdmmc_command_t cmd = {};
+        cmd.opcode = SD_IO_RW_DIRECT;
+        cmd.flags = SCF_CMD_AC | SCF_RSP_R5;
+        cmd.timeout_ms = 1000;
+        esp_err_t err = hosted_host_sdmmc_do_transaction(CONFIG_ESP_HOSTED_ENHANCED_SDIO_SLOT, &cmd);
+        (err == ESP_OK ? job->ok : job->err)++;
+    }
+    xSemaphoreGive(job->done);
+    vTaskDelete(nullptr);
+}
+
+bool share(uint32_t count) {
+    ShareJob job;
+    job.count = count;
+    job.ok = 0;
+    job.err = 0;
+    job.done = xSemaphoreCreateBinary();
+    xTaskCreate(share_task, "share", 4096, &job, 5, nullptr);
+    esp_err_t err = control(HOSTED_TEST_SET_MODE, HOSTED_TEST_SINK, 0);
+    auto* h = reinterpret_cast<hosted_test_hdr_t*>(s_pkt);
+    memset(h, 0, sizeof(*h));
+    h->cmd = HOSTED_TEST_DATA;
+    xSemaphoreTake(s_event, 0);
+    int64_t t0 = esp_timer_get_time();
+    for (uint32_t i = 0; i < 2000 && err == ESP_OK; i++) {
+        h->seq = i;
+        err = hosted_host_test_send(s_pkt, HOSTED_MAX_PAYLOAD, kWaitMs);
+    }
+    if (err == ESP_OK) err = control(HOSTED_TEST_STATS);
+    if (err == ESP_OK && xSemaphoreTake(s_event, pdMS_TO_TICKS(kWaitMs)) != pdTRUE) err = ESP_ERR_TIMEOUT;
+    int64_t us = esp_timer_get_time() - t0;
+    xSemaphoreTake(job.done, portMAX_DELAY);
+    vSemaphoreDelete(job.done);
+    if (err != ESP_OK) return reply_err("share", err);
+    harness_reply("OK sdio share %u %u %u %u", (unsigned)job.ok.load(), (unsigned)job.err.load(),
+                  (unsigned)s_stats_bytes.load(), (unsigned)us);
+    return true;
+}
+
 bool cmd_sdio(int argc, const char* const* argv, void*) {
     if (argc < 2) return false;
     const char* sub = argv[1];
@@ -147,6 +197,8 @@ bool cmd_sdio(int argc, const char* const* argv, void*) {
         return sink(clamp_size(atoi(argv[2])), atoi(argv[3]), argc > 4 ? atoi(argv[4]) : 0);
     } else if (!strcmp(sub, "source") && argc == 4) {
         return source(clamp_size(atoi(argv[2])), atoi(argv[3]));
+    } else if (!strcmp(sub, "share") && argc == 3) {
+        return share(atoi(argv[2]));
     } else if (!strcmp(sub, "echo") && argc >= 4) {
         return echo(clamp_size(atoi(argv[2])), atoi(argv[3]), argc > 4 ? atoi(argv[4]) : 0);
     } else {

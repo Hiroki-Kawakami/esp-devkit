@@ -21,7 +21,14 @@ esp_err_t hosted_sdio_init(void);
 esp_err_t hosted_sdio_connect(uint32_t timeout_ms);
 
 esp_err_t hosted_sdio_wait_int(TickType_t wait);
-esp_err_t hosted_sdio_read_int(uint32_t *int_raw, uint32_t *pkt_len);
+typedef struct {
+    uint32_t token;
+    uint32_t int_raw;
+    uint32_t pkt_len;
+} hosted_sdio_status_t;
+
+/* One CMD53 over TOKEN_RDATA .. PKT_LEN. */
+esp_err_t hosted_sdio_read_status(hosted_sdio_status_t *st);
 esp_err_t hosted_sdio_clear_int(uint32_t bits);
 esp_err_t hosted_sdio_read_token(uint32_t *token);
 esp_err_t hosted_sdio_notify(uint8_t bit);

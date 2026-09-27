@@ -16,7 +16,7 @@
 #include "freertos/task.h"
 #include "host/sdio.h"
 
-#define TX_BUF_NUM         24
+#define TX_BUF_NUM         8
 #define RX_STREAM_MAX      (32 * 1024)
 #define TASK_PRIO          22
 #define TOKEN_POLL_US      300
@@ -49,7 +49,7 @@ static esp_timer_handle_t s_poll_timer;
 static uint8_t *s_rx_buf;
 static uint32_t s_rx_bytes;
 static uint32_t s_tx_count;
-static uint32_t s_tokens;
+static _Atomic uint32_t s_tokens;
 static bool s_started;
 static TaskHandle_t s_rx_task;
 static uint32_t s_ext_caps;
@@ -58,7 +58,13 @@ static void *s_test_rx_arg;
 static char s_log_line[256] = LOG_PREFIX;
 static size_t s_log_len = LOG_PREFIX_LEN;
 
-static void *dma_alloc(size_t size) {
+/* SDMMC DMA out of PSRAM costs about half again per block written, so the
+ * transmit side stays internal; the receive side barely notices. */
+static void *tx_alloc(size_t size) {
+    return heap_caps_aligned_alloc(64, size, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+}
+
+static void *rx_alloc(size_t size) {
     return heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_CACHE_ALIGNED);
 }
 
@@ -113,10 +119,21 @@ static void wait_tokens(uint32_t need) {
     }
 }
 
+static void coalesce(tx_item_t *item) {
+    tx_item_t next;
+    while (xQueuePeek(s_tx_queue, &next, 0) == pdTRUE && item->len + next.len <= HOSTED_BUF_SIZE) {
+        xQueueReceive(s_tx_queue, &next, 0);
+        memcpy(item->buf + item->len, next.buf, next.len);
+        item->len += next.len;
+        xQueueSend(s_tx_free, &next.buf, 0);
+    }
+}
+
 static void tx_task(void *arg) {
     for (;;) {
         tx_item_t item;
         xQueueReceive(s_tx_queue, &item, portMAX_DELAY);
+        if (s_ext_caps & HOSTED_EXT_CAP_RX_AGGR) coalesce(&item);
         uint32_t need = (item.len + HOSTED_BUF_SIZE - 1) / HOSTED_BUF_SIZE;
         wait_tokens(need);
         esp_err_t err = hosted_sdio_write(item.buf, item.len);
@@ -220,11 +237,13 @@ static void dispatch_stream(const uint8_t *p, size_t len) {
 static void rx_task(void *arg) {
     for (;;) {
         if (hosted_sdio_wait_int(portMAX_DELAY) != ESP_OK) continue;
-        uint32_t raw, pkt_len;
-        if (hosted_sdio_read_int(&raw, &pkt_len) != ESP_OK) {
+        hosted_sdio_status_t st;
+        if (hosted_sdio_read_status(&st) != ESP_OK) {
             ESP_LOGE(TAG, "interrupt status read failed");
             continue;
         }
+        s_tokens = (st.token >> 16) & TOKEN_MASK;
+        uint32_t raw = st.int_raw, pkt_len = st.pkt_len;
         hosted_sdio_clear_int(raw);
         if (!(raw & S2H_NEW_PACKET)) continue;
 
@@ -249,10 +268,10 @@ static esp_err_t create(void) {
     s_events = xEventGroupCreate();
     s_tx_free = xQueueCreate(TX_BUF_NUM, sizeof(uint8_t *));
     s_tx_queue = xQueueCreate(TX_BUF_NUM, sizeof(tx_item_t));
-    s_rx_buf = dma_alloc(hosted_sdio_padded(RX_STREAM_MAX));
+    s_rx_buf = rx_alloc(hosted_sdio_padded(RX_STREAM_MAX));
     if (!s_events || !s_tx_free || !s_tx_queue || !s_rx_buf) return ESP_ERR_NO_MEM;
     for (int i = 0; i < TX_BUF_NUM; i++) {
-        uint8_t *buf = dma_alloc(hosted_sdio_padded(HOSTED_BUF_SIZE));
+        uint8_t *buf = tx_alloc(hosted_sdio_padded(HOSTED_BUF_SIZE));
         if (!buf) return ESP_ERR_NO_MEM;
         xQueueSend(s_tx_free, &buf, 0);
     }

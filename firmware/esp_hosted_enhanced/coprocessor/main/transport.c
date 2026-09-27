@@ -15,7 +15,7 @@
 #include "freertos/task.h"
 
 #define TX_BUF_NUM   20
-#define RX_BUF_NUM   20
+#define RX_BUF_NUM   10
 #define TASK_PRIO    21
 
 #define FW_VERSION   ((2 << 16) | (12 << 8) | 6)
@@ -129,11 +129,14 @@ static void rx_task(void *arg) {
         size_t size;
         if (sdio_slave_recv(&handle, &buf, &size, portMAX_DELAY) != ESP_OK) continue;
 
-        const hosted_header_t *h = (const hosted_header_t *)buf;
-        uint16_t len = h->len;
-        uint16_t offset = h->offset;
-        if (offset == sizeof(hosted_header_t) && (size_t)offset + len <= size) {
-            uint8_t *payload = buf + offset;
+        for (size_t pos = 0; size - pos >= sizeof(hosted_header_t);) {
+            const hosted_header_t *h = (const hosted_header_t *)(buf + pos);
+            uint16_t len = h->len;
+            if (h->offset != sizeof(hosted_header_t) || len == 0 ||
+                sizeof(hosted_header_t) + len > size - pos) {
+                break;
+            }
+            uint8_t *payload = buf + pos + sizeof(hosted_header_t);
             switch (h->if_type) {
             case HOSTED_IF_STA:
                 if (s_cbs.on_sta) s_cbs.on_sta(payload, len);
@@ -150,6 +153,7 @@ static void rx_task(void *arg) {
             default:
                 break;
             }
+            pos += sizeof(hosted_header_t) + len;
         }
         sdio_slave_recv_load_buf(handle);
     }

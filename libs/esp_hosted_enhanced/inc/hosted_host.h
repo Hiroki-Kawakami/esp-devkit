@@ -11,6 +11,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "driver/sdmmc_types.h"
 #include "esp_err.h"
 
 #ifdef __cplusplus
@@ -39,6 +40,14 @@ esp_err_t hosted_host_log_forward(bool enable);
 typedef void (*hosted_host_test_rx_t)(const uint8_t *data, size_t len, void *arg);
 void hosted_host_set_test_rx(hosted_host_test_rx_t cb, void *arg);
 esp_err_t hosted_host_test_send(const void *data, size_t len, uint32_t wait_ms);
+
+/* The SDMMC controller is shared: another slot driven by the IDF sdmmc driver
+ * must use this as its sdmmc_host_t.do_transaction, and bracket whatever else
+ * touches the controller (slot init/deinit, clock changes) with
+ * acquire/release. */
+esp_err_t hosted_host_sdmmc_do_transaction(int slot, sdmmc_command_t *cmd);
+void hosted_host_sdmmc_acquire(void);
+void hosted_host_sdmmc_release(void);
 
 #ifdef __cplusplus
 }
