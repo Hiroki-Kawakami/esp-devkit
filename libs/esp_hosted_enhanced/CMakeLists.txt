@@ -3,17 +3,22 @@ set(srcs
     "third_party/protobuf-c/protobuf-c/protobuf-c.c")
 
 if(CONFIG_ESP_HOSTED_ENHANCED_HOST)
-    set(remote_dir "${IDF_PATH}/components/esp_wifi/remote")
     list(APPEND srcs
         "src/host/api.c"
         "src/host/sdio.c"
         "src/host/transport.c"
         "src/host/rpc.c"
-        "src/host/wifi.c"
-        "${remote_dir}/esp_wifi_remote_weak.c")
+        "src/host/wifi.c")
+    set(weak_srcs "esp_wifi_remote_weak.c")
     if(CONFIG_ESP_WIFI_REMOTE_EAP_ENABLED)
-        list(APPEND srcs "${remote_dir}/esp_eap_client_remote_weak.c")
+        list(APPEND weak_srcs "esp_eap_client_remote_weak.c")
     endif()
+    # Building them in place trips IDF's check for sources owned by another component.
+    foreach(src ${weak_srcs})
+        configure_file("${IDF_PATH}/components/esp_wifi/remote/${src}"
+                       "${CMAKE_CURRENT_BINARY_DIR}/${src}" COPYONLY)
+        list(APPEND srcs "${CMAKE_CURRENT_BINARY_DIR}/${src}")
+    endforeach()
 endif()
 
 idf_component_register(
