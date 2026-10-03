@@ -12,6 +12,7 @@ typedef uint8_t lv_button_style_t;
 #define LV_BUTTON_STYLE_SECONDARY   (2)
 #define LV_BUTTON_STYLE_DESTRUCTIVE (3)
 #define LV_BUTTON_STYLE_PLAIN       (4)
+#define LV_BUTTON_STYLE_NAVIGATION  (5)
 #define LV_BUTTON_STYLE_OUTLINE     (0x80)
 
 lv_obj_t *lv_button_create(lv_obj_t *parent, lv_button_style_t type);

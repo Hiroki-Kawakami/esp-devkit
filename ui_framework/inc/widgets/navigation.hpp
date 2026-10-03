@@ -16,6 +16,8 @@ lv_obj_t *lv_navigation_create(lv_obj_t *parent, lv_navigation_style_t style = L
 lv_obj_t *lv_navigation_back_create(lv_obj_t *parent, const char *title, std::function<void(lv_event_t *)> back);
 lv_obj_t *lv_navigation_back_label(lv_obj_t *back);
 lv_obj_t *lv_navigation_title_create(lv_obj_t *parent, const char *title);
+// The trailing container of the bar, created on first use.
+lv_obj_t *lv_navigation_actions(lv_obj_t *navigation);
 
 class NavigationScreen : public Screen {
 public:

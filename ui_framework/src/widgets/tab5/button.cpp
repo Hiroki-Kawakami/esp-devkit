@@ -20,6 +20,7 @@ lv_style_t primary_style, primary_outline_style;
 lv_style_t secondary_style, secondary_outline_style;
 lv_style_t destructive_style, destructive_outline_style;
 lv_style_t plain_outline_style, plain_pressed_style;
+lv_style_t navigation_style;
 
 void button_style_init() {
     if (style_initialized) return;
@@ -67,6 +68,9 @@ void button_style_init() {
     lv_style_set_bg_color(&plain_pressed_style, lv_color_black());
     lv_style_set_bg_opa(&plain_pressed_style, 35);
 
+    lv_style_init(&navigation_style);
+    lv_style_set_pad_all(&navigation_style, 12);
+
     style_initialized = true;
 }
 
@@ -107,6 +111,11 @@ lv_obj_t *lv_button_create(lv_obj_t *parent, lv_button_style_t type) {
         lv_obj_add_style(button, &pressed_style, LV_STATE_PRESSED);
         break;
     case LV_BUTTON_STYLE_PLAIN:
+        lv_obj_add_style(button, &plain_pressed_style, LV_STATE_PRESSED);
+        break;
+    case LV_BUTTON_STYLE_NAVIGATION:
+    case LV_BUTTON_STYLE_NAVIGATION | LV_BUTTON_STYLE_OUTLINE:
+        lv_obj_add_style(button, &navigation_style, 0);
         lv_obj_add_style(button, &plain_pressed_style, LV_STATE_PRESSED);
         break;
     case LV_BUTTON_STYLE_PLAIN | LV_BUTTON_STYLE_OUTLINE:
