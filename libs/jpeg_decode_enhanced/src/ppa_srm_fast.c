@@ -394,6 +394,14 @@ esp_err_t ppa_srm_fast_abort(ppa_srm_fast_handle_t h)
     return err;
 }
 
+static ppa_trans_t *s_first_queued(ppa_engine_t *engine)
+{
+    portENTER_CRITICAL(&engine->spinlock);
+    ppa_trans_t *first = STAILQ_FIRST(&engine->trans_stailq);
+    portEXIT_CRITICAL(&engine->spinlock);
+    return first;
+}
+
 void ppa_srm_fast_end_frame(ppa_srm_fast_handle_t h)
 {
     if (!h || !h->locked) return;
@@ -409,15 +417,19 @@ void ppa_srm_fast_end_frame(ppa_srm_fast_handle_t h)
     // semaphore taken and left its transaction for the in-flight one's done
     // ISR to start. There is no such ISR, so start it here the way
     // ppa_transaction_done_cb() would, keeping the semaphore for it.
-    portENTER_CRITICAL(&h->engine->spinlock);
-    ppa_trans_t *next = STAILQ_FIRST(&h->engine->trans_stailq);
-    portEXIT_CRITICAL(&h->engine->spinlock);
-    if (next) {
+    // A client can also queue between our look and the give, fail its take
+    // and be left with nobody to start it, so look again after giving.
+    for (;;) {
+        ppa_trans_t *next = s_first_queued(h->engine);
+        if (next) {
 #if CONFIG_PM_ENABLE
-        if (h->engine->pm_lock) esp_pm_lock_acquire(h->engine->pm_lock);
+            if (h->engine->pm_lock) esp_pm_lock_acquire(h->engine->pm_lock);
 #endif
-        dma2d_enqueue(h->platform->dma2d_pool_handle, next->trans_desc, next->dma_trans_placeholder);
-    } else {
+            dma2d_enqueue(h->platform->dma2d_pool_handle, next->trans_desc, next->dma_trans_placeholder);
+            return;
+        }
         xSemaphoreGive(h->engine->sem);
+        if (!s_first_queued(h->engine)) return;
+        if (xSemaphoreTake(h->engine->sem, 0) != pdTRUE) return;
     }
 }
