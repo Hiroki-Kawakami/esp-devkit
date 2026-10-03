@@ -66,6 +66,15 @@ public:
         ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
         ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
         ESP_ERROR_CHECK(esp_wifi_start());
+        uint8_t address[6];
+        if (esp_wifi_get_mac(WIFI_IF_STA, address) == ESP_OK) {
+            char buffer[18];
+            std::snprintf(buffer, sizeof(buffer),
+                          "%02x:%02x:%02x:%02x:%02x:%02x", address[0],
+                          address[1], address[2], address[3], address[4],
+                          address[5]);
+            mac_ = buffer;
+        }
         started_ = true;
     }
 
@@ -120,16 +129,7 @@ public:
     }
 
     std::string mac() override {
-        uint8_t address[6];
-        if (esp_wifi_get_mac(WIFI_IF_STA, address) != ESP_OK) {
-            return {};
-        }
-        char buffer[18];
-        std::snprintf(buffer, sizeof(buffer),
-                      "%02x:%02x:%02x:%02x:%02x:%02x", address[0],
-                      address[1], address[2], address[3], address[4],
-                      address[5]);
-        return buffer;
+        return mac_;
     }
 
 private:
@@ -204,6 +204,7 @@ private:
 
     BackendHost* host_;
     bool started_ = false;
+    std::string mac_;
     volatile bool associated_ = false;
 };
 

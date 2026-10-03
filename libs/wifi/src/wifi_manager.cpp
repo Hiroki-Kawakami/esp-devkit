@@ -329,10 +329,11 @@ void Manager::bring_up() {
     p_->timeout_timer = xTimerCreate(
         "wifi_to", pdMS_TO_TICKS(15000), pdFALSE, p_.get(),
         &Impl::timeout_callback);
-    p_->backend = make_backend(p_.get());
-    p_->backend->start();
+    Backend* backend = make_backend(p_.get());
+    backend->start();
     {
         std::lock_guard<std::mutex> lock(p_->mutex);
+        p_->backend = backend;
         if (p_->state == State::Off) {
             p_->state = State::Disconnected;
         }

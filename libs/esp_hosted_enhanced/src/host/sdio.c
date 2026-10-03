@@ -82,13 +82,17 @@ static void give(void) {
 }
 
 /* The IDF ISR would consume the completion events polled here, and would
- * report the FIFO request bits the polled transfers leave raised. */
+ * report the FIFO request bits the polled transfers leave raised. Handing
+ * back SDMMC_LL_SD_EVENT_MASK instead of the IDF default enables RXDR/TXDR:
+ * with DMA into a busy PSRAM they fire per FIFO threshold, overflow the IDF
+ * event queue and drop the completion (sd_host_wait_for_event 0x107). */
 static void set_polled(bool polled) {
     if (!polled) {
         sdmmc_ll_clear_interrupt(&SDMMC, SDMMC_LL_SD_EVENT_MASK);
         sdmmc_ll_clear_idsts_interrupt(&SDMMC, sdmmc_ll_get_idsts_interrupt_raw(&SDMMC));
     }
-    sdmmc_ll_enable_interrupt(&SDMMC, SDMMC_LL_SD_EVENT_MASK, !polled);
+    sdmmc_ll_enable_interrupt(&SDMMC, SDMMC_LL_SD_EVENT_MASK, false);
+    if (!polled) sdmmc_ll_enable_interrupt(&SDMMC, SDMMC_LL_EVENT_DEFAULT, true);
     SDMMC.idinten.val = polled ? 0 : IDMAC_INTS;
     s_polled = polled;
 }
