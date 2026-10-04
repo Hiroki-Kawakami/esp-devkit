@@ -7,6 +7,10 @@ if(ESP_PLATFORM)
     if(CONFIG_USBH_MSC)
         list(APPEND USB_HOST_SRCS "src/msc/msc_bot_device.cpp" "src/msc/msc.cpp")
     endif()
+    if(CONFIG_USBH_UAC)
+        list(APPEND USB_HOST_SRCS "src/uac/uac_format.cpp" "src/uac/uac_descriptors.cpp"
+             "src/uac/uac_stream.cpp" "src/uac/uac_device.cpp" "src/uac/uac.cpp")
+    endif()
     idf_component_register(
         SRCS ${USB_HOST_SRCS}
         INCLUDE_DIRS "inc"
@@ -18,6 +22,9 @@ else()
     endif()
     if(CONFIG_USBH_MSC)
         list(APPEND USB_HOST_SRCS "src/sim/msc_sim.cpp")
+    endif()
+    if(CONFIG_USBH_UAC)
+        list(APPEND USB_HOST_SRCS "src/uac/uac_format.cpp" "src/sim/uac_sim.cpp")
     endif()
     idf_component_register(
         SRCS ${USB_HOST_SRCS}

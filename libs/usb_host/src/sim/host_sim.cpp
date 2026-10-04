@@ -25,8 +25,10 @@ esp_err_t install(Callbacks callbacks) {
     s_installed = true;
     s_callbacks = std::move(callbacks);
 #if CONFIG_USBH_MSC
-    const esp_err_t err = detail::msc_install();
-    if (err != ESP_OK) return err;
+    if (const esp_err_t err = detail::msc_install(); err != ESP_OK) return err;
+#endif
+#if CONFIG_USBH_UAC
+    if (const esp_err_t err = detail::uac_install(); err != ESP_OK) return err;
 #endif
     return ESP_OK;
 }

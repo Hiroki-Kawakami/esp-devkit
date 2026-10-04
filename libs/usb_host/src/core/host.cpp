@@ -25,6 +25,9 @@ constexpr ClassDriver kDrivers[] = {
 #if CONFIG_USBH_MSC
     {detail::msc_install, detail::msc_connected, detail::msc_gone},
 #endif
+#if CONFIG_USBH_UAC
+    {detail::uac_install, detail::uac_connected, detail::uac_gone},
+#endif
 };
 
 struct ClientEvent {

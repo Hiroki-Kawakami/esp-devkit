@@ -12,4 +12,13 @@ config USBH_MSC
         Bulk-Only Transport drives with a SCSI command set, mounted through
         FatFS. On the simulator a host directory stands in for the drive.
 
+config USBH_UAC
+    bool "Audio class driver (playback)"
+    depends on DEVKIT_SIMULATOR || SOC_USB_OTG_SUPPORTED
+    select USBH
+    default n
+    help
+        USB Audio Class 1.0 playback to adaptive and synchronous endpoints.
+        On the simulator a WAV file stands in for the device.
+
 endmenu

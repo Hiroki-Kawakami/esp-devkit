@@ -29,4 +29,12 @@ void msc_gone(usb_device_handle_t handle);
 #endif
 #endif
 
+#if CONFIG_USBH_UAC
+esp_err_t uac_install();
+#ifdef ESP_PLATFORM
+void uac_connected(uint8_t address);
+void uac_gone(usb_device_handle_t handle);
+#endif
+#endif
+
 }  // namespace usb_host::detail

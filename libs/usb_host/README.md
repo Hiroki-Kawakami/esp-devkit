@@ -6,8 +6,9 @@ does not add tasks.
 
 ## Using it
 
-Enable the classes in Kconfig (`CONFIG_USBH_MSC`); the component compiles
-nothing and pulls in no managed dependency when none is enabled. Then:
+Enable the classes in Kconfig (`CONFIG_USBH_MSC`, `CONFIG_USBH_UAC`); the
+component compiles nothing and pulls in no managed dependency when none is
+enabled. Then:
 
 ```cpp
 bsp_power_set_switch(BSP_POWER_SWITCH_USB5V, true);
@@ -34,6 +35,10 @@ already exports the C `usbh_*` namespace, and `usb_host_*` is its public one.
 | `src/core/transfer.cpp` | blocking bulk/control transfers, halt recovery, buffer lending |
 | `src/msc/msc_bot_device.cpp` | Bulk-Only Transport + SCSI, exposed as an `esp_blockdev` |
 | `src/msc/msc.cpp` | connected-device list and the FAT mount table |
+| `src/uac/uac_descriptors.cpp` | UAC1 descriptor walk: playback alternates, the feature unit on their path |
+| `src/uac/uac_stream.cpp` | isochronous OUT transfers fed from a ring, packet sizing |
+| `src/uac/uac_device.cpp` | alternate selection, sampling rate, feature unit requests |
+| `src/uac/uac.cpp` | connected-device list |
 | `src/sim/` | simulator stand-ins |
 
 Device ownership stays with the class driver: the core passes each new device
@@ -85,6 +90,35 @@ per read. Its single buffer also grows to the largest read FAT asks for, which
 makes every 31-byte command sync that whole cache range, and a failed regrow
 leaves a dangling pointer that the next command frees again (1.3.0).
 
+## Audio
+
+`UacDevice` plays PCM on a USB Audio Class 1.0 device: Type I PCM alternates of
+the first streaming interface that has an isochronous OUT endpoint. Only
+adaptive and synchronous endpoints are taken, where the device follows the
+host's SOF and the host decides each packet's size; an asynchronous endpoint
+needs its feedback endpoint read and is skipped with a warning. A device left
+with no usable alternate is not reported at all.
+
+`formats()` lists what the device declared and `open()` takes one of them and
+a rate; the driver neither converts nor resamples. Three transfers of about
+8 ms each stay queued, refilled from a 40 ms ring in their completion callback
+on the client task, so streaming adds no task. A ring that runs dry sends
+silence and the stream keeps its clock; `write()` blocks while the ring is
+full, which paces the caller like an I2S DMA queue does.
+
+Volume and mute go to the feature unit on the path from the streaming
+interface's terminal to an output terminal, through the master channel when it
+has the control and every logical channel otherwise. The range in
+`volume_min_db()`/`volume_max_db()` is what the device answers to GET_MIN and
+GET_MAX at connect; UAC1 descriptors do not carry it. Those requests are sent
+from the client task one after another, holding only the latest value, so
+`set_volume_db()` never waits on the bus.
+
+Audio devices declare many alternates, and their configuration descriptors
+routinely exceed the host library's default
+`CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE` of 256: enumeration then fails in
+`ENUM` with "Configuration descriptor larger than control transfer max length".
+
 ## Simulator
 
 `install()` registers the harness commands of the enabled classes. For MSC, a
@@ -92,3 +126,8 @@ host directory stands in for the drive: `SIMULATOR_USBH_MSC_PATH` is attached
 at boot when set, and `usbh-msc-attach [dir]` / `usbh-msc-detach` plug and
 pull it. The simulator's `MscDevice` has no blocks; `mount()` maps the mount
 point onto the directory through `simulator/path_redirect.h`.
+
+For UAC, `usbh-uac-attach [wav] [rate,...]` plugs a device that offers 16- and
+24-bit stereo at the given rates (44100,48000 by default) and records what it is
+sent to the WAV file (`captures/usb_audio.wav` by default) at real-time pace;
+`usbh-uac-detach` pulls it. Volume and mute only show up in the log.
