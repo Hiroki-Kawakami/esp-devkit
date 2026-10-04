@@ -21,6 +21,7 @@ set(DEVKIT_ROOT ${CMAKE_CURRENT_LIST_DIR})
 # Device-side components, in EXTRA_COMPONENT_DIRS order.
 set(DEVKIT_DEVICE_COMPONENTS
     bsp
+    libs/audio_framework
     libs/esp_hosted_enhanced
     libs/harness
     libs/image_framework
@@ -35,6 +36,7 @@ set(DEVKIT_SIMULATOR_COMPONENTS
     idf_compat
     bsp
     ui_framework
+    libs/audio_framework
     libs/harness
     libs/image_framework
     libs/jpeg_decode_enhanced

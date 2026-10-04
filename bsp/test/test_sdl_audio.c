@@ -59,7 +59,7 @@ static void test_pcm_speaker(void) {
     bsp_audio_set_active(audio, NULL);   /* zero-init = DSP Auto, speaker ON */
 
     CHECK(bsp_audio_get_caps() == (BSP_AUDIO_CAP_PCM | BSP_AUDIO_CAP_SPEAKER), "caps");
-    CHECK(bsp_audio_dsp() != NULL, "dispatch owns a DSP instance from boot");
+    CHECK(bsp_audio_eq() != NULL, "dispatch owns a DSP chain from boot");
     CHECK(bsp_audio_set_speaker_mode(BSP_AUDIO_SPEAKER_MODE_AUTO) == ESP_ERR_NOT_SUPPORTED,
           "AUTO needs CAP_HEADPHONE");
     CHECK(!bsp_audio_headphone_inserted(), "no HP detect");
@@ -109,10 +109,10 @@ static void test_pcm_speaker(void) {
 
     /* DSP modes: Disable drops the chain entirely. */
     bsp_audio_set_active(audio, &(bsp_audio_init_t){ .dsp_mode = BSP_AUDIO_DSP_MODE_DISABLE });
-    CHECK(bsp_audio_dsp() == NULL, "DISABLE: no DSP");
+    CHECK(bsp_audio_eq() == NULL, "DISABLE: no DSP");
     bsp_audio_set_active(audio, &(bsp_audio_init_t){ .dsp_mode = BSP_AUDIO_DSP_MODE_MANUAL });
-    CHECK(bsp_audio_dsp() != NULL, "MANUAL: DSP exists");
-    CHECK(!audio_dsp_is_eq_enabled(bsp_audio_dsp()), "MANUAL: flat init");
+    CHECK(bsp_audio_eq() != NULL, "MANUAL: DSP exists");
+    CHECK(!audf_eq_get_enabled(bsp_audio_eq()), "MANUAL: flat init");
 
     bsp_audio_set_active(NULL, NULL);
     CHECK(bsp_audio_get_caps() == 0, "deactivated");

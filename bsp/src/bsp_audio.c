@@ -6,10 +6,10 @@
  * by the board's bsp_init via bsp_audio_set_active) and implements the public
  * bsp_audio_* API by dispatching through its vtable. Owns everything that is
  * policy rather than hardware: capability gating, the user volume curve
- * (linear-in-dB, delivered as a fading software gain through an audio_dsp
- * instance), mute (a software fade — hardware mute is reserved for power
- * transitions), the DSP voicing mode (Auto: board profile re-applied on route
- * changes; Manual: flat init, app-driven; Disable: no DSP), the speaker route
+ * (linear-in-dB, delivered as a fading software gain), mute (a software fade
+ * — hardware mute is reserved for power transitions), the DSP voicing mode
+ * (Auto: board profile re-applied on route changes; Manual: flat init,
+ * app-driven; Disable: no DSP), the speaker route
  * policy (ON/AUTO/OFF + a headphone-tracking bsp_dispatch source + insert
  * callback), the click-free idempotent open/close sequencing (see
  * inc_private/bsp_audio.h), and the tone synth fallback (CAP_PCM without
@@ -20,6 +20,7 @@
 #include "bsp_audio.h"
 #include "bsp_dispatch.h"
 #include <math.h>
+#include "audf_gain.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -51,10 +52,13 @@ static const char *TAG = "BSP_AUDIO";
 #define TONE_CHUNK_SAMPLES  (TONE_SAMPLE_RATE * TONE_CHUNK_MS / 1000)
 #define TONE_NO_DEADLINE    UINT32_MAX
 
-static bsp_audio_t *s_audio;
-static audio_dsp_t  s_dsp;
+static bsp_audio_t  *s_audio;
+static audf_eq_t    *s_eq;
+static audf_gain_t  *s_gain;
+static audf_mixer_t *s_mixer;
 static bsp_audio_dsp_mode_t s_dsp_mode = BSP_AUDIO_DSP_MODE_AUTO;
 static bool s_dsp_bypass;        /* stream format the DSP can't process (bits != 16) */
+static uint8_t s_dsp_channels = 2;
 static bool s_open;              /* app stream running (between open and close) */
 static bool s_armed;             /* first open done → amp may follow route policy */
 static uint32_t s_rate = BSP_NOMINAL_RATE;   /* current stream rate (profile design fs) */
@@ -113,17 +117,19 @@ static void apply_speaker(bsp_audio_speaker_mode_t mode) {
  * Callable from the app threads (open/reconfig) and the route task — the DSP
  * setters serialize internally. */
 static void apply_dsp_profile(bool hp) {
-    if (!s_dsp || s_dsp_mode != BSP_AUDIO_DSP_MODE_AUTO) return;
+    static const float k_stereo[4] = { 1.0f, 0.0f, 0.0f, 1.0f };
+    static const float k_mono[4]   = { 0.5f, 0.5f, 0.5f, 0.5f };
+    if (!s_eq || s_dsp_mode != BSP_AUDIO_DSP_MODE_AUTO) return;
     if (!s_audio || !s_audio->get_dsp_profile) return;
     bsp_audio_dsp_profile_t profile = {0};
     if (s_audio->get_dsp_profile(s_audio, hp, s_rate, &profile) != ESP_OK) return;
     if (profile.num_stages > BSP_AUDIO_DSP_PROFILE_MAX_STAGES) return;
-    audio_dsp_set_biquads(s_dsp, profile.biquads, profile.num_stages);
+    audf_eq_set_biquads(s_eq, profile.biquads, profile.num_stages);
     /* App override wins over the board profile so an HP insert/remove re-voicing
      * doesn't clobber the user's EQ on/off choice. */
-    audio_dsp_set_eq_enabled(s_dsp, s_eq_override >= 0 ? (bool)s_eq_override
-                                                       : profile.eq_enabled);
-    audio_dsp_set_mono_mix(s_dsp, profile.mono_mix);
+    audf_eq_set_enabled(s_eq, s_eq_override >= 0 ? (bool)s_eq_override
+                                                 : profile.eq_enabled);
+    audf_mixer_set_matrix(s_mixer, 0, profile.mono_mix ? k_mono : k_stereo);
 }
 
 static uint32_t audio_route_tick(void *ctx) {
@@ -153,7 +159,7 @@ static uint32_t audio_route_tick(void *ctx) {
 
     apply_speaker_with_hp(mode, hp);
 
-    bool dsp_auto = s_dsp && s_dsp_mode == BSP_AUDIO_DSP_MODE_AUTO &&
+    bool dsp_auto = s_eq && s_dsp_mode == BSP_AUDIO_DSP_MODE_AUTO &&
                     s_audio && s_audio->get_dsp_profile;
     bool need_poll = (mode == BSP_AUDIO_SPEAKER_MODE_AUTO) || (s_hp_cb != NULL) || dsp_auto;
     return need_poll ? BSP_ROUTE_POLL_MS : BSP_DISPATCH_IDLE;
@@ -171,7 +177,7 @@ static esp_err_t ensure_route_source(void) {
 static bool route_source_needed(void) {
     if (!s_audio || !(s_audio->caps & BSP_AUDIO_CAP_HEADPHONE)) return false;
     return s_speaker_mode == BSP_AUDIO_SPEAKER_MODE_AUTO || s_hp_cb ||
-           (s_dsp && s_dsp_mode == BSP_AUDIO_DSP_MODE_AUTO && s_audio->get_dsp_profile);
+           (s_eq && s_dsp_mode == BSP_AUDIO_DSP_MODE_AUTO && s_audio->get_dsp_profile);
 }
 
 static float volume_to_gain(int volume) {
@@ -193,15 +199,40 @@ static float current_target_gain(void) {
     return s_mute ? 0.0f : volume_to_gain(s_volume);
 }
 
+static void dsp_destroy(void) {
+    audf_eq_destroy(s_eq);
+    audf_gain_destroy(s_gain);
+    audf_mixer_destroy(s_mixer);
+    s_eq = NULL;
+    s_gain = NULL;
+    s_mixer = NULL;
+}
+
+static esp_err_t dsp_create(void) {
+    esp_err_t err = audf_eq_create(&(audf_eq_config_t){
+        .fmt = AUDF_FMT_S16, .channels = 2, .max_stages = BSP_AUDIO_DSP_PROFILE_MAX_STAGES,
+    }, &s_eq);
+    if (err == ESP_OK) {
+        err = audf_gain_create(&(audf_gain_config_t){
+            .fmt = AUDF_FMT_S16, .channels = 2, .sample_rate = BSP_NOMINAL_RATE,
+        }, &s_gain);
+    }
+    if (err == ESP_OK) {
+        err = audf_mixer_create(&(audf_mixer_config_t){
+            .fmt = AUDF_FMT_S16, .out_channels = 2, .num_inputs = 1, .in_channels = (const uint8_t[]){ 2 },
+        }, &s_mixer);
+    }
+    if (err != ESP_OK) dsp_destroy();
+    return err;
+}
+
 void bsp_audio_set_active(bsp_audio_t *audio, const bsp_audio_init_t *init) {
     tone_synth_request_stop(true);
-    if (s_dsp) {
-        audio_dsp_deinit(s_dsp);
-        s_dsp = NULL;
-    }
+    dsp_destroy();
     s_audio = audio;
     s_dsp_mode = BSP_AUDIO_DSP_MODE_AUTO;
     s_dsp_bypass = false;
+    s_dsp_channels = 2;
     s_open = false;
     s_armed = false;
     s_rate = BSP_NOMINAL_RATE;
@@ -219,19 +250,12 @@ void bsp_audio_set_active(bsp_audio_t *audio, const bsp_audio_init_t *init) {
     s_speaker_mode = init->speaker_mode;
 
     if ((audio->caps & BSP_AUDIO_CAP_PCM) && s_dsp_mode != BSP_AUDIO_DSP_MODE_DISABLE) {
-        /* Created flat at a nominal rate so bsp_audio_dsp() is valid from
-         * boot; open() reconfigures to the real stream format. */
-        audio_dsp_config_t dsp_cfg = {
-            .sample_rate     = BSP_NOMINAL_RATE,
-            .channels        = 2,
-            .bits_per_sample = 16,
-        };
-        esp_err_t err = audio_dsp_init(&dsp_cfg, &s_dsp);
+        /* Created flat at a nominal rate so the handles are valid from boot;
+         * open() reconfigures to the real stream format. */
+        esp_err_t err = dsp_create();
         if (err != ESP_OK) {
-            ESP_LOGW(TAG, "audio_dsp_init failed: %d (DSP disabled)", err);
-            s_dsp = NULL;
+            ESP_LOGW(TAG, "DSP creation failed: %d (DSP disabled)", err);
         } else {
-            audio_dsp_set_gain(s_dsp, 0.0f, 0);
             apply_dsp_profile(hp_inserted_now());  /* Auto: board voicing from boot */
         }
     }
@@ -269,19 +293,21 @@ static bool pcm_available(void) {
  * only — the amp gate is finally armed once the DAC has settled. */
 static void stream_started(uint32_t rate, uint8_t bits, uint8_t ch) {
     s_rate = rate ? rate : BSP_NOMINAL_RATE;
-    if (s_dsp) {
+    if (s_eq) {
         s_dsp_bypass = (bits != 16);
         if (!s_dsp_bypass) {
-            audio_dsp_reconfig(s_dsp, s_rate, ch ? ch : 2, 16);
+            s_dsp_channels = ch ? ch : 2;
+            audf_eq_reconfig(s_eq, AUDF_FMT_S16, s_dsp_channels);
+            audf_gain_reconfig(s_gain, AUDF_FMT_S16, s_dsp_channels, s_rate);
             apply_dsp_profile(hp_inserted_now());
-            audio_dsp_set_gain(s_dsp, 0.0f, 0);
+            audf_gain_set(s_gain, 0.0f, 0);
             /* Pin the codec to max while the SW gain holds silence; user
              * volume is delivered by the fade below. */
             if (s_audio->set_hw_volume) s_audio->set_hw_volume(s_audio, 100);
-            audio_dsp_set_gain(s_dsp, current_target_gain(), BSP_OPEN_FADE_MS);
+            audf_gain_set(s_gain, current_target_gain(), BSP_OPEN_FADE_MS);
         }
     }
-    if ((!s_dsp || s_dsp_bypass) && s_audio->set_hw_volume) {
+    if ((!s_eq || s_dsp_bypass) && s_audio->set_hw_volume) {
         /* No DSP on this stream → user volume lives on the codec (0..100, no
          * amplification — the >100 boost only exists on the SW gain path). */
         int hw = s_volume < 0 ? 0 : (s_volume > 100 ? 100 : s_volume);
@@ -318,8 +344,8 @@ static void stream_stopping(void) {
 /* Tone synth fallback (CAP_PCM without CAP_TONE): a lazily-created task owns
  * the provider stream while a tone plays — open + stream_started at a fixed
  * format (so amp arming / hw mute follow the app-stream rules), a gain-scaled
- * sine straight into the provider's write() (bypassing the app's audio_dsp
- * chain — the tone owns its own gain), then close. Parked on a notification
+ * sine straight into the provider's write() (bypassing the app's DSP chain —
+ * the tone owns its own gain), then close. Parked on a notification
  * between tones; a retrigger just updates freq/deadline, re-read every chunk. */
 
 static TaskHandle_t s_tone_task;
@@ -492,7 +518,12 @@ esp_err_t bsp_audio_close(void) {
 esp_err_t bsp_audio_write(void *data, size_t len) {
     if (!pcm_available() || !s_audio->write) return ESP_ERR_NOT_SUPPORTED;
     if (!s_open) return ESP_ERR_INVALID_STATE;
-    if (s_dsp && !s_dsp_bypass) audio_dsp_process(s_dsp, data, len);
+    if (s_eq && !s_dsp_bypass) {
+        size_t frames = len / (sizeof(int16_t) * s_dsp_channels);
+        audf_eq_process(s_eq, data, data, frames);
+        audf_gain_process(s_gain, data, data, frames);
+        if (s_dsp_channels == 2) audf_mixer_process(s_mixer, (const void *const[]){ data }, data, frames);
+    }
     return s_audio->write(s_audio, data, len);
 }
 
@@ -502,9 +533,9 @@ esp_err_t bsp_audio_set_volume(int volume) {
     if (volume > BSP_VOLUME_MAX)  volume = BSP_VOLUME_MAX;
     if (volume == s_volume) return ESP_OK;  /* drop slider duplicates */
     s_volume = volume;
-    if (s_dsp && !s_dsp_bypass) {
+    if (s_eq && !s_dsp_bypass) {
         if (s_mute || !s_open) return ESP_OK;  /* applied on unmute / open fade-in */
-        return audio_dsp_set_gain(s_dsp, volume_to_gain(volume), BSP_VOLUME_FADE_MS);
+        return audf_gain_set(s_gain, volume_to_gain(volume), BSP_VOLUME_FADE_MS);
     }
     if (!s_open) return ESP_OK;  /* applied by stream_started */
     /* No DSP on this stream → fall back to direct hardware volume (clicky). The
@@ -523,8 +554,8 @@ esp_err_t bsp_audio_set_mute(bool mute) {
     if (mute == s_mute) return ESP_OK;
     s_mute = mute;
     if (!s_open) return ESP_OK;  /* applied by stream_started */
-    if (s_dsp && !s_dsp_bypass) {
-        return audio_dsp_set_gain(s_dsp, current_target_gain(), BSP_VOLUME_FADE_MS);
+    if (s_eq && !s_dsp_bypass) {
+        return audf_gain_set(s_gain, current_target_gain(), BSP_VOLUME_FADE_MS);
     }
     return s_audio->set_hw_mute ? s_audio->set_hw_mute(s_audio, mute)
                                 : ESP_ERR_NOT_SUPPORTED;
@@ -534,21 +565,25 @@ bool bsp_audio_get_mute(void) {
     return s_mute;
 }
 
-audio_dsp_t bsp_audio_dsp(void) {
-    return s_dsp;
+audf_eq_t *bsp_audio_eq(void) {
+    return s_eq;
+}
+
+audf_mixer_t *bsp_audio_mixer(void) {
+    return s_mixer;
 }
 
 esp_err_t bsp_audio_set_eq_enabled(bool enabled) {
-    if (!s_dsp) return ESP_ERR_NOT_SUPPORTED;  /* no DSP (DISABLE mode / no PCM) */
+    if (!s_eq) return ESP_ERR_NOT_SUPPORTED;  /* no DSP (DISABLE mode / no PCM) */
     /* Record the override so route re-voicing (apply_dsp_profile) keeps it, then
      * apply it now. In MANUAL mode there is no re-voicing, but the override still
-     * gives a single, consistent entry point alongside bsp_audio_dsp(). */
+     * gives a single, consistent entry point alongside bsp_audio_eq(). */
     s_eq_override = enabled ? 1 : 0;
-    return audio_dsp_set_eq_enabled(s_dsp, enabled);
+    return audf_eq_set_enabled(s_eq, enabled);
 }
 
 bool bsp_audio_get_eq_enabled(void) {
-    return s_dsp ? audio_dsp_is_eq_enabled(s_dsp) : false;
+    return s_eq ? audf_eq_get_enabled(s_eq) : false;
 }
 
 esp_err_t bsp_audio_set_speaker_mode(bsp_audio_speaker_mode_t mode) {

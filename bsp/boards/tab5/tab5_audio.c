@@ -67,16 +67,16 @@ static esp_err_t get_dsp_profile(bsp_audio_t *self, bool headphone, uint32_t sam
     (void)self;
     const uint32_t fs = sample_rate ? sample_rate : 48000;
     if (headphone) {
-        out->biquads[0] = audio_dsp_design_highpass (fs,   50.0f, 0.707f);
-        out->biquads[1] = audio_dsp_design_low_shelf(fs,  150.0f, 0.707f, +10.0f);
-        out->biquads[2] = audio_dsp_design_peaking  (fs, 1000.0f, 0.80f,  -4.0f);
-        out->biquads[3] = audio_dsp_design_peaking  (fs, 2500.0f, 1.00f,  -3.0f);
+        out->biquads[0] = audf_biquad_highpass (fs,   50.0f, 0.707f);
+        out->biquads[1] = audf_biquad_low_shelf(fs,  150.0f, 0.707f, +10.0f);
+        out->biquads[2] = audf_biquad_peaking  (fs, 1000.0f, 0.80f,  -4.0f);
+        out->biquads[3] = audf_biquad_peaking  (fs, 2500.0f, 1.00f,  -3.0f);
         out->num_stages = 4;
         out->mono_mix   = false;
     } else {
-        out->biquads[0] = audio_dsp_design_highpass (fs,  80.0f, 0.707f);
-        out->biquads[1] = audio_dsp_design_low_shelf(fs, 300.0f, 0.707f, +7.0f);
-        out->biquads[2] = audio_dsp_design_peaking  (fs, 150.0f, 1.20f,  +3.0f);
+        out->biquads[0] = audf_biquad_highpass (fs,  80.0f, 0.707f);
+        out->biquads[1] = audf_biquad_low_shelf(fs, 300.0f, 0.707f, +7.0f);
+        out->biquads[2] = audf_biquad_peaking  (fs, 150.0f, 1.20f,  +3.0f);
         out->num_stages = 3;
         out->mono_mix   = true;
     }

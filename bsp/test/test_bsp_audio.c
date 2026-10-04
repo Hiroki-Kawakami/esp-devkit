@@ -18,6 +18,7 @@
 #include "bsp_audio.h"
 #include <math.h>
 #include <stdio.h>
+#include <string.h>
 #include <unistd.h>
 
 static int g_failures;
@@ -45,6 +46,7 @@ typedef struct {
     volatile int  drain_count;
     volatile int  drain_at_close;   /* drain_count seen by the last close */
     volatile bool drained_unmuted;  /* last drain ran before the hw mute */
+    volatile int  last_sample;
 } stub_t;
 
 static esp_err_t st_open(bsp_audio_t *self, uint32_t r, uint8_t b, uint8_t c) {
@@ -68,7 +70,7 @@ static esp_err_t st_drain(bsp_audio_t *self) {
     return ESP_OK;
 }
 static esp_err_t st_write(bsp_audio_t *self, const void *d, size_t l) {
-    (void)self; (void)d; (void)l;
+    if (l >= sizeof(int16_t)) ((stub_t *)self)->last_sample = ((const int16_t *)d)[l / sizeof(int16_t) - 1];
     return ESP_OK;
 }
 static esp_err_t st_set_hw_volume(bsp_audio_t *self, int v) { ((stub_t *)self)->hw_volume = v; return ESP_OK; }
@@ -85,7 +87,7 @@ static esp_err_t st_get_dsp_profile(bsp_audio_t *self, bool headphone, uint32_t 
         out->eq_enabled = false;
         out->mono_mix   = false;
     } else {
-        out->biquads[0] = audio_dsp_design_peaking(rate ? rate : 48000, 150.0f, 1.2f, 3.0f);
+        out->biquads[0] = audf_biquad_peaking(rate ? rate : 48000, 150.0f, 1.2f, 3.0f);
         out->num_stages = 1;
         out->eq_enabled = true;
         out->mono_mix   = true;
@@ -111,6 +113,25 @@ static bsp_audio_t *make_stub(void) {
     return &s->base;
 }
 
+static bool mono_mixed(void) {
+    float m[4];
+    audf_mixer_get_matrix(bsp_audio_mixer(), 0, m);
+    return m[1] != 0.0f;
+}
+
+/* Writes 200 ms of a constant stereo level at 48 kHz, past any volume fade,
+ * and returns what reached the provider. */
+static int settled_level(int16_t level) {
+    static int16_t buf[2 * 960];
+    for (int i = 0; i < 2 * 960; i++) buf[i] = level;
+    for (int i = 0; i < 10; i++) {
+        int16_t tmp[2 * 960];
+        memcpy(tmp, buf, sizeof(tmp));
+        bsp_audio_write(tmp, sizeof(tmp));
+    }
+    return s_stub.last_sample;
+}
+
 /* The route task polls at 200 ms; give it time to react. */
 static void route_settle(void) { usleep(600 * 1000); }
 
@@ -125,10 +146,10 @@ static void hp_cb(bool inserted, void *user) {
 static void test_auto_mode(void) {
     bsp_audio_set_active(make_stub(), NULL);   /* zero-init: Auto + speaker ON */
 
-    audio_dsp_t dsp = bsp_audio_dsp();
-    CHECK(dsp != NULL, "Auto: DSP exists from boot");
-    CHECK(audio_dsp_get_mono_mix(dsp), "Auto: speaker profile applied at boot");
-    CHECK(audio_dsp_is_eq_enabled(dsp), "Auto: speaker EQ on");
+    audf_eq_t *eq = bsp_audio_eq();
+    CHECK(eq != NULL && bsp_audio_mixer() != NULL, "Auto: DSP exists from boot");
+    CHECK(mono_mixed(), "Auto: speaker profile applied at boot");
+    CHECK(audf_eq_get_enabled(eq), "Auto: speaker EQ on");
 
     /* Amp stays off until the first open, even with speaker mode ON. */
     CHECK(!s_stub.speaker_enabled, "amp off before first open");
@@ -146,14 +167,14 @@ static void test_auto_mode(void) {
     route_settle();
     s_stub.hp = true;
     route_settle();
-    CHECK(!audio_dsp_get_mono_mix(dsp), "HP in: monomix off");
-    CHECK(!audio_dsp_is_eq_enabled(dsp), "HP in: speaker EQ off");
+    CHECK(!mono_mixed(), "HP in: monomix off");
+    CHECK(!audf_eq_get_enabled(eq), "HP in: speaker EQ off");
     CHECK(!s_stub.speaker_enabled, "HP in: amp off (speaker AUTO)");
     CHECK(g_cb_count == 1 && g_cb_last, "insert callback fired");
 
     s_stub.hp = false;
     route_settle();
-    CHECK(audio_dsp_get_mono_mix(dsp), "HP out: speaker profile back");
+    CHECK(mono_mixed(), "HP out: speaker profile back");
     CHECK(s_stub.speaker_enabled, "HP out: amp back on");
     CHECK(g_cb_count == 2 && !g_cb_last, "remove callback fired");
     bsp_audio_set_headphone_callback(NULL, NULL);
@@ -174,22 +195,22 @@ static void test_eq_override(void) {
         .dsp_mode = BSP_AUDIO_DSP_MODE_AUTO,
         .speaker_mode = BSP_AUDIO_SPEAKER_MODE_AUTO,
     });
-    audio_dsp_t dsp = bsp_audio_dsp();
+    audf_eq_t *eq = bsp_audio_eq();
     CHECK(bsp_audio_open(44100, 16, 2) == ESP_OK, "open");
-    CHECK(audio_dsp_is_eq_enabled(dsp), "boot: speaker profile EQ on");
+    CHECK(audf_eq_get_enabled(eq), "boot: speaker profile EQ on");
 
     /* Force EQ on, then plug HP (profile would voice it off): override wins. */
     CHECK(bsp_audio_set_eq_enabled(true) == ESP_OK, "force EQ on");
     s_stub.hp = true;
     route_settle();
-    CHECK(audio_dsp_is_eq_enabled(dsp), "HP in: forced EQ on survives re-voice");
+    CHECK(audf_eq_get_enabled(eq), "HP in: forced EQ on survives re-voice");
     CHECK(bsp_audio_get_eq_enabled(), "get reflects EQ on");
 
     /* Force EQ off, then unplug (profile would voice it on): override wins. */
     CHECK(bsp_audio_set_eq_enabled(false) == ESP_OK, "force EQ off");
     s_stub.hp = false;
     route_settle();
-    CHECK(!audio_dsp_is_eq_enabled(dsp), "HP out: forced EQ off survives re-voice");
+    CHECK(!audf_eq_get_enabled(eq), "HP out: forced EQ off survives re-voice");
     CHECK(!bsp_audio_get_eq_enabled(), "get reflects EQ off");
 
     bsp_audio_close();
@@ -200,26 +221,27 @@ static void test_manual_mode(void) {
         .dsp_mode = BSP_AUDIO_DSP_MODE_MANUAL,
         .speaker_mode = BSP_AUDIO_SPEAKER_MODE_AUTO,
     });
-    audio_dsp_t dsp = bsp_audio_dsp();
-    CHECK(dsp != NULL, "Manual: DSP exists");
-    CHECK(!audio_dsp_get_mono_mix(dsp), "Manual: flat init (no board profile)");
-    CHECK(!audio_dsp_is_eq_enabled(dsp), "Manual: EQ off");
+    audf_eq_t *eq = bsp_audio_eq();
+    CHECK(eq != NULL, "Manual: DSP exists");
+    CHECK(!mono_mixed(), "Manual: flat init (no board profile)");
+    CHECK(!audf_eq_get_enabled(eq), "Manual: EQ off");
 
     CHECK(bsp_audio_open(48000, 16, 2) == ESP_OK, "open");
 
     /* SW gain curve: vol 100 = unity, the 100..150 region amplifies above unity
-     * (vol 150 → +6 dB ≈ 2x). get_gain returns the (non-interpolated) target. */
+     * (vol 150 → +6 dB ≈ 2x). */
     bsp_audio_set_volume(100);
-    CHECK(fabsf(audio_dsp_get_gain(dsp) - 1.0f) < 0.01f, "vol 100 = unity gain");
+    CHECK(settled_level(10000) == 10000, "vol 100 = unity gain (%d)", s_stub.last_sample);
     bsp_audio_set_volume(150);
-    CHECK(audio_dsp_get_gain(dsp) > 1.9f && audio_dsp_get_gain(dsp) < 2.05f,
-          "vol 150 boosts ~+6 dB above unity");
+    int boosted = settled_level(10000);
+    CHECK(boosted > 19000 && boosted < 20500, "vol 150 boosts ~+6 dB above unity (%d)", boosted);
     bsp_audio_set_volume(100);
 
-    audio_dsp_set_mono_mix(dsp, true);   /* app's own setting... */
+    static const float mono[4] = { 0.5f, 0.5f, 0.5f, 0.5f };
+    audf_mixer_set_matrix(bsp_audio_mixer(), 0, mono);   /* app's own setting... */
     s_stub.hp = true;
-    route_settle();                       /* ...survives an HP flip */
-    CHECK(audio_dsp_get_mono_mix(dsp), "Manual: route change doesn't re-voice");
+    route_settle();                                       /* ...survives an HP flip */
+    CHECK(mono_mixed(), "Manual: route change doesn't re-voice");
     CHECK(!s_stub.speaker_enabled, "speaker AUTO still routes the amp");
     bsp_audio_close();
 }
@@ -228,7 +250,7 @@ static void test_disable_mode(void) {
     bsp_audio_set_active(make_stub(), &(bsp_audio_init_t){
         .dsp_mode = BSP_AUDIO_DSP_MODE_DISABLE,
     });
-    CHECK(bsp_audio_dsp() == NULL, "Disable: no DSP");
+    CHECK(bsp_audio_eq() == NULL && bsp_audio_mixer() == NULL, "Disable: no DSP");
     CHECK(bsp_audio_set_volume(40) == ESP_OK, "volume stored pre-open");
     CHECK(bsp_audio_open(48000, 16, 2) == ESP_OK, "open");
     CHECK(s_stub.hw_volume == 40, "no DSP: user volume lands on the codec");

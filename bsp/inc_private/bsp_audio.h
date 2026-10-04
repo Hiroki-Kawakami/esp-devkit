@@ -26,7 +26,7 @@ typedef struct bsp_audio bsp_audio_t;
  * re-queried on open and — in DSP_MODE_AUTO — on HP insert/remove. */
 #define BSP_AUDIO_DSP_PROFILE_MAX_STAGES 8
 typedef struct {
-    audio_dsp_biquad_t biquads[BSP_AUDIO_DSP_PROFILE_MAX_STAGES];
+    audf_biquad_t biquads[BSP_AUDIO_DSP_PROFILE_MAX_STAGES];
     size_t num_stages;
     bool eq_enabled;
     bool mono_mix;

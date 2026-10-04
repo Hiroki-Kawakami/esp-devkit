@@ -48,9 +48,9 @@ static esp_err_t get_dsp_profile(bsp_audio_t *self, bool headphone, uint32_t sam
                                  bsp_audio_dsp_profile_t *out) {
     (void)self; (void)headphone;
     const uint32_t fs = sample_rate ? sample_rate : 48000;
-    out->biquads[0] = audio_dsp_design_highpass (fs,  80.0f, 0.707f);
-    out->biquads[1] = audio_dsp_design_low_shelf(fs, 300.0f, 0.707f, +7.0f);
-    out->biquads[2] = audio_dsp_design_peaking  (fs, 150.0f, 1.20f,  +3.0f);
+    out->biquads[0] = audf_biquad_highpass (fs,  80.0f, 0.707f);
+    out->biquads[1] = audf_biquad_low_shelf(fs, 300.0f, 0.707f, +7.0f);
+    out->biquads[2] = audf_biquad_peaking  (fs, 150.0f, 1.20f,  +3.0f);
     out->num_stages = 3;
     out->mono_mix   = true;
     out->eq_enabled = true;

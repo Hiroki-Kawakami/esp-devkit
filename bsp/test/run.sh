@@ -1,14 +1,12 @@
 #!/bin/sh
 # Build & run the bsp audio host unit tests. Run inside the nix dev shell,
 # from anywhere:
-#   nix develop -c esp-devkit/bsp/test/run.sh                  # TEST=test_audio_dsp
-#   TEST=test_bsp_audio nix develop -c esp-devkit/bsp/test/run.sh
+#   nix develop -c esp-devkit/bsp/test/run.sh                  # TEST=test_bsp_audio
 #   TEST=test_sdl_audio nix develop -c esp-devkit/bsp/test/run.sh
 #
-# test_audio_dsp: pure DSP math (no audio device, no GUI). test_bsp_audio:
-# the dispatch policy (DSP voicing modes, amp arming, idempotent open/close,
-# the tone synth fallback) against stub providers. test_sdl_audio: plays a
-# sine through the bsp_audio dispatch + SDL provider — audible when a sound
+# test_bsp_audio: the dispatch policy (DSP voicing modes, amp arming,
+# idempotent open/close, the tone synth fallback) against stub providers.
+# test_sdl_audio: plays a sine through the bsp_audio dispatch + SDL provider — audible when a sound
 # device exists, and falls back to the pacing null sink otherwise (set
 # SIMULATOR_HEADLESS=1 to force the null sink), so it also verifies the
 # write() backpressure timing headless.
@@ -19,6 +17,7 @@ set -e
 here=$(CDPATH= cd "$(dirname "$0")" && pwd)
 comp=$(CDPATH= cd "$here/.." && pwd)        # esp-devkit/bsp
 cc="$comp/../idf_compat"                    # sibling component in this repo
+audf="$comp/../libs/audio_framework"
 out="$here/build"
 mkdir -p "$out"
 
@@ -28,7 +27,7 @@ if ! command -v gcc >/dev/null 2>&1; then
     exit 1
 fi
 
-TEST=${TEST:-test_audio_dsp}
+TEST=${TEST:-test_bsp_audio}
 test_src="$here/$TEST.c"
 [ -f "$test_src" ] || { echo "no such test: $test_src" >&2; exit 1; }
 
@@ -46,27 +45,20 @@ case "$TEST" in
 test_sdl_audio)
     gcc -std=c11 \
         -I"$comp/inc" -I"$comp/inc_private" -I"$comp/simulator" -I"$cc/include" \
+        -I"$audf/inc" -I"$audf/src" \
         "$test_src" \
-        "$comp/src/audio_dsp.c" "$comp/src/bsp_audio.c" "$comp/src/bsp_dispatch.c" \
+        "$comp/src/bsp_audio.c" "$comp/src/bsp_dispatch.c" "$audf"/src/*.c \
         "$comp/simulator/sdl_audio.c" \
         $objs \
         $(pkg-config --cflags --libs sdl2) -lm -lpthread \
         -o "$bin"
     ;;
-test_bsp_audio)
-    gcc -std=c11 \
-        -I"$comp/inc" -I"$comp/inc_private" -I"$cc/include" \
-        "$test_src" \
-        "$comp/src/audio_dsp.c" "$comp/src/bsp_audio.c" "$comp/src/bsp_dispatch.c" \
-        $objs \
-        -lm -lpthread \
-        -o "$bin"
-    ;;
 *)
     gcc -std=c11 \
-        -I"$comp/inc" -I"$cc/include" \
+        -I"$comp/inc" -I"$comp/inc_private" -I"$cc/include" \
+        -I"$audf/inc" -I"$audf/src" \
         "$test_src" \
-        "$comp/src/audio_dsp.c" \
+        "$comp/src/bsp_audio.c" "$comp/src/bsp_dispatch.c" "$audf"/src/*.c \
         $objs \
         -lm -lpthread \
         -o "$bin"

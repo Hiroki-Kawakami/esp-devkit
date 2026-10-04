@@ -7,7 +7,8 @@
 
 #pragma once
 #include "bsp_types.h"
-#include "audio_dsp.h"
+#include "audf_eq.h"
+#include "audf_mixer.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -232,10 +233,11 @@ int       bsp_audio_get_volume(void);
 esp_err_t bsp_audio_set_mute(bool mute);
 bool      bsp_audio_get_mute(void);
 
-/* DSP chain handle (NULL in DSP_MODE_DISABLE / no PCM path). set_gain is owned
- * by the volume plumbing, and in AUTO mode route changes overwrite direct
- * edits — set_eq_enabled is the EQ toggle that survives re-voicing. */
-audio_dsp_t bsp_audio_dsp(void);
+/* Board voicing stages (NULL in DSP_MODE_DISABLE / no PCM path). In AUTO mode
+ * route changes overwrite direct edits — set_eq_enabled is the EQ toggle that
+ * survives re-voicing. The mixer is applied to stereo streams only. */
+audf_eq_t    *bsp_audio_eq(void);
+audf_mixer_t *bsp_audio_mixer(void);
 esp_err_t bsp_audio_set_eq_enabled(bool enabled);
 bool      bsp_audio_get_eq_enabled(void);
 

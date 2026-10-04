@@ -26,7 +26,6 @@ set(BSP_COMMON_SRCS
     "src/bsp_power.c"
     "src/bsp_led.c"
     "src/bsp_audio.c"
-    "src/audio_dsp.c"
     "src/bsp_harness.c")
 
 set(BSP_DEVICE_COMMON_SRCS
@@ -94,6 +93,7 @@ if(ESP_PLATFORM)
             ${BOARD_DEVICE_SRCS}
         INCLUDE_DIRS "inc"
         PRIV_INCLUDE_DIRS "inc_private" ${BOARD_DEVICE_PRIV_INCLUDE_DIRS}
+        REQUIRES audio_framework
         PRIV_REQUIRES esp_timer esp_driver_ppa esp_mm ${BOARD_DEVICE_PRIV_REQUIRES})
 
     # Enable Link Time Optimization

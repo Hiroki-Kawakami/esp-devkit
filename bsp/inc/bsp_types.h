@@ -198,10 +198,10 @@ typedef enum {
     BSP_AUDIO_SPEAKER_MODE_OFF  = 2,
 } bsp_audio_speaker_mode_t;
 
-/* Who drives the DSP chain (audio_dsp.h) that voices the board's output path. */
+/* Who drives the DSP chain that voices the board's output path. */
 typedef enum {
     BSP_AUDIO_DSP_MODE_AUTO    = 0,  /*!< board tuning, re-applied on route changes (default) */
-    BSP_AUDIO_DSP_MODE_MANUAL  = 1,  /*!< initialised flat; the app drives bsp_audio_dsp() */
+    BSP_AUDIO_DSP_MODE_MANUAL  = 1,  /*!< initialised flat; the app drives bsp_audio_eq/mixer() */
     BSP_AUDIO_DSP_MODE_DISABLE = 2,  /*!< no DSP; volume falls back to the codec (clicky) */
 } bsp_audio_dsp_mode_t;
 
