@@ -26,6 +26,7 @@ set(DEVKIT_DEVICE_COMPONENTS
     libs/image_framework
     libs/jpeg_decode_enhanced
     libs/sensors
+    libs/usb_host
     libs/wifi)
 
 # Simulator components: idf_compat first (simulator-only shims), then bsp /
@@ -38,6 +39,7 @@ set(DEVKIT_SIMULATOR_COMPONENTS
     libs/image_framework
     libs/jpeg_decode_enhanced
     libs/sensors
+    libs/usb_host
     libs/wifi)
 
 # devkit_idf_init([UI_FRAMEWORK] [COMPONENT_DIRS dir...])

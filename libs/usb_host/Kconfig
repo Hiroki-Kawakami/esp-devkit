@@ -1,0 +1,15 @@
+menu "USB host"
+
+config USBH
+    bool
+
+config USBH_MSC
+    bool "Mass storage class driver"
+    depends on DEVKIT_SIMULATOR || SOC_USB_OTG_SUPPORTED
+    select USBH
+    default n
+    help
+        Bulk-Only Transport drives with a SCSI command set, mounted through
+        FatFS. On the simulator a host directory stands in for the drive.
+
+endmenu
