@@ -11,6 +11,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "host_internal.hpp"
 #include "usb/usb_helpers.h"
 
 namespace usb_host::detail {
@@ -143,7 +144,7 @@ MscBotDevice::~MscBotDevice() {
         usb_host_transfer_free(data_);
     }
     if (cmd_) usb_host_transfer_free(cmd_);
-    if (xfer_.device()) usb_host_device_close(xfer_.client(), xfer_.device());
+    if (xfer_.device()) close_device(xfer_.device());
 }
 
 esp_err_t MscBotDevice::setup(usb_host_client_handle_t client, uint8_t address) {
@@ -152,7 +153,7 @@ esp_err_t MscBotDevice::setup(usb_host_client_handle_t client, uint8_t address) 
     if (err != ESP_OK) return err;
 
     usb_device_handle_t handle = nullptr;
-    err = usb_host_device_open(client, address, &handle);
+    err = open_device(address, &handle);
     if (err != ESP_OK) return err;
     xfer_.set_device(handle);
 

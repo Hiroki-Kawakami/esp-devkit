@@ -51,4 +51,23 @@ public:
     virtual void set_mute(bool mute) = 0;
 };
 
+// Records PCM from a device's capture interface. Same lifetime rules as
+// UacDevice.
+class UacCaptureDevice {
+public:
+    virtual ~UacCaptureDevice() = default;
+    virtual bool connected() const = 0;
+    // What the device sends, which for a few devices is not what it declares.
+    virtual const std::vector<UacFormat>& formats() const = 0;
+
+    virtual esp_err_t open(size_t format, uint32_t rate) = 0;
+    virtual void close() = 0;
+    // Waits up to timeout_ms for at least one frame and copies whole frames
+    // only; must not overlap close(). Data that arrives while the buffer is
+    // full is dropped.
+    virtual esp_err_t read(void* data, size_t len, size_t* read, uint32_t timeout_ms) = 0;
+    // Bytes recorded and not read yet.
+    virtual size_t available() const = 0;
+};
+
 }  // namespace usb_host

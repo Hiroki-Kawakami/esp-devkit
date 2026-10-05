@@ -13,6 +13,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "host_internal.hpp"
 
 namespace usb_host::detail {
 
@@ -102,7 +103,7 @@ UacOutputDevice::~UacOutputDevice() {
     }
     if (feature_) usb_host_transfer_free(feature_);
     if (ctrl_) usb_host_transfer_free(ctrl_);
-    if (xfer_.device()) usb_host_device_close(xfer_.client(), xfer_.device());
+    if (xfer_.device()) close_device(xfer_.device());
 }
 
 esp_err_t UacOutputDevice::setup(usb_host_client_handle_t client, uint8_t address) {
@@ -111,14 +112,14 @@ esp_err_t UacOutputDevice::setup(usb_host_client_handle_t client, uint8_t addres
     if (err != ESP_OK) return err;
 
     usb_device_handle_t handle = nullptr;
-    err = usb_host_device_open(client, address, &handle);
+    err = open_device(address, &handle);
     if (err != ESP_OK) return err;
     xfer_.set_device(handle);
 
     const usb_config_desc_t* config = nullptr;
     err = usb_host_get_active_config_descriptor(handle, &config);
     if (err != ESP_OK) return err;
-    err = uac_parse(config, &topology_);
+    err = uac_parse(config, false, &topology_);
     if (err != ESP_OK) return err;
     for (const UacStreamAlt& alt : topology_.alts) formats_.push_back(alt.format);
 

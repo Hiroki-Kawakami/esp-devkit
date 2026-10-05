@@ -143,10 +143,15 @@ void parse_streaming(const uint8_t* bytes, uint8_t length, Pending* pending) {
     pending->type_i = true;
 }
 
-void parse_endpoint(const usb_ep_desc_t* endpoint, Pending* pending) {
+void parse_endpoint(const usb_ep_desc_t* endpoint, bool capture, Pending* pending) {
     if (USB_EP_DESC_GET_XFERTYPE(endpoint) != USB_TRANSFER_TYPE_ISOCHRONOUS) return;
-    if (USB_EP_DESC_GET_EP_DIR(endpoint)) return;
-    if ((endpoint->bmAttributes & USB_BM_ATTRIBUTES_SYNCTYPE_MASK) == USB_BM_ATTRIBUTES_SYNC_ASYNC) {
+    if (static_cast<bool>(USB_EP_DESC_GET_EP_DIR(endpoint)) != capture) return;
+    if ((endpoint->bmAttributes & USB_BM_ATTRIBUTES_USAGETYPE_MASK) ==
+        USB_BM_ATTRIBUTES_USAGE_FEEDBACK) {
+        return;
+    }
+    if (!capture &&
+        (endpoint->bmAttributes & USB_BM_ATTRIBUTES_SYNCTYPE_MASK) == USB_BM_ATTRIBUTES_SYNC_ASYNC) {
         pending->async = true;
         return;
     }
@@ -201,7 +206,7 @@ bool find_feature(const std::vector<Entity>& entities, uint8_t id, uint8_t targe
 
 }  // namespace
 
-esp_err_t uac_parse(const usb_config_desc_t* config, UacTopology* out) {
+esp_err_t uac_parse(const usb_config_desc_t* config, bool capture, UacTopology* out) {
     *out = {};
     std::vector<Entity> entities;
     Pending pending;
@@ -235,7 +240,7 @@ esp_err_t uac_parse(const usb_config_desc_t* config, UacTopology* out) {
         } else if (desc->bDescriptorType == kCsInterface && pending.streaming) {
             parse_streaming(bytes, length, &pending);
         } else if (desc->bDescriptorType == USB_B_DESCRIPTOR_TYPE_ENDPOINT && pending.streaming) {
-            parse_endpoint(reinterpret_cast<const usb_ep_desc_t*>(desc), &pending);
+            parse_endpoint(reinterpret_cast<const usb_ep_desc_t*>(desc), capture, &pending);
         } else if (desc->bDescriptorType == kCsEndpoint && pending.streaming && length >= 4 &&
                    bytes[2] == kEpGeneral) {
             pending.alt.rate_control = bytes[3] & kEpRateControl;
@@ -247,6 +252,7 @@ esp_err_t uac_parse(const usb_config_desc_t* config, UacTopology* out) {
         out->alts.clear();
         return ESP_ERR_NOT_SUPPORTED;
     }
+    if (capture) return ESP_OK;
     for (const Entity& entity : entities) {
         if (entity.type != kAcOutputTerminal) continue;
         UacFeatureUnit feature;

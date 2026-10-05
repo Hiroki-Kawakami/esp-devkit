@@ -14,6 +14,8 @@ namespace usb_host {
 
 class MscDevice;
 class UacDevice;
+class UacCaptureDevice;
+class UvcDevice;
 
 // Called on the usb_host worker task; blocking them stalls enumeration.
 struct Callbacks {
@@ -21,6 +23,10 @@ struct Callbacks {
     std::function<void(const std::shared_ptr<MscDevice>&)> msc_disconnected;
     std::function<void(std::shared_ptr<UacDevice>)> uac_connected;
     std::function<void(const std::shared_ptr<UacDevice>&)> uac_disconnected;
+    std::function<void(std::shared_ptr<UacCaptureDevice>)> uac_capture_connected;
+    std::function<void(const std::shared_ptr<UacCaptureDevice>&)> uac_capture_disconnected;
+    std::function<void(std::shared_ptr<UvcDevice>)> uvc_connected;
+    std::function<void(const std::shared_ptr<UvcDevice>&)> uvc_disconnected;
 };
 
 // VBUS is not touched: power the port as the caller sees fit.

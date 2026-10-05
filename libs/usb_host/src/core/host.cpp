@@ -3,7 +3,10 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
+#include <algorithm>
+#include <mutex>
 #include <utility>
+#include <vector>
 
 #include "esp_intr_alloc.h"
 #include "freertos/FreeRTOS.h"
@@ -28,6 +31,9 @@ constexpr ClassDriver kDrivers[] = {
 #if CONFIG_USBH_UAC
     {detail::uac_install, detail::uac_connected, detail::uac_gone},
 #endif
+#if CONFIG_USBH_UVC
+    {detail::uvc_install, detail::uvc_connected, detail::uvc_gone},
+#endif
 };
 
 struct ClientEvent {
@@ -36,9 +42,17 @@ struct ClientEvent {
     usb_device_handle_t handle;
 };
 
+struct OpenDevice {
+    uint8_t address;
+    usb_device_handle_t handle;
+    int users;
+};
+
 QueueHandle_t s_events;
 Callbacks s_callbacks;
 usb_host_client_handle_t s_client;
+std::mutex s_open_lock;
+std::vector<OpenDevice> s_open;
 
 void host_lib_task(void*) {
     while (true) {
@@ -89,6 +103,31 @@ const Callbacks& detail::callbacks() {
 
 usb_host_client_handle_t detail::client() {
     return s_client;
+}
+
+esp_err_t detail::open_device(uint8_t address, usb_device_handle_t* out) {
+    std::lock_guard<std::mutex> guard(s_open_lock);
+    for (OpenDevice& device : s_open) {
+        if (device.address != address) continue;
+        device.users++;
+        *out = device.handle;
+        return ESP_OK;
+    }
+    usb_device_handle_t handle = nullptr;
+    const esp_err_t err = usb_host_device_open(s_client, address, &handle);
+    if (err != ESP_OK) return err;
+    s_open.push_back({address, handle, 1});
+    *out = handle;
+    return ESP_OK;
+}
+
+void detail::close_device(usb_device_handle_t handle) {
+    std::lock_guard<std::mutex> guard(s_open_lock);
+    auto it = std::find_if(s_open.begin(), s_open.end(),
+                           [&](const OpenDevice& device) { return device.handle == handle; });
+    if (it == s_open.end() || --it->users > 0) return;
+    usb_host_device_close(s_client, handle);
+    s_open.erase(it);
 }
 
 esp_err_t install(Callbacks callbacks) {

@@ -30,6 +30,9 @@ esp_err_t install(Callbacks callbacks) {
 #if CONFIG_USBH_UAC
     if (const esp_err_t err = detail::uac_install(); err != ESP_OK) return err;
 #endif
+#if CONFIG_USBH_UVC
+    if (const esp_err_t err = detail::uvc_install(); err != ESP_OK) return err;
+#endif
     return ESP_OK;
 }
 

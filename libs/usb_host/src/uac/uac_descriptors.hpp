@@ -37,8 +37,9 @@ struct UacTopology {
     UacFeatureUnit feature;
 };
 
-// ESP_ERR_NOT_SUPPORTED when there is no UAC1 PCM playback interface on an
-// adaptive or synchronous endpoint.
-esp_err_t uac_parse(const usb_config_desc_t* config, UacTopology* out);
+// The first UAC1 PCM streaming interface in the given direction. Playback
+// takes adaptive and synchronous endpoints only and fills in the feature unit;
+// capture leaves it empty. ESP_ERR_NOT_SUPPORTED when there is none.
+esp_err_t uac_parse(const usb_config_desc_t* config, bool capture, UacTopology* out);
 
 }  // namespace usb_host::detail

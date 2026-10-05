@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -160,8 +161,82 @@ private:
     Clock::time_point start_;
 };
 
+class SimUacCaptureDevice final : public UacCaptureDevice {
+public:
+    explicit SimUacCaptureDevice(uint32_t rate) {
+        UacFormat format;
+        format.channels = 2;
+        format.subframe_bytes = 2;
+        format.bit_resolution = 16;
+        format.rates = {rate};
+        formats_.push_back(std::move(format));
+    }
+
+    bool connected() const override { return !gone_; }
+    const std::vector<UacFormat>& formats() const override { return formats_; }
+
+    esp_err_t open(size_t format, uint32_t rate) override {
+        if (gone_) return ESP_ERR_NOT_FOUND;
+        if (format >= formats_.size()) return ESP_ERR_INVALID_ARG;
+        if (!formats_[format].supports(rate)) return ESP_ERR_NOT_SUPPORTED;
+        rate_ = rate;
+        frames_ = 0;
+        start_ = Clock::now();
+        open_ = true;
+        ESP_LOGI(TAG, "sim capture open %u Hz", static_cast<unsigned>(rate));
+        return ESP_OK;
+    }
+
+    void close() override { open_ = false; }
+
+    esp_err_t read(void* data, size_t len, size_t* read, uint32_t timeout_ms) override {
+        *read = 0;
+        const auto deadline = Clock::now() + std::chrono::milliseconds(timeout_ms);
+        while (available() < kFrameBytes) {
+            if (gone_) return ESP_ERR_NOT_FOUND;
+            if (!open_) return ESP_ERR_INVALID_STATE;
+            if (Clock::now() >= deadline) return ESP_ERR_TIMEOUT;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        const size_t count = std::min(len, available()) / kFrameBytes;
+        auto* out = static_cast<int16_t*>(data);
+        for (size_t i = 0; i < count; i++) {
+            const double phase = 2.0 * M_PI * kToneHz * static_cast<double>(frames_ + i) / rate_;
+            const auto sample = static_cast<int16_t>(std::sin(phase) * kToneLevel);
+            out[i * 2] = sample;
+            out[i * 2 + 1] = sample;
+        }
+        frames_ += count;
+        *read = count * kFrameBytes;
+        return ESP_OK;
+    }
+
+    size_t available() const override {
+        if (!open_) return 0;
+        const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+            Clock::now() - start_).count();
+        const uint64_t due = static_cast<uint64_t>(elapsed) * rate_ / 1000000;
+        return due > frames_ ? static_cast<size_t>(due - frames_) * kFrameBytes : 0;
+    }
+
+    void mark_gone() { gone_ = true; }
+
+private:
+    static constexpr size_t kFrameBytes = 4;
+    static constexpr double kToneHz = 440.0;
+    static constexpr double kToneLevel = 8000.0;
+
+    std::vector<UacFormat> formats_;
+    std::atomic<bool> gone_{false};
+    std::atomic<bool> open_{false};
+    uint32_t rate_ = 0;
+    uint64_t frames_ = 0;
+    Clock::time_point start_;
+};
+
 std::mutex s_lock;
 std::shared_ptr<SimUacDevice> s_device;
+std::shared_ptr<SimUacCaptureDevice> s_capture;
 
 std::vector<uint32_t> parse_rates(const char* text) {
     std::vector<uint32_t> rates;
@@ -209,11 +284,47 @@ bool cmd_detach(int, const char* const*, void*) {
     return true;
 }
 
+bool cmd_capture_attach(int argc, const char* const* argv, void*) {
+    const uint32_t rate = argc > 1 ? static_cast<uint32_t>(strtoul(argv[1], nullptr, 10)) : 48000;
+    if (!rate) {
+        harness_reply("ERR %s: bad sample rate", argv[0]);
+        return true;
+    }
+    std::shared_ptr<SimUacCaptureDevice> device;
+    {
+        std::lock_guard<std::mutex> guard(s_lock);
+        if (s_capture) {
+            harness_reply("ERR %s: a capture device is attached", argv[0]);
+            return true;
+        }
+        s_capture = std::make_shared<SimUacCaptureDevice>(rate);
+        device = s_capture;
+    }
+    if (detail::callbacks().uac_capture_connected) detail::callbacks().uac_capture_connected(device);
+    return true;
+}
+
+bool cmd_capture_detach(int, const char* const*, void*) {
+    std::shared_ptr<SimUacCaptureDevice> device;
+    {
+        std::lock_guard<std::mutex> guard(s_lock);
+        device = std::move(s_capture);
+    }
+    if (!device) return true;
+    device->mark_gone();
+    if (detail::callbacks().uac_capture_disconnected) {
+        detail::callbacks().uac_capture_disconnected(device);
+    }
+    return true;
+}
+
 }  // namespace
 
 esp_err_t detail::uac_install() {
     harness_register("usbh-uac-attach", cmd_attach, nullptr);
     harness_register("usbh-uac-detach", cmd_detach, nullptr);
+    harness_register("usbh-uac-capture-attach", cmd_capture_attach, nullptr);
+    harness_register("usbh-uac-capture-detach", cmd_capture_detach, nullptr);
     return ESP_OK;
 }
 
