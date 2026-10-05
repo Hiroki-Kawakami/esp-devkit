@@ -8,7 +8,6 @@
 #include <algorithm>
 
 #include "esp_log.h"
-#include "usb/usb_helpers.h"
 
 namespace usb_host::detail {
 
@@ -143,20 +142,20 @@ void parse_streaming(const uint8_t* bytes, uint8_t length, Pending* pending) {
     pending->type_i = true;
 }
 
-void parse_endpoint(const usb_ep_desc_t* endpoint, bool capture, Pending* pending) {
-    if (USB_EP_DESC_GET_XFERTYPE(endpoint) != USB_TRANSFER_TYPE_ISOCHRONOUS) return;
-    if (static_cast<bool>(USB_EP_DESC_GET_EP_DIR(endpoint)) != capture) return;
-    if ((endpoint->bmAttributes & USB_BM_ATTRIBUTES_USAGETYPE_MASK) ==
-        USB_BM_ATTRIBUTES_USAGE_FEEDBACK) {
+void parse_endpoint(const EndpointDesc* endpoint, bool capture, Pending* pending) {
+    if (ep_type(endpoint) != TransferType::Isochronous) return;
+    if (ep_is_in(endpoint) != capture) return;
+    if ((endpoint->bmAttributes & kEpUsageMask) ==
+        kEpUsageFeedback) {
         return;
     }
     if (!capture &&
-        (endpoint->bmAttributes & USB_BM_ATTRIBUTES_SYNCTYPE_MASK) == USB_BM_ATTRIBUTES_SYNC_ASYNC) {
+        (endpoint->bmAttributes & kEpSyncMask) == kEpSyncAsync) {
         pending->async = true;
         return;
     }
     pending->alt.endpoint = endpoint->bEndpointAddress;
-    pending->alt.max_packet_bytes = USB_EP_DESC_GET_MPS(endpoint);
+    pending->alt.max_packet_bytes = ep_mps(endpoint);
     pending->alt.interval = endpoint->bInterval;
 }
 
@@ -206,7 +205,7 @@ bool find_feature(const std::vector<Entity>& entities, uint8_t id, uint8_t targe
 
 }  // namespace
 
-esp_err_t uac_parse(const usb_config_desc_t* config, bool capture, UacTopology* out) {
+esp_err_t uac_parse(const ConfigDesc* config, bool capture, UacTopology* out) {
     *out = {};
     std::vector<Entity> entities;
     Pending pending;
@@ -215,15 +214,14 @@ esp_err_t uac_parse(const usb_config_desc_t* config, bool capture, UacTopology* 
     bool uac1 = false;
     uint8_t terminal_link = 0;
 
-    int offset = 0;
-    auto* desc = reinterpret_cast<const usb_standard_desc_t*>(config);
-    while ((desc = usb_parse_next_descriptor(desc, config->wTotalLength, &offset))) {
+    const StandardDesc* desc = reinterpret_cast<const StandardDesc*>(config);
+    while ((desc = next_descriptor(config, desc)) != nullptr) {
         const auto* bytes = reinterpret_cast<const uint8_t*>(desc);
         const uint8_t length = desc->bLength;
-        if (desc->bDescriptorType == USB_B_DESCRIPTOR_TYPE_INTERFACE) {
+        if (desc->bDescriptorType == kDescInterface) {
             flush(&pending, out, &terminal_link);
-            const auto* interface = reinterpret_cast<const usb_intf_desc_t*>(desc);
-            const bool audio = interface->bInterfaceClass == USB_CLASS_AUDIO &&
+            const auto* interface = reinterpret_cast<const InterfaceDesc*>(desc);
+            const bool audio = interface->bInterfaceClass == kClassAudio &&
                                interface->bInterfaceProtocol == kProtocolUac1;
             in_control = false;
             if (audio && interface->bInterfaceSubClass == kSubclassControl && !control_found) {
@@ -239,8 +237,8 @@ esp_err_t uac_parse(const usb_config_desc_t* config, bool capture, UacTopology* 
             parse_control(bytes, length, &entities, &uac1);
         } else if (desc->bDescriptorType == kCsInterface && pending.streaming) {
             parse_streaming(bytes, length, &pending);
-        } else if (desc->bDescriptorType == USB_B_DESCRIPTOR_TYPE_ENDPOINT && pending.streaming) {
-            parse_endpoint(reinterpret_cast<const usb_ep_desc_t*>(desc), capture, &pending);
+        } else if (desc->bDescriptorType == kDescEndpoint && pending.streaming) {
+            parse_endpoint(reinterpret_cast<const EndpointDesc*>(desc), capture, &pending);
         } else if (desc->bDescriptorType == kCsEndpoint && pending.streaming && length >= 4 &&
                    bytes[2] == kEpGeneral) {
             pending.alt.rate_control = bytes[3] & kEpRateControl;

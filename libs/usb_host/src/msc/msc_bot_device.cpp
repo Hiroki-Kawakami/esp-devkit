@@ -12,7 +12,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "host_internal.hpp"
-#include "usb/usb_helpers.h"
 
 namespace usb_host::detail {
 
@@ -69,18 +68,22 @@ uint32_t be32(const uint8_t* bytes) {
            (static_cast<uint32_t>(bytes[2]) << 8) | bytes[3];
 }
 
-const usb_intf_desc_t* find_interface(const usb_config_desc_t* config, int* offset) {
-    auto* desc = reinterpret_cast<const usb_standard_desc_t*>(config);
-    while ((desc = usb_parse_next_descriptor_of_type(desc, config->wTotalLength,
-                                                     USB_W_VALUE_DT_INTERFACE, offset))) {
-        auto* interface = reinterpret_cast<const usb_intf_desc_t*>(desc);
-        if (interface->bInterfaceClass == USB_CLASS_MASS_STORAGE &&
+const InterfaceDesc* find_interface(const ConfigDesc* config) {
+    for (const StandardDesc* desc = reinterpret_cast<const StandardDesc*>(config);
+         (desc = next_descriptor(config, desc)) != nullptr;) {
+        if (desc->bDescriptorType != kDescInterface) continue;
+        auto* interface = reinterpret_cast<const InterfaceDesc*>(desc);
+        if (interface->bInterfaceClass == kClassMassStorage &&
             interface->bInterfaceSubClass == kSubclassScsi &&
-            interface->bInterfaceProtocol == kProtocolBot) {
+            interface->bInterfaceProtocol == kProtocolBot && interface->bAlternateSetting == 0) {
             return interface;
         }
     }
     return nullptr;
+}
+
+size_t round_up_to(size_t bytes, size_t unit) {
+    return (bytes + unit - 1) / unit * unit;
 }
 
 MscBotDevice* blockdev_owner(esp_blockdev_handle_t handle) {
@@ -122,12 +125,12 @@ const esp_blockdev_ops_t kBlockdevOps = {
 
 }  // namespace
 
-esp_err_t MscBotDevice::open(usb_host_client_handle_t client, uint8_t address,
+esp_err_t MscBotDevice::open(uint8_t address,
                              std::shared_ptr<MscBotDevice>* out) {
     auto* raw = new (std::nothrow) MscBotDevice();
     if (!raw) return ESP_ERR_NO_MEM;
     std::shared_ptr<MscBotDevice> device(raw);
-    const esp_err_t err = device->setup(client, address);
+    const esp_err_t err = device->setup(address);
     if (err != ESP_OK) return err;
     ESP_LOGI(TAG, "drive at %u: %u blocks of %u bytes, bulk in %02x/%u out %02x/%u", address,
              static_cast<unsigned>(device->block_count_),
@@ -138,42 +141,35 @@ esp_err_t MscBotDevice::open(usb_host_client_handle_t client, uint8_t address,
 }
 
 MscBotDevice::~MscBotDevice() {
-    if (claimed_) usb_host_interface_release(xfer_.client(), xfer_.device(), interface_);
-    if (data_) {
-        TransferContext::set_buffer(data_, bounce_, bounce_bytes_);
-        usb_host_transfer_free(data_);
-    }
-    if (cmd_) usb_host_transfer_free(cmd_);
+    if (claimed_) interface_release(xfer_.device(), interface_);
+    transfer_free(data_);
+    transfer_free(cmd_);
     if (xfer_.device()) close_device(xfer_.device());
 }
 
-esp_err_t MscBotDevice::setup(usb_host_client_handle_t client, uint8_t address) {
+esp_err_t MscBotDevice::setup(uint8_t address) {
     bounce_bytes_ = kBounceBytes;
-    esp_err_t err = xfer_.init(client);
+    esp_err_t err = xfer_.init();
     if (err != ESP_OK) return err;
 
-    usb_device_handle_t handle = nullptr;
+    Device* handle = nullptr;
     err = open_device(address, &handle);
     if (err != ESP_OK) return err;
     xfer_.set_device(handle);
 
-    const usb_config_desc_t* config = nullptr;
-    err = usb_host_get_active_config_descriptor(handle, &config);
-    if (err != ESP_OK) return err;
-
-    int offset = 0;
-    const usb_intf_desc_t* interface = find_interface(config, &offset);
+    const ConfigDesc* config = config_descriptor(handle);
+    const InterfaceDesc* interface = find_interface(config);
     if (!interface) return ESP_ERR_NOT_SUPPORTED;
     interface_ = interface->bInterfaceNumber;
-    err = find_endpoints(config, interface, offset);
+    err = find_endpoints(config, interface);
     if (err != ESP_OK) return err;
 
-    err = usb_host_transfer_alloc(kCommandBytes, 0, &cmd_);
+    err = transfer_alloc(kCommandBytes, 0, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL, &cmd_);
     if (err != ESP_OK) return err;
-    err = usb_host_transfer_alloc(bounce_bytes_, 0, &data_);
+    err = transfer_alloc(bounce_bytes_, 0, MALLOC_CAP_DMA | MALLOC_CAP_SPIRAM, &data_);
     if (err != ESP_OK) return err;
     bounce_ = data_->data_buffer;
-    err = usb_host_interface_claim(client, handle, interface_, 0);
+    err = interface_claim(handle, interface_, 0);
     if (err != ESP_OK) return err;
     claimed_ = true;
 
@@ -207,14 +203,13 @@ esp_err_t MscBotDevice::clear_halt(uint8_t endpoint) {
     return xfer_.clear_halt(cmd_, endpoint, kTransferTimeoutMs);
 }
 
-esp_err_t MscBotDevice::bulk_transfer(usb_transfer_t* transfer, uint8_t endpoint, size_t bytes) {
+esp_err_t MscBotDevice::bulk_transfer(Transfer* transfer, uint8_t endpoint, size_t bytes) {
     return xfer_.submit(transfer, endpoint, bytes, kTransferTimeoutMs);
 }
 
 esp_err_t MscBotDevice::mass_storage_reset() {
     const esp_err_t err = control_transfer(
-        USB_BM_REQUEST_TYPE_DIR_OUT | USB_BM_REQUEST_TYPE_TYPE_CLASS |
-            USB_BM_REQUEST_TYPE_RECIP_INTERFACE,
+        kReqTypeClass | kReqRecipInterface,
         kRequestReset, 0, interface_, 0);
     clear_halt(bulk_in_);
     clear_halt(bulk_out_);
@@ -225,19 +220,14 @@ esp_err_t MscBotDevice::data_stage(void* data, size_t bytes, bool in) {
     const uint8_t endpoint = in ? bulk_in_ : bulk_out_;
     const bool borrowed = xfer_.borrowable(data, bytes, bulk_in_mps_);
     if (borrowed) {
-        TransferContext::set_buffer(data_, data, bytes);
-        TransferContext::sync_for_device(data, bytes);
-    } else {
-        TransferContext::set_buffer(data_, bounce_, bounce_bytes_);
-        if (!in) memcpy(bounce_, data, bytes);
+        transfer_set_buffer(data_, data, bytes);
+    } else if (!in) {
+        memcpy(bounce_, data, bytes);
     }
-    const size_t submit_bytes =
-        in ? static_cast<size_t>(usb_round_up_to_mps(static_cast<int>(bytes), bulk_in_mps_))
-           : bytes;
+    const size_t submit_bytes = in ? round_up_to(bytes, bulk_in_mps_) : bytes;
     const esp_err_t err = bulk_transfer(data_, endpoint, submit_bytes);
-    if (borrowed && in) TransferContext::sync_for_cpu(data, bytes);
     if (err == ESP_OK && in && !borrowed) memcpy(data, bounce_, bytes);
-    TransferContext::set_buffer(data_, bounce_, bounce_bytes_);
+    transfer_set_buffer(data_, bounce_, bounce_bytes_);
     return err;
 }
 
@@ -270,7 +260,7 @@ esp_err_t MscBotDevice::run_command(const uint8_t* cb, uint8_t cb_length, void* 
     }
 
     const size_t csw_bytes =
-        static_cast<size_t>(usb_round_up_to_mps(static_cast<int>(kCswBytes), bulk_in_mps_));
+        round_up_to(kCswBytes, bulk_in_mps_);
     esp_err_t status = bulk_transfer(cmd_, bulk_in_, csw_bytes);
     if (status == ESP_ERR_INVALID_RESPONSE) {
         clear_halt(bulk_in_);
@@ -373,21 +363,19 @@ esp_err_t MscBotDevice::transfer_chunked(void* buffer, uint32_t block, uint32_t 
     return err;
 }
 
-esp_err_t MscBotDevice::find_endpoints(const usb_config_desc_t* config,
-                                       const usb_intf_desc_t* interface, int offset) {
-    auto* desc = reinterpret_cast<const usb_standard_desc_t*>(interface);
-    for (int i = 0; i < interface->bNumEndpoints; i++) {
-        desc = usb_parse_next_descriptor_of_type(desc, config->wTotalLength,
-                                                 USB_B_DESCRIPTOR_TYPE_ENDPOINT, &offset);
-        if (!desc) break;
-        auto* endpoint = reinterpret_cast<const usb_ep_desc_t*>(desc);
-        if (USB_EP_DESC_GET_XFERTYPE(endpoint) != USB_TRANSFER_TYPE_BULK) continue;
-        if (USB_EP_DESC_GET_EP_DIR(endpoint)) {
+esp_err_t MscBotDevice::find_endpoints(const ConfigDesc* config, const InterfaceDesc* interface) {
+    const StandardDesc* desc = reinterpret_cast<const StandardDesc*>(interface);
+    while ((desc = next_descriptor(config, desc)) != nullptr &&
+           desc->bDescriptorType != kDescInterface) {
+        if (desc->bDescriptorType != kDescEndpoint) continue;
+        auto* endpoint = reinterpret_cast<const EndpointDesc*>(desc);
+        if (ep_type(endpoint) != TransferType::Bulk) continue;
+        if (ep_is_in(endpoint)) {
             bulk_in_ = endpoint->bEndpointAddress;
-            bulk_in_mps_ = USB_EP_DESC_GET_MPS(endpoint);
+            bulk_in_mps_ = ep_mps(endpoint);
         } else {
             bulk_out_ = endpoint->bEndpointAddress;
-            bulk_out_mps_ = USB_EP_DESC_GET_MPS(endpoint);
+            bulk_out_mps_ = ep_mps(endpoint);
         }
     }
     return bulk_in_ && bulk_out_ ? ESP_OK : ESP_ERR_NOT_SUPPORTED;

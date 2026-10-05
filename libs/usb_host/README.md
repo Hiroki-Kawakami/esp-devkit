@@ -1,15 +1,16 @@
 # usb_host
 
-USB host class drivers on top of the ESP-IDF host library (`espressif/usb`).
-One IDF client and one worker task are shared by every class, so adding a class
-does not add tasks.
+A USB host stack for the DWC2 (Synopsys DesignWare OTG) controller, written on
+ESP-IDF's register-level HAL (`hal/usb_dwc_hal.h`) and PHY driver, with class
+drivers on top. Two tasks are shared by every class, so adding a class does not
+add tasks. It supports one device on the root port; hubs and interrupt
+endpoints are not supported.
 
 ## Using it
 
 Enable the classes in Kconfig (`CONFIG_USBH_MSC`, `CONFIG_USBH_UAC`,
-`CONFIG_USBH_UVC`); the
-component compiles nothing and pulls in no managed dependency when none is
-enabled. Then:
+`CONFIG_USBH_UVC`); the component compiles nothing when none is enabled.
+Then:
 
 ```cpp
 bsp_power_set_switch(BSP_POWER_SWITCH_USB5V, true);
@@ -22,19 +23,19 @@ usb_host::install(std::move(callbacks));
 VBUS is left to the caller so it can choose between always-on and powering the
 port only while USB is in use. Classes are registered inside `install()`, so a
 device that enumerates right after it cannot be missed. The callbacks run on
-the worker task, which is also where devices are opened; a callback that blocks
-holds up enumeration.
+the worker task, which is also where devices are enumerated and opened; a
+callback that blocks holds up enumeration.
 
-The API is C++ in `namespace usb_host`: the IDF host library's internal layer
-already exports the C `usbh_*` namespace, and `usb_host_*` is its public one.
+The API is C++ in `namespace usb_host`.
 
 ## Layout
 
 | path | what it is |
 |---|---|
-| `src/core/host.cpp` | host install, client, worker, dispatch to the enabled classes |
+| `src/core/hcd.cpp` | the controller: port, channels, transfer descriptors, interrupt |
+| `src/core/host.cpp` | tasks, enumeration, devices and their endpoints, dispatch to the enabled classes |
 | `src/core/transfer.cpp` | blocking bulk/control transfers, halt recovery, buffer lending |
-| `src/core/in_stream.cpp` | isochronous or bulk IN transfers kept queued, handed to a sink on the client task |
+| `src/core/in_stream.cpp` | isochronous or bulk IN transfers kept queued, handed to a sink on the event task |
 | `src/msc/msc_bot_device.cpp` | Bulk-Only Transport + SCSI, exposed as an `esp_blockdev` |
 | `src/msc/msc.cpp` | connected-device list and the FAT mount table |
 | `src/uac/uac_descriptors.cpp` | UAC1 descriptor walk: playback or capture alternates, the feature unit on the playback path |
@@ -50,28 +51,49 @@ already exports the C `usbh_*` namespace, and `usb_host_*` is its public one.
 
 Device ownership stays with the class driver: the core passes each new device
 address to every enabled class, and a class that finds no interface of its own
-returns without keeping it open. The host library lets a client open a device
-only once, so classes open it through the core (`open_device()` /
-`close_device()`), which counts users: a camera with a microphone is held by
-the video and the audio class at the same time.
+returns without keeping it open. Classes open a device through the core
+(`open_device()` / `close_device()`), which counts users: a camera with a
+microphone is held by the video and the audio class at the same time.
+
+## Host controller
+
+`Hcd` drives the controller in scatter/gather DMA mode through IDF's HAL. Its
+interrupt only moves descriptors and queues what finished; an event task runs
+the completion callbacks, and a worker task handles connection, enumeration
+and disconnection. Every transfer completes on the event task, so anything that
+waits for one — enumeration and opening a device included — runs elsewhere.
+
+Enumeration reads the first 8 bytes of the device descriptor at address 0,
+sends SET_ADDRESS and reads the rest. espressif/usb resets the bus a second
+time between the first read and SET_ADDRESS; some devices then never answer at
+their new address, so the first attempt goes without it, the second keeps it
+for devices that need it, and a third goes without it again.
+
+Control and bulk transfers run one at a time per endpoint, each started from
+the interrupt that finished the previous one. An isochronous endpoint instead
+keeps its channel running over a ring of descriptors, one per (micro)frame: 256
+at high speed and 64 at full speed, which is what `isoc_slots()` hands out to
+the classes as lookahead. Queued transfers are written ahead of the
+controller and reaped behind it, so streaming has no gaps while transfers keep
+coming; the channel stops only when nothing is queued. A descriptor whose
+(micro)frame passes unserved keeps its active bit, so a transfer counts as done
+once the controller's position has passed it, and its unserved packets come
+back as skipped. The CPU reads and writes descriptors through the
+non-cacheable alias of internal RAM, so it never shares a cache line with the
+controller's write-back of a neighbouring descriptor. IDF's HAL addresses only
+64 descriptors, so the high-speed ring is started by the HCD itself.
+
+Data buffers are synced around every transfer by the host stack. An IN buffer
+is invalidated whole, which is why a borrowed one must start and end on a
+cache line.
 
 ## Transfers into the caller's buffer
 
-`TransferContext::set_buffer()` points a transfer at the caller's buffer so the
-DMA writes it directly instead of going through the host stack's own buffer:
-`urb_alloc()` only assigns `data_buffer`/`data_buffer_size` after allocating
-them separately, and `hcd_dwc.c`'s `cache_sync_data_buffer()` documents that
-class drivers may overwrite those fields. An IN transfer is synced with
-`ESP_CACHE_MSYNC_FLAG_DIR_M2C`, which has no unaligned path, so a borrowed
-buffer must be cache aligned in both address and size, and `num_bytes` must be
-a multiple of the endpoint's max packet size (`borrowable()`). With
-`CONFIG_USB_HOST_DWC_DMA_CAP_MEMORY_IN_PSRAM` a PSRAM buffer is reached behind
-the cache, so the class has to call `sync_for_device()` before and
-`sync_for_cpu()` after.
-
-Transfers complete on the client task. Anything that waits for one — opening a
-device included — must run elsewhere, which is why opens happen on the worker
-task rather than in the client event callback.
+`transfer_set_buffer()` points a transfer at the caller's buffer so the DMA
+writes it directly, and `TransferContext::borrowable()` says whether a buffer
+qualifies: cache aligned in address and size, and a multiple of the endpoint's
+max packet size. A PSRAM buffer is fine for bulk, which is how mass storage
+reads land in the caller's buffer.
 
 ## Mass storage
 
@@ -138,10 +160,8 @@ format and send another at the same byte rate; `kQuirks` in `uac_capture.cpp`
 rewrites those formats by vendor and product, and `open()` still asks the
 device for the rate it declared.
 
-Audio and video devices declare many alternates and frame sizes, and their
-configuration descriptors routinely exceed the host library's default
-`CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE` of 256: enumeration then fails in
-`ENUM` with "Configuration descriptor larger than control transfer max length".
+Audio and video devices declare many alternates and frame sizes, so their
+configuration descriptors run to kilobytes; enumeration reads up to 4 KB.
 
 ## Video
 
@@ -159,14 +179,13 @@ with a short transfer or once it reaches `dwMaxPayloadTransferSize`, and only
 its first bytes carry a header. Either way the transfers stay queued like UAC
 playback's, so streaming adds no task.
 
-Isochronous IN transfers (video and audio capture) receive into internal RAM
-even with `CONFIG_USB_HOST_DWC_DMA_CAP_MEMORY_IN_PSRAM`. With the host stack's
-PSRAM buffers, a board that decodes and scans out video at the same time
-leaves the controller too little PSRAM bandwidth: packets come back
-`SKIPPED`, or the next transfer misses its start and waits a whole 64-entry
-frame list (8 ms at high speed), and every frame arrives with holes. Video
-transfers are 1 ms (eight packets) so the four in flight take 25 KB of
-internal RAM at 800-byte packets.
+IN streams (video, and audio capture) receive into internal RAM. While other
+masters keep PSRAM busy, the controller cannot drain its RX FIFO into it in
+time, and it then misses the (micro)frames of every isochronous endpoint on the
+bus: with a bulk camera's buffers in PSRAM and the picture being decoded, its
+microphone lost one packet in twelve. Isochronous video transfers are 1 ms
+(eight packets), so four in flight take 25 KB at 800-byte packets; a bulk
+camera's four transfers take its payload size each, 64 KB at 16 KB.
 
 Frames are assembled into slots the caller passes to `start()`, so the driver
 allocates no frame memory. A frame ends at the EOF bit or when the frame ID

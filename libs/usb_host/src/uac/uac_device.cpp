@@ -29,18 +29,15 @@ constexpr uint8_t kSamplingFreqControl = 0x01;
 constexpr uint8_t kMuteControl = 0x01;
 constexpr uint8_t kVolumeControl = 0x02;
 
-constexpr uint8_t kClassInterfaceOut = USB_BM_REQUEST_TYPE_DIR_OUT |
-                                       USB_BM_REQUEST_TYPE_TYPE_CLASS |
-                                       USB_BM_REQUEST_TYPE_RECIP_INTERFACE;
-constexpr uint8_t kClassInterfaceIn = USB_BM_REQUEST_TYPE_DIR_IN |
-                                      USB_BM_REQUEST_TYPE_TYPE_CLASS |
-                                      USB_BM_REQUEST_TYPE_RECIP_INTERFACE;
-constexpr uint8_t kClassEndpointOut = USB_BM_REQUEST_TYPE_DIR_OUT |
-                                      USB_BM_REQUEST_TYPE_TYPE_CLASS |
-                                      USB_BM_REQUEST_TYPE_RECIP_ENDPOINT;
-constexpr uint8_t kStandardInterfaceOut = USB_BM_REQUEST_TYPE_DIR_OUT |
-                                          USB_BM_REQUEST_TYPE_TYPE_STANDARD |
-                                          USB_BM_REQUEST_TYPE_RECIP_INTERFACE;
+constexpr uint8_t kClassInterfaceOut = 0 | kReqTypeClass |
+                                       kReqRecipInterface;
+constexpr uint8_t kClassInterfaceIn = kReqDirIn |
+                                      kReqTypeClass |
+                                      kReqRecipInterface;
+constexpr uint8_t kClassEndpointOut = 0 | kReqTypeClass |
+                                      kReqRecipEndpoint;
+constexpr uint8_t kStandardInterfaceOut = 0 | kReqTypeStandard |
+                                          kReqRecipInterface;
 
 constexpr uint32_t kControlTimeoutMs = 1000;
 constexpr size_t kControlBytes = 64;
@@ -56,12 +53,12 @@ int lowest_channel(uint8_t channels) {
 
 }  // namespace
 
-esp_err_t UacOutputDevice::open(usb_host_client_handle_t client, uint8_t address,
+esp_err_t UacOutputDevice::open(uint8_t address,
                                 std::shared_ptr<UacOutputDevice>* out) {
     auto* raw = new (std::nothrow) UacOutputDevice();
     if (!raw) return ESP_ERR_NO_MEM;
     std::shared_ptr<UacOutputDevice> device(raw);
-    const esp_err_t err = device->setup(client, address);
+    const esp_err_t err = device->setup(address);
     if (err != ESP_OK) return err;
     for (const UacStreamAlt& alt : device->topology_.alts) {
         const UacFormat& format = alt.format;
@@ -101,41 +98,36 @@ UacOutputDevice::~UacOutputDevice() {
         }
         vTaskDelay(pdMS_TO_TICKS(1));
     }
-    if (feature_) usb_host_transfer_free(feature_);
-    if (ctrl_) usb_host_transfer_free(ctrl_);
+    if (feature_) transfer_free(feature_);
+    if (ctrl_) transfer_free(ctrl_);
     if (xfer_.device()) close_device(xfer_.device());
 }
 
-esp_err_t UacOutputDevice::setup(usb_host_client_handle_t client, uint8_t address) {
-    esp_err_t err = xfer_.init(client);
+esp_err_t UacOutputDevice::setup(uint8_t address) {
+    esp_err_t err = xfer_.init();
     if (err == ESP_OK) err = stream_.init();
     if (err != ESP_OK) return err;
 
-    usb_device_handle_t handle = nullptr;
+    Device* handle = nullptr;
     err = open_device(address, &handle);
     if (err != ESP_OK) return err;
     xfer_.set_device(handle);
 
-    const usb_config_desc_t* config = nullptr;
-    err = usb_host_get_active_config_descriptor(handle, &config);
-    if (err != ESP_OK) return err;
-    err = uac_parse(config, false, &topology_);
+    err = uac_parse(config_descriptor(handle), false, &topology_);
     if (err != ESP_OK) return err;
     for (const UacStreamAlt& alt : topology_.alts) formats_.push_back(alt.format);
 
-    usb_device_info_t info = {};
-    err = usb_host_device_info(handle, &info);
-    if (err != ESP_OK) return err;
-    speed_ = info.speed;
+    speed_ = device_speed(handle);
 
-    err = usb_host_transfer_alloc(kControlBytes, 0, &ctrl_);
-    if (err == ESP_OK) err = usb_host_transfer_alloc(kControlBytes, 0, &feature_);
+    err = transfer_alloc(kControlBytes, 0, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL, &ctrl_);
+    if (err == ESP_OK) {
+        err = transfer_alloc(kControlBytes, 0, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL, &feature_);
+    }
     if (err != ESP_OK) return err;
-    feature_->device_handle = handle;
+    feature_->device = handle;
     feature_->bEndpointAddress = 0;
     feature_->callback = feature_done;
     feature_->context = this;
-    feature_->timeout_ms = kControlTimeoutMs;
 
     mute_channels_ = control_channels(topology_.feature.mute_channels);
     volume_channels_ = control_channels(topology_.feature.volume_channels);
@@ -171,7 +163,7 @@ void UacOutputDevice::probe_volume() {
 
 esp_err_t UacOutputDevice::control_out(uint8_t request_type, uint8_t request, uint16_t value,
                                        uint16_t index, const void* data, uint16_t length) {
-    if (length) memcpy(ctrl_->data_buffer + sizeof(usb_setup_packet_t), data, length);
+    if (length) memcpy(ctrl_->data_buffer + sizeof(SetupPacket), data, length);
     return xfer_.control(ctrl_, request_type, request, value, index, length, kControlTimeoutMs);
 }
 
@@ -180,10 +172,10 @@ esp_err_t UacOutputDevice::control_in(uint8_t request_type, uint8_t request, uin
     const esp_err_t err =
         xfer_.control(ctrl_, request_type, request, value, index, length, kControlTimeoutMs);
     if (err != ESP_OK) return err;
-    if (ctrl_->actual_num_bytes < static_cast<int>(sizeof(usb_setup_packet_t) + length)) {
+    if (ctrl_->actual_num_bytes < static_cast<int>(sizeof(SetupPacket) + length)) {
         return ESP_ERR_INVALID_RESPONSE;
     }
-    memcpy(data, ctrl_->data_buffer + sizeof(usb_setup_packet_t), length);
+    memcpy(data, ctrl_->data_buffer + sizeof(SetupPacket), length);
     return ESP_OK;
 }
 
@@ -199,16 +191,17 @@ esp_err_t UacOutputDevice::open(size_t format, uint32_t rate) {
     IsocOutConfig config;
     config.endpoint = alt.endpoint;
     config.max_packet_bytes = alt.max_packet_bytes;
-    config.period_us = (speed_ == USB_SPEED_HIGH ? 125 : 1000) * interval;
+    config.period_us = (speed_ == Speed::High ? 125 : 1000) * interval;
     config.interval = interval;
+    config.speed = speed_;
     config.rate = rate;
     config.frame_bytes = static_cast<size_t>(alt.format.channels) * alt.format.subframe_bytes;
 
-    esp_err_t err = usb_host_interface_claim(xfer_.client(), xfer_.device(), alt.interface,
+    esp_err_t err = interface_claim(xfer_.device(), alt.interface,
                                              alt.alternate);
     if (err != ESP_OK) return err;
     active_ = static_cast<int>(format);
-    err = control_out(kStandardInterfaceOut, USB_B_REQUEST_SET_INTERFACE, alt.alternate,
+    err = control_out(kStandardInterfaceOut, kReqSetInterface, alt.alternate,
                       alt.interface, nullptr, 0);
     if (err != ESP_OK) {
         close_locked();
@@ -244,10 +237,10 @@ void UacOutputDevice::close_locked() {
     stream_.stop();
     const UacStreamAlt& alt = topology_.alts[active_];
     if (!gone_) {
-        control_out(kStandardInterfaceOut, USB_B_REQUEST_SET_INTERFACE, 0, alt.interface, nullptr,
+        control_out(kStandardInterfaceOut, kReqSetInterface, 0, alt.interface, nullptr,
                     0);
     }
-    usb_host_interface_release(xfer_.client(), xfer_.device(), alt.interface);
+    interface_release(xfer_.device(), alt.interface);
     active_ = -1;
 }
 
@@ -295,7 +288,7 @@ void UacOutputDevice::submit_feature_locked() {
     uint8_t control = 0;
     int channel = 0;
     uint16_t length = 0;
-    uint8_t* data = feature_->data_buffer + sizeof(usb_setup_packet_t);
+    uint8_t* data = feature_->data_buffer + sizeof(SetupPacket);
     if (mute_pending_) {
         channel = lowest_channel(mute_pending_);
         mute_pending_ &= ~(1 << channel);
@@ -312,27 +305,27 @@ void UacOutputDevice::submit_feature_locked() {
     } else {
         return;
     }
-    auto* setup = reinterpret_cast<usb_setup_packet_t*>(feature_->data_buffer);
+    auto* setup = reinterpret_cast<SetupPacket*>(feature_->data_buffer);
     setup->bmRequestType = kClassInterfaceOut;
     setup->bRequest = kSetCur;
     setup->wValue = static_cast<uint16_t>((control << 8) | channel);
     setup->wIndex = feature_index();
     setup->wLength = length;
-    feature_->num_bytes = static_cast<int>(sizeof(usb_setup_packet_t) + length);
+    feature_->num_bytes = static_cast<int>(sizeof(SetupPacket) + length);
     feature_busy_ = true;
-    const esp_err_t err = usb_host_transfer_submit_control(xfer_.client(), feature_);
+    const esp_err_t err = transfer_submit_control(feature_);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "feature unit request: %s", esp_err_to_name(err));
         feature_busy_ = false;
     }
 }
 
-void UacOutputDevice::feature_done(usb_transfer_t* transfer) {
+void UacOutputDevice::feature_done(Transfer* transfer) {
     auto* self = static_cast<UacOutputDevice*>(transfer->context);
     std::lock_guard<std::mutex> guard(self->feature_lock_);
     self->feature_busy_ = false;
-    if (transfer->status != USB_TRANSFER_STATUS_COMPLETED &&
-        transfer->status != USB_TRANSFER_STATUS_NO_DEVICE) {
+    if (transfer->status != TransferStatus::Completed &&
+        transfer->status != TransferStatus::NoDevice) {
         ESP_LOGW(TAG, "feature unit request: status %d", transfer->status);
     }
     self->submit_feature_locked();

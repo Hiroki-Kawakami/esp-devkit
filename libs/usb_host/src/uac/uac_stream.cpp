@@ -19,7 +19,6 @@ const char* TAG = "usb_host_uac";
 
 constexpr uint32_t kRingMs = 40;
 constexpr uint32_t kTransferUs = 8000;
-constexpr int kDescriptorListLength = 61;
 constexpr uint32_t kWriteWaitMs = 50;
 constexpr int kWriteStalls = 10;
 constexpr uint32_t kStopTimeoutMs = 200;
@@ -55,7 +54,7 @@ esp_err_t IsocOutStream::init() {
     return space_ && idle_ ? ESP_OK : ESP_ERR_NO_MEM;
 }
 
-esp_err_t IsocOutStream::start(usb_device_handle_t device, const IsocOutConfig& config) {
+esp_err_t IsocOutStream::start(Device* device, const IsocOutConfig& config) {
     stop();
     device_ = device;
     frame_bytes_ = config.frame_bytes;
@@ -64,7 +63,7 @@ esp_err_t IsocOutStream::start(usb_device_handle_t device, const IsocOutConfig& 
     if (!frame_bytes_ || packet_bytes > config.max_packet_bytes) return ESP_ERR_NOT_SUPPORTED;
 
     packets_ = static_cast<int>(std::max<uint32_t>(1, kTransferUs / config.period_us));
-    packets_ = std::min<int>(packets_, kDescriptorListLength / static_cast<int>(config.interval));
+    packets_ = std::min<int>(packets_, isoc_slots(config.speed) / (kTransfers * static_cast<int>(config.interval)));
     if (packets_ < 1) return ESP_ERR_NOT_SUPPORTED;
     transfer_ms_ = (packets_ * config.period_us + 999) / 1000;
 
@@ -75,13 +74,14 @@ esp_err_t IsocOutStream::start(usb_device_handle_t device, const IsocOutConfig& 
     read_ = 0;
     written_ = 0;
 
-    for (usb_transfer_t*& transfer : transfers_) {
-        const esp_err_t err = usb_host_transfer_alloc(packets_ * packet_bytes, packets_, &transfer);
+    for (Transfer*& transfer : transfers_) {
+        const esp_err_t err = transfer_alloc(packets_ * packet_bytes, packets_,
+                                             MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL, &transfer);
         if (err != ESP_OK) {
             free_buffers();
             return err;
         }
-        transfer->device_handle = device_;
+        transfer->device = device_;
         transfer->bEndpointAddress = config.endpoint;
         transfer->callback = done;
         transfer->context = this;
@@ -91,10 +91,10 @@ esp_err_t IsocOutStream::start(usb_device_handle_t device, const IsocOutConfig& 
     stopping_ = false;
     aborted_ = false;
     running_ = true;
-    for (usb_transfer_t* transfer : transfers_) fill(transfer);
-    for (usb_transfer_t* transfer : transfers_) {
+    for (Transfer* transfer : transfers_) fill(transfer);
+    for (Transfer* transfer : transfers_) {
         inflight_++;
-        const esp_err_t err = usb_host_transfer_submit(transfer);
+        const esp_err_t err = transfer_submit(transfer);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "isochronous submit: %s", esp_err_to_name(err));
             inflight_--;
@@ -112,9 +112,9 @@ void IsocOutStream::stop() {
     xSemaphoreGive(space_);
     if (inflight_ > 0 && xSemaphoreTake(idle_, pdMS_TO_TICKS(kStopTimeoutMs)) != pdTRUE) {
         const uint8_t endpoint = transfers_[0]->bEndpointAddress;
-        usb_host_endpoint_halt(device_, endpoint);
-        usb_host_endpoint_flush(device_, endpoint);
-        usb_host_endpoint_clear(device_, endpoint);
+        endpoint_halt(device_, endpoint);
+        endpoint_flush(device_, endpoint);
+        endpoint_clear(device_, endpoint);
         if (inflight_ > 0) xSemaphoreTake(idle_, portMAX_DELAY);
     }
     free_buffers();
@@ -126,8 +126,8 @@ void IsocOutStream::abort() {
 }
 
 void IsocOutStream::free_buffers() {
-    for (usb_transfer_t*& transfer : transfers_) {
-        if (transfer) usb_host_transfer_free(transfer);
+    for (Transfer*& transfer : transfers_) {
+        if (transfer) transfer_free(transfer);
         transfer = nullptr;
     }
     heap_caps_free(ring_);
@@ -138,18 +138,18 @@ void IsocOutStream::release_one() {
     if (inflight_.fetch_sub(1) == 1) xSemaphoreGive(idle_);
 }
 
-void IsocOutStream::done(usb_transfer_t* transfer) {
+void IsocOutStream::done(Transfer* transfer) {
     auto* self = static_cast<IsocOutStream*>(transfer->context);
-    if (self->stopping_ || transfer->status == USB_TRANSFER_STATUS_NO_DEVICE ||
-        transfer->status == USB_TRANSFER_STATUS_CANCELED) {
+    if (self->stopping_ || transfer->status == TransferStatus::NoDevice ||
+        transfer->status == TransferStatus::Canceled) {
         self->release_one();
         return;
     }
     self->fill(transfer);
-    if (usb_host_transfer_submit(transfer) != ESP_OK) self->release_one();
+    if (transfer_submit(transfer) != ESP_OK) self->release_one();
 }
 
-void IsocOutStream::fill(usb_transfer_t* transfer) {
+void IsocOutStream::fill(Transfer* transfer) {
     size_t offset = 0;
     size_t read = read_.load(std::memory_order_relaxed);
     const size_t written = written_.load(std::memory_order_acquire);

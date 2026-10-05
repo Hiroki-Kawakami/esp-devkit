@@ -23,15 +23,13 @@ constexpr uint8_t kGetCur = 0x81;
 constexpr uint8_t kProbeControl = 0x01;
 constexpr uint8_t kCommitControl = 0x02;
 
-constexpr uint8_t kClassInterfaceOut = USB_BM_REQUEST_TYPE_DIR_OUT |
-                                       USB_BM_REQUEST_TYPE_TYPE_CLASS |
-                                       USB_BM_REQUEST_TYPE_RECIP_INTERFACE;
-constexpr uint8_t kClassInterfaceIn = USB_BM_REQUEST_TYPE_DIR_IN |
-                                      USB_BM_REQUEST_TYPE_TYPE_CLASS |
-                                      USB_BM_REQUEST_TYPE_RECIP_INTERFACE;
-constexpr uint8_t kStandardInterfaceOut = USB_BM_REQUEST_TYPE_DIR_OUT |
-                                          USB_BM_REQUEST_TYPE_TYPE_STANDARD |
-                                          USB_BM_REQUEST_TYPE_RECIP_INTERFACE;
+constexpr uint8_t kClassInterfaceOut = 0 | kReqTypeClass |
+                                       kReqRecipInterface;
+constexpr uint8_t kClassInterfaceIn = kReqDirIn |
+                                      kReqTypeClass |
+                                      kReqRecipInterface;
+constexpr uint8_t kStandardInterfaceOut = 0 | kReqTypeStandard |
+                                          kReqRecipInterface;
 
 constexpr uint8_t kHeaderFid = 0x01;
 constexpr uint8_t kHeaderEof = 0x02;
@@ -41,7 +39,6 @@ constexpr uint32_t kControlTimeoutMs = 1000;
 constexpr size_t kControlBytes = 64;
 constexpr size_t kProbeBytes = 48;
 constexpr uint32_t kIsocTransferUs = 1000;
-constexpr int kIsocDescriptorListLength = 61;
 constexpr size_t kBulkTransferBytes = 32 * 1024;
 constexpr int kTransfers = 4;
 
@@ -53,36 +50,6 @@ void put32(uint8_t* out, uint32_t value) {
     for (int i = 0; i < 4; i++) out[i] = static_cast<uint8_t>(value >> (i * 8));
 }
 
-std::string utf8(const usb_str_desc_t* desc) {
-    std::string out;
-    if (!desc) return out;
-    const int units = (desc->bLength - USB_STR_DESC_SIZE) / 2;
-    for (int i = 0; i < units; i++) {
-        uint32_t code = desc->wData[i];
-        if (code >= 0xd800 && code < 0xdc00 && i + 1 < units && desc->wData[i + 1] >= 0xdc00 &&
-            desc->wData[i + 1] < 0xe000) {
-            code = 0x10000 + ((code - 0xd800) << 10) + (desc->wData[++i] - 0xdc00);
-        }
-        if (code < 0x80) {
-            out += static_cast<char>(code);
-        } else if (code < 0x800) {
-            out += static_cast<char>(0xc0 | (code >> 6));
-            out += static_cast<char>(0x80 | (code & 0x3f));
-        } else if (code < 0x10000) {
-            out += static_cast<char>(0xe0 | (code >> 12));
-            out += static_cast<char>(0x80 | ((code >> 6) & 0x3f));
-            out += static_cast<char>(0x80 | (code & 0x3f));
-        } else {
-            out += static_cast<char>(0xf0 | (code >> 18));
-            out += static_cast<char>(0x80 | ((code >> 12) & 0x3f));
-            out += static_cast<char>(0x80 | ((code >> 6) & 0x3f));
-            out += static_cast<char>(0x80 | (code & 0x3f));
-        }
-    }
-    while (!out.empty() && (out.back() == ' ' || out.back() == '\0')) out.pop_back();
-    return out;
-}
-
 uint16_t probe_bytes(uint16_t uvc_version) {
     if (uvc_version < 0x0110) return 26;
     if (uvc_version < 0x0150) return 34;
@@ -91,12 +58,12 @@ uint16_t probe_bytes(uint16_t uvc_version) {
 
 }  // namespace
 
-esp_err_t UvcCameraDevice::open(usb_host_client_handle_t client, uint8_t address,
+esp_err_t UvcCameraDevice::open(uint8_t address,
                                 std::shared_ptr<UvcCameraDevice>* out) {
     auto* raw = new (std::nothrow) UvcCameraDevice();
     if (!raw) return ESP_ERR_NO_MEM;
     std::shared_ptr<UvcCameraDevice> device(raw);
-    const esp_err_t err = device->setup(client, address);
+    const esp_err_t err = device->setup(address);
     if (err != ESP_OK) return err;
     const UvcTopology& topology = device->topology_;
     ESP_LOGI(TAG, "camera at %u: \"%s\", UVC %x.%02x, interface %u, %s", address,
@@ -130,45 +97,39 @@ UvcCameraDevice::~UvcCameraDevice() {
         std::lock_guard<std::mutex> guard(lock_);
         stop_locked();
     }
-    if (ctrl_) usb_host_transfer_free(ctrl_);
+    if (ctrl_) transfer_free(ctrl_);
     if (xfer_.device()) close_device(xfer_.device());
 }
 
-esp_err_t UvcCameraDevice::setup(usb_host_client_handle_t client, uint8_t address) {
-    esp_err_t err = xfer_.init(client);
+esp_err_t UvcCameraDevice::setup(uint8_t address) {
+    esp_err_t err = xfer_.init();
     if (err == ESP_OK) err = stream_.init();
     if (err != ESP_OK) return err;
 
-    usb_device_handle_t handle = nullptr;
+    Device* handle = nullptr;
     err = open_device(address, &handle);
     if (err != ESP_OK) return err;
     xfer_.set_device(handle);
 
-    const usb_config_desc_t* config = nullptr;
-    err = usb_host_get_active_config_descriptor(handle, &config);
-    if (err != ESP_OK) return err;
-    err = uvc_parse(config, &topology_);
+    err = uvc_parse(config_descriptor(handle), &topology_);
     if (err != ESP_OK) return err;
     for (const UvcFrameDesc& frame : topology_.frames) sizes_.push_back(frame.size);
 
-    usb_device_info_t info = {};
-    err = usb_host_device_info(handle, &info);
-    if (err != ESP_OK) return err;
-    speed_ = info.speed;
-    name_ = utf8(info.str_desc_product);
-
-    return usb_host_transfer_alloc(sizeof(usb_setup_packet_t) + kControlBytes, 0, &ctrl_);
+    speed_ = device_speed(handle);
+    name_ = device_product(handle);
+    return transfer_alloc(sizeof(SetupPacket) + kControlBytes, 0,
+                          MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL, &ctrl_);
 }
 
 esp_err_t UvcCameraDevice::control(uint8_t request_type, uint8_t request, uint16_t value,
                                    uint16_t index, void* data, uint16_t length) {
-    const bool in = request_type & USB_BM_REQUEST_TYPE_DIR_IN;
-    uint8_t* payload = ctrl_->data_buffer + sizeof(usb_setup_packet_t);
+    const bool in = request_type & kReqDirIn;
+    uint8_t* payload = ctrl_->data_buffer + sizeof(SetupPacket);
     if (!in && length) memcpy(payload, data, length);
     const esp_err_t err =
         xfer_.control(ctrl_, request_type, request, value, index, length, kControlTimeoutMs);
     if (err != ESP_OK || !in) return err;
-    const int received = ctrl_->actual_num_bytes - static_cast<int>(sizeof(usb_setup_packet_t));
+    const int received = ctrl_->actual_num_bytes - static_cast<int>(sizeof(SetupPacket));
     if (received <= 0) return ESP_ERR_INVALID_RESPONSE;
     memcpy(data, payload, std::min<int>(received, length));
     return ESP_OK;
@@ -218,22 +179,21 @@ esp_err_t UvcCameraDevice::start_isochronous(uint32_t max_payload) {
     }
 
     const uint32_t interval = 1u << std::min<uint8_t>(chosen->interval - 1, 15);
-    const uint32_t period_us = (speed_ == USB_SPEED_HIGH ? 125 : 1000) * interval;
+    const uint32_t period_us = (speed_ == Speed::High ? 125 : 1000) * interval;
     InStreamConfig config;
     config.endpoint = chosen->endpoint;
     config.isochronous = true;
     config.max_packet_bytes = chosen->max_packet_bytes;
-    config.interval = interval;
     config.packets = std::min<int>(std::max<uint32_t>(1, kIsocTransferUs / period_us),
-                                   kIsocDescriptorListLength / static_cast<int>(interval));
+                                   isoc_slots(speed_) / (kTransfers * static_cast<int>(interval)));
     config.transfers = kTransfers;
     if (config.packets < 1) return ESP_ERR_NOT_SUPPORTED;
 
-    esp_err_t err = usb_host_interface_claim(xfer_.client(), xfer_.device(),
-                                             topology_.streaming_interface, chosen->alternate);
+    esp_err_t err = interface_claim(xfer_.device(), topology_.streaming_interface,
+                                    chosen->alternate);
     if (err != ESP_OK) return err;
     claimed_ = true;
-    err = control(kStandardInterfaceOut, USB_B_REQUEST_SET_INTERFACE, chosen->alternate,
+    err = control(kStandardInterfaceOut, kReqSetInterface, chosen->alternate,
                   topology_.streaming_interface, nullptr, 0);
     if (err != ESP_OK) return err;
     ESP_LOGI(TAG, "alt %u: %d packets of %u bytes per transfer", chosen->alternate,
@@ -253,7 +213,7 @@ esp_err_t UvcCameraDevice::start_bulk(uint32_t max_payload) {
     config.transfer_bytes = bytes;
     config.transfers = kTransfers;
 
-    const esp_err_t err = usb_host_interface_claim(xfer_.client(), xfer_.device(),
+    const esp_err_t err = interface_claim(xfer_.device(),
                                                    topology_.streaming_interface, 0);
     if (err != ESP_OK) return err;
     claimed_ = true;
@@ -314,12 +274,12 @@ void UvcCameraDevice::stop_locked() {
     stream_.stop();
     if (claimed_) {
         if (!gone_ && isochronous_) {
-            control(kStandardInterfaceOut, USB_B_REQUEST_SET_INTERFACE, 0,
+            control(kStandardInterfaceOut, kReqSetInterface, 0,
                     topology_.streaming_interface, nullptr, 0);
         } else if (!gone_) {
             xfer_.clear_halt(ctrl_, topology_.bulk_endpoint, kControlTimeoutMs);
         }
-        usb_host_interface_release(xfer_.client(), xfer_.device(), topology_.streaming_interface);
+        interface_release(xfer_.device(), topology_.streaming_interface);
         claimed_ = false;
     }
     frames_.clear();
@@ -475,13 +435,11 @@ void UvcCameraDevice::log_stats(void* arg) {
     const int64_t last_commit =
         self->last_commit_us_ ? (now - self->last_commit_us_) / 1000 : -1;
     ESP_LOGI(TAG,
-             "in: %u xfers (%u ok, %u skip, %u fail [err %u ovf %u stall %u, %d..%d B], %u ended) "
+             "in: %u xfers (%u ok, %u skip, %u fail, %u ended) "
              "inflight %d last %lld ms ago status %u | frames: %u ok (last %lld ms ago), drop err %u ovf %u nojpeg %u "
              "noslot %u, badhdr %u fid %u | slots: free %d fill %d ready %d held %d",
              (unsigned)in.transfers, (unsigned)in.packets_ok, (unsigned)in.packets_skipped,
-             (unsigned)in.packets_failed, (unsigned)in.packets_error,
-             (unsigned)in.packets_overflow, (unsigned)in.packets_stall, in.failed_bytes_min,
-             in.failed_bytes_max, (unsigned)in.not_resubmitted, in.inflight, last_done,
+             (unsigned)in.packets_failed, (unsigned)in.not_resubmitted, in.inflight, last_done,
              in.last_status, (unsigned)self->committed_.exchange(0), last_commit,
              (unsigned)self->dropped_error_.exchange(0),
              (unsigned)self->dropped_overflow_.exchange(0),

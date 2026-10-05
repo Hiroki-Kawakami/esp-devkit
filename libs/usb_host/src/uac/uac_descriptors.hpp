@@ -9,7 +9,7 @@
 #include <vector>
 
 #include "esp_err.h"
-#include "usb/usb_types_ch9.h"
+#include "usb_types.hpp"
 #include "usb_host_uac.hpp"
 
 namespace usb_host::detail {
@@ -40,6 +40,6 @@ struct UacTopology {
 // The first UAC1 PCM streaming interface in the given direction. Playback
 // takes adaptive and synchronous endpoints only and fills in the feature unit;
 // capture leaves it empty. ESP_ERR_NOT_SUPPORTED when there is none.
-esp_err_t uac_parse(const usb_config_desc_t* config, bool capture, UacTopology* out);
+esp_err_t uac_parse(const ConfigDesc* config, bool capture, UacTopology* out);
 
 }  // namespace usb_host::detail

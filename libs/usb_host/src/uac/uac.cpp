@@ -22,14 +22,14 @@ std::mutex s_lock;
 std::vector<std::shared_ptr<detail::UacOutputDevice>> s_devices;
 std::vector<std::shared_ptr<detail::UacInputDevice>> s_captures;
 
-template <typename Device>
-std::shared_ptr<Device> take(std::vector<std::shared_ptr<Device>>* devices,
-                             usb_device_handle_t handle) {
+template <typename Class>
+std::shared_ptr<Class> take(std::vector<std::shared_ptr<Class>>* devices,
+                            detail::Device* handle) {
     std::lock_guard<std::mutex> guard(s_lock);
     auto it = std::find_if(devices->begin(), devices->end(),
                            [&](const auto& entry) { return entry->usb_device() == handle; });
     if (it == devices->end()) return nullptr;
-    std::shared_ptr<Device> device = std::move(*it);
+    std::shared_ptr<Class> device = std::move(*it);
     devices->erase(it);
     return device;
 }
@@ -42,7 +42,7 @@ esp_err_t detail::uac_install() {
 
 void detail::uac_connected(uint8_t address) {
     std::shared_ptr<UacOutputDevice> device;
-    esp_err_t err = UacOutputDevice::open(client(), address, &device);
+    esp_err_t err = UacOutputDevice::open(address, &device);
     if (err == ESP_OK) {
         {
             std::lock_guard<std::mutex> guard(s_lock);
@@ -54,7 +54,7 @@ void detail::uac_connected(uint8_t address) {
     }
 
     std::shared_ptr<UacInputDevice> capture;
-    err = UacInputDevice::open(client(), address, &capture);
+    err = UacInputDevice::open(address, &capture);
     if (err == ESP_OK) {
         {
             std::lock_guard<std::mutex> guard(s_lock);
@@ -66,7 +66,7 @@ void detail::uac_connected(uint8_t address) {
     }
 }
 
-void detail::uac_gone(usb_device_handle_t handle) {
+void detail::uac_gone(Device* handle) {
     if (auto device = take(&s_devices, handle)) {
         device->mark_gone();
         if (callbacks().uac_disconnected) callbacks().uac_disconnected(device);

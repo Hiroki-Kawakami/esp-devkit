@@ -12,7 +12,7 @@
 #include "esp_err.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
-#include "usb/usb_host.h"
+#include "usb_core.hpp"
 
 namespace usb_host::detail {
 
@@ -33,6 +33,7 @@ struct IsocOutConfig {
     uint16_t max_packet_bytes = 0;
     uint32_t period_us = 0;
     uint32_t interval = 1;
+    Speed speed = Speed::Full;
     uint32_t rate = 0;
     size_t frame_bytes = 0;
 };
@@ -45,7 +46,7 @@ public:
     IsocOutStream& operator=(const IsocOutStream&) = delete;
 
     esp_err_t init();
-    esp_err_t start(usb_device_handle_t device, const IsocOutConfig& config);
+    esp_err_t start(Device* device, const IsocOutConfig& config);
     // Returns once no transfer is in flight.
     void stop();
     // The device is gone: a blocked write() returns at once.
@@ -56,14 +57,14 @@ public:
 private:
     static constexpr int kTransfers = 3;
 
-    static void done(usb_transfer_t* transfer);
-    void fill(usb_transfer_t* transfer);
+    static void done(Transfer* transfer);
+    void fill(Transfer* transfer);
     void release_one();
     void free_buffers();
 
     PacketClock clock_;
-    usb_device_handle_t device_ = nullptr;
-    usb_transfer_t* transfers_[kTransfers] = {};
+    Device* device_ = nullptr;
+    Transfer* transfers_[kTransfers] = {};
     int packets_ = 0;
     size_t frame_bytes_ = 0;
     uint32_t transfer_ms_ = 0;

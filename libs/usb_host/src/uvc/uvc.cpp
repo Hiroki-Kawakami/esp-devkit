@@ -28,7 +28,7 @@ esp_err_t detail::uvc_install() {
 
 void detail::uvc_connected(uint8_t address) {
     std::shared_ptr<UvcCameraDevice> device;
-    const esp_err_t err = UvcCameraDevice::open(client(), address, &device);
+    const esp_err_t err = UvcCameraDevice::open(address, &device);
     if (err != ESP_OK) {
         if (err != ESP_ERR_NOT_SUPPORTED) ESP_LOGE(TAG, "open: %s", esp_err_to_name(err));
         return;
@@ -40,7 +40,7 @@ void detail::uvc_connected(uint8_t address) {
     if (callbacks().uvc_connected) callbacks().uvc_connected(device);
 }
 
-void detail::uvc_gone(usb_device_handle_t handle) {
+void detail::uvc_gone(Device* handle) {
     std::shared_ptr<UvcCameraDevice> device;
     {
         std::lock_guard<std::mutex> guard(s_lock);

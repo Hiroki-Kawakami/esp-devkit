@@ -22,7 +22,7 @@ namespace usb_host::detail {
 
 class UacInputDevice final : public UacCaptureDevice {
 public:
-    static esp_err_t open(usb_host_client_handle_t client, uint8_t address,
+    static esp_err_t open(uint8_t address,
                           std::shared_ptr<UacInputDevice>* out);
     ~UacInputDevice() override;
 
@@ -33,12 +33,12 @@ public:
     esp_err_t read(void* data, size_t len, size_t* read, uint32_t timeout_ms) override;
     size_t available() const override;
 
-    usb_device_handle_t usb_device() const { return xfer_.device(); }
+    Device* usb_device() const { return xfer_.device(); }
     void mark_gone();
 
 private:
     UacInputDevice() = default;
-    esp_err_t setup(usb_host_client_handle_t client, uint8_t address);
+    esp_err_t setup(uint8_t address);
     void apply_quirks(uint16_t vendor, uint16_t product);
     esp_err_t control_out(uint8_t request_type, uint8_t request, uint16_t value, uint16_t index,
                           const void* data, uint16_t length);
@@ -48,7 +48,7 @@ private:
                         bool ok);
 
     TransferContext xfer_;
-    usb_transfer_t* ctrl_ = nullptr;
+    Transfer* ctrl_ = nullptr;
     UacTopology topology_;
     std::vector<UacFormat> formats_;
     // Per format, the rate to ask the device for when it declares one and
@@ -57,7 +57,7 @@ private:
     InStream stream_;
     std::mutex lock_;
     std::atomic<bool> gone_{false};
-    usb_speed_t speed_ = USB_SPEED_FULL;
+    Speed speed_ = Speed::Full;
     int active_ = -1;
 
     uint8_t* ring_ = nullptr;

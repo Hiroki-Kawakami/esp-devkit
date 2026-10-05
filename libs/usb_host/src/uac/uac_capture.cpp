@@ -22,18 +22,15 @@ const char* TAG = "usb_host_uac";
 constexpr uint8_t kSetCur = 0x01;
 constexpr uint8_t kSamplingFreqControl = 0x01;
 
-constexpr uint8_t kClassEndpointOut = USB_BM_REQUEST_TYPE_DIR_OUT |
-                                      USB_BM_REQUEST_TYPE_TYPE_CLASS |
-                                      USB_BM_REQUEST_TYPE_RECIP_ENDPOINT;
-constexpr uint8_t kStandardInterfaceOut = USB_BM_REQUEST_TYPE_DIR_OUT |
-                                          USB_BM_REQUEST_TYPE_TYPE_STANDARD |
-                                          USB_BM_REQUEST_TYPE_RECIP_INTERFACE;
+constexpr uint8_t kClassEndpointOut = 0 | kReqTypeClass |
+                                      kReqRecipEndpoint;
+constexpr uint8_t kStandardInterfaceOut = 0 | kReqTypeStandard |
+                                          kReqRecipInterface;
 
 constexpr uint32_t kControlTimeoutMs = 1000;
 constexpr size_t kControlBytes = 16;
 constexpr uint32_t kRingMs = 200;
 constexpr uint32_t kTransferUs = 8000;
-constexpr int kDescriptorListLength = 61;
 constexpr int kTransfers = 4;
 
 struct Quirk {
@@ -53,12 +50,12 @@ constexpr Quirk kQuirks[] = {
 
 }  // namespace
 
-esp_err_t UacInputDevice::open(usb_host_client_handle_t client, uint8_t address,
+esp_err_t UacInputDevice::open(uint8_t address,
                                std::shared_ptr<UacInputDevice>* out) {
     auto* raw = new (std::nothrow) UacInputDevice();
     if (!raw) return ESP_ERR_NO_MEM;
     std::shared_ptr<UacInputDevice> device(raw);
-    const esp_err_t err = device->setup(client, address);
+    const esp_err_t err = device->setup(address);
     if (err != ESP_OK) return err;
     for (size_t i = 0; i < device->formats_.size(); i++) {
         const UacFormat& format = device->formats_[i];
@@ -80,41 +77,33 @@ UacInputDevice::~UacInputDevice() {
         std::lock_guard<std::mutex> guard(lock_);
         close_locked();
     }
-    if (ctrl_) usb_host_transfer_free(ctrl_);
+    if (ctrl_) transfer_free(ctrl_);
     if (data_) vSemaphoreDelete(data_);
     if (xfer_.device()) close_device(xfer_.device());
 }
 
-esp_err_t UacInputDevice::setup(usb_host_client_handle_t client, uint8_t address) {
+esp_err_t UacInputDevice::setup(uint8_t address) {
     data_ = xSemaphoreCreateBinary();
     if (!data_) return ESP_ERR_NO_MEM;
-    esp_err_t err = xfer_.init(client);
+    esp_err_t err = xfer_.init();
     if (err == ESP_OK) err = stream_.init();
     if (err != ESP_OK) return err;
 
-    usb_device_handle_t handle = nullptr;
+    Device* handle = nullptr;
     err = open_device(address, &handle);
     if (err != ESP_OK) return err;
     xfer_.set_device(handle);
 
-    const usb_config_desc_t* config = nullptr;
-    err = usb_host_get_active_config_descriptor(handle, &config);
-    if (err != ESP_OK) return err;
-    err = uac_parse(config, true, &topology_);
+    err = uac_parse(config_descriptor(handle), true, &topology_);
     if (err != ESP_OK) return err;
     for (const UacStreamAlt& alt : topology_.alts) formats_.push_back(alt.format);
     declared_rates_.assign(formats_.size(), 0);
 
-    const usb_device_desc_t* device = nullptr;
-    err = usb_host_get_device_descriptor(handle, &device);
-    if (err != ESP_OK) return err;
+    const DeviceDesc* device = device_descriptor(handle);
     apply_quirks(device->idVendor, device->idProduct);
-
-    usb_device_info_t info = {};
-    err = usb_host_device_info(handle, &info);
-    if (err != ESP_OK) return err;
-    speed_ = info.speed;
-    return usb_host_transfer_alloc(sizeof(usb_setup_packet_t) + kControlBytes, 0, &ctrl_);
+    speed_ = device_speed(handle);
+    return transfer_alloc(sizeof(SetupPacket) + kControlBytes, 0,
+                          MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL, &ctrl_);
 }
 
 void UacInputDevice::apply_quirks(uint16_t vendor, uint16_t product) {
@@ -137,7 +126,7 @@ void UacInputDevice::apply_quirks(uint16_t vendor, uint16_t product) {
 
 esp_err_t UacInputDevice::control_out(uint8_t request_type, uint8_t request, uint16_t value,
                                       uint16_t index, const void* data, uint16_t length) {
-    if (length) memcpy(ctrl_->data_buffer + sizeof(usb_setup_packet_t), data, length);
+    if (length) memcpy(ctrl_->data_buffer + sizeof(SetupPacket), data, length);
     return xfer_.control(ctrl_, request_type, request, value, index, length, kControlTimeoutMs);
 }
 
@@ -151,14 +140,13 @@ esp_err_t UacInputDevice::open(size_t format, uint32_t rate) {
     const UacStreamAlt& alt = topology_.alts[format];
     const uint32_t device_rate = declared_rates_[format] ? declared_rates_[format] : rate;
     const uint32_t interval = 1u << std::min<uint8_t>(alt.interval - 1, 15);
-    const uint32_t period_us = (speed_ == USB_SPEED_HIGH ? 125 : 1000) * interval;
+    const uint32_t period_us = (speed_ == Speed::High ? 125 : 1000) * interval;
     InStreamConfig config;
     config.endpoint = alt.endpoint;
     config.isochronous = true;
     config.max_packet_bytes = alt.max_packet_bytes;
-    config.interval = interval;
     config.packets = std::min<int>(std::max<uint32_t>(1, kTransferUs / period_us),
-                                   kDescriptorListLength / static_cast<int>(interval));
+                                   isoc_slots(speed_) / (kTransfers * static_cast<int>(interval)));
     config.transfers = kTransfers;
     if (config.packets < 1) return ESP_ERR_NOT_SUPPORTED;
 
@@ -170,14 +158,13 @@ esp_err_t UacInputDevice::open(size_t format, uint32_t rate) {
     written_ = 0;
     xSemaphoreTake(data_, 0);
 
-    esp_err_t err = usb_host_interface_claim(xfer_.client(), xfer_.device(), alt.interface,
-                                             alt.alternate);
+    esp_err_t err = interface_claim(xfer_.device(), alt.interface, alt.alternate);
     if (err != ESP_OK) {
         close_locked();
         return err;
     }
     active_ = static_cast<int>(format);
-    err = control_out(kStandardInterfaceOut, USB_B_REQUEST_SET_INTERFACE, alt.alternate,
+    err = control_out(kStandardInterfaceOut, kReqSetInterface, alt.alternate,
                       alt.interface, nullptr, 0);
     if (err == ESP_OK && alt.rate_control) {
         const uint8_t frequency[3] = {static_cast<uint8_t>(device_rate),
@@ -206,10 +193,10 @@ void UacInputDevice::close_locked() {
     if (active_ >= 0) {
         const UacStreamAlt& alt = topology_.alts[active_];
         if (!gone_) {
-            control_out(kStandardInterfaceOut, USB_B_REQUEST_SET_INTERFACE, 0, alt.interface,
+            control_out(kStandardInterfaceOut, kReqSetInterface, 0, alt.interface,
                         nullptr, 0);
         }
-        usb_host_interface_release(xfer_.client(), xfer_.device(), alt.interface);
+        interface_release(xfer_.device(), alt.interface);
         active_ = -1;
     }
     heap_caps_free(ring_);

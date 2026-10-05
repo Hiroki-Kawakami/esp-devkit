@@ -43,7 +43,7 @@ esp_err_t detail::msc_install() {
 
 void detail::msc_connected(uint8_t address) {
     std::shared_ptr<MscBotDevice> device;
-    const esp_err_t err = MscBotDevice::open(client(), address, &device);
+    const esp_err_t err = MscBotDevice::open(address, &device);
     if (err != ESP_OK) {
         if (err != ESP_ERR_NOT_SUPPORTED) ESP_LOGE(TAG, "open: %s", esp_err_to_name(err));
         return;
@@ -55,7 +55,7 @@ void detail::msc_connected(uint8_t address) {
     if (callbacks().msc_connected) callbacks().msc_connected(device);
 }
 
-void detail::msc_gone(usb_device_handle_t handle) {
+void detail::msc_gone(Device* handle) {
     std::shared_ptr<MscBotDevice> device;
     {
         std::lock_guard<std::mutex> guard(s_lock);

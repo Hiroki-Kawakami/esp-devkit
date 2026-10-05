@@ -6,7 +6,6 @@
 #include "uvc_descriptors.hpp"
 
 #include "esp_log.h"
-#include "usb/usb_helpers.h"
 
 namespace usb_host::detail {
 
@@ -14,7 +13,6 @@ namespace {
 
 const char* TAG = "usb_host_uvc";
 
-constexpr uint8_t kClassVideo = 0x0e;
 constexpr uint8_t kSubclassControl = 0x01;
 constexpr uint8_t kSubclassStreaming = 0x02;
 constexpr uint8_t kCsInterface = 0x24;
@@ -55,31 +53,31 @@ void parse_frame(const uint8_t* bytes, uint8_t length, UvcTopology* out) {
     out->frames.push_back(std::move(frame));
 }
 
-void parse_endpoint(const usb_ep_desc_t* endpoint, uint8_t alternate, UvcTopology* out) {
-    if (!USB_EP_DESC_GET_EP_DIR(endpoint)) return;
-    const int type = USB_EP_DESC_GET_XFERTYPE(endpoint);
-    if (type == USB_TRANSFER_TYPE_BULK && alternate == 0) {
+void parse_endpoint(const EndpointDesc* endpoint, uint8_t alternate, UvcTopology* out) {
+    if (!ep_is_in(endpoint)) return;
+    const TransferType type = ep_type(endpoint);
+    if (type == TransferType::Bulk && alternate == 0) {
         out->bulk_endpoint = endpoint->bEndpointAddress;
-        out->bulk_max_packet_bytes = USB_EP_DESC_GET_MPS(endpoint);
+        out->bulk_max_packet_bytes = ep_mps(endpoint);
         return;
     }
-    if (type != USB_TRANSFER_TYPE_ISOCHRONOUS || alternate == 0) return;
-    if (USB_EP_DESC_GET_MULT(endpoint) != 0) {
+    if (type != TransferType::Isochronous || alternate == 0) return;
+    if (ep_mult(endpoint) != 0) {
         ESP_LOGW(TAG, "alt %u: %u transactions per microframe not supported", alternate,
-                 USB_EP_DESC_GET_MULT(endpoint) + 1);
+                 ep_mult(endpoint) + 1);
         return;
     }
     UvcIsocAlt alt;
     alt.alternate = alternate;
     alt.endpoint = endpoint->bEndpointAddress;
-    alt.max_packet_bytes = USB_EP_DESC_GET_MPS(endpoint);
+    alt.max_packet_bytes = ep_mps(endpoint);
     alt.interval = endpoint->bInterval;
     if (alt.max_packet_bytes && alt.interval) out->isoc_alts.push_back(alt);
 }
 
 }  // namespace
 
-esp_err_t uvc_parse(const usb_config_desc_t* config, UvcTopology* out) {
+esp_err_t uvc_parse(const ConfigDesc* config, UvcTopology* out) {
     *out = {};
     bool in_control = false;
     bool in_streaming = false;
@@ -88,13 +86,12 @@ esp_err_t uvc_parse(const usb_config_desc_t* config, UvcTopology* out) {
     int streaming = -1;
     uint8_t alternate = 0;
 
-    int offset = 0;
-    auto* desc = reinterpret_cast<const usb_standard_desc_t*>(config);
-    while ((desc = usb_parse_next_descriptor(desc, config->wTotalLength, &offset))) {
+    const StandardDesc* desc = reinterpret_cast<const StandardDesc*>(config);
+    while ((desc = next_descriptor(config, desc)) != nullptr) {
         const auto* bytes = reinterpret_cast<const uint8_t*>(desc);
         const uint8_t length = desc->bLength;
-        if (desc->bDescriptorType == USB_B_DESCRIPTOR_TYPE_INTERFACE) {
-            const auto* interface = reinterpret_cast<const usb_intf_desc_t*>(desc);
+        if (desc->bDescriptorType == kDescInterface) {
+            const auto* interface = reinterpret_cast<const InterfaceDesc*>(desc);
             const bool video = interface->bInterfaceClass == kClassVideo;
             in_control = video && interface->bInterfaceSubClass == kSubclassControl;
             in_mjpeg = false;
@@ -124,8 +121,8 @@ esp_err_t uvc_parse(const usb_config_desc_t* config, UvcTopology* out) {
             } else if (bytes[2] != kVsFrameMjpeg) {
                 in_mjpeg = false;
             }
-        } else if (desc->bDescriptorType == USB_B_DESCRIPTOR_TYPE_ENDPOINT && in_streaming) {
-            parse_endpoint(reinterpret_cast<const usb_ep_desc_t*>(desc), alternate, out);
+        } else if (desc->bDescriptorType == kDescEndpoint && in_streaming) {
+            parse_endpoint(reinterpret_cast<const EndpointDesc*>(desc), alternate, out);
         }
     }
 

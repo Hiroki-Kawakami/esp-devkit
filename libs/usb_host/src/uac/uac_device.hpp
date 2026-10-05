@@ -20,7 +20,7 @@ namespace usb_host::detail {
 
 class UacOutputDevice final : public UacDevice {
 public:
-    static esp_err_t open(usb_host_client_handle_t client, uint8_t address,
+    static esp_err_t open(uint8_t address,
                           std::shared_ptr<UacOutputDevice>* out);
     ~UacOutputDevice() override;
 
@@ -38,12 +38,12 @@ public:
     void set_volume_db(float db) override;
     void set_mute(bool mute) override;
 
-    usb_device_handle_t usb_device() const { return xfer_.device(); }
+    Device* usb_device() const { return xfer_.device(); }
     void mark_gone();
 
 private:
     UacOutputDevice() = default;
-    esp_err_t setup(usb_host_client_handle_t client, uint8_t address);
+    esp_err_t setup(uint8_t address);
     void probe_volume();
     esp_err_t control_out(uint8_t request_type, uint8_t request, uint16_t value, uint16_t index,
                           const void* data, uint16_t length);
@@ -51,21 +51,21 @@ private:
                          void* data, uint16_t length);
     void close_locked();
 
-    static void feature_done(usb_transfer_t* transfer);
+    static void feature_done(Transfer* transfer);
     void submit_feature_locked();
     uint16_t feature_index() const;
 
     TransferContext xfer_;
-    usb_transfer_t* ctrl_ = nullptr;
+    Transfer* ctrl_ = nullptr;
     UacTopology topology_;
     std::vector<UacFormat> formats_;
     IsocOutStream stream_;
     std::mutex lock_;
     std::atomic<bool> gone_{false};
-    usb_speed_t speed_ = USB_SPEED_FULL;
+    Speed speed_ = Speed::Full;
     int active_ = -1;
 
-    usb_transfer_t* feature_ = nullptr;
+    Transfer* feature_ = nullptr;
     std::mutex feature_lock_;
     bool feature_busy_ = false;
     bool closing_ = false;

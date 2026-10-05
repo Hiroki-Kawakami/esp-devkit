@@ -9,7 +9,7 @@
 #include <vector>
 
 #include "esp_err.h"
-#include "usb/usb_types_ch9.h"
+#include "usb_types.hpp"
 #include "usb_host_uvc.hpp"
 
 namespace usb_host::detail {
@@ -41,6 +41,6 @@ struct UvcTopology {
 
 // ESP_ERR_NOT_SUPPORTED when no streaming interface offers MJPEG on an
 // endpoint the host can use.
-esp_err_t uvc_parse(const usb_config_desc_t* config, UvcTopology* out);
+esp_err_t uvc_parse(const ConfigDesc* config, UvcTopology* out);
 
 }  // namespace usb_host::detail
