@@ -21,6 +21,7 @@ typedef struct {
     uint8_t        out_channels;
     uint8_t        num_inputs;
     const uint8_t *in_channels;   /*!< [num_inputs] */
+    uint32_t       alloc_caps;    /*!< heap_caps_* for every allocation; 0 = malloc */
 } audf_mixer_config_t;
 
 /* Every input starts with a pass-through matrix: identity, 1->N copies,

@@ -7,6 +7,7 @@
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+#include "audf_alloc.h"
 #include "audf_internal.h"
 #include "audf_sample.h"
 #include "audf_sync.h"
@@ -33,6 +34,7 @@ struct audf_eq {
     audf_fmt_t  fmt;
     uint8_t     channels;
     size_t      max_stages;
+    uint32_t    caps;
 
     biquad_q_t *pending;
     size_t      pending_stages;
@@ -55,16 +57,17 @@ esp_err_t audf_eq_create(const audf_eq_config_t *config, audf_eq_t **out) {
     if (!config || !out) return ESP_ERR_INVALID_ARG;
     if (config->channels < 1 || config->channels > AUDF_MAX_CHANNELS) return ESP_ERR_INVALID_ARG;
 
-    audf_eq_t *eq = calloc(1, sizeof(*eq));
+    audf_eq_t *eq = audf_calloc(1, sizeof(*eq), config->alloc_caps);
     if (!eq) return ESP_ERR_NO_MEM;
+    eq->caps = config->alloc_caps;
     eq->fmt = config->fmt;
     eq->channels = config->channels;
     eq->max_stages = config->max_stages ? config->max_stages : EQ_DEFAULT_MAX_STAGES;
     eq->pending_enabled = config->enabled;
     eq->active_enabled = config->enabled;
-    eq->pending = calloc(eq->max_stages, sizeof(biquad_q_t));
-    eq->active = calloc(eq->max_stages, sizeof(biquad_q_t));
-    eq->states = calloc(eq->max_stages * eq->channels, sizeof(biquad_state_t));
+    eq->pending = audf_calloc(eq->max_stages, sizeof(biquad_q_t), eq->caps);
+    eq->active = audf_calloc(eq->max_stages, sizeof(biquad_q_t), eq->caps);
+    eq->states = audf_calloc(eq->max_stages * eq->channels, sizeof(biquad_state_t), eq->caps);
     if (!eq->pending || !eq->active || !eq->states || audf_sync_init(&eq->sync) != ESP_OK) {
         audf_eq_destroy(eq);
         return ESP_ERR_NO_MEM;
@@ -76,18 +79,18 @@ esp_err_t audf_eq_create(const audf_eq_config_t *config, audf_eq_t **out) {
 void audf_eq_destroy(audf_eq_t *eq) {
     if (!eq) return;
     audf_sync_deinit(&eq->sync);
-    free(eq->pending);
-    free(eq->active);
-    free(eq->states);
-    free(eq);
+    audf_free(eq->pending);
+    audf_free(eq->active);
+    audf_free(eq->states);
+    audf_free(eq);
 }
 
 esp_err_t audf_eq_reconfig(audf_eq_t *eq, audf_fmt_t fmt, uint8_t channels) {
     if (!eq || channels < 1 || channels > AUDF_MAX_CHANNELS) return ESP_ERR_INVALID_ARG;
     if (channels != eq->channels) {
-        biquad_state_t *states = calloc(eq->max_stages * channels, sizeof(biquad_state_t));
+        biquad_state_t *states = audf_calloc(eq->max_stages * channels, sizeof(biquad_state_t), eq->caps);
         if (!states) return ESP_ERR_NO_MEM;
-        free(eq->states);
+        audf_free(eq->states);
         eq->states = states;
         eq->channels = channels;
     } else {

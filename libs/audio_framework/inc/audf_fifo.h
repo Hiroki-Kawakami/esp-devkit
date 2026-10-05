@@ -37,6 +37,7 @@ typedef struct {
     size_t     prefill;         /*!< frames; must not exceed capacity */
     audf_fifo_underrun_t underrun;
     audf_fifo_overrun_t  overrun;
+    uint32_t   alloc_caps;      /*!< heap_caps_* for every allocation; 0 = malloc */
 } audf_fifo_config_t;
 
 esp_err_t audf_fifo_create(const audf_fifo_config_t *config, audf_fifo_t **out);

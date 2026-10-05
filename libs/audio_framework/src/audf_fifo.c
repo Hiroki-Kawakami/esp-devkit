@@ -6,6 +6,7 @@
 #include "audf_fifo.h"
 #include <stdlib.h>
 #include <string.h>
+#include "audf_alloc.h"
 #include "audf_internal.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -27,11 +28,11 @@ struct audf_fifo {
 esp_err_t audf_fifo_create(const audf_fifo_config_t *config, audf_fifo_t **out) {
     if (!config || !out || !config->capacity || config->prefill > config->capacity) return ESP_ERR_INVALID_ARG;
     if (config->channels < 1 || config->channels > AUDF_MAX_CHANNELS) return ESP_ERR_INVALID_ARG;
-    audf_fifo_t *fifo = calloc(1, sizeof(*fifo));
+    audf_fifo_t *fifo = audf_calloc(1, sizeof(*fifo), config->alloc_caps);
     if (!fifo) return ESP_ERR_NO_MEM;
     fifo->config = *config;
     fifo->frame_bytes = audf_frame_bytes(config->fmt, config->channels);
-    fifo->buf = malloc(config->capacity * fifo->frame_bytes);
+    fifo->buf = audf_malloc(config->capacity * fifo->frame_bytes, config->alloc_caps);
     fifo->lock = xSemaphoreCreateMutex();
     fifo->readable = xSemaphoreCreateBinary();
     fifo->writable = xSemaphoreCreateBinary();
@@ -49,8 +50,8 @@ void audf_fifo_destroy(audf_fifo_t *fifo) {
     if (fifo->lock) vSemaphoreDelete(fifo->lock);
     if (fifo->readable) vSemaphoreDelete(fifo->readable);
     if (fifo->writable) vSemaphoreDelete(fifo->writable);
-    free(fifo->buf);
-    free(fifo);
+    audf_free(fifo->buf);
+    audf_free(fifo);
 }
 
 static void copy_in(audf_fifo_t *fifo, const uint8_t *src, size_t frames) {

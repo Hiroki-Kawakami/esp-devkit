@@ -9,6 +9,7 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
+#include "audf_alloc.h"
 #include "audf_internal.h"
 #include "audf_sample.h"
 
@@ -33,6 +34,7 @@ struct audf_resampler {
     uint32_t   in_rate;
     uint32_t   out_rate;
     size_t     max_in;
+    uint32_t   caps;
 
     size_t   left;     /* history frames before pos */
     size_t   right;    /* lookahead frames after pos */
@@ -108,8 +110,9 @@ esp_err_t audf_resampler_create(const audf_resampler_config_t *config, audf_resa
     if (!config || !out || !config->in_rate || !config->out_rate) return ESP_ERR_INVALID_ARG;
     if (config->channels < 1 || config->channels > AUDF_MAX_CHANNELS) return ESP_ERR_INVALID_ARG;
 
-    audf_resampler_t *r = calloc(1, sizeof(*r));
+    audf_resampler_t *r = audf_calloc(1, sizeof(*r), config->alloc_caps);
     if (!r) return ESP_ERR_NO_MEM;
+    r->caps = config->alloc_caps;
     r->kind = config->kind;
     r->fmt = config->fmt;
     r->channels = config->channels;
@@ -140,17 +143,17 @@ esp_err_t audf_resampler_create(const audf_resampler_config_t *config, audf_resa
             r->ntaps = taps * scale;
             r->phase_bits = 0;
             while ((1u << r->phase_bits) < phases) r->phase_bits++;
-            r->taps = malloc((phases + 1) * r->ntaps * sizeof(int32_t));
-            float *tmp = malloc(r->ntaps * sizeof(float));
+            r->taps = audf_malloc((phases + 1) * r->ntaps * sizeof(int32_t), r->caps);
+            float *tmp = audf_malloc(r->ntaps * sizeof(float), r->caps);
             if (!r->taps || !tmp) {
-                free(tmp);
+                audf_free(tmp);
                 err = ESP_ERR_NO_MEM;
                 break;
             }
             for (uint32_t k = 0; k <= phases; k++) {
                 design_row(&r->taps[k * r->ntaps], tmp, r->ntaps, (float)k / (float)phases, fc);
             }
-            free(tmp);
+            audf_free(tmp);
             r->left = r->ntaps / 2 - 1;
             r->right = r->ntaps / 2;
             break;
@@ -168,17 +171,17 @@ esp_err_t audf_resampler_create(const audf_resampler_config_t *config, audf_resa
             r->up_l = l;
             r->down_m = m;
             r->ntaps = taps * m;
-            r->taps = malloc(l * r->ntaps * sizeof(int32_t));
-            float *tmp = malloc(r->ntaps * sizeof(float));
+            r->taps = audf_malloc(l * r->ntaps * sizeof(int32_t), r->caps);
+            float *tmp = audf_malloc(r->ntaps * sizeof(float), r->caps);
             if (!r->taps || !tmp) {
-                free(tmp);
+                audf_free(tmp);
                 err = ESP_ERR_NO_MEM;
                 break;
             }
             for (uint32_t k = 0; k < l; k++) {
                 design_row(&r->taps[k * r->ntaps], tmp, r->ntaps, (float)k / (float)l, 0.5f * PASSBAND / (float)m);
             }
-            free(tmp);
+            audf_free(tmp);
             r->left = r->ntaps / 2 - 1;
             r->right = r->ntaps / 2;
             break;
@@ -189,7 +192,7 @@ esp_err_t audf_resampler_create(const audf_resampler_config_t *config, audf_resa
     }
     if (err == ESP_OK) {
         r->cap = r->left + r->right + r->max_in + (size_t)r->step_int + 2;
-        r->buf = malloc(r->cap * r->channels * sizeof(int32_t));
+        r->buf = audf_malloc(r->cap * r->channels * sizeof(int32_t), r->caps);
         if (!r->buf) err = ESP_ERR_NO_MEM;
     }
     if (err != ESP_OK) {
@@ -203,9 +206,9 @@ esp_err_t audf_resampler_create(const audf_resampler_config_t *config, audf_resa
 
 void audf_resampler_destroy(audf_resampler_t *r) {
     if (!r) return;
-    free(r->taps);
-    free(r->buf);
-    free(r);
+    audf_free(r->taps);
+    audf_free(r->buf);
+    audf_free(r);
 }
 
 void audf_resampler_reset(audf_resampler_t *r) {

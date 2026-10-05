@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS
         "src/audf_adpcm.c"
+        "src/audf_alloc.c"
         "src/audf_codec.c"
         "src/audf_convert.c"
         "src/audf_drift.c"

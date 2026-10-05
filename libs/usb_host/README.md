@@ -127,7 +127,8 @@ at boot when set, and `usbh-msc-attach [dir]` / `usbh-msc-detach` plug and
 pull it. The simulator's `MscDevice` has no blocks; `mount()` maps the mount
 point onto the directory through `simulator/path_redirect.h`.
 
-For UAC, `usbh-uac-attach [wav] [rate,...]` plugs a device that offers 16- and
-24-bit stereo at the given rates (44100,48000 by default) and records what it is
-sent to the WAV file (`captures/usb_audio.wav` by default) at real-time pace;
-`usbh-uac-detach` pulls it. Volume and mute only show up in the log.
+For UAC, `usbh-uac-attach [wav] [rate,...] [novolume]` plugs a device that
+offers 16- and 24-bit stereo at the given rates (44100,48000 by default) and
+records what it is sent to the WAV file (`captures/usb_audio.wav` by default)
+at real-time pace; `usbh-uac-detach` pulls it. Volume and mute only show up in
+the log, and `novolume` leaves the device without a volume control.

@@ -35,6 +35,7 @@ typedef struct {
     uint8_t    channels;
     size_t     max_stages;   /*!< 0 = 8 */
     bool       enabled;
+    uint32_t   alloc_caps;   /*!< heap_caps_* for every allocation; 0 = malloc */
 } audf_eq_config_t;
 
 esp_err_t audf_eq_create(const audf_eq_config_t *config, audf_eq_t **out);

@@ -12,6 +12,12 @@ every module boundary but runs in place on the caller's buffer. Inside a
 module the arithmetic is always wide. `audf_convert*` translates to and from
 the interchange layouts (16-bit, packed 24-bit, full-range 32-bit) at the edges.
 
+## Memory
+
+Every module allocates at create time only, from the heap caps in its config's
+`alloc_caps`; 0 keeps plain `malloc`, which on ESP-IDF puts small blocks in
+internal RAM.
+
 ## Threading
 
 Setters (`audf_eq_set_biquads`, `audf_gain_set`, `audf_mixer_set_matrix`,

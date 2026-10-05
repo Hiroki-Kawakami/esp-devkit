@@ -8,6 +8,7 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
+#include "audf_alloc.h"
 #include "audf_internal.h"
 #include "audf_sample.h"
 #include "audf_sync.h"
@@ -69,12 +70,12 @@ esp_err_t audf_mixer_create(const audf_mixer_config_t *config, audf_mixer_t **ou
         if (ch < 1 || ch > AUDF_MAX_CHANNELS) return ESP_ERR_INVALID_ARG;
     }
 
-    audf_mixer_t *mixer = calloc(1, sizeof(*mixer));
+    audf_mixer_t *mixer = audf_calloc(1, sizeof(*mixer), config->alloc_caps);
     if (!mixer) return ESP_ERR_NO_MEM;
     mixer->fmt = config->fmt;
     mixer->out_channels = config->out_channels;
     mixer->num_inputs = config->num_inputs;
-    mixer->inputs = calloc(config->num_inputs, sizeof(mix_input_t));
+    mixer->inputs = audf_calloc(config->num_inputs, sizeof(mix_input_t), config->alloc_caps);
     if (!mixer->inputs || audf_sync_init(&mixer->sync) != ESP_OK) {
         audf_mixer_destroy(mixer);
         return ESP_ERR_NO_MEM;
@@ -83,8 +84,8 @@ esp_err_t audf_mixer_create(const audf_mixer_config_t *config, audf_mixer_t **ou
         mix_input_t *in = &mixer->inputs[n];
         size_t count = (size_t)config->out_channels * config->in_channels[n];
         in->channels = config->in_channels[n];
-        in->pending = malloc(count * sizeof(int32_t));
-        in->active = malloc(count * sizeof(int32_t));
+        in->pending = audf_malloc(count * sizeof(int32_t), config->alloc_caps);
+        in->active = audf_malloc(count * sizeof(int32_t), config->alloc_caps);
         if (!in->pending || !in->active) {
             audf_mixer_destroy(mixer);
             return ESP_ERR_NO_MEM;
@@ -102,12 +103,12 @@ void audf_mixer_destroy(audf_mixer_t *mixer) {
     audf_sync_deinit(&mixer->sync);
     if (mixer->inputs) {
         for (uint8_t n = 0; n < mixer->num_inputs; n++) {
-            free(mixer->inputs[n].pending);
-            free(mixer->inputs[n].active);
+            audf_free(mixer->inputs[n].pending);
+            audf_free(mixer->inputs[n].active);
         }
     }
-    free(mixer->inputs);
-    free(mixer);
+    audf_free(mixer->inputs);
+    audf_free(mixer);
 }
 
 esp_err_t audf_mixer_set_matrix(audf_mixer_t *mixer, uint8_t input, const float *matrix) {

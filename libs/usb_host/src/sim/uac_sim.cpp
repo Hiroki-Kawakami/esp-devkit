@@ -43,7 +43,8 @@ void put32(uint8_t* out, uint32_t value) {
 
 class SimUacDevice final : public UacDevice {
 public:
-    SimUacDevice(std::string path, std::vector<uint32_t> rates) : path_(std::move(path)) {
+    SimUacDevice(std::string path, std::vector<uint32_t> rates, bool volume)
+        : path_(std::move(path)), volume_(volume) {
         for (uint8_t bytes : {2, 3}) {
             UacFormat format;
             format.channels = 2;
@@ -101,7 +102,7 @@ public:
         if (frame_bytes_) sleep_until_frame(bytes_ / frame_bytes_);
     }
 
-    bool has_volume() const override { return true; }
+    bool has_volume() const override { return volume_; }
     bool has_mute() const override { return true; }
     float volume_min_db() const override { return kVolumeMinDb; }
     float volume_max_db() const override { return kVolumeMaxDb; }
@@ -147,6 +148,7 @@ private:
     }
 
     std::string path_;
+    bool volume_;
     std::vector<UacFormat> formats_;
     std::mutex lock_;
     std::atomic<bool> gone_{false};
@@ -187,7 +189,8 @@ bool cmd_attach(int argc, const char* const* argv, void*) {
             harness_reply("ERR %s: a device is attached", argv[0]);
             return true;
         }
-        s_device = std::make_shared<SimUacDevice>(path, std::move(rates));
+        const bool volume = !(argc > 3 && strcmp(argv[3], "novolume") == 0);
+        s_device = std::make_shared<SimUacDevice>(path, std::move(rates), volume);
         device = s_device;
     }
     if (detail::callbacks().uac_connected) detail::callbacks().uac_connected(device);

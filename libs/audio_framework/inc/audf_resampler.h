@@ -34,6 +34,7 @@ typedef struct {
     size_t     max_in_frames;   /*!< 0 = 1024 */
     uint16_t   taps;            /*!< sinc taps per output at the higher rate; 0 = 48 */
     uint16_t   phases;          /*!< POLYPHASE only, power of two up to 1024; 0 = 64 */
+    uint32_t   alloc_caps;      /*!< heap_caps_* for every allocation; 0 = malloc */
 } audf_resampler_config_t;
 
 esp_err_t audf_resampler_create(const audf_resampler_config_t *config, audf_resampler_t **out);

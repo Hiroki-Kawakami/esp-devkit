@@ -27,7 +27,8 @@ typedef struct audf_graph audf_graph_t;
 typedef struct audf_node  audf_node_t;
 
 typedef struct {
-    size_t max_frames;   /*!< write/read chunk; 0 = 512 */
+    size_t   max_frames;   /*!< write/read chunk; 0 = 512 */
+    uint32_t alloc_caps;   /*!< heap_caps_* for every allocation; 0 = malloc */
 } audf_graph_config_t;
 
 /* Returns the frames produced; the rest of the request plays as silence. */

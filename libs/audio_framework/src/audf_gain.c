@@ -8,6 +8,7 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
+#include "audf_alloc.h"
 #include "audf_internal.h"
 #include "audf_sample.h"
 #include "audf_sync.h"
@@ -46,10 +47,10 @@ static int32_t gain_to_q(float g) {
 esp_err_t audf_gain_create(const audf_gain_config_t *config, audf_gain_t **out) {
     if (!config || !out || !config->sample_rate) return ESP_ERR_INVALID_ARG;
     if (config->channels < 1 || config->channels > AUDF_MAX_CHANNELS) return ESP_ERR_INVALID_ARG;
-    audf_gain_t *gain = calloc(1, sizeof(*gain));
+    audf_gain_t *gain = audf_calloc(1, sizeof(*gain), config->alloc_caps);
     if (!gain) return ESP_ERR_NO_MEM;
     if (audf_sync_init(&gain->sync) != ESP_OK) {
-        free(gain);
+        audf_free(gain);
         return ESP_ERR_NO_MEM;
     }
     gain->fmt = config->fmt;
@@ -64,7 +65,7 @@ esp_err_t audf_gain_create(const audf_gain_config_t *config, audf_gain_t **out) 
 void audf_gain_destroy(audf_gain_t *gain) {
     if (!gain) return;
     audf_sync_deinit(&gain->sync);
-    free(gain);
+    audf_free(gain);
 }
 
 esp_err_t audf_gain_reconfig(audf_gain_t *gain, audf_fmt_t fmt, uint8_t channels, uint32_t sample_rate) {

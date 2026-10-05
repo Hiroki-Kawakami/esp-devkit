@@ -7,6 +7,7 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
+#include "audf_alloc.h"
 #include "audf_convert.h"
 #include "audf_internal.h"
 
@@ -60,6 +61,7 @@ struct audf_node {
 
 struct audf_graph {
     size_t       max_frames;
+    uint32_t     caps;
     audf_node_t *head;
     audf_node_t *tail;
     size_t       count;
@@ -69,8 +71,10 @@ struct audf_graph {
 
 esp_err_t audf_graph_create(const audf_graph_config_t *config, audf_graph_t **out) {
     if (!out) return ESP_ERR_INVALID_ARG;
-    audf_graph_t *graph = calloc(1, sizeof(*graph));
+    const uint32_t caps = config ? config->alloc_caps : 0;
+    audf_graph_t *graph = audf_calloc(1, sizeof(*graph), caps);
     if (!graph) return ESP_ERR_NO_MEM;
+    graph->caps = caps;
     graph->max_frames = config && config->max_frames ? config->max_frames : DEFAULT_MAX_FRAMES;
     *out = graph;
     return ESP_OK;
@@ -81,14 +85,14 @@ void audf_graph_destroy(audf_graph_t *graph) {
     audf_node_t *node = graph->head;
     while (node) {
         audf_node_t *next = node->next;
-        free(node->srcs);
-        free(node->consumers);
-        free(node->buf);
-        free(node->ins);
-        free(node);
+        audf_free(node->srcs);
+        audf_free(node->consumers);
+        audf_free(node->buf);
+        audf_free(node->ins);
+        audf_free(node);
         node = next;
     }
-    free(graph);
+    audf_free(graph);
 }
 
 static audf_node_t *fail(audf_graph_t *graph, esp_err_t err) {
@@ -106,15 +110,15 @@ static audf_node_t *add(audf_graph_t *graph, node_kind_t kind, audf_node_t *cons
         if (!srcs[i]) return fail(graph, ESP_ERR_INVALID_ARG);
         if (srcs[i]->kind == NODE_SINK) return fail(graph, ESP_ERR_INVALID_ARG);
     }
-    audf_node_t *node = calloc(1, sizeof(*node));
+    audf_node_t *node = audf_calloc(1, sizeof(*node), graph->caps);
     if (!node) return fail(graph, ESP_ERR_NO_MEM);
     if (num_srcs) {
-        node->srcs = malloc(num_srcs * sizeof(audf_node_t *));
-        node->ins = calloc(num_srcs, sizeof(void *));
+        node->srcs = audf_malloc(num_srcs * sizeof(audf_node_t *), graph->caps);
+        node->ins = audf_calloc(num_srcs, sizeof(void *), graph->caps);
         if (!node->srcs || !node->ins) {
-            free(node->srcs);
-            free(node->ins);
-            free(node);
+            audf_free(node->srcs);
+            audf_free(node->ins);
+            audf_free(node);
             return fail(graph, ESP_ERR_NO_MEM);
         }
         memcpy(node->srcs, srcs, num_srcs * sizeof(audf_node_t *));
@@ -245,7 +249,7 @@ static esp_err_t link_consumers(audf_graph_t *graph) {
     }
     for (audf_node_t *node = graph->head; node; node = node->next) {
         if (!node->num_consumers) continue;
-        node->consumers = malloc(node->num_consumers * sizeof(audf_node_t *));
+        node->consumers = audf_malloc(node->num_consumers * sizeof(audf_node_t *), graph->caps);
         if (!node->consumers) return ESP_ERR_NO_MEM;
         node->num_consumers = 0;
     }
@@ -309,7 +313,7 @@ static esp_err_t size_buffers(audf_graph_t *graph) {
         if (!node->push) continue;
         node->cap = node->kind == NODE_INPUT ? graph->max_frames : push_out_cap(node, push_in_cap(node));
     }
-    audf_node_t **order = malloc(graph->count * sizeof(audf_node_t *));
+    audf_node_t **order = audf_malloc(graph->count * sizeof(audf_node_t *), graph->caps);
     if (!order) return ESP_ERR_NO_MEM;
     size_t n = 0;
     for (audf_node_t *node = graph->head; node; node = node->next) order[n++] = node;
@@ -318,7 +322,7 @@ static esp_err_t size_buffers(audf_graph_t *graph) {
         if (node->push) continue;
         node->cap = pull_demand(graph, node);
     }
-    free(order);
+    audf_free(order);
 
     for (audf_node_t *node = graph->head; node; node = node->next) {
         bool needs_buf;
@@ -344,7 +348,7 @@ static esp_err_t size_buffers(audf_graph_t *graph) {
             if (in > audf_resampler_max_in_frames(node->resampler)) return ESP_ERR_INVALID_SIZE;
         }
         if (!needs_buf || !node->cap) continue;
-        node->buf = malloc(node->cap * audf_frame_bytes(node->fmt, node->channels));
+        node->buf = audf_malloc(node->cap * audf_frame_bytes(node->fmt, node->channels), graph->caps);
         if (!node->buf) return ESP_ERR_NO_MEM;
     }
     return ESP_OK;

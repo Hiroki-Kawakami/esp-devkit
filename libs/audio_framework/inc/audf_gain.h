@@ -23,6 +23,7 @@ typedef struct {
     uint8_t    channels;
     uint32_t   sample_rate;
     float      gain;          /*!< linear, initial */
+    uint32_t   alloc_caps;    /*!< heap_caps_* for every allocation; 0 = malloc */
 } audf_gain_config_t;
 
 esp_err_t audf_gain_create(const audf_gain_config_t *config, audf_gain_t **out);
