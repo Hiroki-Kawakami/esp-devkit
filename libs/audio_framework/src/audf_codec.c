@@ -10,6 +10,10 @@ esp_err_t audf_decoder_decode(audf_decoder_t *dec, const void *frame, size_t len
     return dec->ops->decode(dec, frame, len, pcm, frames);
 }
 
+void audf_decoder_reset(audf_decoder_t *dec) {
+    if (dec && dec->ops->reset) dec->ops->reset(dec);
+}
+
 size_t audf_decoder_max_frames(const audf_decoder_t *dec) { return dec->max_frames; }
 audf_fmt_t audf_decoder_fmt(const audf_decoder_t *dec) { return dec->fmt; }
 uint8_t audf_decoder_channels(const audf_decoder_t *dec) { return dec->channels; }

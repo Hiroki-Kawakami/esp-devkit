@@ -9,6 +9,7 @@
 
 typedef struct {
     esp_err_t (*decode)(audf_decoder_t *dec, const void *frame, size_t len, void *pcm, size_t *frames);
+    void (*reset)(audf_decoder_t *dec);
     void (*destroy)(audf_decoder_t *dec);
 } audf_decoder_ops_t;
 

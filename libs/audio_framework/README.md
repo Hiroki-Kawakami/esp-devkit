@@ -65,8 +65,12 @@ starts over after `audf_fifo_flush`.
 ## Codecs
 
 Decoders and encoders take one encoded frame at a time; containers are parsed
-by the caller. IMA ADPCM uses the WAV block layout (format tag 0x11).
+by the caller. IMA ADPCM uses the WAV block layout (format tag 0x11). The AAC
+decoder (LC, HE-AAC v1 and v2) is described in
+[`docs/aac.md`](docs/aac.md).
 
 ## Testing
 
-`test/run.sh` builds and runs the host test (inside the nix dev shell).
+`test/run.sh` builds and runs the host test (inside the nix dev shell). The AAC
+decoder has its own host tool and material script; see
+[`docs/aac.md`](docs/aac.md#checking-it).

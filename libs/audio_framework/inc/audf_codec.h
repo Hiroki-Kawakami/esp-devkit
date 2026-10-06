@@ -23,6 +23,8 @@ typedef struct audf_encoder audf_encoder_t;
 /* pcm holds audf_decoder_max_frames() frames. */
 esp_err_t  audf_decoder_decode(audf_decoder_t *dec, const void *frame, size_t len,
                                void *pcm, size_t *frames);
+/* Drops what the decoder carries from one frame to the next, as for a seek. */
+void       audf_decoder_reset(audf_decoder_t *dec);
 size_t     audf_decoder_max_frames(const audf_decoder_t *dec);
 audf_fmt_t audf_decoder_fmt(const audf_decoder_t *dec);
 uint8_t    audf_decoder_channels(const audf_decoder_t *dec);

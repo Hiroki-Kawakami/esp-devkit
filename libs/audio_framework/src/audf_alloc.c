@@ -29,6 +29,15 @@ void *audf_calloc(size_t count, size_t size, uint32_t caps) {
     return calloc(count, size);
 }
 
+void *audf_malloc_aligned(size_t align, size_t size, uint32_t caps) {
+#ifdef ESP_PLATFORM
+    return heap_caps_aligned_alloc(align, size, caps ? caps : MALLOC_CAP_DEFAULT);
+#else
+    (void)caps;
+    return aligned_alloc(align, (size + align - 1) / align * align);
+#endif
+}
+
 void audf_free(void *p) {
     free(p);
 }
