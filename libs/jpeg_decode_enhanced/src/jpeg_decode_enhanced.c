@@ -168,6 +168,7 @@ static esp_err_t s_parse_jpeg(jpeg_decoder_handle_t engine, const uint8_t *in_bu
         uint8_t lastchar = jpeg_get_bytes(header_info, 1);
         uint8_t thischar = jpeg_get_bytes(header_info, 1);
         uint16_t marker = (lastchar << 8 | thischar);
+        esp_err_t err = ESP_OK;
         switch (marker) {
         case JPEG_M_SOI:
             break;
@@ -175,16 +176,16 @@ static esp_err_t s_parse_jpeg(jpeg_decoder_handle_t engine, const uint8_t *in_bu
         case JPEG_M_APP4: case JPEG_M_APP5: case JPEG_M_APP6: case JPEG_M_APP7:
         case JPEG_M_APP8: case JPEG_M_APP9: case JPEG_M_APP10: case JPEG_M_APP11:
         case JPEG_M_APP12: case JPEG_M_APP13: case JPEG_M_APP14: case JPEG_M_APP15:
-            jpeg_parse_appn_marker(header_info);
+            err = jpeg_parse_appn_marker(header_info);
             break;
         case JPEG_M_COM:
-            jpeg_parse_com_marker(header_info);
+            err = jpeg_parse_com_marker(header_info);
             break;
         case JPEG_M_DQT:
-            jpeg_parse_dqt_marker(header_info);
+            err = jpeg_parse_dqt_marker(header_info);
             break;
         case JPEG_M_SOF0:
-            if (jpeg_parse_sof_marker(header_info) != ESP_OK) return ESP_ERR_INVALID_STATE;
+            err = jpeg_parse_sof_marker(header_info);
             break;
         case JPEG_M_SOF1: case JPEG_M_SOF2: case JPEG_M_SOF3: case JPEG_M_SOF5:
         case JPEG_M_SOF6: case JPEG_M_SOF7: case JPEG_M_SOF9: case JPEG_M_SOF10:
@@ -192,18 +193,21 @@ static esp_err_t s_parse_jpeg(jpeg_decoder_handle_t engine, const uint8_t *in_bu
             ESP_LOGE(TAG, "Only baseline-DCT JPEG is supported");
             return ESP_ERR_NOT_SUPPORTED;
         case JPEG_M_DRI:
-            jpeg_parse_dri_marker(header_info);
+            err = jpeg_parse_dri_marker(header_info);
             break;
         case JPEG_M_DHT:
-            jpeg_parse_dht_marker(header_info);
+            err = jpeg_parse_dht_marker(header_info);
             break;
         case JPEG_M_SOS:
-            jpeg_parse_sos_marker(header_info);
+            err = jpeg_parse_sos_marker(header_info);
             break;
         case JPEG_M_INV:
-            jpeg_parse_inv_marker(header_info);
+            err = jpeg_parse_inv_marker(header_info);
             break;
         }
+        // A marker the parser rejects leaves its tables half filled, and
+        // programming those into the codec faults.
+        if (err != ESP_OK) return ESP_ERR_INVALID_STATE;
         if (marker == JPEG_M_SOS) break;
     }
 
