@@ -126,6 +126,7 @@ static inline uint32_t s_cm_bits(ppa_srm_color_mode_t cm)
 // Per-frame transform resolution (decode-thread context, before strips flow)
 // -----------------------------------------------------------------------------
 
+static inline uint32_t s_gcd(uint32_t a, uint32_t b) { while (b) { uint32_t t = a % b; a = b; b = t; } return a; }
 static inline uint32_t s_unscale_ceil(uint32_t v, uint32_t f16) { return (v * SCALE_FRAG_MAX + f16 - 1) / f16; }
 static inline uint32_t s_unscale_floor(uint32_t v, uint32_t f16) { return v * SCALE_FRAG_MAX / f16; }
 
@@ -160,6 +161,11 @@ static void s_resolve_clip(jpeg_ppa_pipeline_handle_t h, uint32_t *col0, uint32_
     uint32_t r0 = s_unscale_ceil(v0, h->cur.fy), r1 = s_unscale_floor(v1, h->cur.fy);
     if (b > c->w) b = c->w;
     if (r1 > c->h) r1 = c->h;
+    // A clip edge between strip boundaries cuts a strip whose band would end
+    // mid output row; PPA then never raises EOF for it.
+    uint32_t step = SCALE_FRAG_MAX / s_gcd(SCALE_FRAG_MAX, h->cur.fy);
+    if (r0 % step) r0 += step - r0 % step;
+    if (r1 < c->h) r1 -= r1 % step;
     if (h->cfg.strip_color_mode == PPA_SRM_COLOR_MODE_YUV420) {
         if ((c->x + a) & 1) a++;
         if ((c->x + b) & 1) b--;

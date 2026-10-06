@@ -371,14 +371,20 @@ IRAM_ATTR esp_err_t ppa_srm_fast_submit(ppa_srm_fast_handle_t h, void *in_buf, u
 
 #if CONFIG_IDF_TARGET_ESP32P4
     // Hardware bug workaround (DIG-734), same as ppa_srm_transaction_on_picked()
-    uint32_t w_out = s_scaled(in_w, h->sx_int, h->sx_frag);
+    // and its fix for 90/270 rotation, which measures the block in output axes.
+    bool swap = (op->rotation_angle == PPA_SRM_ROTATION_ANGLE_90 ||
+                 op->rotation_angle == PPA_SRM_ROTATION_ANGLE_270);
+    uint32_t mb_w = swap ? in_block_h : in_w;
+    uint32_t mb_rows = swap ? in_w : in_block_h;
+    uint32_t w_out = swap ? s_scaled(mb_w, h->sy_int, h->sy_frag) : s_scaled(mb_w, h->sx_int, h->sx_frag);
     uint32_t w_div = (op->out.srm_cm == PPA_SRM_COLOR_MODE_ARGB8888 || op->out.srm_cm == PPA_SRM_COLOR_MODE_RGB888) ? 32 : 64;
     uint32_t w_left = w_out % w_div;
     if (w_left == 0) w_left = w_div;
-    uint32_t h_in_left = in_block_h % h->mb_h;
+    uint32_t h_in_left = mb_rows % h->mb_h;
     if (h_in_left == 0) h_in_left = h->mb_h;
-    uint32_t h_left = s_scaled(h_in_left, h->sy_int, h->sy_frag);
-    h->bypass_mb_order = ((w_out > w_div) || (in_block_h > h->mb_h)) &&
+    uint32_t h_left = swap ? s_scaled(h_in_left, h->sx_int, h->sx_frag)
+                           : s_scaled(h_in_left, h->sy_int, h->sy_frag);
+    h->bypass_mb_order = ((w_out > w_div) || (mb_rows > h->mb_h)) &&
                          (w_left * h_left * h->out_bits < 12 * 128);
 #endif
 

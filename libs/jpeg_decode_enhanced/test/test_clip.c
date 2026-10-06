@@ -140,10 +140,11 @@ static rect_t intersect(rect_t a, rect_t b)
 }
 
 static void check_clip(const char *name, const uint8_t *full, const uint8_t *clipped,
-                       uint32_t out_w, uint32_t out_h, rect_t rendered, rect_t clip, int gap)
+                       uint32_t out_w, uint32_t out_h, rect_t rendered, rect_t clip, int gap_x,
+                       int gap_y)
 {
     rect_t keep = intersect(rendered, clip);
-    rect_t core = { keep.x + gap, keep.y + gap, keep.w - 2 * gap, keep.h - 2 * gap };
+    rect_t core = { keep.x + gap_x, keep.y + gap_y, keep.w - 2 * gap_x, keep.h - 2 * gap_y };
     int outside_written = 0, core_missing = 0, max_diff = 0;
     for (int y = 0; y < (int)out_h; y++) {
         for (int x = 0; x < (int)out_w; x++) {
@@ -178,7 +179,7 @@ int main(int argc, char **argv)
     uint8_t *out_full = malloc((size_t)out_w * out_h * BPP);
     uint8_t *out_clip = malloc((size_t)out_w * out_h * BPP);
     static const struct { uint32_t w, h; } sizes[] = { { 160, 120 }, { 96, 72 }, { 200, 100 } };
-    static const uint32_t scales[] = { 8, 16, 18, 20, 24, 27, 32 };
+    static const uint32_t scales[] = { 8, 10, 15, 16, 18, 20, 24, 27, 32 };
     int cases = 0;
 
     for (size_t si = 0; si < sizeof(sizes) / sizeof(sizes[0]); si++) {
@@ -245,7 +246,12 @@ int main(int argc, char **argv)
                             { 0, 0, (int)out_w, rendered.y + 1 },
                             { 0, 0, (int)out_w, rendered.y },
                         };
+                        // Clip edges across strips snap to rows that scale to whole output rows.
+                        uint32_t d = 16, r = n;
+                        while (r) { uint32_t m = d % r; d = r; r = m; }
                         int gap = (int)((n + 15) / 16) + 1;
+                        int snap = gap + (int)(((16 / d - 1) * n + 15) / 16);
+                        int gap_x = rot & 1 ? snap : gap, gap_y = rot & 1 ? gap : snap;
                         for (size_t ci = 0; ci < sizeof(clips) / sizeof(clips[0]); ci++) {
                             rect_t k = clips[ci];
                             if (k.w <= 0 || k.h <= 0) continue;
@@ -257,7 +263,7 @@ int main(int argc, char **argv)
                                 s_failures++;
                                 continue;
                             }
-                            check_clip(cname, out_full, out_clip, out_w, out_h, rendered, k, gap);
+                            check_clip(cname, out_full, out_clip, out_w, out_h, rendered, k, gap_x, gap_y);
                             cases++;
                         }
 #endif
