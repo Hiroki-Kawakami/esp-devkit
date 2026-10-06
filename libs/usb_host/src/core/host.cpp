@@ -523,6 +523,7 @@ esp_err_t detail::interface_claim(Device* device, uint8_t interface, uint8_t alt
         pipe_config.endpoint = ep->bEndpointAddress;
         pipe_config.max_packet_bytes = ep_mps(ep);
         pipe_config.interval = ep->bInterval;
+        if (ep_type(ep) == TransferType::Isochronous) pipe_config.mult = ep_mult(ep);
         pipe_config.address = device->address;
         pipe_config.speed = device->speed;
         Pipe* pipe = nullptr;

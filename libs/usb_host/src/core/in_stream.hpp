@@ -46,19 +46,6 @@ public:
     // Returns once no transfer is in flight.
     void stop();
 
-    struct Stats {
-        uint32_t transfers;
-        uint32_t packets_ok;
-        uint32_t packets_skipped;
-        uint32_t packets_failed;
-        uint32_t not_resubmitted;
-        int inflight;
-        int64_t last_done_us;
-        uint8_t last_status;
-    };
-    // Counters since the previous call.
-    Stats take_stats();
-
 private:
     static constexpr int kMaxTransfers = 6;
 
@@ -75,13 +62,6 @@ private:
     std::atomic<int> inflight_{0};
     std::atomic<bool> running_{false};
     SemaphoreHandle_t idle_ = nullptr;
-    std::atomic<uint32_t> transfers_done_{0};
-    std::atomic<uint32_t> packets_ok_{0};
-    std::atomic<uint32_t> packets_skipped_{0};
-    std::atomic<uint32_t> packets_failed_{0};
-    std::atomic<uint32_t> not_resubmitted_{0};
-    std::atomic<int64_t> last_done_us_{0};
-    std::atomic<uint8_t> last_status_{0};
 };
 
 }  // namespace usb_host::detail

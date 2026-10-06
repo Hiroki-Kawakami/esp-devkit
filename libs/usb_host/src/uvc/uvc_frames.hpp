@@ -31,14 +31,6 @@ public:
     esp_err_t receive(UvcFrame* frame, uint32_t timeout_ms);
     void release(const UvcFrame& frame);
 
-    struct Counts {
-        int free;
-        int filling;
-        int ready;
-        int held;
-    };
-    Counts counts();
-
 private:
     enum class State : uint8_t { Free, Filling, Ready, Held };
 

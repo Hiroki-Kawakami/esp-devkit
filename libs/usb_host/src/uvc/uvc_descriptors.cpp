@@ -62,15 +62,10 @@ void parse_endpoint(const EndpointDesc* endpoint, uint8_t alternate, UvcTopology
         return;
     }
     if (type != TransferType::Isochronous || alternate == 0) return;
-    if (ep_mult(endpoint) != 0) {
-        ESP_LOGW(TAG, "alt %u: %u transactions per microframe not supported", alternate,
-                 ep_mult(endpoint) + 1);
-        return;
-    }
     UvcIsocAlt alt;
     alt.alternate = alternate;
     alt.endpoint = endpoint->bEndpointAddress;
-    alt.max_packet_bytes = ep_mps(endpoint);
+    alt.max_packet_bytes = static_cast<uint16_t>(ep_mps(endpoint) * (ep_mult(endpoint) + 1));
     alt.interval = endpoint->bInterval;
     if (alt.max_packet_bytes && alt.interval) out->isoc_alts.push_back(alt);
 }

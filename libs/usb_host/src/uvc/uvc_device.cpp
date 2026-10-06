@@ -39,6 +39,7 @@ constexpr uint32_t kControlTimeoutMs = 1000;
 constexpr size_t kControlBytes = 64;
 constexpr size_t kProbeBytes = 48;
 constexpr uint32_t kIsocTransferUs = 1000;
+constexpr size_t kIsocBufferBytes = 64 * 1024;
 constexpr size_t kBulkTransferBytes = 32 * 1024;
 constexpr int kTransfers = 4;
 
@@ -89,10 +90,6 @@ esp_err_t UvcCameraDevice::open(uint8_t address,
 }
 
 UvcCameraDevice::~UvcCameraDevice() {
-    if (stats_timer_) {
-        esp_timer_stop(stats_timer_);
-        esp_timer_delete(stats_timer_);
-    }
     {
         std::lock_guard<std::mutex> guard(lock_);
         stop_locked();
@@ -184,8 +181,11 @@ esp_err_t UvcCameraDevice::start_isochronous(uint32_t max_payload) {
     config.endpoint = chosen->endpoint;
     config.isochronous = true;
     config.max_packet_bytes = chosen->max_packet_bytes;
-    config.packets = std::min<int>(std::max<uint32_t>(1, kIsocTransferUs / period_us),
-                                   isoc_slots(speed_) / (kTransfers * static_cast<int>(interval)));
+    config.packets = std::min<int>({static_cast<int>(std::max<uint32_t>(1, kIsocTransferUs / period_us)),
+                                    isoc_slots(speed_) / (kTransfers * static_cast<int>(interval)),
+                                    static_cast<int>(kIsocBufferBytes / kTransfers /
+                                                     chosen->max_packet_bytes)});
+    config.packets = std::max(config.packets, 1);
     config.transfers = kTransfers;
     if (config.packets < 1) return ESP_ERR_NOT_SUPPORTED;
 
@@ -253,14 +253,6 @@ esp_err_t UvcCameraDevice::start(uint16_t width, uint16_t height, uint32_t inter
         stop_locked();
         return err;
     }
-    if (!stats_timer_) {
-        esp_timer_create_args_t args = {};
-        args.callback = log_stats;
-        args.arg = this;
-        args.name = "uvc_stats";
-        esp_timer_create(&args, &stats_timer_);
-    }
-    if (stats_timer_) esp_timer_start_periodic(stats_timer_, 1000000);
     return ESP_OK;
 }
 
@@ -270,7 +262,6 @@ void UvcCameraDevice::stop() {
 }
 
 void UvcCameraDevice::stop_locked() {
-    if (stats_timer_) esp_timer_stop(stats_timer_);
     stream_.stop();
     if (claimed_) {
         if (!gone_ && isochronous_) {
@@ -312,15 +303,11 @@ void UvcCameraDevice::on_data(void* context, const uint8_t* data, size_t len, si
 
 void UvcCameraDevice::on_isochronous(const uint8_t* data, size_t len, bool ok) {
     if (!ok) {
-        if (assembling_ && !skip_) dropped_error_++;
         if (assembling_) skip_ = true;
         return;
     }
     size_t header = 0;
-    if (!payload_start(data, len, &header)) {
-        bad_headers_++;
-        return;
-    }
+    if (!payload_start(data, len, &header)) return;
     append(data + header, len - header);
     payload_end();
 }
@@ -337,10 +324,7 @@ void UvcCameraDevice::on_bulk(const uint8_t* data, size_t len, size_t requested,
     if (!in_payload_) {
         if (len == 0) return;
         size_t header = 0;
-        if (!payload_start(data, len, &header)) {
-            bad_headers_++;
-            return;
-        }
+        if (!payload_start(data, len, &header)) return;
         data += header;
         len -= header;
         in_payload_ = true;
@@ -359,10 +343,7 @@ bool UvcCameraDevice::payload_start(const uint8_t* data, size_t len, size_t* hea
     *header = data[0];
     header_info_ = data[1];
     const int fid = header_info_ & kHeaderFid;
-    if (assembling_ && fid != fid_) {
-        fid_toggles_++;
-        finish_frame();
-    }
+    if (assembling_ && fid != fid_) finish_frame();
     fid_ = fid;
     if (!assembling_) {
         assembling_ = true;
@@ -370,10 +351,7 @@ bool UvcCameraDevice::payload_start(const uint8_t* data, size_t len, size_t* hea
         frame_ = nullptr;
         frame_bytes_ = 0;
     }
-    if ((header_info_ & kHeaderErr) && !skip_) {
-        dropped_error_++;
-        skip_ = true;
-    }
+    if (header_info_ & kHeaderErr) skip_ = true;
     return true;
 }
 
@@ -385,7 +363,6 @@ void UvcCameraDevice::append(const uint8_t* data, size_t len) {
     if (!frame_) {
         frame_ = frames_.begin(&frame_capacity_);
         if (!frame_) {
-            dropped_no_slot_++;
             skip_ = true;
             return;
         }
@@ -396,7 +373,6 @@ void UvcCameraDevice::append(const uint8_t* data, size_t len) {
                      static_cast<unsigned>(frame_capacity_));
         }
         overflowed_ = true;
-        if (!skip_) dropped_overflow_++;
         skip_ = true;
         return;
     }
@@ -408,15 +384,18 @@ void UvcCameraDevice::payload_end() {
     if (header_info_ & kHeaderEof) finish_frame();
 }
 
+// A frame cut short keeps its SOI but loses its EOI, and the decoder waits
+// for the missing data instead of failing.
 void UvcCameraDevice::finish_frame() {
     if (frame_) {
         const bool jpeg = frame_bytes_ >= 2 && frame_[0] == 0xff && frame_[1] == 0xd8;
-        if (!skip_ && jpeg) {
-            committed_++;
-            last_commit_us_ = esp_timer_get_time();
+        bool eoi = false;
+        for (size_t i = frame_bytes_ > 16 ? frame_bytes_ - 16 : 0; i + 1 < frame_bytes_; i++) {
+            if (frame_[i] == 0xff && frame_[i + 1] == 0xd9) eoi = true;
+        }
+        if (!skip_ && jpeg && eoi) {
             frames_.commit(frame_bytes_);
         } else {
-            if (!skip_) dropped_not_jpeg_++;
             frames_.cancel();
         }
     }
@@ -424,29 +403,6 @@ void UvcCameraDevice::finish_frame() {
     skip_ = false;
     frame_ = nullptr;
     frame_bytes_ = 0;
-}
-
-void UvcCameraDevice::log_stats(void* arg) {
-    auto* self = static_cast<UvcCameraDevice*>(arg);
-    const InStream::Stats in = self->stream_.take_stats();
-    const UvcFrameQueue::Counts slots = self->frames_.counts();
-    const int64_t now = esp_timer_get_time();
-    const int64_t last_done = in.last_done_us ? (now - in.last_done_us) / 1000 : -1;
-    const int64_t last_commit =
-        self->last_commit_us_ ? (now - self->last_commit_us_) / 1000 : -1;
-    ESP_LOGI(TAG,
-             "in: %u xfers (%u ok, %u skip, %u fail, %u ended) "
-             "inflight %d last %lld ms ago status %u | frames: %u ok (last %lld ms ago), drop err %u ovf %u nojpeg %u "
-             "noslot %u, badhdr %u fid %u | slots: free %d fill %d ready %d held %d",
-             (unsigned)in.transfers, (unsigned)in.packets_ok, (unsigned)in.packets_skipped,
-             (unsigned)in.packets_failed, (unsigned)in.not_resubmitted, in.inflight, last_done,
-             in.last_status, (unsigned)self->committed_.exchange(0), last_commit,
-             (unsigned)self->dropped_error_.exchange(0),
-             (unsigned)self->dropped_overflow_.exchange(0),
-             (unsigned)self->dropped_not_jpeg_.exchange(0),
-             (unsigned)self->dropped_no_slot_.exchange(0), (unsigned)self->bad_headers_.exchange(0),
-             (unsigned)self->fid_toggles_.exchange(0), slots.free, slots.filling, slots.ready,
-             slots.held);
 }
 
 }  // namespace usb_host::detail

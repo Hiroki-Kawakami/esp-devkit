@@ -20,6 +20,7 @@ struct PipeConfig {
     uint8_t endpoint = 0;
     uint16_t max_packet_bytes = 0;
     uint8_t interval = 0;  // bInterval as the descriptor has it
+    uint8_t mult = 0;      // extra transactions per microframe
     uint8_t address = 0;
     Speed speed = Speed::Full;
 };

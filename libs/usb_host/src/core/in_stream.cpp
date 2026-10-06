@@ -9,7 +9,6 @@
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
-#include "esp_timer.h"
 
 namespace usb_host::detail {
 
@@ -111,28 +110,11 @@ void InStream::release_one() {
     if (inflight_.fetch_sub(1) == 1) xSemaphoreGive(idle_);
 }
 
-InStream::Stats InStream::take_stats() {
-    Stats stats;
-    stats.transfers = transfers_done_.exchange(0);
-    stats.packets_ok = packets_ok_.exchange(0);
-    stats.packets_skipped = packets_skipped_.exchange(0);
-    stats.packets_failed = packets_failed_.exchange(0);
-    stats.not_resubmitted = not_resubmitted_.exchange(0);
-    stats.inflight = inflight_.load();
-    stats.last_done_us = last_done_us_.load();
-    stats.last_status = last_status_.load();
-    return stats;
-}
-
 void InStream::done(Transfer* transfer) {
     auto* self = static_cast<InStream*>(transfer->context);
-    self->transfers_done_++;
-    self->last_done_us_ = esp_timer_get_time();
-    self->last_status_ = static_cast<uint8_t>(transfer->status);
     if (!self->running_ || transfer->status == TransferStatus::NoDevice ||
         transfer->status == TransferStatus::Canceled) {
         if (self->running_) {
-            self->not_resubmitted_++;
             ESP_LOGW(TAG, "IN %02x: transfer ended with status %d, not resubmitted",
                      transfer->bEndpointAddress, static_cast<int>(transfer->status));
         }
@@ -147,13 +129,11 @@ void InStream::done(Transfer* transfer) {
                  static_cast<int>(transfer->status));
     }
     if (failed || !self->running_) {
-        if (failed) self->not_resubmitted_++;
         self->release_one();
         return;
     }
     const esp_err_t err = transfer_submit(transfer);
     if (err != ESP_OK) {
-        self->not_resubmitted_++;
         ESP_LOGW(TAG, "IN %02x: resubmit: %s", transfer->bEndpointAddress, esp_err_to_name(err));
         self->release_one();
     }
@@ -171,17 +151,14 @@ void InStream::deliver(Transfer* transfer) {
         const IsocPacket& desc = transfer->isoc_packet_desc[i];
         switch (desc.status) {
             case TransferStatus::Completed:
-                packets_ok_++;
                 if (desc.actual_num_bytes > 0) {
                     sink_(context_, packet, desc.actual_num_bytes, desc.num_bytes, true);
                 }
                 break;
             case TransferStatus::TimedOut:
             case TransferStatus::Skipped:
-                packets_skipped_++;
                 break;
             default:
-                packets_failed_++;
                 sink_(context_, nullptr, 0, desc.num_bytes, false);
                 break;
         }

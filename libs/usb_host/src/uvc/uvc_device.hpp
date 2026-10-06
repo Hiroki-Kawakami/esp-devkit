@@ -11,7 +11,6 @@
 #include <mutex>
 #include <vector>
 
-#include "esp_timer.h"
 #include "in_stream.hpp"
 #include "transfer.hpp"
 #include "usb_host_uvc.hpp"
@@ -56,7 +55,6 @@ private:
     void append(const uint8_t* data, size_t len);
     void payload_end();
     void finish_frame();
-    static void log_stats(void* arg);
 
     TransferContext xfer_;
     Transfer* ctrl_ = nullptr;
@@ -84,16 +82,6 @@ private:
     bool in_payload_ = false;
     size_t payload_bytes_ = 0;
     size_t max_payload_ = 0;
-
-    esp_timer_handle_t stats_timer_ = nullptr;
-    std::atomic<uint32_t> committed_{0};
-    std::atomic<uint32_t> dropped_error_{0};
-    std::atomic<uint32_t> dropped_overflow_{0};
-    std::atomic<uint32_t> dropped_not_jpeg_{0};
-    std::atomic<uint32_t> dropped_no_slot_{0};
-    std::atomic<uint32_t> bad_headers_{0};
-    std::atomic<uint32_t> fid_toggles_{0};
-    std::atomic<int64_t> last_commit_us_{0};
 };
 
 }  // namespace usb_host::detail

@@ -172,9 +172,11 @@ PROBE/COMMIT for one size and interval and then streams.
 
 Isochronous devices get the alternate with the smallest packet that holds the
 committed `dwMaxPayloadTransferSize`, or the largest one when none does.
-Alternates with more than one transaction per microframe are skipped: the host
-stack schedules one transaction per (micro)frame, so 1024 bytes per microframe
-(8 MB/s) is the ceiling. Bulk devices stream on alternate 0; a payload ends
+An alternate with two or three transactions per microframe counts all of them
+as its packet size; the channel's multi count is set from the endpoint, and one
+descriptor receives the whole microframe, up to 3072 bytes (24 MB/s). Isochronous
+transfers are 1 ms, cut down to fit 64 KB across the four in flight. Bulk devices
+stream on alternate 0; a payload ends
 with a short transfer or once it reaches `dwMaxPayloadTransferSize`, and only
 its first bytes carry a header. Either way the transfers stay queued like UAC
 playback's, so streaming adds no task.
@@ -183,9 +185,9 @@ IN streams (video, and audio capture) receive into internal RAM. While other
 masters keep PSRAM busy, the controller cannot drain its RX FIFO into it in
 time, and it then misses the (micro)frames of every isochronous endpoint on the
 bus: with a bulk camera's buffers in PSRAM and the picture being decoded, its
-microphone lost one packet in twelve. Isochronous video transfers are 1 ms
-(eight packets), so four in flight take 25 KB at 800-byte packets; a bulk
-camera's four transfers take its payload size each, 64 KB at 16 KB.
+microphone lost one packet in twelve. Isochronous video takes 25 KB at
+800-byte packets and at most 64 KB; a bulk camera's four transfers take its
+payload size each, 64 KB at 16 KB.
 
 Frames are assembled into slots the caller passes to `start()`, so the driver
 allocates no frame memory. A frame ends at the EOF bit or when the frame ID

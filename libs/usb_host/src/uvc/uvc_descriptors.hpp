@@ -32,8 +32,7 @@ struct UvcTopology {
     uint8_t streaming_interface = 0;
     uint8_t format_index = 0;
     std::vector<UvcFrameDesc> frames;
-    // Single-transaction alternates only: the host stack issues one per
-    // (micro)frame.
+    // max_packet_bytes counts every transaction of a (micro)frame.
     std::vector<UvcIsocAlt> isoc_alts;
     uint8_t bulk_endpoint = 0;
     uint16_t bulk_max_packet_bytes = 0;

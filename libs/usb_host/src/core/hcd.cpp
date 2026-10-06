@@ -111,11 +111,12 @@ esp_err_t Hcd::init(int intr_flags, TaskHandle_t notify) {
     if (!hal_.channels.hdls || !pipes_ || !frame_list_) return ESP_ERR_NO_MEM;
     esp_cache_msync(frame_list_, frame_bytes, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
 
-    // The periodic TX FIFO takes a whole 1023-byte isochronous OUT packet,
-    // the non-periodic one a 512-byte bulk packet, and IN gets the rest.
+    // The non-periodic TX FIFO takes a 512-byte bulk packet and the periodic
+    // one a 640-byte isochronous OUT packet; IN gets the rest, which has to
+    // keep up with three 1024-byte transactions in one microframe.
     const uint32_t depth = hal_.constant_config.hsphy_type ? 1024 : 256;
     fifo_.nptx_fifo_lines = depth / 8;
-    fifo_.ptx_fifo_lines = depth / 4;
+    fifo_.ptx_fifo_lines = depth * 5 / 32;
     fifo_.rx_fifo_lines = hal_.constant_config.fifo_size - fifo_.nptx_fifo_lines -
                           fifo_.ptx_fifo_lines;
 
@@ -268,6 +269,7 @@ esp_err_t Hcd::pipe_alloc(const PipeConfig& config, Pipe** out) {
         err = ESP_ERR_NOT_FOUND;
     } else {
         usb_dwc_hal_chan_set_ep_char(&hal_, &pipe->chan_, &ep);
+        pipe->chan_.regs->hcchar_reg.ec = config.mult + 1;
         pipe->has_chan_ = true;
         pipes_[slot] = pipe;
     }
@@ -752,10 +754,16 @@ void Hcd::handle_channel(Pipe* pipe, BaseType_t* woken) {
             if (pipe->state_ == Pipe::State::Active) start_locked(pipe);
             break;
         case USB_DWC_HAL_CHAN_EVENT_ERROR:
-            if (pipe->state_ != Pipe::State::Dead) pipe->state_ = Pipe::State::Halted;
+            // The next SETUP clears a control endpoint's STALL or error.
+            if (pipe->type_ != TransferType::Control && pipe->state_ != Pipe::State::Dead) {
+                pipe->state_ = Pipe::State::Halted;
+            }
             if (transfer) {
                 finish_locked(pipe, transfer, chan_error_status(usb_dwc_hal_chan_get_error(&pipe->chan_)),
                               woken);
+            }
+            if (pipe->type_ == TransferType::Control && pipe->state_ == Pipe::State::Active) {
+                start_locked(pipe);
             }
             break;
         case USB_DWC_HAL_CHAN_EVENT_HALT_REQ:

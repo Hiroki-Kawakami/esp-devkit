@@ -121,20 +121,6 @@ void UvcFrameQueue::release(const UvcFrame& frame) {
     if (slot.state == State::Held) slot.state = State::Free;
 }
 
-UvcFrameQueue::Counts UvcFrameQueue::counts() {
-    std::lock_guard<std::mutex> guard(lock_);
-    Counts counts = {};
-    for (const Slot& slot : slots_) {
-        switch (slot.state) {
-            case State::Free: counts.free++; break;
-            case State::Filling: counts.filling++; break;
-            case State::Ready: counts.ready++; break;
-            case State::Held: counts.held++; break;
-        }
-    }
-    return counts;
-}
-
 }  // namespace detail
 
 }  // namespace usb_host
