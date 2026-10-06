@@ -217,8 +217,9 @@ the log, and `novolume` leaves the device without a volume control.
 tone in 16-bit stereo at real-time pace (48000 by default);
 `usbh-uac-capture-detach` pulls it.
 
-For UVC, `usbh-uvc-attach [path] [WxH]` plugs a camera that streams JPEG files
-at the requested interval, offering one size (1280x720 by default) at 30 and
-15 fps. `path` is a JPEG file or a directory of them, played in name order and
-looped, and defaults to `SIMULATOR_USBH_UVC_PATH`; the files are sent as they
-are, so their size should match. `usbh-uvc-detach` pulls it.
+For UVC, `usbh-uvc-attach [path] [WxH[,WxH...]]` plugs a camera that streams
+JPEG files at the requested interval, offering the listed sizes (1280x720 by
+default) at 30 and 15 fps each. `path` is a JPEG file or a directory of them,
+played in name order and looped; omitted or `-`, it is
+`SIMULATOR_USBH_UVC_PATH`. The files are sent as they are whichever size is
+streaming. `usbh-uvc-detach` pulls it.

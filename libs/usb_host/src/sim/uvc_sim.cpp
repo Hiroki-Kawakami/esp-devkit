@@ -36,14 +36,8 @@ constexpr uint32_t kIntervals[] = {333333, 666666};
 
 class SimUvcDevice final : public UvcDevice {
 public:
-    SimUvcDevice(std::vector<std::vector<uint8_t>> pictures, uint16_t width, uint16_t height)
-        : pictures_(std::move(pictures)) {
-        UvcFrameSize size;
-        size.width = width;
-        size.height = height;
-        size.intervals.assign(std::begin(kIntervals), std::end(kIntervals));
-        sizes_.push_back(std::move(size));
-    }
+    SimUvcDevice(std::vector<std::vector<uint8_t>> pictures, std::vector<UvcFrameSize> sizes)
+        : pictures_(std::move(pictures)), sizes_(std::move(sizes)) {}
     ~SimUvcDevice() override { stop(); }
 
     bool connected() const override { return !gone_; }
@@ -55,10 +49,10 @@ public:
         std::lock_guard<std::mutex> guard(lock_);
         if (gone_) return ESP_ERR_NOT_FOUND;
         if (!slots || !count || !slot_bytes) return ESP_ERR_INVALID_ARG;
-        const UvcFrameSize& size = sizes_.front();
-        if (width != size.width || height != size.height || !size.supports(interval)) {
-            return ESP_ERR_NOT_SUPPORTED;
-        }
+        auto size = std::find_if(sizes_.begin(), sizes_.end(), [&](const UvcFrameSize& entry) {
+            return entry.width == width && entry.height == height;
+        });
+        if (size == sizes_.end() || !size->supports(interval)) return ESP_ERR_NOT_SUPPORTED;
         stop_locked();
         frames_.reset(slots, count, slot_bytes);
         running_ = true;
@@ -154,16 +148,28 @@ std::vector<std::vector<uint8_t>> load_pictures(const std::filesystem::path& pat
 
 bool cmd_attach(int argc, const char* const* argv, void*) {
     const char* fallback = getenv("SIMULATOR_USBH_UVC_PATH");
-    const char* path = argc > 1 ? argv[1] : fallback;
+    const char* path = argc > 1 && strcmp(argv[1], "-") != 0 ? argv[1] : fallback;
     if (!path) {
         harness_reply("ERR %s: no path and SIMULATOR_USBH_UVC_PATH unset", argv[0]);
         return true;
     }
-    unsigned width = 1280;
-    unsigned height = 720;
-    if (argc > 2 && sscanf(argv[2], "%ux%u", &width, &height) != 2) {
-        harness_reply("ERR %s: size must be WxH", argv[0]);
-        return true;
+    std::vector<UvcFrameSize> sizes;
+    const char* list = argc > 2 ? argv[2] : "1280x720";
+    while (*list) {
+        unsigned width = 0;
+        unsigned height = 0;
+        int used = 0;
+        if (sscanf(list, "%ux%u%n", &width, &height, &used) != 2) {
+            harness_reply("ERR %s: sizes must be WxH[,WxH...]", argv[0]);
+            return true;
+        }
+        UvcFrameSize size;
+        size.width = static_cast<uint16_t>(width);
+        size.height = static_cast<uint16_t>(height);
+        size.intervals.assign(std::begin(kIntervals), std::end(kIntervals));
+        sizes.push_back(std::move(size));
+        list += used;
+        if (*list == ',') list++;
     }
     auto pictures = load_pictures(path);
     if (pictures.empty()) {
@@ -177,7 +183,7 @@ bool cmd_attach(int argc, const char* const* argv, void*) {
             harness_reply("ERR %s: a camera is attached", argv[0]);
             return true;
         }
-        s_device = std::make_shared<SimUvcDevice>(std::move(pictures), width, height);
+        s_device = std::make_shared<SimUvcDevice>(std::move(pictures), std::move(sizes));
         device = s_device;
     }
     if (detail::callbacks().uvc_connected) detail::callbacks().uvc_connected(device);
