@@ -31,9 +31,10 @@ TEST=${TEST:-test_bsp_audio}
 test_src="$here/$TEST.c"
 [ -f "$test_src" ] || { echo "no such test: $test_src" >&2; exit 1; }
 
-# idf_compat host shims (the pthread-backed FreeRTOS API). Cached in build/.
+# idf_compat host shims (heap caps and the pthread-backed FreeRTOS API). Cached
+# in build/.
 objs=""
-for s in freertos_port freertos_queue freertos_task; do
+for s in esp_heap_caps freertos_port freertos_queue freertos_task; do
     o="$out/$s.o"
     [ -f "$o" ] || gcc -c "$cc/src/$s.c" -I"$cc/include" -o "$o"
     objs="$objs $o"

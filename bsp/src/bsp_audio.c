@@ -20,7 +20,9 @@
 #include "bsp_audio.h"
 #include "bsp_dispatch.h"
 #include <math.h>
+#include "audf_convert.h"
 #include "audf_gain.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -40,6 +42,7 @@ static const char *TAG = "BSP_AUDIO";
 #define BSP_MUTE_SETTLE_MS  20      /* hw-mute settle before stopping clocks */
 #define BSP_NOMINAL_RATE    48000   /* DSP placeholder rate until the first open */
 #define BSP_ROUTE_POLL_MS   200     /* route-source re-tick while tracking HP state */
+#define BSP_DSP_CHUNK       256     /* frames per pass through the S32 DSP buffer */
 
 /* Tone synth fallback (CAP_PCM without CAP_TONE): a fixed low-rate mono format
  * chosen for simplicity, not fidelity — it's a beep, not program audio. */
@@ -56,6 +59,7 @@ static bsp_audio_t  *s_audio;
 static audf_eq_t    *s_eq;
 static audf_gain_t  *s_gain;
 static audf_mixer_t *s_mixer;
+static int32_t      *s_dsp_buf;
 static bsp_audio_dsp_mode_t s_dsp_mode = BSP_AUDIO_DSP_MODE_AUTO;
 static bool s_dsp_bypass;        /* stream format the DSP can't process (bits != 16) */
 static uint8_t s_dsp_channels = 2;
@@ -203,23 +207,30 @@ static void dsp_destroy(void) {
     audf_eq_destroy(s_eq);
     audf_gain_destroy(s_gain);
     audf_mixer_destroy(s_mixer);
+    heap_caps_free(s_dsp_buf);
     s_eq = NULL;
     s_gain = NULL;
     s_mixer = NULL;
+    s_dsp_buf = NULL;
 }
 
+/* S32, not S16 in place: an EQ boost would saturate before the volume gain. */
 static esp_err_t dsp_create(void) {
+    const size_t buf_bytes = BSP_DSP_CHUNK * 2 * sizeof(int32_t);
+    s_dsp_buf = heap_caps_malloc(buf_bytes, MALLOC_CAP_SPIRAM);
+    if (!s_dsp_buf) s_dsp_buf = heap_caps_malloc(buf_bytes, MALLOC_CAP_DEFAULT);
+    if (!s_dsp_buf) return ESP_ERR_NO_MEM;
     esp_err_t err = audf_eq_create(&(audf_eq_config_t){
-        .fmt = AUDF_FMT_S16, .channels = 2, .max_stages = BSP_AUDIO_DSP_PROFILE_MAX_STAGES,
+        .fmt = AUDF_FMT_S32, .channels = 2, .max_stages = BSP_AUDIO_DSP_PROFILE_MAX_STAGES,
     }, &s_eq);
     if (err == ESP_OK) {
         err = audf_gain_create(&(audf_gain_config_t){
-            .fmt = AUDF_FMT_S16, .channels = 2, .sample_rate = BSP_NOMINAL_RATE,
+            .fmt = AUDF_FMT_S32, .channels = 2, .sample_rate = BSP_NOMINAL_RATE,
         }, &s_gain);
     }
     if (err == ESP_OK) {
         err = audf_mixer_create(&(audf_mixer_config_t){
-            .fmt = AUDF_FMT_S16, .out_channels = 2, .num_inputs = 1, .in_channels = (const uint8_t[]){ 2 },
+            .fmt = AUDF_FMT_S32, .out_channels = 2, .num_inputs = 1, .in_channels = (const uint8_t[]){ 2 },
         }, &s_mixer);
     }
     if (err != ESP_OK) dsp_destroy();
@@ -297,8 +308,8 @@ static void stream_started(uint32_t rate, uint8_t bits, uint8_t ch) {
         s_dsp_bypass = (bits != 16);
         if (!s_dsp_bypass) {
             s_dsp_channels = ch ? ch : 2;
-            audf_eq_reconfig(s_eq, AUDF_FMT_S16, s_dsp_channels);
-            audf_gain_reconfig(s_gain, AUDF_FMT_S16, s_dsp_channels, s_rate);
+            audf_eq_reconfig(s_eq, AUDF_FMT_S32, s_dsp_channels);
+            audf_gain_reconfig(s_gain, AUDF_FMT_S32, s_dsp_channels, s_rate);
             apply_dsp_profile(hp_inserted_now());
             audf_gain_set(s_gain, 0.0f, 0);
             /* Pin the codec to max while the SW gain holds silence; user
@@ -519,10 +530,21 @@ esp_err_t bsp_audio_write(void *data, size_t len) {
     if (!pcm_available() || !s_audio->write) return ESP_ERR_NOT_SUPPORTED;
     if (!s_open) return ESP_ERR_INVALID_STATE;
     if (s_eq && !s_dsp_bypass) {
+        int16_t *pcm = data;
         size_t frames = len / (sizeof(int16_t) * s_dsp_channels);
-        audf_eq_process(s_eq, data, data, frames);
-        audf_gain_process(s_gain, data, data, frames);
-        if (s_dsp_channels == 2) audf_mixer_process(s_mixer, (const void *const[]){ data }, data, frames);
+        while (frames > 0) {
+            const size_t n = frames < BSP_DSP_CHUNK ? frames : BSP_DSP_CHUNK;
+            const size_t samples = n * s_dsp_channels;
+            audf_convert(pcm, AUDF_FMT_S16, s_dsp_buf, AUDF_FMT_S32, samples);
+            audf_eq_process(s_eq, s_dsp_buf, s_dsp_buf, n);
+            audf_gain_process(s_gain, s_dsp_buf, s_dsp_buf, n);
+            if (s_dsp_channels == 2) {
+                audf_mixer_process(s_mixer, (const void *const[]){ s_dsp_buf }, s_dsp_buf, n);
+            }
+            audf_convert(s_dsp_buf, AUDF_FMT_S32, pcm, AUDF_FMT_S16, samples);
+            pcm += samples;
+            frames -= n;
+        }
     }
     return s_audio->write(s_audio, data, len);
 }
