@@ -83,24 +83,32 @@ void ensure_pool(ListState *state) {
     }
 }
 
+int32_t max_scroll_y(const ListState *state) {
+    const int64_t content_height = static_cast<int64_t>(state->item_count) * state->row_height;
+    const int64_t max_y = content_height - lv_obj_get_content_height(state->list);
+    return static_cast<int32_t>(std::clamp<int64_t>(max_y, 0, std::numeric_limits<int32_t>::max()));
+}
+
 void bind_visible_rows(ListState *state, bool force) {
     if (!state || state->updating || state->pool.empty() || state->row_height <= 0) return;
-    int32_t scroll_y = lv_obj_get_scroll_y(state->list);
-    if (scroll_y < 0) scroll_y = 0;
+    const int32_t scroll_y = std::clamp<int32_t>(lv_obj_get_scroll_y(state->list), 0, max_scroll_y(state));
     std::size_t first = static_cast<std::size_t>(scroll_y / state->row_height);
     first = first > kOverscanRows ? first - kOverscanRows : 0;
     if (!force && first == state->first_bound) return;
 
     state->updating = true;
     state->first_bound = first;
-    for (std::size_t slot_index = 0; slot_index < state->pool.size(); ++slot_index) {
-        RowSlot &slot = state->pool[slot_index];
-        const std::size_t item_index = first + slot_index;
+    const std::size_t pool_size = state->pool.size();
+    for (std::size_t item_index = first; item_index < first + pool_size; ++item_index) {
+        RowSlot &slot = state->pool[item_index % pool_size];
         if (item_index >= state->item_count) {
-            slot.index = SIZE_MAX;
-            lv_obj_add_flag(slot.object, LV_OBJ_FLAG_HIDDEN);
+            if (force || slot.index != SIZE_MAX) {
+                slot.index = SIZE_MAX;
+                lv_obj_add_flag(slot.object, LV_OBJ_FLAG_HIDDEN);
+            }
             continue;
         }
+        if (!force && slot.index == item_index) continue;
         slot.index = item_index;
         lv_obj_remove_flag(slot.object, LV_OBJ_FLAG_HIDDEN);
         const int64_t y = static_cast<int64_t>(item_index) * state->row_height;
@@ -159,6 +167,12 @@ void list_resized(lv_event_t *event) {
     auto *state = static_cast<ListState *>(lv_event_get_user_data(event));
     if (state->updating) return;
     ensure_pool(state);
+    // A flex-driven resize does not set readjust_scroll_after_layout, so LVGL leaves an
+    // out-of-range scroll position behind when the list gets taller.
+    const int32_t max_y = max_scroll_y(state);
+    if (lv_obj_get_scroll_y(state->list) > max_y) {
+        lv_obj_scroll_to_y(state->list, max_y, LV_ANIM_OFF);
+    }
     bind_visible_rows(state, true);
 }
 
@@ -219,7 +233,7 @@ void lv_list_show_row(lv_obj_t *list, std::size_t index, lv_anim_enable_t animat
 std::size_t lv_list_first_visible_row(const lv_obj_t *list) {
     ListState *state = state_for(list);
     if (!state || state->item_count == 0 || state->row_height <= 0) return SIZE_MAX;
-    const int32_t scroll_y = std::max<int32_t>(lv_obj_get_scroll_y(state->list), 0);
+    const int32_t scroll_y = std::clamp<int32_t>(lv_obj_get_scroll_y(state->list), 0, max_scroll_y(state));
     return std::min<std::size_t>(static_cast<std::size_t>(scroll_y / state->row_height),
                                  state->item_count - 1);
 }
