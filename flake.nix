@@ -19,13 +19,13 @@
         pythonEnv = (import ./nix/python-env.nix { inherit pkgs; }).pythonEnv;
 
         # Copy the IDF checkout into a writable store path (idf_tools writes to it).
-        # The patch is an upstream fix that has not reached a v6.1 tag yet; see
-        # its header for provenance.
+        # Each patch's header says what it changes and where it comes from.
         idfStore = pkgs.runCommandLocal "esp-idf-v6.1" { } ''
           mkdir -p $out
           cp -R ${esp-idf-src}/. $out/
           chmod -R u+w $out
           patch -p1 -d $out < ${./nix/patches/ppa-srm-rotation-dig734.patch}
+          patch -p1 -d $out < ${./nix/patches/p4-rev1-cpu-400mhz.patch}
         '';
       in {
         devShells.default = pkgs.mkShell {
