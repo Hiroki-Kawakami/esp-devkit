@@ -1,0 +1,74 @@
+Adds a 220 MHz PSRAM speed for ESP32-P4 below rev 3.0: the 250 MHz latency and
+dummy settings with MPLL at 440 MHz. On rev 1.x, 250 MHz returns corrupted
+bursts no matter how the DQS phase, delay lines, read dummy or drive strength
+are set, and 240 MHz still fails on some chips, so 250 MHz stays limited to
+rev 3.0 and up. Not upstream; Espressif rates PSRAM at 200 MHz below rev 3.0.
+
+diff --git a/components/esp_psram/esp32p4/Kconfig.spiram b/components/esp_psram/esp32p4/Kconfig.spiram
+--- a/components/esp_psram/esp32p4/Kconfig.spiram
++++ b/components/esp_psram/esp32p4/Kconfig.spiram
+@@ -34,6 +34,10 @@
+             depends on !ESP32P4_SELECTS_REV_LESS_V3
+             bool "250MHz clock speed"
+ 
++        config SPIRAM_SPEED_220M
++            depends on ESP32P4_SELECTS_REV_LESS_V3
++            bool "220MHz clock speed"
++
+         config SPIRAM_SPEED_200M
+             bool "200MHz clock speed"
+ 
+@@ -50,6 +54,7 @@
+         default 80 if SPIRAM_SPEED_80M
+         default 100 if SPIRAM_SPEED_100M
+         default 200 if SPIRAM_SPEED_200M
++        default 220 if SPIRAM_SPEED_220M
+         default 250 if SPIRAM_SPEED_250M
+ 
+     config SPIRAM_FETCH_INSTRUCTIONS
+diff --git a/components/esp_psram/device/esp_psram_impl_ap_hex.c b/components/esp_psram/device/esp_psram_impl_ap_hex.c
+--- a/components/esp_psram/device/esp_psram_impl_ap_hex.c
++++ b/components/esp_psram/device/esp_psram_impl_ap_hex.c
+@@ -27,7 +27,7 @@
+ #define AP_HEX_PSRAM_WR_CMD_BITLEN         16
+ #define AP_HEX_PSRAM_ADDR_BITLEN           32
+ 
+-#if CONFIG_SPIRAM_SPEED_250M
++#if CONFIG_SPIRAM_SPEED_250M || CONFIG_SPIRAM_SPEED_220M
+ #define AP_HEX_PSRAM_RD_DUMMY_BITLEN       (2*(18-1))
+ #define AP_HEX_PSRAM_RD_REG_DUMMY_BITLEN   (2*(9-1))
+ #define AP_HEX_PSRAM_WR_DUMMY_BITLEN       (2*(9-1))
+@@ -58,6 +58,8 @@
+ #define AP_HEX_PSRAM_MPLL_DEFAULT_FREQ_MHZ 320
+ #elif CONFIG_SPIRAM_SPEED_250M
+ #define AP_HEX_PSRAM_MPLL_DEFAULT_FREQ_MHZ 500
++#elif CONFIG_SPIRAM_SPEED_220M
++#define AP_HEX_PSRAM_MPLL_DEFAULT_FREQ_MHZ 440
+ #else
+ #define AP_HEX_PSRAM_MPLL_DEFAULT_FREQ_MHZ 400
+ #endif
+diff --git a/components/esp_hw_support/mspi/mspi_timing_tuning/port/esp32p4/mspi_timing_tuning_configs.h b/components/esp_hw_support/mspi/mspi_timing_tuning/port/esp32p4/mspi_timing_tuning_configs.h
+--- a/components/esp_hw_support/mspi/mspi_timing_tuning/port/esp32p4/mspi_timing_tuning_configs.h
++++ b/components/esp_hw_support/mspi/mspi_timing_tuning/port/esp32p4/mspi_timing_tuning_configs.h
+@@ -23,6 +23,9 @@
+ #if CONFIG_SPIRAM_SPEED_250M
+ #define MSPI_TIMING_PSRAM_NEEDS_TUNING      1
+ #define MSPI_TIMING_MPLL_FREQ_MHZ           500
++#elif CONFIG_SPIRAM_SPEED_220M
++#define MSPI_TIMING_PSRAM_NEEDS_TUNING      1
++#define MSPI_TIMING_MPLL_FREQ_MHZ           440
+ #elif CONFIG_SPIRAM_SPEED_200M
+ #define MSPI_TIMING_PSRAM_NEEDS_TUNING      1
+ #define MSPI_TIMING_MPLL_FREQ_MHZ           400
+diff --git a/components/esp_hw_support/mspi/mspi_timing_tuning/tuning_scheme_impl/mspi_timing_by_dqs.c b/components/esp_hw_support/mspi/mspi_timing_tuning/tuning_scheme_impl/mspi_timing_by_dqs.c
+--- a/components/esp_hw_support/mspi/mspi_timing_tuning/tuning_scheme_impl/mspi_timing_by_dqs.c
++++ b/components/esp_hw_support/mspi/mspi_timing_tuning/tuning_scheme_impl/mspi_timing_by_dqs.c
+@@ -32,7 +32,7 @@
+ #define AP_HEX_PSRAM_RD_CMD_BITLEN         16
+ #define AP_HEX_PSRAM_WR_CMD_BITLEN         16
+ #define AP_HEX_PSRAM_ADDR_BITLEN           32
+-#if CONFIG_SPIRAM_SPEED_250M
++#if CONFIG_SPIRAM_SPEED_250M || CONFIG_SPIRAM_SPEED_220M
+ #define AP_HEX_PSRAM_RD_DUMMY_BITLEN       (2*(18-1))
+ #define AP_HEX_PSRAM_WR_DUMMY_BITLEN       (2*(9-1))
+ #elif CONFIG_SPIRAM_SPEED_200M
