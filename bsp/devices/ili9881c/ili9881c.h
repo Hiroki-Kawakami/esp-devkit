@@ -24,6 +24,7 @@ typedef struct {
     bsp_pixel_format_t pixel_format;    /*!< RGB565 or RGB888                   */
     uint8_t            fb_num;          /*!< number of host framebuffers (1..3) */
     gpio_num_t         backlight_gpio;  /*!< LEDC PWM pin; NC -> no backlight   */
+    uint16_t           backlight_min_duty; /*!< 12-bit duty at brightness 1      */
 } ili9881c_config_t;
 
 BSP_NONNULL(1, 2) esp_err_t ili9881c_lcd_create(const ili9881c_config_t *config, bsp_display_t **out);

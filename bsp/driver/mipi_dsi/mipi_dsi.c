@@ -110,10 +110,17 @@ static esp_err_t read_bitmap(bsp_display_t *self, bsp_rect_t area, void *pixels)
 }
 
 static esp_err_t set_brightness(bsp_display_t *self, int brightness) {
-    (void)self;
+    mipi_dsi_lcd_t *lcd = (mipi_dsi_lcd_t *)self;
     if (brightness < 0) brightness = 0;
     if (brightness > 100) brightness = 100;
-    uint32_t duty = (uint32_t)(((float)brightness / 100.0f) * ((1 << 12) - 1));
+    const uint32_t max_duty = (1 << 12) - 1;
+    const uint32_t min_duty = lcd->config.backlight_min_duty ? lcd->config.backlight_min_duty : 1;
+    uint32_t duty = 0;
+    if (brightness > 0) {
+        const float t = (float)(brightness - 1) / 99.0f;
+        duty = min_duty + (uint32_t)(t * t * (float)(max_duty - min_duty) + 0.5f);
+        if (duty < min_duty + (uint32_t)brightness - 1) duty = min_duty + (uint32_t)brightness - 1;
+    }
 
     esp_err_t err = ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, duty);
     if (err != ESP_OK) return err;
@@ -285,6 +292,7 @@ static esp_err_t validate_config(const mipi_dsi_config_t *config) {
         return ESP_ERR_NOT_SUPPORTED;
     }
     if (config->fb_num > MIPI_DSI_MAX_FRAME_BUFFERS) return ESP_ERR_INVALID_ARG;
+    if (config->backlight_min_duty > (1 << 12) - 100) return ESP_ERR_INVALID_ARG;
     if (config->lane_bit_rate_mbps.rgb565 <= 0 || config->lane_bit_rate_mbps.rgb888 <= 0 ||
         config->dpi_clock_freq_mhz <= 0) {
         return ESP_ERR_INVALID_ARG;

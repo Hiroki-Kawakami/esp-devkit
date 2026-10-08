@@ -21,6 +21,7 @@ typedef struct {
     bsp_pixel_format_t pixel_format;
     uint8_t            fb_num;
     gpio_num_t         backlight_gpio;
+    uint16_t           backlight_min_duty;
 } st7123_config_t;
 
 BSP_NONNULL(1, 2) esp_err_t st7123_lcd_create(const st7123_config_t *config, bsp_display_t **out);

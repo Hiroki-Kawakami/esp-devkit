@@ -35,6 +35,7 @@ typedef struct {
     bsp_pixel_format_t pixel_format; /*!< RGB565 or RGB888 */
     uint8_t            fb_num;       /*!< 0 selects one framebuffer; maximum is 3 */
     gpio_num_t         backlight_gpio; /*!< NC disables backlight control */
+    uint16_t           backlight_min_duty; /*!< 12-bit duty at brightness 1; 0 means 1 */
 
     struct {
         float rgb565;

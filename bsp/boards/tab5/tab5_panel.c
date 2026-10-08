@@ -20,8 +20,11 @@
 
 static const char *TAG = "tab5_panel";
 
-#define TAB5_LCD_PIN_BL    GPIO_NUM_22
-#define TAB5_TOUCH_PIN_INT GPIO_NUM_23
+#define TAB5_LCD_PIN_BL      GPIO_NUM_22
+/* The backlight boost driver holds a fixed current floor while enabled;
+ * brightness does not change below this duty at 5kHz. */
+#define TAB5_LCD_BL_MIN_DUTY 1300
+#define TAB5_TOUCH_PIN_INT   GPIO_NUM_23
 
 #define TAB5_PANEL_W       720
 #define TAB5_PANEL_H       1280
@@ -71,10 +74,11 @@ static int get_st712x_version(i2c_master_bus_handle_t bus) {
 
 static esp_err_t setup_st7121_lcd(const bsp_config_t *config) {
     const st7121_config_t lcd_cfg = {
-        .size           = { TAB5_PANEL_W, TAB5_PANEL_H },
-        .pixel_format   = resolve_pixel_format(config),
-        .fb_num         = resolve_fb_num(config),
-        .backlight_gpio = TAB5_LCD_PIN_BL,
+        .size               = { TAB5_PANEL_W, TAB5_PANEL_H },
+        .pixel_format       = resolve_pixel_format(config),
+        .fb_num             = resolve_fb_num(config),
+        .backlight_gpio     = TAB5_LCD_PIN_BL,
+        .backlight_min_duty = TAB5_LCD_BL_MIN_DUTY,
     };
     bsp_display_t *display = NULL;
     esp_err_t err = st7121_lcd_create(&lcd_cfg, &display);
@@ -85,10 +89,11 @@ static esp_err_t setup_st7121_lcd(const bsp_config_t *config) {
 
 static esp_err_t setup_st7123_lcd(const bsp_config_t *config) {
     const st7123_config_t lcd_cfg = {
-        .size           = { TAB5_PANEL_W, TAB5_PANEL_H },
-        .pixel_format   = resolve_pixel_format(config),
-        .fb_num         = resolve_fb_num(config),
-        .backlight_gpio = TAB5_LCD_PIN_BL,
+        .size               = { TAB5_PANEL_W, TAB5_PANEL_H },
+        .pixel_format       = resolve_pixel_format(config),
+        .fb_num             = resolve_fb_num(config),
+        .backlight_gpio     = TAB5_LCD_PIN_BL,
+        .backlight_min_duty = TAB5_LCD_BL_MIN_DUTY,
     };
     bsp_display_t *display = NULL;
     esp_err_t err = st7123_lcd_create(&lcd_cfg, &display);
@@ -117,10 +122,11 @@ static void setup_st712x_touch(i2c_master_bus_handle_t bus) {
 
 static esp_err_t setup_ili9881c(const bsp_config_t *config) {
     const ili9881c_config_t lcd_cfg = {
-        .size           = { TAB5_PANEL_W, TAB5_PANEL_H },
-        .pixel_format   = resolve_pixel_format(config),
-        .fb_num         = resolve_fb_num(config),
-        .backlight_gpio = TAB5_LCD_PIN_BL,
+        .size               = { TAB5_PANEL_W, TAB5_PANEL_H },
+        .pixel_format       = resolve_pixel_format(config),
+        .fb_num             = resolve_fb_num(config),
+        .backlight_gpio     = TAB5_LCD_PIN_BL,
+        .backlight_min_duty = TAB5_LCD_BL_MIN_DUTY,
     };
     bsp_display_t *display = NULL;
     esp_err_t err = ili9881c_lcd_create(&lcd_cfg, &display);
