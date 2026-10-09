@@ -389,6 +389,8 @@ static void s_init_whole_frame_descriptor(jpeg_enh_strip_decoder_handle_t h, voi
 // 2D-DMA channel & event plumbing
 // =============================================================================
 
+static bool s_emit_strip(jpeg_enh_strip_decoder_handle_t h, uint32_t idx);
+
 // Descriptors are processed strictly in chain order, so we count strips with a
 // simple in-order counter instead of trying to identify the descriptor from
 // the (non-populated for RX_DONE) event data.
@@ -396,7 +398,11 @@ static IRAM_ATTR bool s_on_desc_done(dma2d_channel_handle_t chan, dma2d_event_da
 {
     (void)chan; (void)evt;
     jpeg_enh_strip_decoder_handle_t h = (jpeg_enh_strip_decoder_handle_t)user_data;
-    uint32_t idx = h->isr_next_strip++;
+    return s_emit_strip(h, h->isr_next_strip++);
+}
+
+static IRAM_ATTR bool s_emit_strip(jpeg_enh_strip_decoder_handle_t h, uint32_t idx)
+{
     if (h->whole_frame || idx >= h->frame.strip_count) return false;
     if (h->cfg.on_strip_done) {
         uint32_t y = idx * h->frame.strip_h;
@@ -420,13 +426,19 @@ static IRAM_ATTR bool s_on_recv_eof(dma2d_channel_handle_t chan, dma2d_event_dat
     (void)chan; (void)evt;
     jpeg_enh_strip_decoder_handle_t h = (jpeg_enh_strip_decoder_handle_t)user_data;
     BaseType_t hp = pdFALSE;
+    // The last strip's RX_DONE is sometimes never reported although EOF means
+    // every strip has been written, so the strips still owed are delivered here.
+    bool yield = false;
+    while (!h->whole_frame && h->isr_next_strip < h->frame.strip_count) {
+        yield |= s_emit_strip(h, h->isr_next_strip++);
+    }
     // Mirror the IDF JPEG decoder: post RX_EOF to the engine's event queue so
     // the waiting process() loop can unblock. Also release frame_done_sem so
     // the wait for the final strip callback is race-free.
     jpeg_dma2d_dec_evt_t e = { .dma_evt = JPEG_DMA2D_RX_EOF, .jpgd_status = 0 };
     xQueueSendFromISR(h->engine->evt_queue, &e, &hp);
     xSemaphoreGiveFromISR(h->frame_done_sem, &hp);
-    return hp == pdTRUE;
+    return yield || hp == pdTRUE;
 }
 
 static void s_dma_apply_jpeg_transfer_ability(jpeg_enh_strip_decoder_handle_t h,

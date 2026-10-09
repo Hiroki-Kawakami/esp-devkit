@@ -25,6 +25,7 @@
           cp -R ${esp-idf-src}/. $out/
           chmod -R u+w $out
           patch -p1 -d $out < ${./nix/patches/ppa-srm-rotation-dig734.patch}
+          patch -p1 -d $out < ${./nix/patches/ppa-srm-dig734-threshold.patch}
           patch -p1 -d $out < ${./nix/patches/p4-rev1-cpu-400mhz.patch}
           patch -p1 -d $out < ${./nix/patches/p4-rev1-psram-220mhz.patch}
         '';

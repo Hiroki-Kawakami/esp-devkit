@@ -385,7 +385,7 @@ IRAM_ATTR esp_err_t ppa_srm_fast_submit(ppa_srm_fast_handle_t h, void *in_buf, u
     uint32_t h_left = swap ? s_scaled(h_in_left, h->sx_int, h->sx_frag)
                            : s_scaled(h_in_left, h->sy_int, h->sy_frag);
     h->bypass_mb_order = ((w_out > w_div) || (mb_rows > h->mb_h)) &&
-                         (w_left * h_left * h->out_bits < 12 * 128);
+                         (w_left * h_left * h->out_bits < 4096);
 #endif
 
     return dma2d_enqueue(h->platform->dma2d_pool_handle, &h->trans, h->trans_placeholder);
