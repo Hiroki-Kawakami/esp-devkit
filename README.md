@@ -51,3 +51,5 @@ files.
 - [Test harness](docs/harness.md) — scripted UI verification: synthetic touch
   and button input plus a JPEG capture of the panel, driven by the same script
   on the simulator or a board.
+- [CI firmware build](docs/ci.md) — GitHub Actions build of the firmware in a
+  Nix-built image of the devShell's IDF environment.

@@ -13,6 +13,8 @@ let
       dependencies = deps;
       doCheck = false;
       pythonImportsCheck = [];
+      # The wrapped script's bin dir lands on sys.path, where `esptool.py` (a shell wrapper) shadows the package.
+      makeWrapperArgs = [ "--set" "PYTHONSAFEPATH" "1" ];
     };
 
   esptool = mkPypiPkg {

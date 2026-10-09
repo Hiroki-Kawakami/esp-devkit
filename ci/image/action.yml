@@ -1,0 +1,87 @@
+name: esp-devkit firmware build image
+description: Build the firmware build image with Nix and push it to a registry, reusing the existing tag when the build environment is unchanged.
+
+inputs:
+  flake-attr:
+    description: Flake attribute of the image, built with mkFwImage.
+    default: .#fw-image
+  image:
+    description: Image repository without a tag. Defaults to ghcr.io/<owner>/<repo>/fw-builder.
+    default: ""
+  key-files:
+    description: Project files (space separated) that define the image, hashed into the tag.
+    default: flake.nix
+  force:
+    description: Rebuild and push even if the tag already exists.
+    default: "false"
+  nix-image:
+    description: Container image that runs the Nix build.
+    default: nixos/nix:2.34.8
+  token:
+    description: Registry password.
+    default: ${{ github.token }}
+
+outputs:
+  image-ref:
+    description: Image reference including the tag.
+    value: ${{ steps.key.outputs.ref }}
+
+runs:
+  using: composite
+  steps:
+    - id: key
+      shell: bash
+      env:
+        IMAGE: ${{ inputs.image }}
+        KEY_FILES: ${{ inputs.key-files }}
+        DEVKIT: ${{ github.action_path }}/../..
+      run: |
+        set -euo pipefail
+        image=${IMAGE:-ghcr.io/$GITHUB_REPOSITORY/fw-builder}
+        # Local path inputs (the esp-devkit submodule) are covered by hashing their files instead of their rev.
+        key=$(
+          {
+            jq -S '[.nodes[] | .locked // empty | select(.type != "path" and ((.url // "") | startswith("file:") | not))]' flake.lock
+            (cd "$DEVKIT" && find flake.nix nix -type f | LC_ALL=C sort | xargs sha256sum)
+            sha256sum $KEY_FILES
+          } | sha256sum | cut -c1-16
+        )
+        echo "registry=${image%%/*}" >> "$GITHUB_OUTPUT"
+        echo "ref=${image,,}:$key" >> "$GITHUB_OUTPUT"
+
+    - shell: bash
+      env:
+        REGISTRY: ${{ steps.key.outputs.registry }}
+        TOKEN: ${{ inputs.token }}
+      run: echo "$TOKEN" | docker login "$REGISTRY" -u "$GITHUB_ACTOR" --password-stdin
+
+    - id: exists
+      shell: bash
+      env:
+        REF: ${{ steps.key.outputs.ref }}
+        FORCE: ${{ inputs.force }}
+      run: |
+        if [ "$FORCE" != "true" ] && docker manifest inspect "$REF" > /dev/null 2>&1; then
+          echo "found=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "found=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    - if: steps.exists.outputs.found != 'true'
+      shell: bash
+      env:
+        REF: ${{ steps.key.outputs.ref }}
+        ATTR: ${{ inputs.flake-attr }}
+        NIX_IMAGE: ${{ inputs.nix-image }}
+        TOKEN: ${{ inputs.token }}
+      run: |
+        docker run --rm -v "$GITHUB_WORKSPACE:/work" -w /work \
+          -e REF -e ATTR -e TOKEN -e GITHUB_ACTOR \
+          -e NIX_CONFIG=$'experimental-features = nix-command flakes\nsandbox = false\nmax-jobs = auto' \
+          -e TMPDIR=/tmp \
+          "$NIX_IMAGE" sh -euc '
+            git config --global --add safe.directory "*"
+            nix build --print-build-logs -o /tmp/image "$ATTR"
+            /tmp/image | nix run --inputs-from . nixpkgs#skopeo -- --insecure-policy copy \
+              --dest-creds "$GITHUB_ACTOR:$TOKEN" docker-archive:/dev/stdin "docker://$REF"
+          '

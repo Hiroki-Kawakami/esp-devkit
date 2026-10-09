@@ -1,0 +1,61 @@
+name: esp-devkit firmware build
+description: Build an ESP-IDF project inside the firmware build image and upload the merged binary, ELF and sdkconfig as an artifact.
+
+inputs:
+  image-ref:
+    description: Firmware build image, as output by the image action.
+    required: true
+  project-dir:
+    description: ESP-IDF project directory, relative to the workspace.
+    required: true
+  command:
+    description: Build command run in the workspace. Defaults to `idf.py -C <project-dir> build merge-bin`.
+    default: ""
+  artifact-name:
+    description: Artifact name. Defaults to the project directory name.
+    default: ""
+  token:
+    description: Registry password.
+    default: ${{ github.token }}
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        IMAGE_REF: ${{ inputs.image-ref }}
+        TOKEN: ${{ inputs.token }}
+      run: echo "$TOKEN" | docker login "${IMAGE_REF%%/*}" -u "$GITHUB_ACTOR" --password-stdin
+
+    - shell: bash
+      env:
+        IMAGE_REF: ${{ inputs.image-ref }}
+        PROJECT_DIR: ${{ inputs.project-dir }}
+        COMMAND: ${{ inputs.command }}
+      run: |
+        docker run --rm -v "$GITHUB_WORKSPACE:/work" -w /work "$IMAGE_REF" \
+          sh -euc "${COMMAND:-idf.py -C $PROJECT_DIR build merge-bin}"
+
+    - id: files
+      shell: bash
+      env:
+        PROJECT_DIR: ${{ inputs.project-dir }}
+        ARTIFACT_NAME: ${{ inputs.artifact-name }}
+      run: |
+        set -euo pipefail
+        desc=$PROJECT_DIR/build/project_description.json
+        build=$(jq -r .build_dir "$desc")
+        build=${build#/work/}
+        config=$(jq -r .config_file "$desc")
+        config=${config#/work/}
+        out=$RUNNER_TEMP/fw-artifact
+        mkdir -p "$out"
+        cp "$build/merged-binary.bin" "$build/$(jq -r .app_elf "$desc")" "$config" "$out/"
+        echo "name=${ARTIFACT_NAME:-$(basename "$PROJECT_DIR")}" >> "$GITHUB_OUTPUT"
+        echo "dir=$out" >> "$GITHUB_OUTPUT"
+
+    - uses: actions/upload-artifact@v7
+      with:
+        name: ${{ steps.files.outputs.name }}
+        path: ${{ steps.files.outputs.dir }}
+        if-no-files-found: error
