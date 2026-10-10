@@ -10,6 +10,8 @@
 #include "harness.h"
 #endif
 
+extern "C" __attribute__((weak)) void resgen_resources_init(void) {}
+
 lv_result_t lv_async_call(std::function<void()> fn) {
     auto *fn_ptr = new std::function<void()>(std::move(fn));
     auto result = lv_async_call([](void *arg) {
@@ -49,27 +51,32 @@ extern "C" lv_result_t __wrap_lv_async_call(lv_async_cb_t async_xcb, void *user_
 }
 #endif
 
-#if defined(ESP_PLATFORM) && CONFIG_HARNESS
+#ifdef ESP_PLATFORM
+#if CONFIG_HARNESS
 static bool harness_idle(void *) {
     if (!lvgl_port_lock(0)) return false;
     bool idle = lv_anim_count_running() == 0;
     lvgl_port_unlock();
     return idle;
 }
+#endif
 
-// Linked in place of esp_lvgl_port's lvgl_port_init() via -Wl,--wrap (added by
-// CMakeLists.txt only when CONFIG_HARNESS): the app gets the harness without a
-// call of its own, exactly like the simulator shim below.
+// Linked in place of esp_lvgl_port's lvgl_port_init() via -Wl,--wrap (see
+// CMakeLists.txt): the app gets the resources and the harness without a call of
+// its own, exactly like the simulator shim below.
 extern "C" esp_err_t __real_lvgl_port_init(const lvgl_port_cfg_t *cfg);
 
 extern "C" esp_err_t __wrap_lvgl_port_init(const lvgl_port_cfg_t *cfg) {
+    resgen_resources_init();
     esp_err_t err = __real_lvgl_port_init(cfg);
+#if CONFIG_HARNESS
     if (err != ESP_OK) return err;
     harness_set_idle_cb(harness_idle, nullptr);
     harness_set_lock_cb([](void *) { lvgl_port_lock(0); },
                         [](void *) { lvgl_port_unlock(); }, nullptr);
     harness_start();
-    return ESP_OK;
+#endif
+    return err;
 }
 #endif
 
@@ -86,6 +93,7 @@ static bool s_inited;
 
 esp_err_t lvgl_port_init(const lvgl_port_cfg_t *cfg) {
     (void)cfg;   // task/stack/affinity knobs are meaningless without an LVGL task
+    resgen_resources_init();
     lv_init();
     lv_tick_set_cb(SDL_GetTicks);
     lv_delay_set_cb(SDL_Delay);

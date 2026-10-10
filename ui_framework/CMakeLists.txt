@@ -60,12 +60,10 @@ if(ESP_PLATFORM)
     target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=lv_async_call")
 
     # Route the app's lvgl_port_init() through lvgl.cpp's __wrap_ version, which
-    # starts the harness after the real init. The simulator needs no equivalent
-    # (its lvgl_port_init is our own shim) -- and must not have one, since the
-    # macOS linker has no --wrap.
-    if(CONFIG_HARNESS)
-        target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=lvgl_port_init")
-    endif()
+    # maps resgen's resource partition and starts the harness around the real
+    # init. The simulator needs no equivalent (its lvgl_port_init is our own
+    # shim) -- and must not have one, since the macOS linker has no --wrap.
+    target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=lvgl_port_init")
 else()
     # Fetch original LVGL for the host build. release/v9.5 tracks the same
     # major.minor as the device's managed lvgl (esp_lvgl_port pulls 9.x).

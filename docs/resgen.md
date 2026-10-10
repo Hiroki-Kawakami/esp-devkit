@@ -19,7 +19,8 @@ endif()
 
 The guard is required: ESP-IDF's requirement scan includes component
 CMakeLists in script mode, where `devkit.cmake` has not been included. The
-component needs `ui_framework` only if the definition has a `pack` font.
+component needs `ui_framework` if the definition has a `pack` font or uses
+[partition mode](#partition-mode).
 
 Code then includes `resources.h`:
 
@@ -40,6 +41,52 @@ The generator can also be run by hand, e.g. to inspect output:
 ```sh
 nix develop -c sh -c '$RESGEN_PYTHON <esp-devkit>/tools/resgen/resgen.py all <definition> /tmp/out'
 ```
+
+`all --partition <label>` writes the partition mode output instead.
+
+## Partition mode
+
+By default every bitmap is a `const` array in the generated `.c` files, so it
+lands in the app image and moves whenever code or other constants change,
+which defeats differential flashing. Passing a partition label moves the bulk
+data out of the app:
+
+```cmake
+resgen_add_resources(TARGET ${COMPONENT_LIB} DEFINITION resources/resources.json PARTITION resources)
+```
+
+```csv
+resources, data, undefined, , 4M,
+```
+
+- The partition is looked up by label; the subtype is not checked. A missing
+  partition fails the configure, a `resources.bin` larger than it fails the
+  build.
+- `resources.bin` is registered with `esp_partition_register_target(...
+  FLASH_IN_PROJECT)`, so `idf.py flash`, `merge-bin` and `<label>-flash` write
+  it; `idf.py app-flash` does not.
+- The blob holds glyph bitmaps, image pixels and a pack's `glyphs`,
+  `codepoints` and `data`, each 64 byte aligned. An `lv_font_t` keeps
+  `glyph_dsc` in the app: its bitfield layout depends on
+  `CONFIG_LV_FONT_FMT_TXT_LARGE` and the compiler. `cmaps` stay too, since
+  they hold pointers and the mapped blob is read-only.
+- The structs that point into the blob (`lv_font_fmt_txt_dsc_t`,
+  `lv_image_dsc_t`, `resgen_font_pack_t`) are non-`const` RAM objects, so
+  images and packs are declared without `const` in `resources.h`. Symbols and
+  usage are otherwise the same as in the default mode.
+- `ui_framework`'s `lvgl_port_init()` calls `resgen_resources_init()`, a weak
+  no-op that the generated `resources.c` overrides: it maps the partition (on
+  the simulator, reads the build's `resources.bin`) and points the structs at
+  it. No resource may be read before `lvgl_port_init()`. The override sits in
+  the object every entry references, so it is linked whenever any resource is.
+- The blob starts with a magic, a version, the payload size and its SHA-256,
+  and `resources.c` embeds the same header. Firmware that finds anything else
+  in the partition logs `resgen: partition '<label>' does not match this
+  firmware` and aborts.
+- The mapping is permanent and costs flash MMU pages for the whole blob; on a
+  SoC with a small MMU window, stay with the default mode.
+- One component per firmware can use partition mode (`resources.c` defines
+  global symbols).
 
 ## Definition
 
@@ -197,6 +244,8 @@ instead of compositing it.
   the `.c` files whose content actually changed.
 - The command line carries the absolute `$RESGEN_PYTHON` store path, so a
   nixpkgs update reruns every entry at the next reconfigure.
+- In partition mode each entry also writes `<name>.bin`, and `resgen.py blob`
+  joins them into `resources.bin` and `resources.c`.
 - The simulator's `idf_component_register` shim adds sources to the
   `simulator` target, which is defined in another directory. Custom command
   outputs are not attached to a target in a different directory, hence the

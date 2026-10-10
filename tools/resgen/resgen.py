@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 import argparse
 import ctypes
+import hashlib
 import io
 import json
 import math
 import re
+import struct
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -12,6 +14,11 @@ from pathlib import Path
 ICON_CODEPOINT_START = 0xE000
 ICON_CODEPOINT_END = 0xF000
 HEADER_NAME = "resources.h"
+BLOB_NAME = "resources.bin"
+BLOB_SOURCE_NAME = "resources.c"
+BLOB_MAGIC = b"RESGEN\0\0"
+BLOB_VERSION = 1
+BLOB_ALIGN = 64
 IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 IMAGE_FORMATS = {
@@ -172,6 +179,14 @@ def write_if_changed(path, text):
     path.write_text(text, encoding="utf-8")
 
 
+def write_bytes_if_changed(path, data):
+    path = Path(path)
+    if path.exists() and path.read_bytes() == data:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+
+
 def utf8_literal(codepoint):
     return "".join(f"\\x{b:02X}" for b in chr(codepoint).encode("utf-8"))
 
@@ -309,7 +324,7 @@ def prefilter_rows(levels, width, height):
     return bytes(out)
 
 
-def generate_header(definition):
+def generate_header(definition, blob=False):
     lines = [
         "#pragma once",
         "",
@@ -322,10 +337,17 @@ def generate_header(definition):
     ]
     packs = [name for name, font in definition.fonts.items() if font.get("pack")]
     lines += [f"LV_FONT_DECLARE({name})" for name in definition.fonts if name not in packs]
+    qualifier = "" if blob else "const "
     if packs:
         lines += ["", '#include "resgen_font_pack.h"', ""]
-        lines += [f"extern const resgen_font_pack_t {name};" for name in packs]
-    lines += [f"LV_IMAGE_DECLARE({name});" for name in definition.images]
+        lines += [f"extern {qualifier}resgen_font_pack_t {name};" for name in packs]
+    if blob:
+        lines += [f"extern lv_image_dsc_t {name};" for name in definition.images]
+        lines += ["", "extern const uint8_t *resgen_blob;"]
+        lines += [f"void resgen_relocate_{name}(uint32_t offset);"
+                  for name in list(definition.fonts) + list(definition.images)]
+    else:
+        lines += [f"LV_IMAGE_DECLARE({name});" for name in definition.images]
     if definition.icon_codepoints:
         lines.append("")
         width = max(len(n) for n in definition.icon_codepoints)
@@ -406,8 +428,17 @@ def build_cmaps(codepoints):
     return cmaps
 
 
+def relocate_function(name, assignments):
+    return [
+        f"void resgen_relocate_{name}(uint32_t offset) {{",
+        *[f"    {a};" for a in assignments],
+        "}",
+        "",
+    ]
+
+
 def generate_font_c(name, font, glyphs, line_height, base_line,
-                    underline_position=0, underline_thickness=0):
+                    underline_position=0, underline_thickness=0, blob=False):
     bpp = font.get("bpp", 4)
     glyphs = sorted(glyphs, key=lambda g: g.codepoint)
     bitmap = bytearray()
@@ -445,18 +476,21 @@ def generate_font_c(name, font, glyphs, line_height, base_line,
         glyph_id += len(cps)
 
     fallback = font.get("fallback")
-    out = ['#include "lvgl.h"', ""]
+    out = ['#include "resources.h"' if blob else '#include "lvgl.h"', ""]
     if needs_large:
         out += ["#if !LV_FONT_FMT_TXT_LARGE",
                 f'#error "{name} needs CONFIG_LV_FONT_FMT_TXT_LARGE"',
                 "#endif", ""]
     if fallback:
         out += [f"LV_FONT_DECLARE({fallback})", ""]
+    if not blob:
+        out += [
+            "static LV_ATTRIBUTE_LARGE_CONST const uint8_t glyph_bitmap[] = {",
+            hex_rows(bitmap) if bitmap else "    0x00,",
+            "};",
+            "",
+        ]
     out += [
-        "static LV_ATTRIBUTE_LARGE_CONST const uint8_t glyph_bitmap[] = {",
-        hex_rows(bitmap) if bitmap else "    0x00,",
-        "};",
-        "",
         "static const lv_font_fmt_txt_glyph_dsc_t glyph_dsc[] = {",
         *dsc_rows,
         "};",
@@ -467,8 +501,8 @@ def generate_font_c(name, font, glyphs, line_height, base_line,
         *cmap_rows,
         "};",
         "",
-        "static const lv_font_fmt_txt_dsc_t font_dsc = {",
-        "    .glyph_bitmap = glyph_bitmap,",
+        f"static {'' if blob else 'const '}lv_font_fmt_txt_dsc_t font_dsc = {{",
+        f"    .glyph_bitmap = {'NULL' if blob else 'glyph_bitmap'},",
         "    .glyph_dsc = glyph_dsc,",
         "    .cmaps = cmaps,",
         "    .kern_dsc = NULL,",
@@ -492,7 +526,10 @@ def generate_font_c(name, font, glyphs, line_height, base_line,
         "};",
         "",
     ]
-    return "\n".join(out)
+    if blob:
+        out += relocate_function(name, ["font_dsc.glyph_bitmap = resgen_blob + offset"])
+        return "\n".join(out), bytes(bitmap)
+    return "\n".join(out), None
 
 
 def svg_aspect(path):
@@ -519,7 +556,7 @@ def render_svg_alpha(path, width, height):
     return image.getchannel("A").tobytes()
 
 
-def generate_icon_font(definition, name):
+def generate_icon_font(definition, name, blob=False):
     font = definition.fonts[name]
     size = font["size"]
     bpp = font.get("bpp", 4)
@@ -532,7 +569,7 @@ def generate_icon_font(definition, name):
         alpha = render_svg_alpha(path, width, size)
         glyphs.append(make_glyph(definition.icon_codepoints[icon], width * 16,
                                  alpha, width, size, 0, 0, bpp))
-    return generate_font_c(name, font, glyphs, line_height=size, base_line=0)
+    return generate_font_c(name, font, glyphs, line_height=size, base_line=0, blob=blob)
 
 
 def glyph_codepoints(definition, where, face, font):
@@ -613,9 +650,9 @@ def render_ttf_glyphs(definition, name):
     }
 
 
-def generate_ttf_font(definition, name):
+def generate_ttf_font(definition, name, blob=False):
     glyphs, metrics = render_ttf_glyphs(definition, name)
-    return generate_font_c(name, definition.fonts[name], glyphs, **metrics)
+    return generate_font_c(name, definition.fonts[name], glyphs, **metrics, blob=blob)
 
 
 def encode_pack_glyph(glyph, bpp, compress, prefilter):
@@ -627,7 +664,7 @@ def encode_pack_glyph(glyph, bpp, compress, prefilter):
     return pack_levels(glyph.levels, bpp), False
 
 
-def generate_pack_c(name, font, glyphs, metrics, check=False):
+def generate_pack_c(name, font, glyphs, metrics, check=False, blob=False):
     bpp = font.get("bpp", 4)
     prefilter = font.get("compress", True)
     glyphs = sorted(glyphs, key=lambda g: g.codepoint)
@@ -656,6 +693,37 @@ def generate_pack_c(name, font, glyphs, metrics, check=False):
     # the decoder reads a 24 bit window, so the last glyph must have slack
     data += b"\x00\x00"
 
+    fields = [
+        f"    .glyph_count = {len(glyphs)},",
+        f"    .px = {font['size']},",
+        f"    .bpp = {bpp},",
+        f"    .prefilter = {1 if prefilter else 0},",
+        f"    .line_height = {metrics['line_height']},",
+        f"    .base_line = {metrics['base_line']},",
+        f"    .max_ascent = {max((g.height + g.ofs_y for g in glyphs), default=0)},",
+        f"    .max_descent = {max((-g.ofs_y for g in glyphs), default=0)},",
+        f"    .underline_position = {metrics['underline_position']},",
+        f"    .underline_thickness = {metrics['underline_thickness']},",
+    ]
+    if blob:
+        table = b"".join(struct.pack("<IHBBbbxx", bitmap, g.adv_w, g.width, g.height, g.ofs_x, g.ofs_y)
+                         for bitmap, g in rows)
+        codepoints = struct.pack(f"<{len(glyphs)}H", *(g.codepoint for g in glyphs))
+        codepoints += bytes(-len(codepoints) % 4)
+        return "\n".join([
+            '#include "resources.h"',
+            "",
+            f"resgen_font_pack_t {name} = {{",
+            *fields,
+            "};",
+            "",
+            *relocate_function(name, [
+                f"{name}.glyphs = (const resgen_glyph_t *)(resgen_blob + offset)",
+                f"{name}.codepoints = (const uint16_t *)(resgen_blob + offset + {len(table)})",
+                f"{name}.data = resgen_blob + offset + {len(table) + len(codepoints)}",
+            ]),
+        ]), table + codepoints + bytes(data)
+
     glyph_rows = [
         f"    {{.bitmap = 0x{bitmap:08x}, .adv_w = {g.adv_w}, .box_w = {g.width}, "
         f".box_h = {g.height}, .ofs_x = {g.ofs_x}, .ofs_y = {g.ofs_y}}}, /* U+{g.codepoint:04X} */"
@@ -680,24 +748,15 @@ def generate_pack_c(name, font, glyphs, metrics, check=False):
         "    .codepoints = codepoints,",
         "    .glyphs = glyphs,",
         "    .data = glyph_data,",
-        f"    .glyph_count = {len(glyphs)},",
-        f"    .px = {font['size']},",
-        f"    .bpp = {bpp},",
-        f"    .prefilter = {1 if prefilter else 0},",
-        f"    .line_height = {metrics['line_height']},",
-        f"    .base_line = {metrics['base_line']},",
-        f"    .max_ascent = {max((g.height + g.ofs_y for g in glyphs), default=0)},",
-        f"    .max_descent = {max((-g.ofs_y for g in glyphs), default=0)},",
-        f"    .underline_position = {metrics['underline_position']},",
-        f"    .underline_thickness = {metrics['underline_thickness']},",
+        *fields,
         "};",
         "",
-    ])
+    ]), None
 
 
-def generate_pack_font(definition, name, check=False):
+def generate_pack_font(definition, name, check=False, blob=False):
     glyphs, metrics = render_ttf_glyphs(definition, name)
-    return generate_pack_c(name, definition.fonts[name], glyphs, metrics, check)
+    return generate_pack_c(name, definition.fonts[name], glyphs, metrics, check, blob)
 
 
 def encode_image(image, fmt):
@@ -730,7 +789,7 @@ def encode_image(image, fmt):
     raise AssertionError(fmt)
 
 
-def generate_image(definition, name):
+def generate_image(definition, name, blob=False):
     from PIL import Image, ImageOps
 
     where = f"image.{name}"
@@ -757,14 +816,7 @@ def generate_image(definition, name):
         raise DefinitionError(f"{where}: {e}")
     cf, bytes_per_px = IMAGE_FORMATS[fmt]
     w, h = size
-    return "\n".join([
-        '#include "lvgl.h"',
-        "",
-        "static LV_ATTRIBUTE_MEM_ALIGN LV_ATTRIBUTE_LARGE_CONST const uint8_t image_data[] = {",
-        hex_rows(data),
-        "};",
-        "",
-        f"const lv_image_dsc_t {name} = {{",
+    header = [
         "    .header = {",
         "        .magic = LV_IMAGE_HEADER_MAGIC,",
         f"        .cf = {cf},",
@@ -773,10 +825,71 @@ def generate_image(definition, name):
         f"        .stride = {w * bytes_per_px},",
         "    },",
         f"    .data_size = {len(data)},",
+    ]
+    if blob:
+        return "\n".join([
+            '#include "resources.h"',
+            "",
+            f"lv_image_dsc_t {name} = {{",
+            *header,
+            "};",
+            "",
+            *relocate_function(name, [f"{name}.data = resgen_blob + offset"]),
+        ]), data
+    return "\n".join([
+        '#include "lvgl.h"',
+        "",
+        "static LV_ATTRIBUTE_MEM_ALIGN LV_ATTRIBUTE_LARGE_CONST const uint8_t image_data[] = {",
+        hex_rows(data),
+        "};",
+        "",
+        f"const lv_image_dsc_t {name} = {{",
+        *header,
         "    .data = image_data,",
         "};",
         "",
+    ]), None
+
+
+def generate_blob(definition, outdir, partition, max_size=None):
+    names = list(definition.fonts) + list(definition.images)
+    header_size = BLOB_ALIGN
+    body = bytearray()
+    offsets = []
+    for name in names:
+        path = outdir / f"{name}.bin"
+        if not path.exists():
+            raise DefinitionError(f"{path} not found; run 'entry --blob' for {name} first")
+        body += bytes(-len(body) % BLOB_ALIGN)
+        offsets.append(header_size + len(body))
+        body += path.read_bytes()
+    header = BLOB_MAGIC + struct.pack("<II", BLOB_VERSION, len(body)) + hashlib.sha256(body).digest()
+    header += bytes(header_size - len(header))
+    data = header + bytes(body)
+    if max_size is not None and len(data) > max_size:
+        raise DefinitionError(f"{BLOB_NAME} is {len(data)} bytes, partition '{partition}' holds {max_size}")
+    source = "\n".join([
+        '#include "resources.h"',
+        '#include "resgen_blob.h"',
+        "",
+        "const uint8_t *resgen_blob;",
+        "",
+        "static const uint8_t header[] = {",
+        hex_rows(header),
+        "};",
+        "",
+        "void resgen_resources_init(void) {",
+        f"    resgen_blob = resgen_blob_map({c_string(partition)}, "
+        f"{c_string((outdir / BLOB_NAME).resolve().as_posix())}, header, sizeof(header), {len(data)});",
+        *[f"    resgen_relocate_{name}({offset});" for name, offset in zip(names, offsets)],
+        "}",
+        "",
     ])
+    return data, source
+
+
+def c_string(value):
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
 def cmake_quote(value):
@@ -804,13 +917,21 @@ def main():
     p = sub.add_parser("header", help=f"write {HEADER_NAME}")
     p.add_argument("definition")
     p.add_argument("outdir")
-    p = sub.add_parser("entry", help="write <name>.c for one font or image")
+    p.add_argument("--blob", action="store_true", help="declare the partition mode symbols")
+    p = sub.add_parser("entry", help="write <name>.c (and <name>.bin with --blob) for one font or image")
     p.add_argument("definition")
     p.add_argument("name")
     p.add_argument("outdir")
+    p.add_argument("--blob", action="store_true", help="put the bulk data in <name>.bin")
+    p = sub.add_parser("blob", help=f"join every <name>.bin into {BLOB_NAME} and write {BLOB_SOURCE_NAME}")
+    p.add_argument("definition")
+    p.add_argument("outdir")
+    p.add_argument("partition")
+    p.add_argument("--max-size", type=lambda v: int(v, 0))
     p = sub.add_parser("all", help="write the header and every entry")
     p.add_argument("definition")
     p.add_argument("outdir")
+    p.add_argument("--partition", help="partition mode, for the named partition")
     p = sub.add_parser("check", help="verify that every packed glyph decodes back")
     p.add_argument("definition")
     args = parser.parse_args()
@@ -827,8 +948,14 @@ def main():
                     print(f"resgen: {name}: every glyph decodes back")
             return
         outdir = Path(args.outdir)
+        if args.command == "blob":
+            data, source = generate_blob(definition, outdir, args.partition, args.max_size)
+            write_bytes_if_changed(outdir / BLOB_NAME, data)
+            write_if_changed(outdir / BLOB_SOURCE_NAME, source)
+            return
+        blob = args.blob if args.command in ("header", "entry") else bool(args.partition)
         if args.command in ("header", "all"):
-            write_if_changed(outdir / HEADER_NAME, generate_header(definition))
+            write_if_changed(outdir / HEADER_NAME, generate_header(definition, blob))
         if args.command == "entry":
             names = [args.name]
         elif args.command == "all":
@@ -838,16 +965,22 @@ def main():
         for name in names:
             if name in definition.fonts:
                 if "icon" in definition.fonts[name]:
-                    text = generate_icon_font(definition, name)
+                    text, data = generate_icon_font(definition, name, blob=blob)
                 elif definition.fonts[name].get("pack"):
-                    text = generate_pack_font(definition, name)
+                    text, data = generate_pack_font(definition, name, blob=blob)
                 else:
-                    text = generate_ttf_font(definition, name)
+                    text, data = generate_ttf_font(definition, name, blob=blob)
             elif name in definition.images:
-                text = generate_image(definition, name)
+                text, data = generate_image(definition, name, blob=blob)
             else:
                 raise DefinitionError(f"no font or image named '{name}'")
             write_if_changed(outdir / f"{name}.c", text)
+            if blob:
+                write_bytes_if_changed(outdir / f"{name}.bin", data)
+        if args.command == "all" and blob:
+            data, source = generate_blob(definition, outdir, args.partition)
+            write_bytes_if_changed(outdir / BLOB_NAME, data)
+            write_if_changed(outdir / BLOB_SOURCE_NAME, source)
     except DefinitionError as e:
         print(f"resgen: error: {e}", file=sys.stderr)
         sys.exit(1)
