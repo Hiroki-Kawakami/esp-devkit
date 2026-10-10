@@ -158,6 +158,8 @@ public:
     // Functions are added before start(), and described in the order added.
     esp_err_t add(std::shared_ptr<Function> function);
     esp_err_t start();
+    // Returns once the host has had time to see the device gone, so a Device
+    // started next enumerates afresh.
     void stop();
 
     bool configured() const;

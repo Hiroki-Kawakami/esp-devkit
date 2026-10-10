@@ -28,6 +28,7 @@ const char* TAG = "usb_device";
 constexpr int kEventQueueLength = 16;
 constexpr uint32_t kTaskStackBytes = 4096;
 constexpr size_t kMinControlBytes = 1024;
+constexpr uint32_t kDisconnectHoldMs = 100;
 constexpr uint8_t kConfigurationValue = 1;
 constexpr uint8_t kStatusSelfPowered = 0x01;
 constexpr uint8_t kStatusHalted = 0x01;
@@ -453,6 +454,9 @@ void Device::stop() {
         xSemaphoreTake(s.stopped, portMAX_DELAY);
         s.dcd.stop();
         s.started = false;
+        // Reconnecting at once looks like a bus reset to the host, which then
+        // keeps the descriptors it read before.
+        vTaskDelay(pdMS_TO_TICKS(kDisconnectHoldMs));
     }
     if (s.events) vQueueDelete(s.events);
     if (s.stopped) vSemaphoreDelete(s.stopped);
