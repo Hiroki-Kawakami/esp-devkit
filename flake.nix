@@ -14,6 +14,8 @@
 
         toolchains = import ./nix/toolchains.nix { inherit pkgs system; };
         pythonEnv = (import ./nix/python-env.nix { inherit pkgs; }).pythonEnv;
+        # tools/resgen; kept off PATH so it never shadows the IDF python3.
+        resgenPython = pkgs.python3.withPackages (ps: [ ps.freetype-py ps.pillow ps.resvg-py ps.fonttools ]);
 
         # Flake git inputs fetch every submodule with its full history (gigabytes); fetchgit takes depth 1.
         esp-idf-src = pkgs.fetchgit {
@@ -61,6 +63,7 @@
           IDF_COMPONENT_MANAGER = "1";
           ESP_IDF_VERSION = "6.1";
           ESP_ROM_ELF_DIR = "${toolchains.romElfs}/";  # trailing slash required
+          RESGEN_PYTHON = "${resgenPython}/bin/python3";
         };
 
         mkFwImage = { name ? "esp-devkit-fw", extraPackages ? [ ], extraEnv ? { } }:

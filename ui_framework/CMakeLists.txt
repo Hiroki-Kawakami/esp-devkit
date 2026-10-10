@@ -20,6 +20,7 @@ set(UI_FRAMEWORK_SRCS
     "src/display_manager.cpp"
     "src/lv_mem_psram.c"
     "src/lvgl.cpp"
+    "src/packed_font.cpp"
     "src/screen_manager.cpp"
     "src/widgets/common/fonts.cpp"
     "src/widgets/common/layout.cpp")

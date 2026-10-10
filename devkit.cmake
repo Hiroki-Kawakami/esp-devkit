@@ -18,6 +18,8 @@
 # implicit project(Project) that locks in the wrong (host default) toolchain.
 set(DEVKIT_ROOT ${CMAKE_CURRENT_LIST_DIR})
 
+include("${DEVKIT_ROOT}/tools/resgen/resgen.cmake")
+
 # Device-side components, in EXTRA_COMPONENT_DIRS order.
 set(DEVKIT_DEVICE_COMPONENTS
     bsp
