@@ -4,7 +4,7 @@
  *
  * ESP-IDF v6.0.2 esp_mac host implementation. The first process without an
  * injected SIMULATOR_BASE_MAC generates a local/unicast factory MAC and saves
- * it in idf_compat's JSON-backed NVS. Interface addresses follow the IDF
+ * it in idf_compat's file-backed NVS. Interface addresses follow the IDF
  * four-universal-address scheme and are cached once read.
  */
 

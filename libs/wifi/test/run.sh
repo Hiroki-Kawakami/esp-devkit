@@ -7,8 +7,6 @@ trap 'rm -rf -- "$TEST_TMP"' EXIT HUP INT TERM
 
 CXX_BIN=${CXX:-c++}
 CC_BIN=${CC:-cc}
-CJSON_FLAGS=$(pkg-config --cflags --libs libcjson 2>/dev/null \
-    || pkg-config --cflags --libs cjson)
 
 for source in esp_err nvs freertos_port freertos_task freertos_queue freertos_timers
 do
@@ -41,7 +39,7 @@ done
     "$TEST_TMP/freertos_queue.o" \
     "$TEST_TMP/freertos_timers.o" \
     "$TEST_TMP/harness.o" \
-    -pthread $CJSON_FLAGS \
+    -pthread \
     -o "$TEST_TMP/test_wifi_manager"
 
-"$TEST_TMP/test_wifi_manager" "$TEST_TMP/nvs.json"
+"$TEST_TMP/test_wifi_manager" "$TEST_TMP/nvs.toml"

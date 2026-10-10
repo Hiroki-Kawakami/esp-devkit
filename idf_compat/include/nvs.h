@@ -1,8 +1,7 @@
 #pragma once
 // Host counterpart of ESP-IDF <nvs.h>: the key/value C API plus the ESP_ERR_NVS_*
-// codes. Backed by a JSON file on the host (see nvs.c); the on-device build uses
-// the real flash-backed implementation. Shared code calls this C API directly on
-// both targets (there is no C++ wrapper).
+// codes. Backed by a text file on the host (see nvs.c); the on-device build uses
+// the real flash-backed implementation.
 #include <stdint.h>
 #include <stddef.h>
 #include "esp_err.h"

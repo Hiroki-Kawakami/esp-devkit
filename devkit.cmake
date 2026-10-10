@@ -149,7 +149,6 @@ macro(devkit_simulator)
     # Host dependencies
     # ---------------------------------------------------------------------------
     find_package(SDL2 REQUIRED)
-    find_package(cJSON REQUIRED)     # idf_compat's nvs shim persists to a JSON blob
     find_package(Threads REQUIRED)   # host FreeRTOS API (idf_compat) is built on pthreads
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(JPEG REQUIRED IMPORTED_TARGET libjpeg)
@@ -161,7 +160,7 @@ macro(devkit_simulator)
     target_compile_definitions(simulator PRIVATE
         SDL_DISABLE_ARM_NEON_H
         SDL_MAIN_HANDLED)
-    target_link_libraries(simulator SDL2::SDL2 cjson Threads::Threads
+    target_link_libraries(simulator SDL2::SDL2 Threads::Threads
         PkgConfig::JPEG ${CMAKE_DL_LIBS})
 
     # Initial host-view rotation of the SDL window (r/l keys change it at runtime).

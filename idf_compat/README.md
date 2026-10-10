@@ -38,7 +38,7 @@ nothing is vendored. The same philosophy throughout: reimplement the API
 *contract* on host primitives, just enough for the simulator.
 
 - ESP-IDF APIs: `esp_err`, `esp_log`, `esp_check`, `esp_timer`, `esp_heap_caps`,
-  `multi_heap`, `esp_mac`, `esp_attr` (placement attributes, empty), and a JSON-backed
+  `multi_heap`, `esp_mac`, `esp_attr` (placement attributes, empty), and a file-backed
   `nvs` / `nvs_flash`.
 - The FreeRTOS API (`freertos/*.h`) on native pthreads — see below.
 - `driver/jpeg_decode` — IDF JPEG decode engine API, backed by libjpeg.
@@ -64,14 +64,43 @@ host binary, component splits like esp_common / nvs_flash are invisible):
 
 ## NVS
 
-`nvs.c` implements the ESP-IDF NVS C API backed by a JSON file (default
-`nvs_data.json` in the cwd; override with the sim-only `nvs_flash_sim_set_path()`
-before the first open). Shared code calls the C API directly — there is no C++
-wrapper. Fidelity notes are at the top of `src/nvs.c`.
+`nvs.c` implements the ESP-IDF NVS C API backed by a TOML-like text file
+(default `nvs_data.toml` in the cwd; override with the sim-only
+`nvs_flash_sim_set_path()` before the first open).
+
+```toml
+# comments and blank lines are kept
+[app]
+volume: u8 = 90
+name: str = "example"
+ssid = "example-ap"
+
+[idf_compat_sim]
+factory_mac: blob = 0x020000000001
+```
+
+- `[namespace]` starts a namespace; `key[: type] = value` is one entry. Keys and
+  namespaces outside `[A-Za-z0-9_-]+` are written as `"..."`.
+- Types: `u8` `i8` `u16` `i16` `u32` `i32` `u64` `i64` `str` `blob`.
+- Values: decimal integers, `"..."` strings (`\"` `\\` `\n` `\t` `\uXXXX`
+  escapes, UTF-8 as is), and `0x` + hex bytes in memory order for blobs (`0x`
+  alone is an empty blob).
+- `nvs_set_*` always writes the type. A typed entry is only readable with the
+  matching `nvs_get_*`; any other getter returns `ESP_ERR_NVS_NOT_FOUND`, as on
+  the device.
+- The type may be left out when editing the file by hand. An untyped integer is
+  readable by every integer getter whose range holds it, an untyped `"..."` by
+  `nvs_get_str` and `nvs_get_blob` (without the NUL), and an untyped `0x...` by
+  `nvs_get_blob` only. Setting the key adds the type.
+- A write rewrites only the affected line; comments, ordering and lines that
+  fail to parse (reported on stderr) are kept. New keys go after the last entry
+  of their namespace. When a key appears twice, the later line wins.
+- The file is read once per process. Edit it while the simulator is stopped:
+  the next write replaces the whole file with the in-memory copy.
 
 The namespace `idf_compat_sim` is reserved for simulator hardware identity and
 is preserved by `nvs_flash_erase()`, just as erasing application NVS on a device
-does not erase its eFuse identity. The default `nvs_data.json` is gitignored
+does not erase its eFuse identity. The default `nvs_data.toml` is gitignored
 because it can contain environment-specific values.
 
 ## MAC addresses

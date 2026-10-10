@@ -105,7 +105,6 @@
             # Host simulator toolchain (simulator/)
             pkgs.gcc
             pkgs.ccache
-            pkgs.cjson
             pkgs.SDL2
             pkgs.libjpeg
             pkgs.zlib
