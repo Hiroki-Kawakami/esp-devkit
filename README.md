@@ -15,7 +15,9 @@ devkit_idf_init(COMPONENT_DIRS ../app)
 project(my_app)
 ```
 `devkit_idf_init` takes `COMPONENT_DIRS` (extra `EXTRA_COMPONENT_DIRS`, e.g.
-the app component). The build is trimmed to whatever `main` transitively
+the app component). Like `EXTRA_COMPONENT_DIRS`, each entry is either a
+component or a directory whose subdirectories are components; the simulator
+follows the same rule. The build is trimmed to whatever `main` transitively
 `REQUIRES`.
 
 Simulator wrapper (`simulator/CMakeLists.txt`):
