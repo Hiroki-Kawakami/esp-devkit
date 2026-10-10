@@ -31,6 +31,7 @@ set(DEVKIT_DEVICE_COMPONENTS
     libs/lvgl
     libs/sensors
     libs/ui_framework
+    libs/usb_device
     libs/usb_host
     libs/wifi)
 
@@ -46,6 +47,7 @@ set(DEVKIT_SIMULATOR_COMPONENTS
     libs/lvgl
     libs/sensors
     libs/ui_framework
+    libs/usb_device
     libs/usb_host
     libs/wifi)
 

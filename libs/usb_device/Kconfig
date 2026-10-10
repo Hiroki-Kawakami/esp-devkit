@@ -1,0 +1,12 @@
+menu "USB device"
+
+config USBD
+    bool "USB device stack"
+    depends on DEVKIT_SIMULATOR || SOC_USB_OTG_SUPPORTED
+    default n
+    help
+        Device stack for the DWC2 controller, with functions composed into one
+        configuration. On the simulator the controller is a stub that fails
+        to start.
+
+endmenu
