@@ -5,8 +5,6 @@
 
 #include "widgets/button.hpp"
 #include "widgets.hpp"
-#include <src/misc/lv_color.h>
-#include <src/misc/lv_style.h>
 
 namespace {
 

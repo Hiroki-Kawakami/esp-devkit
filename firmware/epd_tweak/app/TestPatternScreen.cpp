@@ -96,7 +96,7 @@ void TestPatternScreen::build() {
         const uint8_t v = (uint8_t)(i * 0x11);
         lv_obj_t *cont = lv_obj_create(root_);
         lv_obj_remove_style_all(cont);
-        lv_obj_remove_flag(cont, LV_OBJ_FLAG_CLICKABLE);   // let taps reach root_
+        lv_obj_set_clickable(cont, false);   // let taps reach root_
         lv_obj_set_pos(cont, i * sw, 0);
         lv_obj_set_size(cont, sw, top_h);
 
@@ -112,7 +112,7 @@ void TestPatternScreen::build() {
     // Clear, then invalidate so LVGL re-renders through flush_cb (the redraw's
     // draws block until the clear finishes, so no delay is needed) and the
     // final flush issues QUALITY_ALL via epd_set_next_refresh_mode.
-    lv_obj_add_flag(root_, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_clickable(root_, true);
     lv_obj_add_event_fn(root_, LV_EVENT_CLICKED, [this](lv_event_t *) {
         bsp_display_clear();
         epd_set_next_refresh_mode(BSP_EPD_MODE_QUALITY_ALL);

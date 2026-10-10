@@ -81,7 +81,7 @@ void AudioTestScreen::build() {
     lv_obj_set_style_bg_color(root_, lv_color_black(), 0);
     lv_obj_set_style_pad_all(root_, 8, 0);
     lv_obj_set_style_pad_row(root_, 8, 0);
-    lv_obj_remove_flag(root_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(root_, false);
     lv_obj_set_flex_flow(root_, LV_FLEX_FLOW_COLUMN);
 
     lv_obj_t *title = lv_label_create(root_);

@@ -28,39 +28,39 @@ set(DEVKIT_DEVICE_COMPONENTS
     libs/harness
     libs/image_framework
     libs/jpeg_decode_enhanced
+    libs/lvgl
     libs/sensors
+    libs/ui_framework
     libs/usb_host
     libs/wifi)
 
-# Simulator components: idf_compat first (simulator-only shims), then bsp /
-# ui_framework and the libs.
+# Simulator components: idf_compat first (simulator-only shims), then bsp and
+# the libs.
 set(DEVKIT_SIMULATOR_COMPONENTS
     idf_compat
     bsp
-    ui_framework
     libs/audio_framework
     libs/harness
     libs/image_framework
     libs/jpeg_decode_enhanced
+    libs/lvgl
     libs/sensors
+    libs/ui_framework
     libs/usb_host
     libs/wifi)
 
-# devkit_idf_init([UI_FRAMEWORK] [COMPONENT_DIRS dir...])
+# devkit_idf_init([COMPONENT_DIRS dir...])
 #
 # Registers shared components and COMPONENT_DIRS in EXTRA_COMPONENT_DIRS, then
 # trims the build to main's dependency graph via COMPONENTS. The wrapper calls
 # project(<name>) right after this.
 macro(devkit_idf_init)
-    cmake_parse_arguments(DEVKIT "UI_FRAMEWORK" "" "COMPONENT_DIRS" ${ARGN})
+    cmake_parse_arguments(DEVKIT "" "" "COMPONENT_DIRS" ${ARGN})
 
     set(EXTRA_COMPONENT_DIRS "")
     foreach(_devkit_comp ${DEVKIT_DEVICE_COMPONENTS})
         list(APPEND EXTRA_COMPONENT_DIRS "${DEVKIT_ROOT}/${_devkit_comp}")
     endforeach()
-    if(DEVKIT_UI_FRAMEWORK)
-        list(APPEND EXTRA_COMPONENT_DIRS "${DEVKIT_ROOT}/ui_framework")
-    endif()
     foreach(_devkit_dir ${DEVKIT_COMPONENT_DIRS})
         if(NOT IS_ABSOLUTE "${_devkit_dir}")
             set(_devkit_dir "${CMAKE_CURRENT_SOURCE_DIR}/${_devkit_dir}")
@@ -88,10 +88,9 @@ macro(devkit_simulator_init)
         set(CMAKE_C_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
         set(CMAKE_CXX_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
     endif()
-    set(FETCHCONTENT_UPDATES_DISCONNECTED ON)
 endmacro()
 
-# devkit_simulator([LV_CONF_DIR dir] [DEFAULT_ROTATION deg]
+# devkit_simulator([DEFAULT_ROTATION deg]
 #                  [SDKCONFIG file] [SAVEDEFCONFIG file]
 #                  [SDKCONFIG_DEFAULTS file...]
 #                  [MAIN_SRCS src...] [COMPONENT_DIRS dir...])
@@ -101,7 +100,7 @@ endmacro()
 # executable, then adds devkit components + COMPONENT_DIRS as subdirectories.
 macro(devkit_simulator)
     cmake_parse_arguments(DEVKIT_SIM ""
-        "BOARD;LV_CONF_DIR;DEFAULT_ROTATION;SDKCONFIG;SAVEDEFCONFIG"
+        "BOARD;DEFAULT_ROTATION;SDKCONFIG;SAVEDEFCONFIG"
         "MAIN_SRCS;COMPONENT_DIRS;SDKCONFIG_DEFAULTS" ${ARGN})
 
     if(DEVKIT_SIM_BOARD)
@@ -143,8 +142,6 @@ macro(devkit_simulator)
             "${CMAKE_CURRENT_SOURCE_DIR}/${DEVKIT_SIM_SAVEDEFCONFIG}")
     endif()
 
-    include(FetchContent)
-
     set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
     # ---------------------------------------------------------------------------
@@ -177,13 +174,6 @@ macro(devkit_simulator)
         target_sources(simulator PRIVATE "${_devkit_src}")
     endforeach()
     target_include_directories(simulator PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/main")
-
-    if(DEVKIT_SIM_LV_CONF_DIR)
-        if(NOT IS_ABSOLUTE "${DEVKIT_SIM_LV_CONF_DIR}")
-            set(DEVKIT_SIM_LV_CONF_DIR "${CMAKE_CURRENT_SOURCE_DIR}/${DEVKIT_SIM_LV_CONF_DIR}")
-        endif()
-        set(UI_FRAMEWORK_LV_CONF_DIR "${DEVKIT_SIM_LV_CONF_DIR}")
-    endif()
 
     # ---------------------------------------------------------------------------
     # Components (idf_component_register shim)

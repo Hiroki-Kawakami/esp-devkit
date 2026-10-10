@@ -139,7 +139,7 @@ void create_pool(ListState *state) {
         lv_obj_t *container = lv_container_create(state->rows);
         lv_obj_set_size(container, LV_PCT(100), 0);
         lv_obj_set_flex_grow(container, 1);
-        lv_obj_remove_flag(container, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_scrollable(container, false);
 
         lv_obj_t *row = state->data_source->createRow(container);
         if (!row) {
@@ -147,11 +147,11 @@ void create_pool(ListState *state) {
             break;
         }
         lv_obj_set_size(row, LV_PCT(100), LV_PCT(100));
-        lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_hidden(row, true);
         lv_obj_add_event_cb(row, row_clicked, LV_EVENT_CLICKED, state);
         lv_obj_t *separator = lv_hor_separator_create(state->rows);
-        lv_obj_add_flag(separator, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_remove_flag(separator, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_hidden(separator, true);
+        lv_obj_set_clickable(separator, false);
         state->pool.push_back({container, row, separator, SIZE_MAX});
     }
     while (state->pool.size() > state->rows_per_page) {
@@ -169,23 +169,23 @@ void bind_page(ListState *state) {
         const std::size_t item_index = first + slot_index;
         if (item_index >= state->item_count) {
             slot.index = SIZE_MAX;
-            lv_obj_add_flag(slot.object, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_hidden(slot.object, true);
             if (slot_index + 1 < state->rows_per_page) {
                 lv_obj_set_style_bg_opa(slot.separator, LV_OPA_TRANSP, 0);
-                lv_obj_remove_flag(slot.separator, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_set_hidden(slot.separator, false);
             } else {
-                lv_obj_add_flag(slot.separator, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_set_hidden(slot.separator, true);
             }
             continue;
         }
         slot.index = item_index;
-        lv_obj_remove_flag(slot.object, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_hidden(slot.object, false);
         state->data_source->bindRow(slot.object, item_index);
         if (slot_index + 1 < state->rows_per_page) {
             lv_obj_set_style_bg_opa(slot.separator, LV_OPA_COVER, 0);
-            lv_obj_remove_flag(slot.separator, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_hidden(slot.separator, false);
         } else {
-            lv_obj_add_flag(slot.separator, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_hidden(slot.separator, true);
         }
     }
 
@@ -197,14 +197,14 @@ void bind_page(ListState *state) {
     lv_label_set_text(state->status_label, text.c_str());
 
     if (state->page > 0) {
-        lv_obj_remove_flag(state->previous_button, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_hidden(state->previous_button, false);
     } else {
-        lv_obj_add_flag(state->previous_button, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_hidden(state->previous_button, true);
     }
     if (state->page + 1 < state->page_count) {
-        lv_obj_remove_flag(state->next_button, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_hidden(state->next_button, false);
     } else {
-        lv_obj_add_flag(state->next_button, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_hidden(state->next_button, true);
     }
     state->updating = false;
 }
@@ -267,7 +267,7 @@ lv_obj_t *lv_list_create(lv_obj_t *parent, ListDataSource *data_source) {
     lv_obj_set_flex_grow(state->list, 1);
     lv_obj_set_flex_flow(state->list, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(state->list, 0, 0);
-    lv_obj_remove_flag(state->list, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(state->list, false);
     lv_obj_set_user_data(state->list, state);
     lv_obj_add_event_cb(state->list, list_deleted, LV_EVENT_DELETE, state);
 
@@ -277,7 +277,7 @@ lv_obj_t *lv_list_create(lv_obj_t *parent, ListDataSource *data_source) {
     lv_obj_set_flex_grow(state->rows, 1);
     lv_obj_set_flex_flow(state->rows, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(state->rows, 0, 0);
-    lv_obj_remove_flag(state->rows, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(state->rows, false);
 
     lv_obj_t *status = lv_obj_create(state->list);
     lv_obj_remove_style_all(status);
@@ -285,7 +285,7 @@ lv_obj_t *lv_list_create(lv_obj_t *parent, ListDataSource *data_source) {
     lv_obj_set_style_border_side(status, LV_BORDER_SIDE_TOP, 0);
     lv_obj_set_style_border_width(status, 2, 0);
     lv_obj_set_style_border_color(status, lv_color_black(), 0);
-    lv_obj_remove_flag(status, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(status, false);
 
     state->status_label = lv_label_create(status);
     lv_obj_set_font_role(state->status_label, LV_WIDGETS_FONT_BODY);

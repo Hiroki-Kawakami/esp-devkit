@@ -77,7 +77,7 @@ void ensure_pool(ListState *state) {
         lv_obj_t *row = state->data_source->createRow(state->list);
         if (!row) break;
         lv_obj_set_size(row, LV_PCT(100), state->row_height);
-        lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_hidden(row, true);
         lv_obj_add_event_cb(row, row_clicked, LV_EVENT_CLICKED, state);
         state->pool.push_back({row, SIZE_MAX});
     }
@@ -104,13 +104,13 @@ void bind_visible_rows(ListState *state, bool force) {
         if (item_index >= state->item_count) {
             if (force || slot.index != SIZE_MAX) {
                 slot.index = SIZE_MAX;
-                lv_obj_add_flag(slot.object, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_set_hidden(slot.object, true);
             }
             continue;
         }
         if (!force && slot.index == item_index) continue;
         slot.index = item_index;
-        lv_obj_remove_flag(slot.object, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_hidden(slot.object, false);
         const int64_t y = static_cast<int64_t>(item_index) * state->row_height;
         lv_obj_set_pos(slot.object, 0, static_cast<int32_t>(std::min<int64_t>(
             y, std::numeric_limits<int32_t>::max())));
@@ -142,7 +142,7 @@ void reload(ListState *state, bool preserve_position) {
     ensure_pool(state);
     for (RowSlot &slot : state->pool) {
         slot.index = SIZE_MAX;
-        lv_obj_add_flag(slot.object, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_hidden(slot.object, true);
         lv_obj_set_height(slot.object, state->row_height);
     }
     lv_obj_update_layout(state->list);
@@ -211,7 +211,7 @@ lv_obj_t *lv_list_create(lv_obj_t *parent, ListDataSource *data_source) {
     lv_obj_remove_style_all(state->extent);
     lv_obj_set_size(state->extent, 1, 0);
     lv_obj_set_pos(state->extent, 0, 0);
-    lv_obj_remove_flag(state->extent, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(state->extent, false);
 
     reload(state, false);
     return state->list;

@@ -9,8 +9,8 @@
 
 void ListWidgetsScreen::build() {
     createNavigation("List Widget", LV_NAVIGATION_STYLE_LIST | LV_NAVIGATION_STYLE_BACK);
-    lv_obj_remove_flag(root_, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_remove_flag(contents_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(root_, false);
+    lv_obj_set_scrollable(contents_, false);
     list_ = lv_list_create(contents_, this);
 }
 

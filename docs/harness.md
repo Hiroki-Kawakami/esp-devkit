@@ -114,10 +114,9 @@ either in `sdkconfig.defaults` or via menuconfig. It compiles the console
 transport, selects the `bsp_harness.h` hooks and pulls in the JPEG encoder from
 `libs/image_framework`. Leave it off in production builds.
 
-Nothing is needed in the app: `lvgl_port_init()` is wrapped (`-Wl,--wrap`, added
-only for `CONFIG_HARNESS` builds) and starts the harness after the real init,
-registering the LVGL idle predicate and the lock that keeps a capture from
-racing a flush. Firmware **without** an LVGL port calls `harness_start()` itself
+Nothing is needed in the app: `lvgl_port_init()` starts the harness after
+initializing LVGL, registering the LVGL idle predicate and the lock that keeps
+a capture from racing a flush. Firmware **without** an LVGL port calls `harness_start()` itself
 once the BSP is up.
 
 The console must be UART or USB-Serial-JTAG (the build errors out otherwise).

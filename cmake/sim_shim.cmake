@@ -14,7 +14,7 @@
 #
 # REQUIRES are intentionally ignored: everything links into a single
 # binary so include dirs are global, and IDF-only requirements
-# (esp_lvgl_port, driver, nvs_flash, ...) simply have no host counterpart.
+# (driver, nvs_flash, ...) simply have no host counterpart.
 function(idf_component_register)
     cmake_parse_arguments(C "" ""
         "SRCS;INCLUDE_DIRS;PRIV_INCLUDE_DIRS;REQUIRES;PRIV_REQUIRES;EMBED_FILES;EMBED_TXTFILES"

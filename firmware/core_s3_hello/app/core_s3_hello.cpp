@@ -120,13 +120,13 @@ static void build_audio_test(lv_obj_t *scr) {
     lv_obj_set_style_pad_all(row, 0, 0);
     lv_obj_set_style_pad_column(row, 8, 0);
     lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(row, false);
 
     lv_obj_add_event_cb(make_button(row, "-"), volume_cb, LV_EVENT_CLICKED, new vol_btn{ vol, -10 });
     lv_obj_add_event_cb(make_button(row, "+"), volume_cb, LV_EVENT_CLICKED, new vol_btn{ vol, +10 });
 
     lv_obj_t *tone = make_button(row, "TONE");
-    lv_obj_add_flag(tone, LV_OBJ_FLAG_CHECKABLE);
+    lv_obj_set_checkable(tone, true);
     lv_obj_add_event_cb(tone, tone_toggle_cb, LV_EVENT_VALUE_CHANGED, nullptr);
 }
 

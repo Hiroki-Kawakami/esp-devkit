@@ -29,7 +29,7 @@ void ImageScreen::build() {
 
     epd_set_next_refresh_mode(BSP_EPD_MODE_QUALITY_ALL);
 
-    lv_obj_add_flag(root_, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_clickable(root_, true);
     lv_obj_add_event_fn(root_, LV_EVENT_CLICKED, [this](lv_event_t *) {
         bsp_display_clear();
         epd_set_next_refresh_mode(BSP_EPD_MODE_QUALITY_ALL);

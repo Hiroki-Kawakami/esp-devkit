@@ -176,7 +176,7 @@ A pack is for large glyph sets (CJK) that are only reached through a fallback
 chain. Neither LVGL's `lv_font_fmt_txt` nor its compressed variant
 (`LV_USE_FONT_COMPRESSED`, which decompresses and `lv_malloc`s line buffers on
 *every* draw) keeps a decoded glyph around, so the pack has its own format and
-is drawn by `PackedFont` (`ui_framework/inc/packed_font.hpp`). It caches
+is drawn by `PackedFont` (`libs/ui_framework/inc/packed_font.hpp`). It caches
 decoded glyphs as A8 masks in PSRAM and hands them to LVGL through the
 static-bitmap path (no per-draw allocation, no copy into a draw buffer):
 
@@ -189,7 +189,7 @@ lv_font_t body = lv_font_montserrat_24;  // copy: the built-in fonts are const
 body.fallback = japanese.font();
 ```
 
-`resgen_font_pack_t` (`ui_framework/inc/resgen_font_pack.h`, included by the
+`resgen_font_pack_t` (`libs/ui_framework/inc/resgen_font_pack.h`, included by the
 generated `resources.h`) is a sorted `uint16_t` codepoint table, a
 `resgen_glyph_t` per glyph, and one bitmap blob. Codepoints are limited to the
 BMP.

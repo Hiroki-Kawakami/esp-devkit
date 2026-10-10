@@ -38,53 +38,88 @@ lv_event_dsc_t *lv_obj_add_event_fn(lv_obj_t *obj, lv_event_code_t filter,
 }
 
 #ifdef ESP_PLATFORM
+#include "esp_heap_caps.h"
+#include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+#include "freertos/task.h"
+#include "freertos/idf_additions.h"
+
+// Not a task notification: with LV_USE_FREERTOS_TASK_NOTIFY, LVGL's own
+// thread sync waits on the LVGL task's notification slot, and a stray wake
+// would end that wait early.
+static SemaphoreHandle_t s_wake;
+
 // Linked in place of LVGL's lv_async_call() via -Wl,--wrap (see CMakeLists.txt):
-// esp_lvgl_port's task sleeps on its event group, so a queued async call would
-// not run until something else -- an indev poll, an animation -- happened to
-// wake it. Waking it here is what makes lv_async_call() take effect promptly.
+// the LVGL task sleeps until its next timer, so a queued async call would not
+// run until then without this wake.
 extern "C" lv_result_t __real_lv_async_call(lv_async_cb_t async_xcb, void *user_data);
 
 extern "C" lv_result_t __wrap_lv_async_call(lv_async_cb_t async_xcb, void *user_data) {
     lv_result_t res = __real_lv_async_call(async_xcb, user_data);
-    if (res == LV_RESULT_OK) lvgl_port_task_wake(LVGL_PORT_EVENT_USER, nullptr);
+    if (res == LV_RESULT_OK && s_wake) xSemaphoreGive(s_wake);
     return res;
 }
-#endif
 
-#ifdef ESP_PLATFORM
 #if CONFIG_HARNESS
 static bool harness_idle(void *) {
-    if (!lvgl_port_lock(0)) return false;
+    lv_lock();
     bool idle = lv_anim_count_running() == 0;
-    lvgl_port_unlock();
+    lv_unlock();
     return idle;
 }
 #endif
 
-// Linked in place of esp_lvgl_port's lvgl_port_init() via -Wl,--wrap (see
-// CMakeLists.txt): the app gets the resources and the harness without a call of
-// its own, exactly like the simulator shim below.
-extern "C" esp_err_t __real_lvgl_port_init(const lvgl_port_cfg_t *cfg);
+static uint32_t tick_ms() {
+    return static_cast<uint32_t>(esp_timer_get_time() / 1000);
+}
 
-extern "C" esp_err_t __wrap_lvgl_port_init(const lvgl_port_cfg_t *cfg) {
+static void lvgl_task(void *arg) {
+    const uint32_t max_sleep_ms = reinterpret_cast<uintptr_t>(arg);
+    while (true) {
+        uint32_t sleep_ms = lv_display_get_default() ? lv_timer_handler() : 0;
+        if (sleep_ms > max_sleep_ms) sleep_ms = max_sleep_ms;
+        TickType_t ticks = pdMS_TO_TICKS(sleep_ms);
+        xSemaphoreTake(s_wake, ticks > 0 ? ticks : 1);
+    }
+}
+
+esp_err_t lvgl_port_init(const lvgl_port_cfg_t *cfg) {
+    if (!cfg || cfg->task_affinity >= configNUM_CORES) return ESP_ERR_INVALID_ARG;
+    if (s_wake) return ESP_ERR_INVALID_STATE;
+
     resgen_resources_init();
-    esp_err_t err = __real_lvgl_port_init(cfg);
+    lv_init();
+    lv_tick_set_cb(tick_ms);
+
+    s_wake = xSemaphoreCreateBinary();
+    if (!s_wake) return ESP_ERR_NO_MEM;
+
+    const uintptr_t max_sleep_ms = cfg->task_max_sleep_ms > 0 ? cfg->task_max_sleep_ms : 500;
+    const UBaseType_t caps = cfg->task_stack_caps ? cfg->task_stack_caps
+                                                  : MALLOC_CAP_INTERNAL | MALLOC_CAP_DEFAULT;
+    const BaseType_t core = cfg->task_affinity < 0 ? tskNO_AFFINITY : cfg->task_affinity;
+    if (xTaskCreatePinnedToCoreWithCaps(lvgl_task, "taskLVGL", cfg->task_stack,
+                                        reinterpret_cast<void *>(max_sleep_ms),
+                                        cfg->task_priority, nullptr, core, caps) != pdPASS) {
+        vSemaphoreDelete(s_wake);
+        s_wake = nullptr;
+        return ESP_FAIL;
+    }
+
 #if CONFIG_HARNESS
-    if (err != ESP_OK) return err;
     harness_set_idle_cb(harness_idle, nullptr);
-    harness_set_lock_cb([](void *) { lvgl_port_lock(0); },
-                        [](void *) { lvgl_port_unlock(); }, nullptr);
+    harness_set_lock_cb([](void *) { lv_lock(); }, [](void *) { lv_unlock(); }, nullptr);
     harness_start();
 #endif
-    return err;
+    return ESP_OK;
 }
 #endif
 
 #ifndef ESP_PLATFORM
-// Simulator-only LVGL "port" shim: mirror esp_lvgl_port's surface so app/board
-// code calls lvgl_port_init() the same way on both targets. There is no LVGL
-// task here — the host main thread drives LVGL via lvgl_sim_loop() below (SDL is
-// main-thread-only, so the present loop must own the main thread).
+// No LVGL task on the simulator: the host main thread drives LVGL via
+// lvgl_sim_loop() below (SDL is main-thread-only, so the present loop must own
+// the main thread).
 #include <SDL2/SDL.h>
 #include <unistd.h>
 #include "sdl_panel.h"

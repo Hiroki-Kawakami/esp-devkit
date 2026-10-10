@@ -1,0 +1,1117 @@
+# LVGL options for the esp-devkit build of LVGL (see CMakeLists.txt for the
+# pinned version). Symbol names follow upstream's Kconfig, which lv_conf_internal.h
+# reads; an upstream bool missing here is compiled as 0.
+
+menu "LVGL"
+
+config LV_CONF_SKIP
+    bool
+    default y
+
+config LV_STDLIB_BUILTIN
+    int
+    default 0
+
+config LV_USE_STDLIB_STRING
+    int
+    default 1
+
+config LV_USE_STDLIB_SPRINTF
+    int
+    default 1
+
+config LV_USE_OS
+    int
+    default 1 if DEVKIT_SIMULATOR
+    default 2
+
+config LV_USE_FREERTOS_TASK_NOTIFY
+    bool
+    default y if !DEVKIT_SIMULATOR
+
+config LV_USE_DRAW_SW
+    bool
+    default y
+
+choice LV_MALLOC
+    prompt "LVGL heap"
+    default LV_MALLOC_CLIB
+
+    config LV_MALLOC_CLIB
+        bool "C library malloc"
+
+    config LV_MALLOC_SPIRAM
+        bool "SPIRAM"
+        depends on SPIRAM
+endchoice
+
+config LV_USE_STDLIB_MALLOC
+    int
+    default 255 if LV_MALLOC_SPIRAM
+    default 1
+
+menu "Rendering Configuration"
+
+choice LV_COLOR_FORMAT_DEFAULT
+    prompt "Default color format"
+    default LV_COLOR_FORMAT_RGB565
+
+    config LV_COLOR_FORMAT_I1
+        bool "I1"
+    config LV_COLOR_FORMAT_L8
+        bool "L8"
+    config LV_COLOR_FORMAT_RGB565
+        bool "RGB565"
+    config LV_COLOR_FORMAT_RGB565_SWAPPED
+        bool "RGB565 (Big-endian)"
+    config LV_COLOR_FORMAT_RGB888
+        bool "RGB888"
+    config LV_COLOR_FORMAT_XRGB8888
+        bool "XRGB8888"
+    config LV_COLOR_FORMAT_ARGB8888
+        bool "ARGB8888"
+    config LV_COLOR_FORMAT_ARGB8888_PREMULTIPLIED
+        bool "ARGB8888 (premultiplied)"
+endchoice
+
+config LV_COLOR_DEPTH
+    int
+    default 1 if LV_COLOR_FORMAT_I1
+    default 8 if LV_COLOR_FORMAT_L8
+    default 16 if LV_COLOR_FORMAT_RGB565 || LV_COLOR_FORMAT_RGB565_SWAPPED
+    default 24 if LV_COLOR_FORMAT_RGB888
+    default 32
+
+config LV_COLOR_MIX_ROUND_OFS
+    int "Color mix rounding offset"
+    default 0
+    range 0 254
+
+config LV_DEF_REFR_PERIOD
+    int "Default refresh period (ms)"
+    default 33
+
+config LV_DPI_DEF
+    int "Default DPI (px/inch)"
+    default 130
+
+config LV_DRAW_BUF_STRIDE_ALIGN
+    int "Draw buffer stride alignment (bytes)"
+    default 1
+
+config LV_DRAW_BUF_ALIGN
+    int "Draw buffer address alignment (bytes)"
+    default 4
+
+config LV_USE_MATRIX
+    bool "Matrix"
+    select LV_USE_FLOAT
+
+config LV_DRAW_TRANSFORM_USE_MATRIX
+    bool "Matrix based transformations"
+    depends on LV_USE_MATRIX
+
+config LV_DRAW_LAYER_SIMPLE_BUF_SIZE
+    int "Simple layer buffer size (bytes)"
+    default 24576
+
+config LV_DRAW_LAYER_MAX_MEMORY
+    int "Maximum layer memory (bytes, 0 = no limit)"
+    default 0
+
+config LV_DRAW_THREAD_STACK_SIZE
+    int "Draw thread stack size (bytes)"
+    default 32768 if DEVKIT_SIMULATOR
+    default 8192
+
+config LV_DRAW_THREAD_PRIO
+    int "Draw thread priority"
+    range 0 4
+    default 3
+
+config LV_USE_SNAPSHOT
+    bool "Snapshot"
+
+menu "Supported color formats"
+
+config LV_DRAW_SW_SUPPORT_RGB565
+    bool "RGB565"
+    default y
+
+config LV_DRAW_SW_SUPPORT_RGB565_SWAPPED
+    bool "RGB565 swapped"
+    default y
+
+config LV_DRAW_SW_SUPPORT_RGB565A8
+    bool "RGB565A8"
+    default y
+
+config LV_DRAW_SW_SUPPORT_RGB888
+    bool "RGB888"
+    default y
+
+config LV_DRAW_SW_SUPPORT_XRGB8888
+    bool "XRGB8888"
+    default y
+
+config LV_DRAW_SW_SUPPORT_ARGB8888
+    bool "ARGB8888"
+    default y
+
+config LV_DRAW_SW_SUPPORT_ARGB8888_PREMULTIPLIED
+    bool "ARGB8888 premultiplied"
+    default y
+
+config LV_DRAW_SW_SUPPORT_L8
+    bool "L8"
+    default y
+
+config LV_DRAW_SW_SUPPORT_AL88
+    bool "AL88"
+    default y
+
+config LV_DRAW_SW_SUPPORT_A8
+    bool "A8"
+    default y
+
+config LV_DRAW_SW_SUPPORT_I1
+    bool "I1"
+    default y
+
+config LV_DRAW_SW_I1_LUM_THRESHOLD
+    int "I1 luminance threshold"
+    default 127
+    range 0 254
+    depends on LV_DRAW_SW_SUPPORT_I1
+
+endmenu
+
+config LV_DRAW_SW_DRAW_UNIT_CNT
+    int "Number of draw units"
+    default 1
+    range 1 255
+
+config LV_DRAW_SW_COMPLEX
+    bool "Complex draw engine"
+    default y
+
+config LV_GRADIENT_MAX_STOPS
+    int "Maximum gradient stops"
+    default 2
+
+config LV_USE_DRAW_SW_COMPLEX_GRADIENTS
+    bool "Complex gradients"
+
+config LV_DRAW_SW_SHADOW_CACHE_SIZE
+    int "Shadow cache size"
+    depends on LV_DRAW_SW_COMPLEX
+    default 0
+
+config LV_DRAW_SW_CIRCLE_CACHE_SIZE
+    int "Circle cache size"
+    depends on LV_DRAW_SW_COMPLEX
+    default 4
+
+endmenu
+
+menu "Input Devices"
+
+config LV_INDEV_DEF_SCROLL_LIMIT
+    int "Scroll threshold (px)"
+    range 0 255
+    default 10
+
+config LV_INDEV_DEF_SCROLL_THROW
+    int "Scroll throw slow-down (%)"
+    range 1 100
+    default 10
+
+config LV_INDEV_DEF_SCROLL_ELASTIC_FACTOR
+    int "Elastic scroll slow-down factor"
+    range 1 255
+    default 4
+
+config LV_INDEV_DEF_LONG_PRESS_TIME
+    int "Long press time (ms)"
+    range 0 65535
+    default 400
+
+config LV_INDEV_DEF_LONG_PRESS_REP_TIME
+    int "Long press repeat period (ms)"
+    range 0 65535
+    default 100
+
+config LV_INDEV_DEF_DOUBLE_CLICK_TIME
+    int "Multi-click time (ms)"
+    range 0 65535
+    default 400
+
+config LV_INDEV_DEF_GESTURE_LIMIT
+    int "Gesture threshold (px)"
+    range 0 255
+    default 50
+
+config LV_INDEV_DEF_GESTURE_MIN_VELOCITY
+    int "Gesture minimum velocity (px)"
+    range 0 255
+    default 3
+
+config LV_INDEV_DEF_ROTARY_SENSITIVITY
+    int "Rotary sensitivity"
+    range 1 65535
+    default 256
+
+config LV_USE_GRIDNAV
+    bool "Grid navigation"
+
+config LV_USE_GESTURE_RECOGNITION
+    bool "Multi-touch gesture recognition"
+    select LV_USE_FLOAT
+
+if LV_USE_GESTURE_RECOGNITION
+
+config LV_INDEV_DEF_GESTURE_PINCH_DOWN_THRESHOLD
+    int "Pinch in threshold (%)"
+    range 1 99
+    default 75
+
+config LV_INDEV_DEF_GESTURE_PINCH_UP_THRESHOLD
+    int "Pinch out threshold (%)"
+    range 101 1000
+    default 150
+
+config LV_INDEV_DEF_GESTURE_PINCH_MAX_INITIAL_SCALE
+    int "Pinch maximum initial scale (%)"
+    range 101 1000
+    default 250
+
+config LV_INDEV_DEF_GESTURE_ROTATION_THRESHOLD
+    int "Rotation threshold (mrad)"
+    range 1 3141
+    default 200
+
+endif
+
+endmenu
+
+menu "Core"
+
+config LV_OBJ_STYLE_CACHE
+    bool "Style cache"
+    default y
+
+config LV_USE_OBJ_NAME
+    bool "Widget names (lv_obj_set_name)"
+
+config LV_USE_OBJ_ID
+    bool "Widget id (lv_obj_set_id)"
+
+if LV_USE_OBJ_ID
+
+config LV_OBJ_ID_AUTO_ASSIGN
+    bool "Automatic ID assignment on widget creation"
+    default y
+
+config LV_USE_OBJ_ID_BUILTIN
+    bool "Built-in ID handler"
+    default y
+
+endif
+
+config LV_USE_OBJ_PROPERTY
+    bool "Generic widget property set/get API"
+
+config LV_USE_OBJ_PROPERTY_NAME
+    bool "Access properties by name"
+    default y
+    depends on LV_USE_OBJ_PROPERTY
+
+config LV_USE_EXT_DATA
+    bool "External data and destructor"
+
+config LV_USE_FLOAT
+    bool "Float as lv_value_precise_t"
+
+config LV_USE_OBSERVER
+    bool "Observer"
+    default y
+
+config LV_USE_TRANSLATION
+    bool "Text translation"
+
+config LV_USE_COLOR_FILTER
+    bool "Color filter style"
+
+config LV_USE_FRAGMENT
+    bool "Fragment"
+
+config LV_USE_PRIVATE_API
+    bool "Private API (lvgl_private.h)"
+
+config LV_ATTRIBUTE_FAST_MEM_USE_IRAM
+    bool "Place LV_ATTRIBUTE_FAST_MEM functions in IRAM"
+    depends on !DEVKIT_SIMULATOR
+
+endmenu
+
+menu "Logging"
+
+config LV_USE_LOG
+    bool "Logging"
+    default y if DEVKIT_SIMULATOR
+
+if LV_USE_LOG
+
+choice
+    bool "Default log verbosity"
+    default LV_LOG_LEVEL_WARN
+
+    config LV_LOG_LEVEL_TRACE
+        bool "Trace: detailed information about everything"
+    config LV_LOG_LEVEL_INFO
+        bool "Info: important events"
+    config LV_LOG_LEVEL_WARN
+        bool "Warn: something unwanted happened but caused no problem"
+    config LV_LOG_LEVEL_ERROR
+        bool "Error: critical issues where the system may fail"
+    config LV_LOG_LEVEL_USER
+        bool "User: only logs added by the user"
+    config LV_LOG_LEVEL_NONE
+        bool "None: nothing is logged"
+endchoice
+
+config LV_LOG_LEVEL
+    int
+    default 0 if LV_LOG_LEVEL_TRACE
+    default 1 if LV_LOG_LEVEL_INFO
+    default 2 if LV_LOG_LEVEL_WARN
+    default 3 if LV_LOG_LEVEL_ERROR
+    default 4 if LV_LOG_LEVEL_USER
+    default 5 if LV_LOG_LEVEL_NONE
+
+config LV_LOG_PRINTF
+    bool "Print the log with 'printf'"
+    default y if DEVKIT_SIMULATOR
+
+config LV_LOG_USE_TIMESTAMP
+    bool "Add a timestamp to each log"
+    default y
+
+config LV_LOG_USE_FILE_LINE
+    bool "Add the file name and line number to each log"
+    default y
+
+menu "Trace logs per module"
+
+config LV_LOG_TRACE_MEM
+    bool "Memory"
+    default y
+
+config LV_LOG_TRACE_TIMER
+    bool "Timer"
+    default y
+
+config LV_LOG_TRACE_INDEV
+    bool "Input devices"
+    default y
+
+config LV_LOG_TRACE_DISP_REFR
+    bool "Display refresh"
+    default y
+
+config LV_LOG_TRACE_EVENT
+    bool "Events"
+    default y
+
+config LV_LOG_TRACE_OBJ_CREATE
+    bool "Widget creation"
+    default y
+
+config LV_LOG_TRACE_LAYOUT
+    bool "Layout"
+    default y
+
+config LV_LOG_TRACE_ANIM
+    bool "Animations"
+    default y
+
+config LV_LOG_TRACE_CACHE
+    bool "Cache"
+    default y
+
+endmenu
+
+endif
+
+endmenu
+
+menu "Asserts and Checks"
+
+config LV_USE_ASSERT
+    bool "LV_ASSERT / LV_ASSERT_MSG / LV_ASSERT_FORMAT_MSG"
+
+config LV_USE_ASSERT_MALLOC
+    bool "LV_ASSERT_MALLOC"
+
+config LV_USE_ASSERT_NULL
+    bool "LV_ASSERT_NULL"
+
+config LV_USE_ASSERT_STYLE
+    bool "LV_ASSERT_STYLE"
+
+config LV_USE_ASSERT_MEM_INTEGRITY
+    bool "LV_ASSERT_MEM_INTEGRITY"
+
+config LV_USE_ASSERT_OBJ
+    bool "LV_ASSERT_OBJ"
+
+config LV_USE_CHECK_ARG
+    bool "Runtime argument validation"
+    default y
+
+if LV_USE_CHECK_ARG
+
+config LV_CHECK_ARG_ASSERT_ON_FAIL
+    bool "Assert on failure"
+
+choice
+    prompt "Log behavior on LV_CHECK_ARG failure"
+    default LV_CHECK_ARG_LOG_MODE_VERBOSE if LV_USE_LOG
+    default LV_CHECK_ARG_LOG_MODE_NONE if !LV_USE_LOG
+
+    config LV_CHECK_ARG_LOG_MODE_NONE
+        bool "None: no log output on failure"
+
+    config LV_CHECK_ARG_LOG_MODE_MINIMAL
+        bool "Minimal: log 'Check failed' only (file/line from LV_LOG_WARN)"
+        depends on LV_USE_LOG
+
+    config LV_CHECK_ARG_LOG_MODE_VERBOSE
+        bool "Verbose: log 'Check failed: <cond>' plus caller-supplied message"
+        depends on LV_USE_LOG
+endchoice
+
+config LV_CHECK_ARG_LOG_MODE
+    int
+    default 0 if LV_CHECK_ARG_LOG_MODE_NONE
+    default 1 if LV_CHECK_ARG_LOG_MODE_MINIMAL
+    default 2 if LV_CHECK_ARG_LOG_MODE_VERBOSE
+
+config LV_USE_CHECK_OBJ_CLASSTYPE
+    bool "Class check in LV_CHECK_OBJ"
+
+config LV_USE_CHECK_OBJ_VALIDITY
+    bool "Widget-tree validity check in LV_CHECK_OBJ"
+
+config LV_USE_CHECK_OBJ_PARENT_LINK
+    bool "Parent-link consistency check in lv_obj_is_in_widget_tree"
+    depends on LV_USE_CHECK_OBJ_VALIDITY
+    depends on LV_USE_ASSERT
+
+endif
+
+endmenu
+
+menu "Debugging"
+
+config LV_USE_SYSMON
+    bool "System monitor"
+
+config LV_USE_PERF_MONITOR
+    bool "Performance monitor"
+    depends on LV_USE_SYSMON
+
+choice
+    prompt "Performance monitor position"
+    depends on LV_USE_PERF_MONITOR
+    default LV_PERF_MONITOR_ALIGN_BOTTOM_RIGHT
+
+    config LV_PERF_MONITOR_ALIGN_TOP_LEFT
+        bool "Top left"
+    config LV_PERF_MONITOR_ALIGN_TOP_MID
+        bool "Top middle"
+    config LV_PERF_MONITOR_ALIGN_TOP_RIGHT
+        bool "Top right"
+    config LV_PERF_MONITOR_ALIGN_BOTTOM_LEFT
+        bool "Bottom left"
+    config LV_PERF_MONITOR_ALIGN_BOTTOM_MID
+        bool "Bottom middle"
+    config LV_PERF_MONITOR_ALIGN_BOTTOM_RIGHT
+        bool "Bottom right"
+    config LV_PERF_MONITOR_ALIGN_LEFT_MID
+        bool "Left middle"
+    config LV_PERF_MONITOR_ALIGN_RIGHT_MID
+        bool "Right middle"
+    config LV_PERF_MONITOR_ALIGN_CENTER
+        bool "Center"
+endchoice
+
+config LV_USE_PERF_MONITOR_LOG_MODE
+    bool "Log performance data"
+    depends on LV_USE_PERF_MONITOR
+
+config LV_USE_REFR_DEBUG
+    bool "Redraw area overlay"
+
+config LV_USE_LAYER_DEBUG
+    bool "Layer type overlay"
+
+config LV_USE_PARALLEL_DRAW_DEBUG
+    bool "Draw unit overlay"
+
+endmenu
+
+menu "Themes"
+
+config LV_USE_THEME_DEFAULT
+    bool "Default theme"
+    default y
+
+config LV_THEME_DEFAULT_DARK
+    bool "Dark mode"
+    depends on LV_USE_THEME_DEFAULT
+
+config LV_THEME_DEFAULT_GROW
+    bool "Grow on press"
+    default y
+    depends on LV_USE_THEME_DEFAULT
+
+config LV_THEME_DEFAULT_TRANSITION_TIME
+    int "Transition time (ms)"
+    default 80
+    depends on LV_USE_THEME_DEFAULT
+
+config LV_USE_THEME_SIMPLE
+    bool "Simple theme"
+    default y
+
+config LV_USE_THEME_MONO
+    bool "Monochrome theme"
+    default y
+
+endmenu
+
+menu "Layouts"
+
+config LV_USE_FLEX
+    bool "Flex"
+    default y
+
+config LV_USE_GRID
+    bool "Grid"
+    default y
+
+endmenu
+
+menu "Image Settings"
+
+config LV_CACHE_DEF_SIZE
+    int "Default image cache size (bytes, 0 = disabled)"
+    default 0
+
+config LV_IMAGE_HEADER_CACHE_DEF_CNT
+    int "Default image header cache size (entries, 0 = disabled)"
+    default 0
+
+endmenu
+
+menu "Text & Font Settings"
+
+choice LV_TXT_ENC
+    prompt "Character encoding for strings"
+    default LV_TXT_ENC_UTF8
+
+    config LV_TXT_ENC_UTF8
+        bool "UTF8"
+    config LV_TXT_ENC_ASCII
+        bool "ASCII"
+endchoice
+
+config LV_TXT_BREAK_CHARS
+    string "Characters to break (wrap) text on"
+    default " ,.;:-_)]}"
+
+config LV_TXT_LINE_BREAK_LONG_LEN
+    int "Line break long length"
+    default 0
+
+config LV_TXT_LINE_BREAK_LONG_PRE_MIN_LEN
+    int "Min num chars before break"
+    default 3
+    depends on LV_TXT_LINE_BREAK_LONG_LEN > 0
+
+config LV_TXT_LINE_BREAK_LONG_POST_MIN_LEN
+    int "Min num chars after break"
+    default 3
+    depends on LV_TXT_LINE_BREAK_LONG_LEN > 0
+
+config LV_TXT_COLOR_CMD
+    string "Text recoloring control character"
+    default "#"
+
+config LV_USE_BIDI
+    bool "Bidirectional text"
+
+choice LV_BIDI_BASE_DIR_DEF
+    prompt "Default base direction"
+    depends on LV_USE_BIDI
+    default LV_BASE_DIR_AUTO
+
+    config LV_BASE_DIR_LTR
+        bool "Left-to-Right"
+    config LV_BASE_DIR_RTL
+        bool "Right-to-Left"
+    config LV_BASE_DIR_AUTO
+        bool "Auto detect"
+endchoice
+
+config LV_USE_ARABIC_PERSIAN_CHARS
+    bool "Arabic/Persian character shaping"
+
+menu "Built-in Fonts"
+
+config LV_FONT_MONTSERRAT_8
+    bool "Montserrat 8"
+config LV_FONT_MONTSERRAT_10
+    bool "Montserrat 10"
+config LV_FONT_MONTSERRAT_12
+    bool "Montserrat 12"
+config LV_FONT_MONTSERRAT_14
+    bool "Montserrat 14"
+    default y
+config LV_FONT_MONTSERRAT_16
+    bool "Montserrat 16"
+config LV_FONT_MONTSERRAT_18
+    bool "Montserrat 18"
+config LV_FONT_MONTSERRAT_20
+    bool "Montserrat 20"
+config LV_FONT_MONTSERRAT_22
+    bool "Montserrat 22"
+config LV_FONT_MONTSERRAT_24
+    bool "Montserrat 24"
+config LV_FONT_MONTSERRAT_26
+    bool "Montserrat 26"
+config LV_FONT_MONTSERRAT_28
+    bool "Montserrat 28"
+config LV_FONT_MONTSERRAT_30
+    bool "Montserrat 30"
+config LV_FONT_MONTSERRAT_32
+    bool "Montserrat 32"
+config LV_FONT_MONTSERRAT_34
+    bool "Montserrat 34"
+config LV_FONT_MONTSERRAT_36
+    bool "Montserrat 36"
+config LV_FONT_MONTSERRAT_38
+    bool "Montserrat 38"
+config LV_FONT_MONTSERRAT_40
+    bool "Montserrat 40"
+config LV_FONT_MONTSERRAT_42
+    bool "Montserrat 42"
+config LV_FONT_MONTSERRAT_44
+    bool "Montserrat 44"
+config LV_FONT_MONTSERRAT_46
+    bool "Montserrat 46"
+config LV_FONT_MONTSERRAT_48
+    bool "Montserrat 48"
+
+config LV_FONT_MONTSERRAT_28_COMPRESSED
+    bool "Montserrat 28 (compressed)"
+config LV_FONT_DEJAVU_16_PERSIAN_HEBREW
+    bool "Dejavu 16 (Persian, Hebrew, Arabic)"
+config LV_FONT_SOURCE_HAN_SANS_SC_14_CJK
+    bool "SourceHanSansSC 14 (CJK)"
+config LV_FONT_SOURCE_HAN_SANS_SC_16_CJK
+    bool "SourceHanSansSC 16 (CJK)"
+
+config LV_FONT_UNSCII_8
+    bool "UNSCII 8"
+config LV_FONT_UNSCII_16
+    bool "UNSCII 16"
+
+endmenu
+
+choice LV_FONT_DEFAULT
+    prompt "Default font"
+    default LV_FONT_DEFAULT_MONTSERRAT_14
+
+    config LV_FONT_DEFAULT_MONTSERRAT_8
+        bool "Montserrat 8"
+        select LV_FONT_MONTSERRAT_8
+    config LV_FONT_DEFAULT_MONTSERRAT_10
+        bool "Montserrat 10"
+        select LV_FONT_MONTSERRAT_10
+    config LV_FONT_DEFAULT_MONTSERRAT_12
+        bool "Montserrat 12"
+        select LV_FONT_MONTSERRAT_12
+    config LV_FONT_DEFAULT_MONTSERRAT_14
+        bool "Montserrat 14"
+        select LV_FONT_MONTSERRAT_14
+    config LV_FONT_DEFAULT_MONTSERRAT_16
+        bool "Montserrat 16"
+        select LV_FONT_MONTSERRAT_16
+    config LV_FONT_DEFAULT_MONTSERRAT_18
+        bool "Montserrat 18"
+        select LV_FONT_MONTSERRAT_18
+    config LV_FONT_DEFAULT_MONTSERRAT_20
+        bool "Montserrat 20"
+        select LV_FONT_MONTSERRAT_20
+    config LV_FONT_DEFAULT_MONTSERRAT_22
+        bool "Montserrat 22"
+        select LV_FONT_MONTSERRAT_22
+    config LV_FONT_DEFAULT_MONTSERRAT_24
+        bool "Montserrat 24"
+        select LV_FONT_MONTSERRAT_24
+    config LV_FONT_DEFAULT_MONTSERRAT_26
+        bool "Montserrat 26"
+        select LV_FONT_MONTSERRAT_26
+    config LV_FONT_DEFAULT_MONTSERRAT_28
+        bool "Montserrat 28"
+        select LV_FONT_MONTSERRAT_28
+    config LV_FONT_DEFAULT_MONTSERRAT_30
+        bool "Montserrat 30"
+        select LV_FONT_MONTSERRAT_30
+    config LV_FONT_DEFAULT_MONTSERRAT_32
+        bool "Montserrat 32"
+        select LV_FONT_MONTSERRAT_32
+    config LV_FONT_DEFAULT_MONTSERRAT_34
+        bool "Montserrat 34"
+        select LV_FONT_MONTSERRAT_34
+    config LV_FONT_DEFAULT_MONTSERRAT_36
+        bool "Montserrat 36"
+        select LV_FONT_MONTSERRAT_36
+    config LV_FONT_DEFAULT_MONTSERRAT_38
+        bool "Montserrat 38"
+        select LV_FONT_MONTSERRAT_38
+    config LV_FONT_DEFAULT_MONTSERRAT_40
+        bool "Montserrat 40"
+        select LV_FONT_MONTSERRAT_40
+    config LV_FONT_DEFAULT_MONTSERRAT_42
+        bool "Montserrat 42"
+        select LV_FONT_MONTSERRAT_42
+    config LV_FONT_DEFAULT_MONTSERRAT_44
+        bool "Montserrat 44"
+        select LV_FONT_MONTSERRAT_44
+    config LV_FONT_DEFAULT_MONTSERRAT_46
+        bool "Montserrat 46"
+        select LV_FONT_MONTSERRAT_46
+    config LV_FONT_DEFAULT_MONTSERRAT_48
+        bool "Montserrat 48"
+        select LV_FONT_MONTSERRAT_48
+    config LV_FONT_DEFAULT_MONTSERRAT_28_COMPRESSED
+        bool "Montserrat 28 (compressed)"
+        select LV_FONT_MONTSERRAT_28_COMPRESSED
+    config LV_FONT_DEFAULT_DEJAVU_16_PERSIAN_HEBREW
+        bool "Dejavu 16 (Persian, Hebrew, Arabic)"
+        select LV_FONT_DEJAVU_16_PERSIAN_HEBREW
+    config LV_FONT_DEFAULT_SOURCE_HAN_SANS_SC_14_CJK
+        bool "SourceHanSansSC 14 (CJK)"
+        select LV_FONT_SOURCE_HAN_SANS_SC_14_CJK
+    config LV_FONT_DEFAULT_SOURCE_HAN_SANS_SC_16_CJK
+        bool "SourceHanSansSC 16 (CJK)"
+        select LV_FONT_SOURCE_HAN_SANS_SC_16_CJK
+    config LV_FONT_DEFAULT_UNSCII_8
+        bool "UNSCII 8"
+        select LV_FONT_UNSCII_8
+    config LV_FONT_DEFAULT_UNSCII_16
+        bool "UNSCII 16"
+        select LV_FONT_UNSCII_16
+endchoice
+
+config LV_FONT_FMT_TXT_LARGE
+    bool "Large font format"
+
+config LV_USE_FONT_COMPRESSED
+    bool "Compressed fonts"
+
+config LV_USE_FONT_PLACEHOLDER
+    bool "Glyph placeholders"
+    default y
+
+config LV_USE_IMGFONT
+    bool "Image font"
+
+endmenu
+
+menu "Widgets"
+
+config LV_WIDGETS_HAS_DEFAULT_VALUE
+    bool "Default values for widgets"
+    default y
+
+config LV_USE_ANIMIMG
+    bool "Animated image"
+    default y
+
+config LV_USE_ARC
+    bool "Arc"
+    default y
+
+config LV_USE_ARCLABEL
+    bool "Arc label"
+    default y
+
+config LV_USE_BAR
+    bool "Bar"
+    default y
+
+config LV_USE_BUTTON
+    bool "Button"
+    default y
+
+config LV_USE_BUTTONMATRIX
+    bool "Button matrix"
+    default y
+
+config LV_USE_CALENDAR
+    bool "Calendar"
+    default y
+
+if LV_USE_CALENDAR
+
+config LV_CALENDAR_WEEK_STARTS_MONDAY
+    bool "Week starts on Monday"
+
+menu "Days name configuration"
+
+config LV_MONDAY_STR
+    string "Shortened string for Monday"
+    default "Mo"
+config LV_TUESDAY_STR
+    string "Shortened string for Tuesday"
+    default "Tu"
+config LV_WEDNESDAY_STR
+    string "Shortened string for Wednesday"
+    default "We"
+config LV_THURSDAY_STR
+    string "Shortened string for Thursday"
+    default "Th"
+config LV_FRIDAY_STR
+    string "Shortened string for Friday"
+    default "Fr"
+config LV_SATURDAY_STR
+    string "Shortened string for Saturday"
+    default "Sa"
+config LV_SUNDAY_STR
+    string "Shortened string for Sunday"
+    default "Su"
+
+endmenu
+
+menu "Month names configuration"
+
+config LV_JANUARY_STR
+    string "String for January"
+    default "January"
+config LV_FEBRUARY_STR
+    string "String for February"
+    default "February"
+config LV_MARCH_STR
+    string "String for March"
+    default "March"
+config LV_APRIL_STR
+    string "String for April"
+    default "April"
+config LV_MAY_STR
+    string "String for May"
+    default "May"
+config LV_JUNE_STR
+    string "String for June"
+    default "June"
+config LV_JULY_STR
+    string "String for July"
+    default "July"
+config LV_AUGUST_STR
+    string "String for August"
+    default "August"
+config LV_SEPTEMBER_STR
+    string "String for September"
+    default "September"
+config LV_OCTOBER_STR
+    string "String for October"
+    default "October"
+config LV_NOVEMBER_STR
+    string "String for November"
+    default "November"
+config LV_DECEMBER_STR
+    string "String for December"
+    default "December"
+
+endmenu
+
+config LV_USE_CALENDAR_HEADER_ARROW
+    bool "Header with arrow buttons"
+    default y
+
+config LV_USE_CALENDAR_HEADER_DROPDOWN
+    bool "Header with dropdowns"
+    default y
+
+config LV_USE_CALENDAR_CHINESE
+    bool "Chinese calendar"
+
+endif
+
+config LV_USE_CANVAS
+    bool "Canvas"
+    select LV_USE_IMAGE
+    default y
+
+config LV_USE_CHART
+    bool "Chart"
+    default y
+
+config LV_USE_CHECKBOX
+    bool "Checkbox"
+    default y
+
+config LV_USE_DROPDOWN
+    bool "Dropdown"
+    select LV_USE_LABEL
+    default y
+
+config LV_USE_IMAGE
+    bool "Image"
+    default y
+
+config LV_USE_IMAGEBUTTON
+    bool "Image button"
+    default y
+
+config LV_USE_IME_PINYIN
+    bool "Pinyin input method"
+    select LV_USE_KEYBOARD
+
+if LV_USE_IME_PINYIN
+
+config LV_IME_PINYIN_USE_K9_MODE
+    bool "9-key input mode"
+    default y
+
+config LV_IME_PINYIN_K9_CAND_TEXT_NUM
+    int "Maximum number of candidate panels for 9-key input mode"
+    depends on LV_IME_PINYIN_USE_K9_MODE
+    default 3
+
+config LV_IME_PINYIN_USE_DEFAULT_DICT
+    bool "Built-in dictionary"
+    default y
+
+config LV_IME_PINYIN_CAND_TEXT_NUM
+    int "Maximum number of candidate panels"
+    default 6
+
+endif
+
+config LV_USE_KEYBOARD
+    bool "Keyboard"
+    default y
+
+config LV_USE_LABEL
+    bool "Label"
+    default y
+
+if LV_USE_LABEL
+
+config LV_LABEL_TEXT_SELECTION
+    bool "Text selection"
+    default y
+
+config LV_LABEL_LONG_TXT_HINT
+    bool "Long text draw hint"
+    default y
+
+config LV_LABEL_WAIT_CHAR_COUNT
+    int "Circular scroll gap (characters)"
+    default 3
+
+endif
+
+config LV_USE_LED
+    bool "LED"
+    default y
+
+config LV_USE_LINE
+    bool "Line"
+    default y
+
+config LV_USE_LIST
+    bool "List"
+    default y
+
+config LV_USE_MENU
+    bool "Menu"
+    default y
+
+config LV_USE_MSGBOX
+    bool "Message box"
+    default y
+    select LV_USE_LABEL
+
+config LV_USE_QRCODE
+    bool "QR code"
+    select LV_USE_CANVAS
+
+config LV_USE_ROLLER
+    bool "Roller"
+    select LV_USE_LABEL
+    default y
+
+config LV_USE_SCALE
+    bool "Scale"
+    default y
+
+config LV_USE_SLIDER
+    bool "Slider"
+    select LV_USE_BAR
+    default y
+
+config LV_USE_SPAN
+    bool "Span"
+    default y
+
+config LV_SPAN_SNIPPET_STACK_SIZE
+    int "Maximum number of span descriptors"
+    default 64
+    depends on LV_USE_SPAN
+
+config LV_USE_SPINBOX
+    bool "Spinbox"
+    default y
+
+config LV_USE_SPINNER
+    bool "Spinner"
+    default y
+
+config LV_USE_SWITCH
+    bool "Switch"
+    default y
+
+config LV_USE_TEXTAREA
+    bool "Text area"
+    select LV_USE_LABEL
+    default y
+
+config LV_TEXTAREA_DEF_PWD_SHOW_TIME
+    int "Default password show time (ms)"
+    default 1500
+    depends on LV_USE_TEXTAREA
+
+config LV_USE_TABLE
+    bool "Table"
+    default y
+
+config LV_USE_TABVIEW
+    bool "Tabview"
+    default y
+
+config LV_USE_TILEVIEW
+    bool "Tileview"
+    default y
+
+config LV_USE_WIN
+    bool "Window"
+    default y
+
+endmenu
+
+endmenu

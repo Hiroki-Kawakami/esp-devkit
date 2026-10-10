@@ -11,12 +11,12 @@ namespace { LcdTestScreen *g_active = nullptr; }
 void LcdTestScreen::build() {
     lv_obj_set_style_bg_color(root_, lv_color_black(), 0);
     lv_obj_set_style_pad_all(root_, 0, 0);
-    lv_obj_remove_flag(root_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(root_, false);
     lv_obj_set_flex_flow(root_, LV_FLEX_FLOW_COLUMN);
 
     lv_obj_t *strip = lv_obj_create(root_);
     lv_obj_remove_style_all(strip);
-    lv_obj_remove_flag(strip, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(strip, false);
     lv_obj_set_width(strip, LV_PCT(100));
     lv_obj_set_flex_grow(strip, 1);
     lv_obj_set_flex_flow(strip, LV_FLEX_FLOW_ROW);
