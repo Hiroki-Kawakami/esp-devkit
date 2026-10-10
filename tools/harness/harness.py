@@ -23,6 +23,7 @@ Script: one command per line, '#' comments.
     imu rot0|rot90|rot180|rot270|face-up|face-down
                                inject a resting pose
     imu release                back to the real sensor
+    reset                      reboot the board and wait for it (no-op on the simulator)
     quit                       stop (implicit at end of script)
     <anything else>            passed through verbatim (app commands)
 """
@@ -67,6 +68,9 @@ class SimLink:
         except queue.Empty:
             return ""
 
+    def reset(self):
+        pass
+
     def close(self):
         try:
             self.proc.stdin.close()
@@ -85,10 +89,20 @@ class SerialLink:
         self.ser.port = port
         self.ser.baudrate = baud
         self.ser.timeout = 0.1
-        self.ser.dtr = False
-        self.ser.rts = False
+        # Opening asserts both lines; dropping DTR before RTS passes through
+        # DTR=0/RTS=1, which pulls EN low and reboots the board.
+        self.ser.dtr = True
+        self.ser.rts = True
         self.ser.open()
+        self.ser.rts = False
+        self.ser.dtr = False
         self.ser.reset_input_buffer()
+        self.buf = b""
+
+    def reset(self):
+        self.ser.rts = True
+        time.sleep(0.1)
+        self.ser.rts = False
         self.buf = b""
 
     def send(self, line):
@@ -282,6 +296,9 @@ class Harness:
                 self.btn(int(args[0]), args[1] if len(args) > 1 else "click")
             elif cmd == "imu":
                 self.imu(args)
+            elif cmd == "reset":
+                self.link.reset()
+                self.wait_ready()
             elif cmd == "quit":
                 return
             else:

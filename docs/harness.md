@@ -49,6 +49,10 @@ USB-Serial-JTAG). **Close `idf.py monitor` first** — the harness shares the
 console port with the log stream. `--log` echoes the target's log lines to
 stderr while the script runs.
 
+Connecting does not reset the board, so separate runs pick up where the last
+one left off — act, capture, look, act again. A script that needs a fresh boot
+starts with `reset`.
+
 The script argument defaults to `-` (stdin), so one-off commands can be piped:
 
 ```sh
@@ -76,6 +80,7 @@ One command per line, `#` starts a comment, blank lines are ignored.
 | `imu <ax> <ay> <az> [<gx> <gy> <gz>]` | replace the IMU reading until `imu release` |
 | `imu rot0\|rot90\|rot180\|rot270\|face-up\|face-down` | resting pose matching that `bsp_imu_orientation_t` |
 | `imu release` | back to the board's sensor (the view rotation on the simulator) |
+| `reset` | reboot the board and wait until the harness answers again; no-op on the simulator, which starts fresh every run |
 | `quit` | stop the script (implicit at end of file) |
 | anything else | sent verbatim — app commands registered with `harness_register()` |
 
