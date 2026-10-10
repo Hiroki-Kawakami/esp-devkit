@@ -9,4 +9,11 @@ config USBD
         configuration. On the simulator the controller is a stub that fails
         to start.
 
+config USBD_VENDOR
+    bool "Vendor-specific function"
+    depends on USBD
+    default n
+    help
+        One vendor-specific interface with bulk endpoints.
+
 endmenu

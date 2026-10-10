@@ -17,6 +17,19 @@ namespace {
 const char* TAG = "usb_device";
 
 constexpr uint16_t kBcdUsb = 0x0200;
+constexpr uint16_t kBcdUsbBos = 0x0210;
+constexpr uint8_t kCapabilityUsb20Extension = 0x02;
+constexpr uint8_t kCapabilityPlatform = 0x05;
+constexpr uint8_t kMsOs20PlatformUuid[16] = {0xdf, 0x60, 0xdd, 0xd8, 0x89, 0x45, 0xc7, 0x4c,
+                                             0x9c, 0xd2, 0x65, 0x9d, 0x9e, 0x64, 0x8a, 0x9f};
+constexpr uint32_t kMsOs20WindowsVersion = 0x06030000;
+constexpr uint16_t kMsOs20SetHeader = 0x00;
+constexpr uint16_t kMsOs20ConfigSubset = 0x01;
+constexpr uint16_t kMsOs20FunctionSubset = 0x02;
+constexpr uint16_t kMsOs20CompatibleId = 0x03;
+constexpr uint16_t kMsOs20RegistryProperty = 0x04;
+constexpr uint16_t kRegMultiSz = 7;
+constexpr std::string_view kDeviceInterfaceGuids = "DeviceInterfaceGUIDs";
 constexpr uint8_t kMaxEndpointNumber = 15;
 constexpr size_t kInterfaceDescBytes = 9;
 constexpr size_t kConfigDescBytes = 9;
@@ -34,9 +47,26 @@ void put16(std::vector<uint8_t>& bytes, uint16_t value) {
     bytes.push_back(static_cast<uint8_t>(value >> 8));
 }
 
+void put32(std::vector<uint8_t>& bytes, uint32_t value) {
+    put16(bytes, static_cast<uint16_t>(value));
+    put16(bytes, static_cast<uint16_t>(value >> 16));
+}
+
+void set16(std::vector<uint8_t>& bytes, size_t offset, size_t value) {
+    bytes[offset] = static_cast<uint8_t>(value);
+    bytes[offset + 1] = static_cast<uint8_t>(value >> 8);
+}
+
+void put_utf16z(std::vector<uint8_t>& bytes, std::string_view ascii) {
+    for (char c : ascii) put16(bytes, static_cast<uint8_t>(c));
+    put16(bytes, 0);
+}
+
 void put_interface(detail::ConfigState& state, uint8_t number, uint8_t alternate, uint8_t cls,
                    uint8_t subclass, uint8_t protocol, uint8_t name) {
     state.interface_offset = state.bytes.size();
+    state.interface = number;
+    state.alternate = alternate;
     state.bytes.insert(state.bytes.end(), {static_cast<uint8_t>(kInterfaceDescBytes),
                                            detail::kDescInterface, number, alternate, 0, cls,
                                            subclass, protocol, name});
@@ -89,13 +119,17 @@ esp_err_t build_config(const DeviceInfo& info, Speed speed,
                        detail::Descriptors* out, bool* has_iad) {
     std::vector<uint8_t>& bytes = out->config[static_cast<int>(speed)];
     bytes.assign(kConfigDescBytes, 0);
-    detail::ConfigState state{speed, bytes, out->strings};
+    std::vector<detail::EndpointInfo>& endpoints = out->endpoints[static_cast<int>(speed)];
+    endpoints.clear();
+    out->winusb.clear();
+    detail::ConfigState state{speed, bytes, endpoints, out->strings, out->winusb};
     ConfigBuilder builder(state);
     const bool record_owners = out->interface_owner.empty();
 
     for (const auto& function : functions) {
         const size_t start = bytes.size();
         const uint8_t first = state.interfaces;
+        state.function_first = first;
         function->describe(builder);
         if (state.error) return ESP_ERR_INVALID_ARG;
         const uint8_t count = state.interfaces - first;
@@ -135,6 +169,67 @@ esp_err_t build_config(const DeviceInfo& info, Speed speed,
     return ESP_OK;
 }
 
+void build_bos(uint8_t vendor_code, size_t set_bytes, std::vector<uint8_t>* out) {
+    std::vector<uint8_t>& b = *out;
+    b = {5, detail::kDescBos, 0, 0, 2};
+    b.insert(b.end(), {7, detail::kDescDeviceCapability, kCapabilityUsb20Extension});
+    put32(b, 0);
+    b.insert(b.end(), {28, detail::kDescDeviceCapability, kCapabilityPlatform, 0});
+    b.insert(b.end(), std::begin(kMsOs20PlatformUuid), std::end(kMsOs20PlatformUuid));
+    put32(b, kMsOs20WindowsVersion);
+    put16(b, static_cast<uint16_t>(set_bytes));
+    b.insert(b.end(), {vendor_code, 0});
+    set16(b, 2, b.size());
+}
+
+void put_winusb_features(std::vector<uint8_t>& b, const std::string& guid) {
+    put16(b, 20);
+    put16(b, kMsOs20CompatibleId);
+    b.insert(b.end(), {'W', 'I', 'N', 'U', 'S', 'B', 0, 0});
+    b.insert(b.end(), 8, 0);
+    if (guid.empty()) return;
+
+    const size_t start = b.size();
+    put16(b, 0);
+    put16(b, kMsOs20RegistryProperty);
+    put16(b, kRegMultiSz);
+    put16(b, static_cast<uint16_t>((kDeviceInterfaceGuids.size() + 1) * 2));
+    put_utf16z(b, kDeviceInterfaceGuids);
+    put16(b, static_cast<uint16_t>((guid.size() + 2) * 2));
+    put_utf16z(b, guid);
+    put16(b, 0);
+    set16(b, start, b.size() - start);
+}
+
+// A composite device lists its WinUSB functions in function subsets; a device
+// with a single interface takes the features at the top level.
+void build_ms_os_20(const detail::Descriptors& d, std::vector<uint8_t>* out) {
+    std::vector<uint8_t>& b = *out;
+    b.clear();
+    put16(b, 10);
+    put16(b, kMsOs20SetHeader);
+    put32(b, kMsOs20WindowsVersion);
+    put16(b, 0);
+    if (d.interface_owner.size() <= 1) {
+        if (!d.winusb.empty()) put_winusb_features(b, d.winusb.front().guid);
+    } else if (!d.winusb.empty()) {
+        const size_t config = b.size();
+        put16(b, 8);
+        put16(b, kMsOs20ConfigSubset);
+        b.insert(b.end(), {0, 0, 0, 0});
+        for (const auto& function : d.winusb) {
+            const size_t subset = b.size();
+            put16(b, 8);
+            put16(b, kMsOs20FunctionSubset);
+            b.insert(b.end(), {function.first_interface, 0, 0, 0});
+            put_winusb_features(b, function.guid);
+            set16(b, subset + 6, b.size() - subset);
+        }
+        set16(b, config + 6, b.size() - config);
+    }
+    set16(b, 8, b.size());
+}
+
 }  // namespace
 
 Speed ConfigBuilder::speed() const {
@@ -172,6 +267,8 @@ uint8_t ConfigBuilder::endpoint(EndpointType type, bool in, uint16_t max_packet_
     put16(bytes, max_packet_bytes);
     bytes.push_back(interval);
     bytes[state_.interface_offset + 4]++;
+    state_.endpoints.push_back(
+        {address, type, max_packet_bytes, state_.interface, state_.alternate});
     return address;
 }
 
@@ -184,6 +281,15 @@ uint8_t ConfigBuilder::string(std::string_view text) {
     return intern(state_.strings, text);
 }
 
+void ConfigBuilder::winusb(std::string_view device_interface_guid) {
+    if (state_.interfaces == state_.function_first) {
+        ESP_LOGE(TAG, "winusb before the function's first interface");
+        state_.error = true;
+        return;
+    }
+    state_.winusb.push_back({state_.function_first, std::string(device_interface_guid)});
+}
+
 namespace detail {
 
 size_t Descriptors::largest() const {
@@ -191,6 +297,8 @@ size_t Descriptors::largest() const {
     bytes = std::max(bytes, device.size());
     bytes = std::max(bytes, qualifier.size());
     for (const auto& c : config) bytes = std::max(bytes, c.size());
+    bytes = std::max(bytes, bos.size());
+    bytes = std::max(bytes, ms_os_20.size());
     return bytes;
 }
 
@@ -209,13 +317,18 @@ esp_err_t build_descriptors(const DeviceInfo& info, Port port,
     }
     if (err != ESP_OK) return err;
 
+    if (info.ms_os_20) {
+        build_ms_os_20(*out, &out->ms_os_20);
+        build_bos(info.ms_os_20_vendor_code, out->ms_os_20.size(), &out->bos);
+    }
+    const uint16_t bcd_usb = info.ms_os_20 ? kBcdUsbBos : kBcdUsb;
     const uint8_t cls = has_iad ? kClassMisc : 0;
     const uint8_t subclass = has_iad ? kSubclassCommon : 0;
     const uint8_t protocol = has_iad ? kProtocolIad : 0;
 
     std::vector<uint8_t>& d = out->device;
     d = {18, kDescDevice};
-    put16(d, kBcdUsb);
+    put16(d, bcd_usb);
     d.insert(d.end(), {cls, subclass, protocol, kEp0MaxPacket});
     put16(d, info.vendor_id);
     put16(d, info.product_id);
@@ -225,7 +338,7 @@ esp_err_t build_descriptors(const DeviceInfo& info, Port port,
     if (port == Port::HighSpeed) {
         std::vector<uint8_t>& q = out->qualifier;
         q = {10, kDescDeviceQualifier};
-        put16(q, kBcdUsb);
+        put16(q, bcd_usb);
         q.insert(q.end(), {cls, subclass, protocol, kEp0MaxPacket, 1, 0});
     }
     return ESP_OK;

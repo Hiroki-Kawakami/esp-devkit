@@ -26,6 +26,8 @@ constexpr uint8_t kDescEndpoint = 0x05;
 constexpr uint8_t kDescDeviceQualifier = 0x06;
 constexpr uint8_t kDescOtherSpeedConfig = 0x07;
 constexpr uint8_t kDescInterfaceAssociation = 0x0b;
+constexpr uint8_t kDescBos = 0x0f;
+constexpr uint8_t kDescDeviceCapability = 0x10;
 
 constexpr uint8_t kReqGetStatus = 0x00;
 constexpr uint8_t kReqClearFeature = 0x01;
@@ -40,6 +42,7 @@ constexpr uint8_t kReqSetInterface = 0x0b;
 constexpr uint8_t kReqDirIn = 0x80;
 constexpr uint8_t kReqTypeMask = 0x60;
 constexpr uint8_t kReqTypeStandard = 0x00;
+constexpr uint8_t kReqTypeVendor = 0x40;
 constexpr uint8_t kReqRecipMask = 0x1f;
 constexpr uint8_t kReqRecipDevice = 0x00;
 constexpr uint8_t kReqRecipInterface = 0x01;
