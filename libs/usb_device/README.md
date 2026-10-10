@@ -81,11 +81,27 @@ requests to callbacks.
 | `src/core/dcd.hpp` | the controller interface the core is written against |
 | `src/dwc2/dcd.cpp` | the DWC2 controller |
 | `src/vendor/vendor.cpp` | the vendor-specific function |
-| `src/sim/dcd.cpp` | the simulator's controller, which fails to start |
+| `src/sim/dcd.cpp` | the simulator's controller, a USB/IP server |
 
 The core never touches hardware: the controller posts bus events and SETUP
 packets to the device task's queue, and the task answers through `Dcd`. Which
 `Dcd` is built is chosen by CMake, so the simulator runs the same core.
+
+## Simulator
+
+The simulator's controller exports the device over USB/IP, on
+`SIMULATOR_USBD_LISTEN` (`<ipv4>:<port>`, default `127.0.0.1:3240`) with bus
+id `1-1`. Any USB/IP client attaches to it: `usbip attach -r <host> -b 1-1`
+on Linux, or a client of its own over TCP. An import is the bus reset and
+enumeration; the client then sends SET_CONFIGURATION itself, which the
+Linux one does as part of attaching. Each attached session sees the device
+configured afresh, and closing the connection is the device's disconnect.
+
+A host URB is a run of packets. One whose length is not a multiple of the
+max packet size, a zero-length one, or one flagged for a trailing
+zero-length packet ends the OUT transfer it lands in, as a short packet does
+on the bus; a URB that finds no transfer queued waits, as a NAK would. IN
+URBs collect transfers the same way. Isochronous URBs are refused.
 
 ## Controller
 

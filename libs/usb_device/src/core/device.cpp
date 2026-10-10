@@ -430,7 +430,7 @@ esp_err_t Device::start() {
     s.stopped = xSemaphoreCreateBinary();
     if (!s.events || !s.stopped) return ESP_ERR_NO_MEM;
 
-    err = s.dcd.start(s.config.port, s.control_bytes, s.events);
+    err = s.dcd.start(s.config.port, s.control_bytes, s.events, s.descriptors);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "controller: %s", esp_err_to_name(err));
         return err;

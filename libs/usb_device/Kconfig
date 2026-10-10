@@ -6,8 +6,7 @@ config USBD
     default n
     help
         Device stack for the DWC2 controller, with functions composed into one
-        configuration. On the simulator the controller is a stub that fails
-        to start.
+        configuration. On the simulator the controller is a USB/IP server.
 
 config USBD_VENDOR
     bool "Vendor-specific function"

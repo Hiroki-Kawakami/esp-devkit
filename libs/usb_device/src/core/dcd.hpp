@@ -11,6 +11,7 @@
 #include "esp_err.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include "descriptors.hpp"
 #include "usb_device.hpp"
 #include "usb_types.hpp"
 
@@ -46,7 +47,10 @@ public:
     Dcd& operator=(const Dcd&) = delete;
 
     // `ep0_bytes` sizes the buffer of the longest control data stage.
-    esp_err_t start(Port port, size_t ep0_bytes, QueueHandle_t events);
+    // `descriptors` outlives the controller; a virtual one announces the
+    // device from them before enumeration.
+    esp_err_t start(Port port, size_t ep0_bytes, QueueHandle_t events,
+                    const Descriptors& descriptors);
     void stop();
 
     // Replies to the last SETUP, once. A reply that a bus reset overtook is

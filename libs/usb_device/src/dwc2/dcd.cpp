@@ -764,7 +764,7 @@ Dcd::~Dcd() {
     stop();
 }
 
-esp_err_t Dcd::start(Port port, size_t ep0_bytes, QueueHandle_t events) {
+esp_err_t Dcd::start(Port port, size_t ep0_bytes, QueueHandle_t events, const Descriptors&) {
     if (state_) return ESP_ERR_INVALID_STATE;
     if (port != Port::HighSpeed) return ESP_ERR_NOT_SUPPORTED;
 
