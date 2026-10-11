@@ -65,7 +65,10 @@ public:
     // controller requires.
     void set_address(uint8_t address);
 
-    esp_err_t open_endpoint(uint8_t address, EndpointType type, uint16_t max_packet_bytes);
+    // `interval` is the descriptor's bInterval. An isochronous transfer is one
+    // packet; queued ones go out in consecutive service intervals.
+    esp_err_t open_endpoint(uint8_t address, EndpointType type, uint16_t max_packet_bytes,
+                            uint8_t interval);
     // Queued transfers come back canceled.
     void close_endpoint(uint8_t address);
     esp_err_t submit(Transfer* transfer);

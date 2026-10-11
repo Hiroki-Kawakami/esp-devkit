@@ -20,6 +20,7 @@ struct EndpointInfo {
     uint8_t address;
     EndpointType type;
     uint16_t max_packet_bytes;
+    uint8_t interval;
     uint8_t interface;
     uint8_t alternate;
 };
@@ -63,6 +64,8 @@ struct ConfigState {
     uint8_t alternate = 0;
     uint8_t next_out = 1;
     uint8_t next_in = 1;
+    bool has_association = false;
+    uint8_t association[3] = {};
     bool error = false;
 };
 

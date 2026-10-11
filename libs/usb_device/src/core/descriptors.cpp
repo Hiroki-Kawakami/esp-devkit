@@ -130,6 +130,7 @@ esp_err_t build_config(const DeviceInfo& info, Speed speed,
         const size_t start = bytes.size();
         const uint8_t first = state.interfaces;
         state.function_first = first;
+        state.has_association = false;
         function->describe(builder);
         if (state.error) return ESP_ERR_INVALID_ARG;
         const uint8_t count = state.interfaces - first;
@@ -142,9 +143,9 @@ esp_err_t build_config(const DeviceInfo& info, Speed speed,
                                         detail::kDescInterfaceAssociation,
                                         first,
                                         count,
-                                        desc[5],
-                                        desc[6],
-                                        desc[7],
+                                        state.has_association ? state.association[0] : desc[5],
+                                        state.has_association ? state.association[1] : desc[6],
+                                        state.has_association ? state.association[2] : desc[7],
                                         desc[8]};
         bytes.insert(bytes.begin() + start, iad, iad + kIadBytes);
         *has_iad = true;
@@ -254,22 +255,32 @@ void ConfigBuilder::alternate(uint8_t interface, uint8_t alternate, uint8_t cls,
 }
 
 uint8_t ConfigBuilder::endpoint(EndpointType type, bool in, uint16_t max_packet_bytes,
-                                uint8_t interval) {
+                                uint8_t interval, uint8_t attributes, uint8_t reuse) {
     uint8_t& next = in ? state_.next_in : state_.next_out;
-    if (state_.interfaces == 0 || next > kMaxEndpointNumber) {
-        ESP_LOGE(TAG, "endpoint without an interface or past %u", kMaxEndpointNumber);
+    if (state_.interfaces == 0 || (!reuse && next > kMaxEndpointNumber) ||
+        (reuse && ((reuse & 0x80) != 0) != in)) {
+        ESP_LOGE(TAG, "endpoint without an interface, past %u or reused across directions",
+                 kMaxEndpointNumber);
         state_.error = true;
         return 0;
     }
-    const uint8_t address = next++ | (in ? 0x80 : 0x00);
+    const uint8_t address = reuse ? reuse : (next++ | (in ? 0x80 : 0x00));
     std::vector<uint8_t>& bytes = state_.bytes;
-    bytes.insert(bytes.end(), {7, detail::kDescEndpoint, address, static_cast<uint8_t>(type)});
+    bytes.insert(bytes.end(), {7, detail::kDescEndpoint, address,
+                               static_cast<uint8_t>(static_cast<uint8_t>(type) | attributes)});
     put16(bytes, max_packet_bytes);
     bytes.push_back(interval);
     bytes[state_.interface_offset + 4]++;
     state_.endpoints.push_back(
-        {address, type, max_packet_bytes, state_.interface, state_.alternate});
+        {address, type, max_packet_bytes, interval, state_.interface, state_.alternate});
     return address;
+}
+
+void ConfigBuilder::association(uint8_t cls, uint8_t subclass, uint8_t protocol) {
+    state_.has_association = true;
+    state_.association[0] = cls;
+    state_.association[1] = subclass;
+    state_.association[2] = protocol;
 }
 
 void ConfigBuilder::append(const void* data, size_t bytes) {

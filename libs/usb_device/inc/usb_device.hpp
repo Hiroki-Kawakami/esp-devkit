@@ -57,6 +57,9 @@ struct ControlRequest {
 // The controller reads and writes `buffer` directly. An OUT buffer must start
 // and end on a cache line and be a multiple of the endpoint's max packet
 // size; an IN buffer needs 4-byte alignment. Either may be in PSRAM.
+// On an isochronous endpoint a transfer is one packet, and queued ones go
+// out in consecutive service intervals; an OUT buffer then holds at least one
+// max packet, and a packet with no transfer queued is lost.
 // Completion runs `callback` on the device task.
 struct Transfer {
     uint8_t* buffer = nullptr;
@@ -106,8 +109,14 @@ public:
     // Endpoints that follow belong to this alternate.
     void alternate(uint8_t interface, uint8_t alternate, uint8_t cls, uint8_t subclass,
                    uint8_t protocol, std::string_view name = {});
-    // Returns the endpoint address, direction bit included.
-    uint8_t endpoint(EndpointType type, bool in, uint16_t max_packet_bytes, uint8_t interval = 0);
+    // Returns the endpoint address, direction bit included. `attributes` adds
+    // the isochronous synchronization and usage bits to bmAttributes. `reuse`
+    // gives another alternate of the interface an address it already has.
+    uint8_t endpoint(EndpointType type, bool in, uint16_t max_packet_bytes, uint8_t interval = 0,
+                     uint8_t attributes = 0, uint8_t reuse = 0);
+    // The class the interface association in front of a multi-interface
+    // function names, when it is not that of the function's first interface.
+    void association(uint8_t cls, uint8_t subclass, uint8_t protocol);
     void append(const void* data, size_t bytes);
     uint8_t string(std::string_view text);
     // Binds WinUSB to the function being described, when DeviceInfo::ms_os_20

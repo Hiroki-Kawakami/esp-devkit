@@ -90,6 +90,8 @@ constexpr uint32_t kDctlClearGlobalOutNak = 1u << 10;
 constexpr uint32_t kDstsSpeedShift = 1;
 constexpr uint32_t kDstsSpeedMask = 0x3u << kDstsSpeedShift;
 constexpr uint32_t kDstsSpeedHigh = 0;
+constexpr uint32_t kDstsFrameShift = 8;
+constexpr uint32_t kFrameMask = 0x3fff;
 
 constexpr uint32_t kEpctlEp0MpsMask = 0x3u;
 constexpr uint32_t kEpctlActive = 1u << 15;
@@ -109,6 +111,7 @@ constexpr uint32_t kEpintSetup = 1u << 3;
 constexpr uint32_t kEpintTimeout = 1u << 3;
 constexpr uint32_t kEpintStatusPhase = 1u << 5;
 constexpr uint32_t kEpintInNakEffective = 1u << 6;
+constexpr uint32_t kEpintNak = 1u << 13;
 constexpr uint32_t kEpintBufferNotAvailable = 1u << 9;
 constexpr uint32_t kEpintSetupReceived = 1u << 15;
 
@@ -125,6 +128,12 @@ constexpr uint32_t kDescShort = 1u << 26;
 constexpr uint32_t kDescIoc = 1u << 25;
 constexpr uint32_t kDescSetupReceived = 1u << 24;
 constexpr uint32_t kDescBytesMask = 0xffffu;
+constexpr uint32_t kDescHostBusy = 3u << kDescStatusShift;
+constexpr uint32_t kDescIsoPidShift = 23;
+constexpr uint32_t kDescIsoFrameShift = 12;
+constexpr uint32_t kDescIsoFrameMask = 0x7ffu;
+constexpr uint32_t kDescIsoInBytesMask = 0xfffu;
+constexpr uint32_t kDescIsoOutBytesMask = 0x7ffu;
 
 struct DmaDesc {
     uint32_t status;
@@ -142,10 +151,24 @@ enum class Ep0Stage : uint8_t {
     StatusIn,
 };
 
+// An isochronous endpoint runs a ring of descriptors, one packet each, so
+// the next (micro)frame always has a buffer.
+struct IsoRing {
+    bool running = false;
+    uint16_t interval = 1;
+    uint16_t frame = 0;
+    int fill = 0;
+    int reap = 0;
+    int queued = 0;
+    Transfer* transfers[kDescriptorsPerEndpoint] = {};
+};
+
 struct Ep {
     bool open = false;
     bool in = false;
     bool stalled = false;
+    bool iso = false;
+    IsoRing ring;
     uint8_t number = 0;
     uint16_t max_packet_bytes = 0;
     uint32_t chunk = 0;
@@ -267,6 +290,14 @@ struct Dcd::State {
     void cancel_all(Ep& ep, TransferStatus status);
     bool disable(Ep& ep);
     void endpoint_interrupt(Ep& ep);
+
+    uint16_t current_frame() const;
+    void iso_fill(Ep& ep);
+    void iso_start(Ep& ep);
+    void iso_reap(Ep& ep);
+    void iso_stopped(Ep& ep);
+    void iso_cancel(Ep& ep, TransferStatus status);
+    void update_nak_mask();
 };
 
 esp_err_t Dcd::State::allocate(size_t bytes) {
@@ -390,6 +421,7 @@ void Dcd::State::bus_reset() {
             cancel_all(*ep, TransferStatus::Canceled);
             ep->open = false;
             ep->stalled = false;
+            ep->iso = false;
         }
     }
     dev->daintmsk_reg.val = (1u << 0) | (1u << kDaintOutShift);
@@ -618,6 +650,10 @@ void Dcd::State::finish(Ep& ep, TransferStatus status, uint32_t actual) {
 }
 
 void Dcd::State::cancel_all(Ep& ep, TransferStatus status) {
+    if (ep.iso) {
+        iso_cancel(ep, status);
+        return;
+    }
     if (ep.active) {
         const uint32_t moved = progress(ep);
         Transfer* transfer = ep.active;
@@ -657,6 +693,22 @@ bool Dcd::State::disable(Ep& ep) {
 void Dcd::State::endpoint_interrupt(Ep& ep) {
     const uint32_t flags = ints(ep);
     ints(ep) = flags;
+    if (ep.iso) {
+        if (flags & kEpintXferComplete) iso_reap(ep);
+        if (flags & kEpintBufferNotAvailable) iso_stopped(ep);
+        if ((flags & kEpintNak) && ep.in && !ep.ring.running && ep.head) {
+            // The NAK lands in a (micro)frame the host polls the endpoint in;
+            // the next poll is one interval on.
+            ep.ring.frame = (current_frame() + ep.ring.interval) & kFrameMask;
+            iso_start(ep);
+            update_nak_mask();
+        }
+        if (flags & kEpintAhbError) {
+            ESP_DRAM_LOGE(TAG, "ep 0x%02x: 0x%08x", ep.number | (ep.in ? 0x80 : 0),
+                          (unsigned)flags);
+        }
+        return;
+    }
     if ((flags & kEpintXferComplete) && ep.active) {
         if (ep.in) {
             finish(ep, TransferStatus::Completed, progress(ep));
@@ -684,6 +736,134 @@ void Dcd::State::endpoint_interrupt(Ep& ep) {
     if (flags & (kEpintAhbError | kEpintBufferNotAvailable)) {
         ESP_DRAM_LOGE(TAG, "ep 0x%02x: 0x%08x", ep.number | (ep.in ? 0x80 : 0),
                       (unsigned)flags);
+    }
+}
+
+uint16_t Dcd::State::current_frame() const {
+    return (dev->dsts_reg.val >> kDstsFrameShift) & kFrameMask;
+}
+
+void Dcd::State::iso_fill(Ep& ep) {
+    IsoRing& ring = ep.ring;
+    DmaDesc* descs = uncached(ep.descs);
+    while (ep.head && ring.queued < kDescriptorsPerEndpoint) {
+        Transfer* transfer = ep.head;
+        ep.head = transfer->next;
+        if (!ep.head) ep.tail = nullptr;
+        transfer->next = nullptr;
+
+        const uint32_t bytes = transfer->length;
+        uint32_t status = kDescHostReady | kDescLast | kDescIoc;
+        if (ep.in) {
+            const uint32_t packets =
+                bytes ? (bytes + ep.max_packet_bytes - 1) / ep.max_packet_bytes : 1;
+            status |= (bytes & kDescIsoInBytesMask) | (packets << kDescIsoPidShift) |
+                      ((ring.frame & kDescIsoFrameMask) << kDescIsoFrameShift);
+            if (bytes % ep.max_packet_bytes) status |= kDescShort;
+            ring.frame = (ring.frame + ring.interval) & kFrameMask;
+        } else {
+            status |= bytes & kDescIsoOutBytesMask;
+        }
+        DmaDesc& desc = descs[ring.fill];
+        desc.buffer = dma_address(transfer->buffer);
+        desc.status = status;
+        // The newest descriptor ends the chain; the controller wraps to the
+        // first after the physical last one.
+        if (ring.fill > 0) descs[ring.fill - 1].status &= ~kDescLast;
+        ring.transfers[ring.fill] = transfer;
+        ring.fill = (ring.fill + 1) % kDescriptorsPerEndpoint;
+        ring.queued++;
+    }
+    memory_barrier();
+}
+
+void Dcd::State::iso_start(Ep& ep) {
+    IsoRing& ring = ep.ring;
+    DmaDesc* descs = uncached(ep.descs);
+    for (int i = 0; i < kDescriptorsPerEndpoint; i++) descs[i].status = kDescHostBusy;
+    ring.fill = 0;
+    ring.reap = 0;
+    ring.queued = 0;
+    iso_fill(ep);
+    if (!ring.queued) return;
+    ring.running = true;
+    dma(ep) = dma_address(ep.descs);
+    ctl(ep) |= kEpctlEnable | kEpctlClearNak;
+}
+
+void Dcd::State::iso_reap(Ep& ep) {
+    IsoRing& ring = ep.ring;
+    const DmaDesc* descs = uncached(ep.descs);
+    while (ring.queued) {
+        const uint32_t status = descs[ring.reap].status;
+        if ((status >> kDescStatusShift) != kDescDmaDone) break;
+        Transfer* transfer = ring.transfers[ring.reap];
+        ring.transfers[ring.reap] = nullptr;
+        const uint32_t mask = ep.in ? kDescIsoInBytesMask : kDescIsoOutBytesMask;
+        const uint32_t remaining = status & mask;
+        const uint32_t actual = transfer->length > remaining ? transfer->length - remaining : 0;
+        complete(transfer,
+                 (status & kDescErrorMask) ? TransferStatus::Error : TransferStatus::Completed,
+                 actual);
+        ring.reap = (ring.reap + 1) % kDescriptorsPerEndpoint;
+        ring.queued--;
+    }
+    if (ring.running) iso_fill(ep);
+}
+
+// The ring ran dry: what it still holds goes back in front of the queue, and
+// the endpoint starts over, OUT at once and IN at the next poll.
+void Dcd::State::iso_stopped(Ep& ep) {
+    iso_reap(ep);
+    disable(ep);
+    IsoRing& ring = ep.ring;
+    for (int i = 0; i < ring.queued; i++) {
+        const int index = (ring.fill - 1 - i + kDescriptorsPerEndpoint) % kDescriptorsPerEndpoint;
+        Transfer* transfer = ring.transfers[index];
+        ring.transfers[index] = nullptr;
+        transfer->next = ep.head;
+        ep.head = transfer;
+        if (!ep.tail) ep.tail = transfer;
+    }
+    ring.queued = 0;
+    ring.running = false;
+    if (!ep.in && ep.head) {
+        iso_start(ep);
+    } else {
+        update_nak_mask();
+    }
+}
+
+void Dcd::State::iso_cancel(Ep& ep, TransferStatus status) {
+    IsoRing& ring = ep.ring;
+    if (ring.running) iso_reap(ep);
+    for (int i = 0; i < ring.queued; i++) {
+        const int index = (ring.reap + i) % kDescriptorsPerEndpoint;
+        complete(ring.transfers[index], status, 0);
+        ring.transfers[index] = nullptr;
+    }
+    ring.queued = 0;
+    ring.running = false;
+    while (Transfer* transfer = ep.head) {
+        ep.head = transfer->next;
+        complete(transfer, status, 0);
+    }
+    ep.tail = nullptr;
+    update_nak_mask();
+}
+
+// NAKs are only wanted while an isochronous IN waits to learn which
+// (micro)frames the host polls it in; every idle bulk IN NAKs as well.
+void Dcd::State::update_nak_mask() {
+    bool waiting = false;
+    for (uint32_t n = 1; n < endpoints; n++) {
+        const Ep& ep = in_eps[n];
+        waiting = waiting || (ep.open && ep.iso && !ep.ring.running && ep.head);
+    }
+    if (waiting) {
+        dev->diepmsk_reg.val |= kEpintNak;
+    } else {
+        dev->diepmsk_reg.val &= ~kEpintNak;
     }
 }
 
@@ -871,14 +1051,13 @@ void Dcd::set_address(uint8_t address) {
     portEXIT_CRITICAL(&state_->lock);
 }
 
-esp_err_t Dcd::open_endpoint(uint8_t address, EndpointType type, uint16_t max_packet_bytes) {
+esp_err_t Dcd::open_endpoint(uint8_t address, EndpointType type, uint16_t max_packet_bytes,
+                             uint8_t interval) {
     if (!state_) return ESP_ERR_INVALID_STATE;
     State& s = *state_;
     Ep* ep = s.endpoint(address);
     if (!ep || max_packet_bytes == 0) return ESP_ERR_INVALID_ARG;
-    if (type != EndpointType::Bulk && type != EndpointType::Interrupt) {
-        return ESP_ERR_NOT_SUPPORTED;
-    }
+    if (type == EndpointType::Control) return ESP_ERR_NOT_SUPPORTED;
     if (!ep->descs) {
         const size_t line = cache_line(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
         const size_t bytes = round_up(sizeof(DmaDesc) * kDescriptorsPerEndpoint, line);
@@ -911,10 +1090,13 @@ esp_err_t Dcd::open_endpoint(uint8_t address, EndpointType type, uint16_t max_pa
     if (err == ESP_OK) {
         ep->open = true;
         ep->stalled = false;
+        ep->iso = type == EndpointType::Isochronous;
+        ep->ring = IsoRing{};
+        ep->ring.interval = static_cast<uint16_t>(1u << (std::max<uint8_t>(interval, 1) - 1));
         ep->max_packet_bytes = max_packet_bytes;
         ep->chunk = kDescBytesMask / max_packet_bytes * max_packet_bytes;
         s.ctl(*ep) = max_packet_bytes | (static_cast<uint32_t>(type) << kEpctlTypeShift) |
-                     kEpctlActive | kEpctlSetData0 | kEpctlSetNak |
+                     kEpctlActive | (ep->iso ? 0 : kEpctlSetData0) | kEpctlSetNak |
                      (fifo << kEpctlTxFifoShift);
         s.dev->daintmsk_reg.val |= 1u << (ep->number + (ep->in ? 0 : kDaintOutShift));
     }
@@ -935,6 +1117,7 @@ void Dcd::close_endpoint(uint8_t address) {
         s.dev->daintmsk_reg.val &= ~(1u << (ep->number + (ep->in ? 0 : kDaintOutShift)));
         ep->open = false;
         ep->stalled = false;
+        s.update_nak_mask();
     }
     portEXIT_CRITICAL(&s.lock);
     s.send_pending_from_task();
@@ -962,7 +1145,29 @@ esp_err_t Dcd::submit(Transfer* transfer) {
 
     esp_err_t err = ESP_OK;
     portENTER_CRITICAL(&s.lock);
-    if (!ep->open) {
+    if (ep->open && ep->iso) {
+        const uint32_t limit = ep->in ? kDescIsoInBytesMask : kDescIsoOutBytesMask;
+        if (transfer->length > limit || (!ep->in && transfer->length < ep->max_packet_bytes)) {
+            err = ESP_ERR_INVALID_SIZE;
+        } else {
+            transfer->actual = 0;
+            transfer->status = TransferStatus::Completed;
+            transfer->next = nullptr;
+            if (ep->tail) {
+                ep->tail->next = transfer;
+            } else {
+                ep->head = transfer;
+            }
+            ep->tail = transfer;
+            if (ep->ring.running) {
+                s.iso_fill(*ep);
+            } else if (!ep->in) {
+                s.iso_start(*ep);
+            } else {
+                s.update_nak_mask();
+            }
+        }
+    } else if (!ep->open) {
         err = ESP_ERR_INVALID_STATE;
     } else if ((!ep->in && (transfer->length == 0 ||
                             transfer->length % ep->max_packet_bytes != 0)) ||

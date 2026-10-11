@@ -4,8 +4,7 @@ A USB device stack for the DWC2 (Synopsys DesignWare OTG) controller, driving
 its registers directly in descriptor DMA mode. Functions are composed into one
 configuration; each `Device` owns one controller and one task, so the
 high-speed and full-speed controllers can run side by side. Only the
-high-speed controller, and bulk and interrupt endpoints, are implemented so
-far.
+high-speed controller is implemented so far.
 
 ## Using it
 
@@ -51,6 +50,15 @@ packet ends an OUT transfer in whichever descriptor it lands; the controller
 disables the endpoint there and does not touch the next descriptors, so the
 transfer boundary holds.
 
+An isochronous transfer is one packet instead, and up to 16 of them sit in a
+ring of descriptors so every service interval has a buffer; more wait in the
+queue and move into the ring as packets complete. An OUT packet with no buffer
+in the ring is lost. IN descriptors carry the (micro)frame they go out in, so
+an isochronous IN starts at the first NAK the host is answered with, which
+tells the frames it polls in: the NAK interrupt is unmasked only while one
+waits for that, since every idle bulk IN NAKs too. A ring that runs dry stops
+the endpoint; it starts over the same way, OUT at once.
+
 Measured on the high-speed controller to a macOS host through a hub: bulk OUT
 at about 41 MB/s, the same into PSRAM as into internal RAM, so the bus and not
 the device sets the pace.
@@ -72,6 +80,25 @@ function subset per function, so the others keep their class drivers.
 OUT and/or IN endpoint, and hands its configuration changes and vendor
 requests to callbacks.
 
+## UAC
+
+`UacSpeaker` (`CONFIG_USBD_UAC`) is a USB Audio Class 2.0 speaker: an Audio
+Control interface with a clock source, a feature unit for mute and volume and
+a speaker terminal, and an Audio Streaming interface whose alternates from 1
+on are the configured formats. The sample rates, volume range and endpoint
+intervals are configuration too.
+
+- **Async** plays on the device's clock: a feedback endpoint reports the rate
+  given to `set_feedback()`, in 16.16 samples per microframe at high speed and
+  10.14 per frame at full speed. The caller derives it from how full its
+  buffer is.
+- **Adaptive** has no feedback endpoint; the caller follows the host's rate.
+- The data endpoint's packets hold one sample frame more than the rate needs,
+  for the clocks to drift into.
+- Rate, mute and volume requests are answered from the configuration, and
+  changes reach the caller through callbacks on the device task, as do the
+  stream starting and stopping and each received packet.
+
 ## Layout
 
 | path | what it is |
@@ -81,6 +108,7 @@ requests to callbacks.
 | `src/core/dcd.hpp` | the controller interface the core is written against |
 | `src/dwc2/dcd.cpp` | the DWC2 controller |
 | `src/vendor/vendor.cpp` | the vendor-specific function |
+| `src/uac/uac.cpp` | the USB Audio Class 2.0 speaker |
 | `src/sim/dcd.cpp` | the simulator's controller, a USB/IP server |
 
 The core never touches hardware: the controller posts bus events and SETUP
@@ -101,7 +129,10 @@ A host URB is a run of packets. One whose length is not a multiple of the
 max packet size, a zero-length one, or one flagged for a trailing
 zero-length packet ends the OUT transfer it lands in, as a short packet does
 on the bus; a URB that finds no transfer queued waits, as a NAK would. IN
-URBs collect transfers the same way. Isochronous URBs are refused.
+URBs collect transfers the same way. Each packet of an isochronous URB is one
+device transfer, completed at once: an OUT packet with no transfer queued is
+lost and an IN one goes back empty, and IN data goes back packed, as the Linux
+USB/IP server sends it.
 
 ## Controller
 

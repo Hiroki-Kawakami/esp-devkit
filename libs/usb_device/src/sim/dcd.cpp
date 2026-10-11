@@ -120,10 +120,17 @@ struct Urb {
     uint32_t done = 0;
 };
 
+struct IsoPacket {
+    uint32_t offset;
+    uint32_t length;
+    uint32_t actual;
+};
+
 struct Ep {
     bool open = false;
     bool in = false;
     bool stalled = false;
+    bool iso = false;
     bool zlp_pending = false;
     uint16_t max_packet_bytes = 0;
     uint32_t offset = 0;
@@ -172,6 +179,10 @@ struct Dcd::State {
     void reply(uint32_t seqnum, int32_t status, uint32_t actual, const uint8_t* data,
                size_t bytes);
     void reply_unlink(uint32_t seqnum, int32_t status);
+    void reply_iso(uint32_t seqnum, const std::vector<uint8_t>& data,
+                   const std::vector<IsoPacket>& packets);
+    void process_iso(Ep& ep, uint32_t seqnum, const std::vector<uint8_t>& data,
+                     std::vector<IsoPacket>& packets);
     std::vector<uint8_t> device_record() const;
 
     Ep* endpoint(uint8_t address);
@@ -223,6 +234,58 @@ void Dcd::State::reply(uint32_t seqnum, int32_t status, uint32_t actual, const u
     if (data && bytes) out.insert(out.end(), data, data + bytes);
     outbox.push_back(std::move(out));
     outbox_ready.notify_one();
+}
+
+// Isochronous IN data goes back packed, each packet's actual bytes after the
+// last, as the Linux USB/IP server sends it.
+void Dcd::State::reply_iso(uint32_t seqnum, const std::vector<uint8_t>& data,
+                           const std::vector<IsoPacket>& packets) {
+    if (client < 0) return;
+    uint32_t actual = 0;
+    for (const IsoPacket& packet : packets) actual += packet.actual;
+    std::vector<uint8_t> out;
+    put32(out, kRetSubmit);
+    put32(out, seqnum);
+    put32(out, 0);
+    put32(out, 0);
+    put32(out, 0);
+    put32(out, 0);
+    put32(out, actual);
+    put32(out, 0);
+    put32(out, static_cast<uint32_t>(packets.size()));
+    put32(out, 0);
+    out.insert(out.end(), 8, 0);
+    out.insert(out.end(), data.begin(), data.end());
+    for (const IsoPacket& packet : packets) {
+        put32(out, packet.offset);
+        put32(out, packet.length);
+        put32(out, packet.actual);
+        put32(out, 0);
+    }
+    outbox.push_back(std::move(out));
+    outbox_ready.notify_one();
+}
+
+// Each packet of an isochronous URB is one device transfer. With none queued
+// an OUT packet is lost and an IN packet goes out empty, as on the bus.
+void Dcd::State::process_iso(Ep& ep, uint32_t seqnum, const std::vector<uint8_t>& data,
+                             std::vector<IsoPacket>& packets) {
+    std::vector<uint8_t> in_data;
+    for (IsoPacket& packet : packets) {
+        packet.actual = 0;
+        if (ep.transfers.empty()) continue;
+        Transfer* transfer = ep.transfers.front();
+        ep.transfers.pop_front();
+        if (ep.in) {
+            packet.actual = std::min(packet.length, transfer->length);
+            in_data.insert(in_data.end(), transfer->buffer, transfer->buffer + packet.actual);
+        } else if (packet.offset + packet.length <= data.size()) {
+            packet.actual = std::min(packet.length, transfer->length);
+            memcpy(transfer->buffer, data.data() + packet.offset, packet.actual);
+        }
+        complete(transfer, TransferStatus::Completed, packet.actual);
+    }
+    reply_iso(seqnum, in_data, packets);
 }
 
 void Dcd::State::reply_unlink(uint32_t seqnum, int32_t status) {
@@ -413,10 +476,19 @@ bool Dcd::State::handle_command(int fd, const uint8_t* header) {
         if (!read_all(fd, data.data(), length)) return false;
     }
     if (packets != 0 && packets != kNoIsoPackets) {
-        std::vector<uint8_t> iso(16 * static_cast<size_t>(packets));
-        if (!read_all(fd, iso.data(), iso.size())) return false;
+        std::vector<uint8_t> raw(16 * static_cast<size_t>(packets));
+        if (!read_all(fd, raw.data(), raw.size())) return false;
+        std::vector<IsoPacket> iso(packets);
+        for (uint32_t i = 0; i < packets; i++) {
+            iso[i] = {get32(&raw[16 * i]), get32(&raw[16 * i + 4]), 0};
+        }
         std::lock_guard<std::mutex> guard(lock);
-        reply(seqnum, kErrPipe, 0, nullptr, 0);
+        Ep* ep = endpoint(static_cast<uint8_t>(number | (direction == kDirIn ? 0x80 : 0)));
+        if (!ep || !ep->open || !ep->iso) {
+            reply(seqnum, kErrPipe, 0, nullptr, 0);
+        } else {
+            process_iso(*ep, seqnum, data, iso);
+        }
         return true;
     }
 
@@ -657,17 +729,17 @@ void Dcd::ep0_stall() {
 
 void Dcd::set_address(uint8_t) {}
 
-esp_err_t Dcd::open_endpoint(uint8_t address, EndpointType type, uint16_t max_packet_bytes) {
+esp_err_t Dcd::open_endpoint(uint8_t address, EndpointType type, uint16_t max_packet_bytes,
+                             uint8_t) {
     if (!state_) return ESP_ERR_INVALID_STATE;
-    if (type != EndpointType::Bulk && type != EndpointType::Interrupt) {
-        return ESP_ERR_NOT_SUPPORTED;
-    }
+    if (type == EndpointType::Control) return ESP_ERR_NOT_SUPPORTED;
     std::lock_guard<std::mutex> guard(state_->lock);
     Ep* ep = state_->endpoint(address);
     if (!ep || max_packet_bytes == 0) return ESP_ERR_INVALID_ARG;
     if (ep->open) return ESP_ERR_INVALID_STATE;
     ep->open = true;
     ep->stalled = false;
+    ep->iso = type == EndpointType::Isochronous;
     ep->zlp_pending = false;
     ep->offset = 0;
     ep->max_packet_bytes = max_packet_bytes;
@@ -695,7 +767,8 @@ esp_err_t Dcd::submit(Transfer* transfer) {
         Ep* ep = state_->endpoint(transfer->endpoint);
         if (!ep) return ESP_ERR_INVALID_ARG;
         if (!ep->open) return ESP_ERR_INVALID_STATE;
-        if (!ep->in && (transfer->length == 0 || transfer->length % ep->max_packet_bytes != 0)) {
+        if (!ep->iso && !ep->in &&
+            (transfer->length == 0 || transfer->length % ep->max_packet_bytes != 0)) {
             return ESP_ERR_INVALID_SIZE;
         }
         transfer->actual = 0;

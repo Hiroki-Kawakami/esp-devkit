@@ -15,4 +15,11 @@ config USBD_VENDOR
     help
         One vendor-specific interface with bulk endpoints.
 
+config USBD_UAC
+    bool "USB Audio Class 2.0 speaker"
+    depends on USBD
+    default n
+    help
+        An isochronous audio stream from the host, with mute and volume.
+
 endmenu

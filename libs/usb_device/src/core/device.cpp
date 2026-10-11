@@ -191,7 +191,8 @@ void Device::State::open_alternate(uint8_t interface, uint8_t alternate) {
     for (const auto& endpoint : descriptors.endpoints_for(speed)) {
         if (endpoint.interface != interface || endpoint.alternate != alternate) continue;
         const esp_err_t err =
-            dcd.open_endpoint(endpoint.address, endpoint.type, endpoint.max_packet_bytes);
+            dcd.open_endpoint(endpoint.address, endpoint.type, endpoint.max_packet_bytes,
+                              endpoint.interval);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "open endpoint 0x%02x: %s", endpoint.address, esp_err_to_name(err));
         }
