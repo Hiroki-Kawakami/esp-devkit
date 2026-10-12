@@ -30,15 +30,13 @@ void hosted_rpc_init(void) {
     if (s_call_lock) return;
     s_call_lock = xSemaphoreCreateMutex();
     s_done = xSemaphoreCreateBinary();
-    s_rx_buf = malloc(HOSTED_MAX_SERIAL);
-    assert(s_call_lock && s_done && s_rx_buf);
+    assert(s_call_lock && s_done);
 }
 
-static esp_err_t send_serial(const uint8_t *msg, size_t len) {
+// buf: TLV_HEADER_LEN bytes for the framing, then the len message bytes.
+static esp_err_t send_serial(uint8_t *buf, size_t len) {
     size_t total = TLV_HEADER_LEN + len;
     if (total > HOSTED_MAX_SERIAL) return ESP_ERR_INVALID_SIZE;
-    uint8_t *buf = malloc(total);
-    if (!buf) return ESP_ERR_NO_MEM;
     buf[0] = HOSTED_SERIAL_TLV_EP;
     buf[1] = HOSTED_SERIAL_EP_LEN;
     buf[2] = 0;
@@ -47,7 +45,6 @@ static esp_err_t send_serial(const uint8_t *msg, size_t len) {
     buf[pos++] = HOSTED_SERIAL_TLV_DATA;
     buf[pos++] = len & 0xff;
     buf[pos++] = len >> 8;
-    memcpy(&buf[pos], msg, len);
 
     esp_err_t err = ESP_OK;
     for (size_t off = 0; off < total && err == ESP_OK; off += HOSTED_MAX_PAYLOAD) {
@@ -55,7 +52,6 @@ static esp_err_t send_serial(const uint8_t *msg, size_t len) {
         uint8_t flags = off + n < total ? HOSTED_FLAG_MORE_FRAGMENT : 0;
         err = hosted_transport_send(HOSTED_IF_SERIAL, flags, buf + off, n, portMAX_DELAY);
     }
-    free(buf);
     return err;
 }
 
@@ -66,14 +62,14 @@ Rpc *hosted_rpc_call(Rpc *req, uint32_t timeout_ms, esp_err_t *err) {
     req->uid = s_uid;
 
     size_t n = rpc__get_packed_size(req);
-    uint8_t *buf = malloc(n);
+    uint8_t *buf = malloc(TLV_HEADER_LEN + n);
     Rpc *resp = NULL;
     *err = ESP_ERR_NO_MEM;
     if (buf) {
-        rpc__pack(req, buf);
+        rpc__pack(req, buf + TLV_HEADER_LEN);
         xSemaphoreTake(s_done, 0);
         if (s_response) {
-            rpc__free_unpacked(s_response, NULL);
+            rpc__free_unpacked(s_response);
             s_response = NULL;
         }
         s_pending_uid = s_uid;
@@ -84,7 +80,7 @@ Rpc *hosted_rpc_call(Rpc *req, uint32_t timeout_ms, esp_err_t *err) {
                 resp = s_response;
                 s_response = NULL;
                 if (resp->msg_id == RPC_ID__Resp_Base) {
-                    rpc__free_unpacked(resp, NULL);
+                    rpc__free_unpacked(resp);
                     resp = NULL;
                     *err = ESP_ERR_NOT_SUPPORTED;
                 }
@@ -99,8 +95,8 @@ Rpc *hosted_rpc_call(Rpc *req, uint32_t timeout_ms, esp_err_t *err) {
     return resp;
 }
 
-static void on_message(const uint8_t *msg, size_t len) {
-    Rpc *rpc = rpc__unpack(NULL, len, msg);
+static void on_message(uint8_t *owner, const uint8_t *msg, size_t len) {
+    Rpc *rpc = rpc__unpack(owner, msg, len);
     if (!rpc) {
         ESP_LOGW(TAG, "undecodable message dropped");
         return;
@@ -115,9 +111,11 @@ static void on_message(const uint8_t *msg, size_t len) {
     } else {
         ESP_LOGW(TAG, "stale response %d dropped", rpc->msg_id);
     }
-    rpc__free_unpacked(rpc, NULL);
+    rpc__free_unpacked(rpc);
 }
 
+// The decoded message keeps referring to the rx buffer, so it is handed over
+// (shrunk in place) and the next message gets a fresh one.
 static void deliver(void) {
     const uint8_t *p = s_rx_buf;
     if (s_rx_len < TLV_HEADER_LEN || p[0] != HOSTED_SERIAL_TLV_EP) return;
@@ -125,11 +123,19 @@ static void deliver(void) {
     if (pos + 3 > s_rx_len || p[pos] != HOSTED_SERIAL_TLV_DATA) return;
     size_t len = p[pos + 1] | p[pos + 2] << 8;
     pos += 3;
-    if (len && pos + len <= s_rx_len) on_message(p + pos, len);
+    if (!len || pos + len > s_rx_len) return;
+    uint8_t *owner = realloc(s_rx_buf, pos + len);
+    if (!owner) return;
+    s_rx_buf = NULL;
+    on_message(owner, owner + pos, len);
 }
 
 void hosted_rpc_on_serial(const uint8_t *payload, uint16_t len, uint8_t flags) {
-    if (s_rx_len + len > HOSTED_MAX_SERIAL) {
+    if (!s_rx_buf && !s_rx_overflow) {
+        s_rx_buf = malloc(HOSTED_MAX_SERIAL);
+        if (!s_rx_buf) ESP_LOGE(TAG, "no memory for rpc message");
+    }
+    if (!s_rx_buf || s_rx_len + len > HOSTED_MAX_SERIAL) {
         s_rx_overflow = true;
     } else if (!s_rx_overflow) {
         memcpy(s_rx_buf + s_rx_len, payload, len);
@@ -137,7 +143,7 @@ void hosted_rpc_on_serial(const uint8_t *payload, uint16_t len, uint8_t flags) {
     }
     if (flags & HOSTED_FLAG_MORE_FRAGMENT) return;
     if (s_rx_overflow) {
-        ESP_LOGW(TAG, "rpc message over %d bytes dropped", HOSTED_MAX_SERIAL);
+        if (s_rx_buf) ESP_LOGW(TAG, "rpc message over %d bytes dropped", HOSTED_MAX_SERIAL);
     } else {
         deliver();
     }

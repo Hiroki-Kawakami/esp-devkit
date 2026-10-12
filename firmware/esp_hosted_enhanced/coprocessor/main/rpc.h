@@ -13,14 +13,14 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "esp_hosted_rpc.pb-c.h"
+#include "esp_hosted_rpc.pb.h"
 
 /* The handler must call RPC_REPLY exactly once. */
 typedef void (*rpc_handler_t)(const Rpc *req, Rpc *resp);
 
 /* Safe mode serves only the version and OTA requests. */
 void rpc_init(bool safe_mode);
-void rpc_on_message(uint8_t *msg, size_t len);
+void rpc_on_message(uint8_t *owner, const uint8_t *msg, size_t len);
 void rpc_send_esp_init(void);
 
 void rpc_reply(Rpc *resp);

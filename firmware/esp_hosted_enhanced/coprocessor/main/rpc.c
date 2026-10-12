@@ -22,7 +22,8 @@
 static const char *TAG = "rpc";
 
 typedef struct {
-    uint8_t *msg;
+    uint8_t *owner;
+    const uint8_t *msg;
     size_t len;
 } rpc_msg_t;
 
@@ -37,12 +38,12 @@ static bool s_safe_mode;
 
 static void send_packed(bool event, Rpc *rpc) {
     size_t n = rpc__get_packed_size(rpc);
-    uint8_t *buf = malloc(n);
+    uint8_t *buf = malloc(SERIAL_HEADROOM + n);
     if (!buf) {
         ESP_LOGE(TAG, "no memory for rpc %d", rpc->msg_id);
         return;
     }
-    rpc__pack(rpc, buf);
+    rpc__pack(rpc, buf + SERIAL_HEADROOM);
     serial_send(event, buf, n);
     free(buf);
 }
@@ -122,20 +123,19 @@ static void rpc_task(void *arg) {
     for (;;) {
         rpc_msg_t m;
         xQueueReceive(s_queue, &m, portMAX_DELAY);
-        Rpc *req = rpc__unpack(NULL, m.len, m.msg);
-        free(m.msg);
+        Rpc *req = rpc__unpack(m.owner, m.msg, m.len);
         if (!req) {
             ESP_LOGW(TAG, "undecodable request dropped");
             continue;
         }
         /* The stock host leaves msg_type unset on requests. */
         if (req->msg_type != RPC_TYPE__Resp && req->msg_type != RPC_TYPE__Event) dispatch(req);
-        rpc__free_unpacked(req, NULL);
+        rpc__free_unpacked(req);
     }
 }
 
-void rpc_on_message(uint8_t *msg, size_t len) {
-    rpc_msg_t m = {msg, len};
+void rpc_on_message(uint8_t *owner, const uint8_t *msg, size_t len) {
+    rpc_msg_t m = {owner, msg, len};
     xQueueSend(s_queue, &m, portMAX_DELAY);
 }
 

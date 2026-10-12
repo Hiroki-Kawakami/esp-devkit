@@ -1,9 +1,9 @@
 # esp_hosted_enhanced
 
 esp-hosted 2.12 compatible Wi-Fi remote over SDIO: the shared wire format
-(`inc/hosted_wire.h`, the vendored `esp_hosted_rpc` protobuf and protobuf-c
-runtime) and, on a host without native Wi-Fi, an `esp_wifi_remote`
-implementation. It talks to the stock esp-hosted coprocessor firmware as well
+(`inc/hosted_wire.h` and the vendored `esp_hosted_rpc` schema, compiled to C
+at build time by `tools/protogen`) and, on a host without native Wi-Fi, an
+`esp_wifi_remote` implementation. It talks to the stock esp-hosted coprocessor firmware as well
 as to `firmware/esp_hosted_enhanced/coprocessor`.
 
 ## Host
@@ -37,3 +37,13 @@ them. Anything else on the same controller (an SD card on the other slot) uses
 `hosted_host_sdmmc_init` and `hosted_host_sdmmc_do_transaction` as its
 `sdmmc_host_t` hooks, and brackets its mount and unmount with
 `hosted_host_sdmmc_acquire/release`.
+
+## Tests
+
+`test/` checks the generated RPC code against libprotobuf-c on the PC (from the
+repository root):
+
+```
+nix develop -c sh -c 'cmake -S libs/esp_hosted_enhanced/test -B build/hosted_rpc_test -G Ninja && cmake --build build/hosted_rpc_test'
+build/hosted_rpc_test/hosted_rpc_test
+```

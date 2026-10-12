@@ -1,0 +1,36 @@
+syntax = "proto3";
+
+enum TestEnum {
+	TEST_ZERO = 0;
+	TEST_ONE = 1;
+	TEST_BIG = 100000;
+}
+
+message TestEmpty {
+}
+
+message TestAll {
+	int32 i32 = 1;
+	int64 i64 = 2;
+	uint32 u32 = 3;
+	uint64 u64 = 4;
+	bool b = 5;
+	TestEnum e = 6;
+	bytes data = 7;
+	TestAll child = 8;
+	TestEmpty empty = 9;
+	repeated int32 r_i32 = 16;
+	repeated int64 r_i64 = 17;
+	repeated uint32 r_u32 = 18;
+	repeated uint64 r_u64 = 19;
+	repeated bool r_b = 20;
+	repeated TestEnum r_e = 21;
+	repeated bytes r_data = 22;
+	repeated TestAll r_child = 23;
+	oneof pick {
+		int32 o_i32 = 2000;
+		bytes o_data = 2001;
+		TestAll o_child = 2002;
+		TestEmpty o_empty = 2003;
+	}
+}

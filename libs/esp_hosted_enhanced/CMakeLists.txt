@@ -1,6 +1,8 @@
-set(srcs
-    "third_party/esp_hosted_rpc/esp_hosted_rpc.pb-c.c"
-    "third_party/protobuf-c/protobuf-c/protobuf-c.c")
+if(NOT CMAKE_BUILD_EARLY_EXPANSION)
+    protogen_generate(rpc LANG c PROTO "third_party/esp_hosted_rpc/esp_hosted_rpc.proto")
+endif()
+
+set(srcs ${rpc_SOURCES})
 
 if(CONFIG_ESP_HOSTED_ENHANCED_HOST)
     list(APPEND srcs
@@ -23,10 +25,7 @@ endif()
 
 idf_component_register(
     SRCS ${srcs}
-    INCLUDE_DIRS
-        "inc"
-        "third_party/esp_hosted_rpc"
-        "third_party/protobuf-c"
+    INCLUDE_DIRS "inc" ${rpc_INCLUDE_DIRS}
     PRIV_INCLUDE_DIRS "src"
     REQUIRES esp_driver_sdmmc
     PRIV_REQUIRES sdmmc esp_driver_gpio esp_wifi esp_event esp_timer wpa_supplicant esp_mm esp_hal_sd)

@@ -105,9 +105,9 @@ static void send_no_args(int32_t event_id) {
 
 static void send_connected(const wifi_event_sta_connected_t *e) {
     WifiEventStaConnected c = WIFI_EVENT_STA_CONNECTED__INIT;
-    c.ssid = (ProtobufCBinaryData){sizeof(e->ssid), (uint8_t *)e->ssid};
+    c.ssid = (pb_bytes_t){sizeof(e->ssid), (uint8_t *)e->ssid};
     c.ssid_len = e->ssid_len;
-    c.bssid = (ProtobufCBinaryData){sizeof(e->bssid), (uint8_t *)e->bssid};
+    c.bssid = (pb_bytes_t){sizeof(e->bssid), (uint8_t *)e->bssid};
     c.channel = e->channel;
     c.authmode = e->authmode;
     c.aid = e->aid;
@@ -137,9 +137,9 @@ static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id, void *da
         }
         const wifi_event_sta_disconnected_t *e = data;
         WifiEventStaDisconnected d = WIFI_EVENT_STA_DISCONNECTED__INIT;
-        d.ssid = (ProtobufCBinaryData){sizeof(e->ssid), (uint8_t *)e->ssid};
+        d.ssid = (pb_bytes_t){sizeof(e->ssid), (uint8_t *)e->ssid};
         d.ssid_len = e->ssid_len;
-        d.bssid = (ProtobufCBinaryData){sizeof(e->bssid), (uint8_t *)e->bssid};
+        d.bssid = (pb_bytes_t){sizeof(e->bssid), (uint8_t *)e->bssid};
         d.reason = e->reason;
         d.rssi = e->rssi;
         RpcEventStaDisconnected m = RPC__EVENT__STA_DISCONNECTED__INIT;
@@ -243,7 +243,7 @@ void wifi_rpc_get_mac(const Rpc *req, Rpc *resp) {
     RpcRespGetMacAddress m = RPC__RESP__GET_MAC_ADDRESS__INIT;
     uint8_t mac[6];
     m.resp = r ? esp_wifi_get_mac(r->mode, mac) : ESP_ERR_INVALID_ARG;
-    if (m.resp == ESP_OK) m.mac = (ProtobufCBinaryData){sizeof(mac), mac};
+    if (m.resp == ESP_OK) m.mac = (pb_bytes_t){sizeof(mac), mac};
     RPC_REPLY(resp, resp_get_mac_address, &m);
 }
 
@@ -270,7 +270,7 @@ void wifi_rpc_stop(const Rpc *req, Rpc *resp) {
     RPC_REPLY_STATUS(resp, RpcRespWifiStop, RPC__RESP__WIFI_STOP__INIT, resp_wifi_stop, err);
 }
 
-static void copy_str(uint8_t *dst, size_t cap, const ProtobufCBinaryData *src) {
+static void copy_str(uint8_t *dst, size_t cap, const pb_bytes_t *src) {
     size_t n = src->len < cap ? src->len : cap;
     memcpy(dst, src->data, n);
     if (n < cap) dst[n] = 0;
@@ -362,12 +362,12 @@ void wifi_rpc_get_config(const Rpc *req, Rpc *resp) {
     }
     if (m.resp == ESP_OK) {
         const wifi_sta_config_t *a = &cfg.sta;
-        sc.ssid = (ProtobufCBinaryData){strnlen((char *)a->ssid, sizeof(a->ssid)), (uint8_t *)a->ssid};
-        sc.password = (ProtobufCBinaryData){strnlen((char *)a->password, sizeof(a->password)),
+        sc.ssid = (pb_bytes_t){strnlen((char *)a->ssid, sizeof(a->ssid)), (uint8_t *)a->ssid};
+        sc.password = (pb_bytes_t){strnlen((char *)a->password, sizeof(a->password)),
                                             (uint8_t *)a->password};
         sc.scan_method = a->scan_method;
         sc.bssid_set = a->bssid_set;
-        sc.bssid = (ProtobufCBinaryData){sizeof(a->bssid), (uint8_t *)a->bssid};
+        sc.bssid = (pb_bytes_t){sizeof(a->bssid), (uint8_t *)a->bssid};
         sc.channel = a->channel;
         sc.listen_interval = a->listen_interval;
         sc.sort_method = a->sort_method;
@@ -395,7 +395,7 @@ void wifi_rpc_get_config(const Rpc *req, Rpc *resp) {
                         a->vht_su_beamformee_disabled << STA_VHT_SU_BMFEE_DISABLED |
                         a->vht_mu_beamformee_disabled << STA_VHT_MU_BMFEE_DISABLED |
                         a->vht_mcs8_enabled << STA_VHT_MCS8;
-        sc.sae_h2e_identifier = (ProtobufCBinaryData){
+        sc.sae_h2e_identifier = (pb_bytes_t){
             strnlen((char *)a->sae_h2e_identifier, sizeof(a->sae_h2e_identifier)),
             (uint8_t *)a->sae_h2e_identifier};
         sc.sae_pk_mode = a->sae_pk_mode;
@@ -512,8 +512,8 @@ static void ap_record_to_rpc(const wifi_ap_record_t *a, ap_record_msg_t *m) {
     WifiApRecord *r = &m->rec;
     size_t ssid_len = strnlen((char *)a->ssid, sizeof(a->ssid)) + 1;
     if (ssid_len > sizeof(a->ssid)) ssid_len = sizeof(a->ssid);
-    r->bssid = (ProtobufCBinaryData){sizeof(a->bssid), (uint8_t *)a->bssid};
-    r->ssid = (ProtobufCBinaryData){ssid_len, (uint8_t *)a->ssid};
+    r->bssid = (pb_bytes_t){sizeof(a->bssid), (uint8_t *)a->bssid};
+    r->ssid = (pb_bytes_t){ssid_len, (uint8_t *)a->ssid};
     r->primary = a->primary;
     r->second = a->second;
     r->rssi = a->rssi;
@@ -526,7 +526,7 @@ static void ap_record_to_rpc(const wifi_ap_record_t *a, ap_record_msg_t *m) {
                  a->ftm_responder << AP_REC_FTM_RESPONDER |
                  a->ftm_initiator << AP_REC_FTM_INITIATOR | a->phy_11a << AP_REC_11A |
                  a->phy_11ac << AP_REC_11AC;
-    m->country.cc = (ProtobufCBinaryData){sizeof(a->country.cc), (uint8_t *)a->country.cc};
+    m->country.cc = (pb_bytes_t){sizeof(a->country.cc), (uint8_t *)a->country.cc};
     m->country.schan = a->country.schan;
     m->country.nchan = a->country.nchan;
     m->country.max_tx_power = a->country.max_tx_power;

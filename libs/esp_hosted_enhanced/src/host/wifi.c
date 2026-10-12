@@ -109,7 +109,7 @@ static void post(int32_t id, const void *data, size_t size) {
     }
 }
 
-static void copy_bytes(void *dst, size_t cap, const ProtobufCBinaryData *src) {
+static void copy_bytes(void *dst, size_t cap, const pb_bytes_t *src) {
     memcpy(dst, src->data, src->len < cap ? src->len : cap);
 }
 
@@ -233,7 +233,7 @@ esp_err_t esp_wifi_remote_get_mode(wifi_mode_t *mode) {
     if (!resp) return err;
     err = HOSTED_RPC_STATUS(resp, resp_get_wifi_mode);
     if (err == ESP_OK) *mode = resp->resp_get_wifi_mode->mode;
-    rpc__free_unpacked(resp, NULL);
+    rpc__free_unpacked(resp);
     return err;
 }
 
@@ -259,14 +259,14 @@ esp_err_t esp_wifi_remote_get_mac(wifi_interface_t ifx, uint8_t mac[6]) {
             err = ESP_FAIL;
         }
     }
-    rpc__free_unpacked(resp, NULL);
+    rpc__free_unpacked(resp);
     return err;
 }
 
 esp_err_t esp_wifi_remote_set_mac(wifi_interface_t ifx, const uint8_t mac[6]) {
     RpcReqSetMacAddress m = RPC__REQ__SET_MAC_ADDRESS__INIT;
     m.mode = ifx;
-    m.mac = (ProtobufCBinaryData){6, (uint8_t *)mac};
+    m.mac = (pb_bytes_t){6, (uint8_t *)mac};
     HOSTED_RPC_REQ(req, RPC_ID__Req_SetMacAddress, req_set_mac_address, &m);
     return HOSTED_RPC_CALL_STATUS(req, resp_set_mac_address, HOSTED_RPC_TIMEOUT_MS);
 }
@@ -305,7 +305,7 @@ esp_err_t esp_wifi_remote_get_ps(wifi_ps_type_t *type) {
     if (!resp) return err;
     err = HOSTED_RPC_STATUS(resp, resp_wifi_get_ps);
     if (err == ESP_OK) *type = resp->resp_wifi_get_ps->type;
-    rpc__free_unpacked(resp, NULL);
+    rpc__free_unpacked(resp);
     return err;
 }
 
@@ -324,11 +324,11 @@ esp_err_t esp_wifi_remote_set_config(wifi_interface_t ifx, wifi_config_t *conf) 
     pmf.capable = a->pmf_cfg.capable;
     pmf.required = a->pmf_cfg.required;
     WifiStaConfig sc = WIFI_STA_CONFIG__INIT;
-    sc.ssid = (ProtobufCBinaryData){cstr_len(a->ssid, sizeof(a->ssid)), (uint8_t *)a->ssid};
-    sc.password = (ProtobufCBinaryData){cstr_len(a->password, sizeof(a->password)), (uint8_t *)a->password};
+    sc.ssid = (pb_bytes_t){cstr_len(a->ssid, sizeof(a->ssid)), (uint8_t *)a->ssid};
+    sc.password = (pb_bytes_t){cstr_len(a->password, sizeof(a->password)), (uint8_t *)a->password};
     sc.scan_method = a->scan_method;
     sc.bssid_set = a->bssid_set;
-    sc.bssid = (ProtobufCBinaryData){sizeof(a->bssid), (uint8_t *)a->bssid};
+    sc.bssid = (pb_bytes_t){sizeof(a->bssid), (uint8_t *)a->bssid};
     sc.channel = a->channel;
     sc.listen_interval = a->listen_interval;
     sc.sort_method = a->sort_method;
@@ -351,7 +351,7 @@ esp_err_t esp_wifi_remote_set_config(wifi_interface_t ifx, wifi_config_t *conf) 
                     a->vht_su_beamformee_disabled << STA_VHT_SU_BMFEE_DISABLED |
                     a->vht_mu_beamformee_disabled << STA_VHT_MU_BMFEE_DISABLED |
                     a->vht_mcs8_enabled << STA_VHT_MCS8;
-    sc.sae_h2e_identifier = (ProtobufCBinaryData){
+    sc.sae_h2e_identifier = (pb_bytes_t){
         cstr_len(a->sae_h2e_identifier, sizeof(a->sae_h2e_identifier)), (uint8_t *)a->sae_h2e_identifier};
     sc.sae_pk_mode = a->sae_pk_mode;
     WifiConfig wc = WIFI_CONFIG__INIT;
@@ -418,7 +418,7 @@ esp_err_t esp_wifi_remote_get_config(wifi_interface_t ifx, wifi_config_t *conf) 
         a->vht_mcs8_enabled = BIT_OF(c->he_bitmask, STA_VHT_MCS8);
         copy_bytes(a->sae_h2e_identifier, sizeof(a->sae_h2e_identifier), &c->sae_h2e_identifier);
     }
-    rpc__free_unpacked(resp, NULL);
+    rpc__free_unpacked(resp);
     return err;
 }
 
@@ -431,9 +431,9 @@ esp_err_t esp_wifi_remote_scan_start(const wifi_scan_config_t *config, bool bloc
     m.block = block;
     if (config) {
         if (config->ssid) {
-            sc.ssid = (ProtobufCBinaryData){cstr_len(config->ssid, 32), config->ssid};
+            sc.ssid = (pb_bytes_t){cstr_len(config->ssid, 32), config->ssid};
         }
-        if (config->bssid) sc.bssid = (ProtobufCBinaryData){6, config->bssid};
+        if (config->bssid) sc.bssid = (pb_bytes_t){6, config->bssid};
         sc.channel = config->channel;
         sc.show_hidden = config->show_hidden;
         sc.scan_type = config->scan_type;
@@ -465,7 +465,7 @@ esp_err_t esp_wifi_remote_scan_get_ap_num(uint16_t *number) {
     if (!resp) return err;
     err = HOSTED_RPC_STATUS(resp, resp_wifi_scan_get_ap_num);
     if (err == ESP_OK) *number = resp->resp_wifi_scan_get_ap_num->number;
-    rpc__free_unpacked(resp, NULL);
+    rpc__free_unpacked(resp);
     return err;
 }
 
@@ -522,7 +522,7 @@ esp_err_t esp_wifi_remote_scan_get_ap_records(uint16_t *number, wifi_ap_record_t
         for (uint16_t i = 0; i < n; i++) ap_record_from_rpc(&ap_records[i], r->ap_records[i]);
         *number = n;
     }
-    rpc__free_unpacked(resp, NULL);
+    rpc__free_unpacked(resp);
     return err;
 }
 
@@ -539,7 +539,7 @@ esp_err_t esp_wifi_remote_sta_get_ap_info(wifi_ap_record_t *ap_info) {
             err = ESP_FAIL;
         }
     }
-    rpc__free_unpacked(resp, NULL);
+    rpc__free_unpacked(resp);
     return err;
 }
 
@@ -550,6 +550,6 @@ esp_err_t esp_wifi_remote_sta_get_rssi(int *rssi) {
     if (!resp) return err;
     err = HOSTED_RPC_STATUS(resp, resp_wifi_sta_get_rssi);
     if (err == ESP_OK) *rssi = resp->resp_wifi_sta_get_rssi->rssi;
-    rpc__free_unpacked(resp, NULL);
+    rpc__free_unpacked(resp);
     return err;
 }

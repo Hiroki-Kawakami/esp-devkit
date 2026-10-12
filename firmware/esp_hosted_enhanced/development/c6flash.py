@@ -24,32 +24,19 @@ WINDOW = 3
 
 
 def open_harness(port, log_stream):
-    deadline = time.monotonic() + 20
-    while True:
-        try:
-            link = SerialLink(port, 115200)
-            break
-        except Exception:
-            if time.monotonic() > deadline:
-                raise
-            time.sleep(0.5)
-    # Opening the USB-Serial-JTAG port resets the board; drop the boot chatter
-    # so late ping replies do not shift every later reply by one.
-    time.sleep(4)
-    link.ser.reset_input_buffer()
-    link.buf = b""
+    link = SerialLink(port, 115200)
     link.ser.timeout = 0.005
     h = Harness(link, log_stream)
     h.wait_ready()
     return h, link
 
 
-def restart_host(h, link, mode, args, log_stream):
+def restart_host(h, link, mode, args):
     h.cmd(f"c6 {mode}")
-    link.close()
     if args.reset_cmd:
         subprocess.run(args.reset_cmd, shell=True, check=True)
-    return open_harness(args.port, log_stream)
+    link.reset()
+    h.wait_ready()
 
 
 def expect_ok(h):
@@ -85,7 +72,7 @@ def main():
     try:
         mode = "recovery" if args.recovery else "normal"
         if h.cmd("c6 state")[1] != mode or args.reset_cmd:
-            h, link = restart_host(h, link, mode, args, log_stream)
+            restart_host(h, link, mode, args)
         print(f"coprocessor {wait_coprocessor(h, 40)} ({mode})")
 
         h.cmd("c6 begin", timeout=30)
@@ -105,7 +92,7 @@ def main():
         print(f"\r100%  {len(data)} bytes in {time.monotonic() - t0:.1f} s")
 
         time.sleep(2.0)
-        h, link = restart_host(h, link, "normal", args, log_stream)
+        restart_host(h, link, "normal", args)
         print(f"coprocessor {wait_coprocessor(h, 40)}")
     finally:
         link.close()

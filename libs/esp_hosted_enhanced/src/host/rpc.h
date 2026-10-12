@@ -12,7 +12,7 @@
 #include <stdint.h>
 
 #include "esp_err.h"
-#include "esp_hosted_rpc.pb-c.h"
+#include "esp_hosted_rpc.pb.h"
 
 #define HOSTED_RPC_TIMEOUT_MS 5000
 
@@ -44,7 +44,7 @@ void hosted_wifi_on_event(const Rpc *event);
         Rpc *r_ = hosted_rpc_call(&(req), (timeout), &e_);   \
         if (r_) {                                            \
             e_ = HOSTED_RPC_STATUS(r_, field);               \
-            rpc__free_unpacked(r_, NULL);                    \
+            rpc__free_unpacked(r_);                          \
         }                                                    \
         e_;                                                  \
     })

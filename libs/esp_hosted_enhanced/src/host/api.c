@@ -28,7 +28,7 @@ esp_err_t hosted_host_fw_version(uint32_t *major, uint32_t *minor, uint32_t *pat
         *minor = r->minor1;
         *patch = r->patch1;
     }
-    rpc__free_unpacked(resp, NULL);
+    rpc__free_unpacked(resp);
     return err;
 }
 
@@ -40,7 +40,7 @@ esp_err_t hosted_host_ota_begin(void) {
 
 esp_err_t hosted_host_ota_write(const void *data, size_t len) {
     RpcReqOTAWrite m = RPC__REQ__OTAWRITE__INIT;
-    m.ota_data = (ProtobufCBinaryData){len, (uint8_t *)data};
+    m.ota_data = (pb_bytes_t){len, (uint8_t *)data};
     HOSTED_RPC_REQ(req, RPC_ID__Req_OTAWrite, req_ota_write, &m);
     return HOSTED_RPC_CALL_STATUS(req, resp_ota_write, OTA_TIMEOUT_MS);
 }
