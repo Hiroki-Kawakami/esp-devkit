@@ -156,6 +156,64 @@ typedef enum {
     BSP_POWER_SWITCH_SENSOR,  /*!< external-sensor power rail */
 } bsp_power_switch_t;
 
+typedef enum {
+    BSP_KEYBOARD_MODE_HID  = 0,  /*!< HID modifier + keycode (every provider supports it) */
+    BSP_KEYBOARD_MODE_RAW  = 1,  /*!< device-local key index + press/release */
+    BSP_KEYBOARD_MODE_CHAR = 2,  /*!< modifier + string, press only */
+} bsp_keyboard_mode_t;
+
+typedef enum {
+    BSP_KEYBOARD_CAP_HID  = 1 << BSP_KEYBOARD_MODE_HID,
+    BSP_KEYBOARD_CAP_RAW  = 1 << BSP_KEYBOARD_MODE_RAW,
+    BSP_KEYBOARD_CAP_CHAR = 1 << BSP_KEYBOARD_MODE_CHAR,
+} bsp_keyboard_caps_t;
+
+typedef enum {
+    BSP_KEYBOARD_DETECT_MANUAL = 0,  /*!< connection checked at bsp_init and by bsp_keyboard_probe */
+    BSP_KEYBOARD_DETECT_AUTO   = 1,  /*!< probed periodically while disconnected */
+} bsp_keyboard_detect_t;
+
+/* HID modifier byte bits, shared by HID and CHAR events. */
+typedef enum {
+    BSP_KEYBOARD_MOD_LCTRL  = 1 << 0,
+    BSP_KEYBOARD_MOD_LSHIFT = 1 << 1,
+    BSP_KEYBOARD_MOD_LALT   = 1 << 2,
+    BSP_KEYBOARD_MOD_LGUI   = 1 << 3,
+    BSP_KEYBOARD_MOD_RCTRL  = 1 << 4,
+    BSP_KEYBOARD_MOD_RSHIFT = 1 << 5,
+    BSP_KEYBOARD_MOD_RALT   = 1 << 6,
+    BSP_KEYBOARD_MOD_RGUI   = 1 << 7,
+} bsp_keyboard_mod_t;
+
+typedef enum {
+    BSP_KEYBOARD_EVENT_HID  = BSP_KEYBOARD_MODE_HID,
+    BSP_KEYBOARD_EVENT_RAW  = BSP_KEYBOARD_MODE_RAW,
+    BSP_KEYBOARD_EVENT_CHAR = BSP_KEYBOARD_MODE_CHAR,
+    BSP_KEYBOARD_EVENT_CONNECTED,
+    BSP_KEYBOARD_EVENT_DISCONNECTED,
+} bsp_keyboard_event_type_t;
+
+#define BSP_KEYBOARD_CHAR_MAX 15
+
+typedef struct {
+    bsp_keyboard_event_type_t type;
+    union {
+        struct {
+            uint8_t modifiers;
+            uint8_t keycode;    /*!< HID usage; 0 = key released */
+        } hid;
+        struct {
+            uint16_t index;     /*!< device-local key index */
+            bool     pressed;
+        } raw;
+        struct {
+            uint8_t modifiers;
+            uint8_t len;
+            char    str[BSP_KEYBOARD_CHAR_MAX + 1];  /*!< UTF-8, NUL-terminated; content is device-defined */
+        } chr;
+    };
+} bsp_keyboard_event_t;
+
 typedef struct { float x, y, z; } bsp_vec3_t;
 
 typedef enum {

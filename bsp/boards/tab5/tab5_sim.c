@@ -12,7 +12,9 @@
 #include "bsp_dispatch.h"
 #include "bsp_audio.h"
 #include "bsp_imu.h"
+#include "bsp_keyboard.h"
 #include "sdl_panel.h"
+#include "sim_keyboard.h"
 #include "imu_sim.h"
 #include "sdl_audio.h"
 #include <stdio.h>
@@ -52,6 +54,14 @@ esp_err_t bsp_init(const bsp_config_t *config) {
         });
     } else {
         fprintf(stderr, "[sim] sdl_audio_create failed: %d\n", audio_err);
+    }
+
+    bsp_keyboard_t *keyboard = NULL;
+    if (sim_keyboard_create(&keyboard) == ESP_OK) {
+        bsp_keyboard_set_active(keyboard, &(bsp_keyboard_init_t){
+            .mode   = config->keyboard.mode,
+            .detect = config->keyboard.detect,
+        });
     }
     return ESP_OK;
 }

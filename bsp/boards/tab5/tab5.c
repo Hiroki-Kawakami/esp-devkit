@@ -21,7 +21,9 @@
 #include "bsp_dispatch.h"
 #include "bsp_sd.h"
 #include "bsp_imu.h"
+#include "bsp_led.h"
 #include "bmi270.h"
+#include "tab5_keyboard.h"
 #include "sd_mmc.h"
 #include "sd_pwr_ctrl_by_on_chip_ldo.h"
 #include "tab5_panel.h"
@@ -43,6 +45,11 @@ static const char *TAG = "tab5";
 
 #define TAB5_IMU_ADDR     0x68
 
+#define TAB5_EXT_I2C_PORT     I2C_NUM_1
+#define TAB5_EXT_I2C_PIN_SDA  GPIO_NUM_0
+#define TAB5_EXT_I2C_PIN_SCL  GPIO_NUM_1
+#define TAB5_KEYBOARD_PIN_INT GPIO_NUM_50
+
 #define TAB5_SD_PIN_CLK GPIO_NUM_43
 #define TAB5_SD_PIN_CMD GPIO_NUM_44
 #define TAB5_SD_PIN_D0  GPIO_NUM_39
@@ -60,11 +67,12 @@ static const char *TAG = "tab5";
 
 static pi4io_t s_pi4ioe1, s_pi4ioe2;
 
-static esp_err_t i2c_bus_init(i2c_master_bus_handle_t *out_bus) {
+static esp_err_t i2c_bus_init(i2c_port_t port, gpio_num_t sda, gpio_num_t scl,
+                               i2c_master_bus_handle_t *out_bus) {
     const i2c_master_bus_config_t cfg = {
-        .i2c_port          = TAB5_I2C_PORT,
-        .sda_io_num        = TAB5_I2C_PIN_SDA,
-        .scl_io_num        = TAB5_I2C_PIN_SCL,
+        .i2c_port          = port,
+        .sda_io_num        = sda,
+        .scl_io_num        = scl,
         .clk_source        = I2C_CLK_SRC_DEFAULT,
         .flags.enable_internal_pullup = true,
     };
@@ -187,6 +195,26 @@ static esp_err_t audio_init(const bsp_config_t *config, i2c_master_bus_handle_t 
     return ESP_OK;
 }
 
+static esp_err_t keyboard_init(const bsp_config_t *config) {
+    i2c_master_bus_handle_t bus = NULL;
+    esp_err_t err = i2c_bus_init(TAB5_EXT_I2C_PORT, TAB5_EXT_I2C_PIN_SDA, TAB5_EXT_I2C_PIN_SCL, &bus);
+    if (err != ESP_OK) return err;
+
+    bsp_keyboard_t *keyboard = NULL;
+    bsp_led_t *led = NULL;
+    err = tab5_keyboard_create(&(tab5_keyboard_config_t){
+        .i2c_bus = bus,
+        .int_io  = TAB5_KEYBOARD_PIN_INT,
+    }, &keyboard, &led);
+    if (err != ESP_OK) return err;
+    bsp_keyboard_set_active(keyboard, &(bsp_keyboard_init_t){
+        .mode   = config->keyboard.mode,
+        .detect = config->keyboard.detect,
+    });
+    bsp_led_set_active(led);
+    return ESP_OK;
+}
+
 static esp_err_t imu_init(i2c_master_bus_handle_t bus) {
     bsp_imu_t *imu = NULL;
     esp_err_t err = bmi270_imu_create(&(bmi270_config_t){
@@ -207,7 +235,7 @@ esp_err_t bsp_init(const bsp_config_t *config) {
     if (!config) config = &defaults;
 
     i2c_master_bus_handle_t i2c_bus = NULL;
-    esp_err_t err = i2c_bus_init(&i2c_bus);
+    esp_err_t err = i2c_bus_init(TAB5_I2C_PORT, TAB5_I2C_PIN_SDA, TAB5_I2C_PIN_SCL, &i2c_bus);
     if (err != ESP_OK) return err;
 
     err = io_expanders_init(i2c_bus);
@@ -231,6 +259,10 @@ esp_err_t bsp_init(const bsp_config_t *config) {
 
     if ((err = imu_init(i2c_bus)) != ESP_OK) {
         ESP_LOGW(TAG, "imu unavailable: %s", esp_err_to_name(err));
+    }
+
+    if ((err = keyboard_init(config)) != ESP_OK) {
+        ESP_LOGW(TAG, "keyboard unavailable: %s", esp_err_to_name(err));
     }
     return ESP_OK;
 }

@@ -14,6 +14,7 @@
 
 #define DEFAULT_PRIORITY  5
 #define TASK_STACK        4096
+#define ALIGN_MIN_MS      100
 
 static bsp_dispatch_source_t *s_sources;
 static portMUX_TYPE           s_list_mux = portMUX_INITIALIZER_UNLOCKED;
@@ -44,7 +45,9 @@ static void dispatch_task(void *arg) {
                 if (!src->waiting) {
                     TickType_t d = pdMS_TO_TICKS(ms);
                     if (ms > 0 && d == 0) d = 1;   /* sub-tick interval must not busy-spin */
-                    src->deadline = now + d;
+                    /* Slow periods snap to multiples of themselves so harmonic
+                     * periods share wakeups; short polls keep exact spacing. */
+                    src->deadline = ms >= ALIGN_MIN_MS ? (now / d + 1) * d : now + d;
                 }
             }
         }

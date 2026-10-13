@@ -5,6 +5,7 @@
 
 #include "home_screen.hpp"
 #include "format_test_screen.hpp"
+#include "keyboard_test_screen.hpp"
 #include "render_format_screen.hpp"
 
 static constexpr int kCycleSwitches = 40;
@@ -45,6 +46,11 @@ void HomeScreen::build() {
     auto render_format = add_button(contents_, "Render Format Test");
     lv_obj_add_event_fn(render_format, LV_EVENT_CLICKED, [](lv_event_t*){
         screen_manager.push(std::make_shared<RenderFormatScreen>());
+    });
+
+    auto keyboard_test = add_button(contents_, "Keyboard Test");
+    lv_obj_add_event_fn(keyboard_test, LV_EVENT_CLICKED, [](lv_event_t*){
+        screen_manager.push(std::make_shared<KeyboardTestScreen>());
     });
 
     auto format_cycle = add_button(contents_, "Pixel Format Cycle");

@@ -107,6 +107,44 @@ static bool cmd_btn(int argc, const char *const *argv, void *user) {
     return true;
 }
 
+static bool cmd_kbd(int argc, const char *const *argv, void *user) {
+    (void)user;
+    bsp_keyboard_event_t event = {0};
+    if (argc == 4 && !strcmp(argv[1], "hid")) {
+        event.type          = BSP_KEYBOARD_EVENT_HID;
+        event.hid.modifiers = (uint8_t)strtol(argv[2], NULL, 0);
+        event.hid.keycode   = (uint8_t)strtol(argv[3], NULL, 0);
+    } else if (argc == 4 && !strcmp(argv[1], "raw") &&
+               (!strcmp(argv[3], "down") || !strcmp(argv[3], "up"))) {
+        event.type        = BSP_KEYBOARD_EVENT_RAW;
+        event.raw.index   = (uint16_t)strtol(argv[2], NULL, 0);
+        event.raw.pressed = !strcmp(argv[3], "down");
+    } else if (argc == 3 && !strcmp(argv[1], "char")) {
+        size_t len = strlen(argv[2]);
+        if (len > BSP_KEYBOARD_CHAR_MAX) len = BSP_KEYBOARD_CHAR_MAX;
+        event.type    = BSP_KEYBOARD_EVENT_CHAR;
+        event.chr.len = (uint8_t)len;
+        memcpy(event.chr.str, argv[2], len);
+    } else {
+        harness_reply("ERR kbd: need hid <mod> <keycode> | raw <index> down|up | char <text>");
+        return true;
+    }
+    esp_err_t err = bsp_harness_keyboard_inject(&event);
+    if (err != ESP_OK) harness_reply("ERR kbd: %s", esp_err_to_name(err));
+    return true;
+}
+
+static bool cmd_simkeys(int argc, const char *const *argv, void *user) {
+    (void)user;
+    if (argc < 2 || (strcmp(argv[1], "keyboard") && strcmp(argv[1], "shortcuts"))) {
+        harness_reply("ERR simkeys: keyboard|shortcuts");
+        return true;
+    }
+    esp_err_t err = bsp_harness_sim_set_key_route(!strcmp(argv[1], "keyboard"));
+    if (err != ESP_OK) harness_reply("ERR simkeys: %s", esp_err_to_name(err));
+    return true;
+}
+
 static bool cmd_imu(int argc, const char *const *argv, void *user) {
     (void)user;
     esp_err_t err;
@@ -211,6 +249,8 @@ void harness_cmds_register(void) {
     harness_register("move", cmd_touch_down, NULL);
     harness_register("up",   cmd_touch_up,   NULL);
     harness_register("btn",  cmd_btn,        NULL);
+    harness_register("kbd",  cmd_kbd,        NULL);
+    harness_register("simkeys", cmd_simkeys, NULL);
     harness_register("imu",  cmd_imu,        NULL);
     harness_register("idle", cmd_idle,       NULL);
     harness_register("snap", cmd_snap,       NULL);

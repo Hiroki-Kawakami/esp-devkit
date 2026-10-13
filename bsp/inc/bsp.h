@@ -27,6 +27,10 @@ typedef struct {
         bsp_audio_dsp_mode_t dsp_mode;          /*!< who voices the DSP chain */
         bsp_audio_speaker_mode_t speaker_mode;  /*!< speaker route policy */
     } audio;
+    struct {
+        bsp_keyboard_mode_t   mode;    /*!< default: HID */
+        bsp_keyboard_detect_t detect;  /*!< default: MANUAL */
+    } keyboard;
     /* Shared dispatch task (touch/button polling, audio route tracking). Always
      * runs once any module needs it; only tunable here. */
     struct {
@@ -194,9 +198,27 @@ void bsp_button_on_double_click(uint8_t id, uint16_t interval_ms,
 void bsp_button_on_long_press(uint8_t id, uint16_t duration_ms,
                               bsp_button_cb_t cb, void *arg);
 
+// MARK: Keyboard
+/* Detachable keyboard; caps == 0 when the board has no keyboard provider.
+ * Exactly one mode is active; set_mode outside the caps returns
+ * ESP_ERR_NOT_SUPPORTED. The mode survives disconnects and is re-applied on
+ * connect. Events fire on the shared BSP dispatch task -- marshal to your UI
+ * thread yourself. probe blocks for one bus transaction and returns
+ * ESP_ERR_NOT_FOUND when nothing answers; the resulting CONNECTED /
+ * DISCONNECTED event still arrives on the dispatch task. */
+uint32_t  bsp_keyboard_get_caps(void);
+bool      bsp_keyboard_is_connected(void);
+esp_err_t bsp_keyboard_probe(void);
+esp_err_t bsp_keyboard_set_mode(bsp_keyboard_mode_t mode);
+bsp_keyboard_mode_t bsp_keyboard_get_mode(void);
+
+typedef void (*bsp_keyboard_event_cb_t)(const bsp_keyboard_event_t *event, void *arg);
+void bsp_keyboard_set_event_cb(bsp_keyboard_event_cb_t cb, void *arg);
+
 // MARK: LED
 /* Board-provided indicator LED(s), monochrome or RGB; count == 0 when no
- * provider is registered. Calls return ESP_ERR_INVALID_STATE with no provider,
+ * provider is registered, and LEDs on a detachable accessory count only while
+ * it is connected. Calls return ESP_ERR_INVALID_STATE with no provider,
  * ESP_ERR_INVALID_ARG when index >= count, and ESP_ERR_NOT_SUPPORTED for the
  * color model the LED lacks (set_rgb on a monochrome LED). level/channels 0..255. */
 uint8_t bsp_led_count(void);

@@ -31,6 +31,13 @@ esp_err_t bsp_harness_display_read(bsp_rect_t area, void *pixels) {
     return d->read_bitmap(d, area, pixels);
 }
 
+#ifdef ESP_PLATFORM
+esp_err_t bsp_harness_sim_set_key_route(bool keyboard) {
+    (void)keyboard;
+    return ESP_ERR_NOT_SUPPORTED;
+}
+#endif
+
 void bsp_harness_set_screenshot_cb(bsp_harness_screenshot_fn fn, void *user) {
     s_screenshot_fn   = fn;
     s_screenshot_user = user;

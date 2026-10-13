@@ -19,6 +19,7 @@ set(BSP_COMMON_SRCS
     "src/bsp_dispatch.c"
     "src/bsp_touch.c"
     "src/bsp_button.c"
+    "src/bsp_keyboard.c"
     "src/bsp_hotknot.c"
     "src/bsp_rtc.c"
     "src/bsp_imu.c"
@@ -114,6 +115,7 @@ else()
             "simulator/power_sim.c"
             "simulator/sdl_audio.c"
             "simulator/sim_button.c"
+            "simulator/sim_keyboard.c"
         INCLUDE_DIRS "inc"
         PRIV_INCLUDE_DIRS "inc_private" "simulator")
 endif()

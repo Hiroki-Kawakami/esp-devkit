@@ -20,6 +20,7 @@
  */
 
 #include "sdl_panel.h"
+#include "sim_keyboard.h"
 #include "bsp_harness.h"
 
 #include <SDL2/SDL.h>
@@ -99,6 +100,8 @@ static bool s_touch_dirty;
 
 static void capture_screenshot(void);
 
+static volatile bool s_keys_to_keyboard;
+
 static Uint32 sdl_texture_format(bsp_pixel_format_t fmt) {
     switch (fmt) {
         // RGB888 framebuffers hold LVGL's native byte order (B, G, R), so the
@@ -129,15 +132,67 @@ bsp_rotation_t sdl_panel_get_view_rotation(void) {
     return (bsp_rotation_t)(s_window_rotation / 90);
 }
 
+static uint8_t hid_modifiers(Uint16 mod) {
+    return ((mod & KMOD_LCTRL)  ? BSP_KEYBOARD_MOD_LCTRL  : 0) |
+           ((mod & KMOD_LSHIFT) ? BSP_KEYBOARD_MOD_LSHIFT : 0) |
+           ((mod & KMOD_LALT)   ? BSP_KEYBOARD_MOD_LALT   : 0) |
+           ((mod & KMOD_LGUI)   ? BSP_KEYBOARD_MOD_LGUI   : 0) |
+           ((mod & KMOD_RCTRL)  ? BSP_KEYBOARD_MOD_RCTRL  : 0) |
+           ((mod & KMOD_RSHIFT) ? BSP_KEYBOARD_MOD_RSHIFT : 0) |
+           ((mod & KMOD_RALT)   ? BSP_KEYBOARD_MOD_RALT   : 0) |
+           ((mod & KMOD_RGUI)   ? BSP_KEYBOARD_MOD_RGUI   : 0);
+}
+
+static void route_key(const SDL_KeyboardEvent *key) {
+    if (key->repeat || key->keysym.scancode > 0xFF) return;
+    const bool pressed = key->type == SDL_KEYDOWN;
+    const SDL_Keycode sym = key->keysym.sym;
+    const bool modifier_key = key->keysym.scancode >= SDL_SCANCODE_LCTRL &&
+                              key->keysym.scancode <= SDL_SCANCODE_RGUI;
+    char ascii[2] = { 0 };
+    const char *name = NULL;
+    if (pressed && !modifier_key) {
+        if (sym < 0x20 || sym >= 0x7F) {
+            name = SDL_GetKeyName(sym);
+        } else if (key->keysym.mod & KMOD_CTRL) {
+            /* Ctrl chords produce no SDL_TEXTINPUT. */
+            ascii[0] = (char)sym;
+            name = ascii;
+        }
+    }
+    sim_keyboard_key((uint8_t)key->keysym.scancode, hid_modifiers(key->keysym.mod), pressed, name);
+}
+
+esp_err_t bsp_harness_sim_set_key_route(bool keyboard) {
+    s_keys_to_keyboard = keyboard;
+    return ESP_OK;
+}
+
 /* Drain the SDL event queue: window close quits; s captures; r/l rotate the host
- * view; ESC quits. Touch is sampled from the mouse state in pump_input. */
+ * view; ESC quits; Cmd+K hands every non-Cmd key to the simulated keyboard
+ * instead, and back. Touch is sampled from the mouse state in pump_input. */
 static void pump_events(void) {
     SDL_Event ev;
     while (SDL_PollEvent(&ev)) {
         switch (ev.type) {
         case SDL_QUIT:
             exit(0);
+        case SDL_TEXTINPUT:
+            if (s_keys_to_keyboard) sim_keyboard_text(ev.text.text, hid_modifiers(SDL_GetModState()));
+            break;
         case SDL_KEYDOWN:
+        case SDL_KEYUP:
+            if (ev.type == SDL_KEYDOWN && !ev.key.repeat &&
+                (ev.key.keysym.mod & KMOD_GUI) && ev.key.keysym.sym == SDLK_k) {
+                s_keys_to_keyboard = !s_keys_to_keyboard;
+                fprintf(stderr, "[sim] keys -> %s\n", s_keys_to_keyboard ? "keyboard" : "shortcuts");
+                break;
+            }
+            if (s_keys_to_keyboard) {
+                if (!(ev.key.keysym.mod & KMOD_GUI)) route_key(&ev.key);
+                break;
+            }
+            if (ev.type == SDL_KEYUP) break;
             switch (ev.key.keysym.sym) {
             case SDLK_ESCAPE: exit(0);
             case SDLK_s:

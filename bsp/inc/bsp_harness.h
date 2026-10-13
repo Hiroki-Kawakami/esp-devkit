@@ -32,6 +32,15 @@ void bsp_harness_touch_inject(const bsp_touch_point_t *points, int count);
  * as usual; event-only providers get DOWN/UP directly. */
 esp_err_t bsp_harness_button_inject(uint8_t id, bool pressed);
 
+/* Deliver `event` to the keyboard event callback as if the provider had
+ * reported it. Key events must match the current mode (ESP_ERR_INVALID_STATE
+ * otherwise); ESP_ERR_NOT_SUPPORTED without a keyboard provider. */
+esp_err_t bsp_harness_keyboard_inject(const bsp_keyboard_event_t *event);
+
+/* Simulator only: route the SDL window's keys to the simulated keyboard (true)
+ * or to the simulator shortcuts (false). ESP_ERR_NOT_SUPPORTED on a device. */
+esp_err_t bsp_harness_sim_set_key_route(bool keyboard);
+
 bool      bsp_harness_imu_present(void);
 esp_err_t bsp_harness_imu_inject(const bsp_imu_sample_t *sample);
 

@@ -77,6 +77,10 @@ One command per line, `#` starts a comment, blank lines are ignored.
 | `move <x> <y> [id]` | same as `down`, for readability |
 | `up [id]` | release |
 | `btn <id> [click\|down\|up]` | physical button in the `bsp_button` id space, default `click` |
+| `kbd hid <mod> <keycode>` | keyboard HID event (`keycode` 0 = release); must match the current keyboard mode |
+| `kbd raw <index> down\|up` | keyboard RAW event |
+| `kbd char <text>` | keyboard CHAR event (no spaces) |
+| `simkeys keyboard\|shortcuts` | simulator only: SDL keys go to the simulated keyboard or the window shortcuts (also Cmd+K) |
 | `imu <ax> <ay> <az> [<gx> <gy> <gz>]` | replace the IMU reading until `imu release` |
 | `imu rot0\|rot90\|rot180\|rot270\|face-up\|face-down` | resting pose matching that `bsp_imu_orientation_t` |
 | `imu release` | back to the board's sensor (the view rotation on the simulator) |
