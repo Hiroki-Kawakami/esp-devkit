@@ -209,8 +209,11 @@ void Device::State::close_alternate(uint8_t interface) {
 
 void Device::State::unconfigure() {
     if (configuration == 0) return;
-    for (const auto& function : functions) function->unconfigured();
+    // Transfers the controller finished before the endpoints closed would
+    // otherwise reach the functions after unconfigured().
     for (size_t i = 0; i < alternates.size(); i++) close_alternate(static_cast<uint8_t>(i));
+    complete_transfers();
+    for (const auto& function : functions) function->unconfigured();
     configuration = 0;
 }
 
