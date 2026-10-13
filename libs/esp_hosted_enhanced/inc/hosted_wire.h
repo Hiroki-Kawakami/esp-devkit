@@ -79,6 +79,14 @@ typedef enum {
 } hosted_config_tlv_t;
 
 #define HOSTED_CAP_WLAN_SDIO  (1 << 0)
+#define HOSTED_CAP_BT_SDIO    (1 << 2)
+#define HOSTED_CAP_BLE_ONLY   (1 << 3)
+
+/* H4 packet types. On HOSTED_IF_HCI the host puts it in pkt_type and leaves it
+ * out of the payload; the coprocessor sends it as the first payload byte. */
+#define HOSTED_HCI_CMD  0x01
+#define HOSTED_HCI_ACL  0x02
+#define HOSTED_HCI_EVT  0x04
 
 /* Extensions, advertised in the INIT event; unknown tags are skipped by the
  * stock host, and nothing below is sent until the host asks for it. */

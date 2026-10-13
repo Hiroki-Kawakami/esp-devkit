@@ -12,6 +12,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
+#include "bt.h"
 #include "ota.h"
 #include "serial.h"
 #include "sdkconfig.h"
@@ -100,6 +101,7 @@ static const rpc_entry_t s_handlers[] = {
     {RPC_ID__Req_WifiScanGetApRecords, wifi_rpc_scan_get_ap_records, false},
     {RPC_ID__Req_WifiStaGetApInfo, wifi_rpc_sta_get_ap_info, false},
     {RPC_ID__Req_WifiStaGetRssi, wifi_rpc_sta_get_rssi, false},
+    {RPC_ID__Req_FeatureControl, bt_rpc_feature_control, false},
 };
 
 static void dispatch(const Rpc *req) {

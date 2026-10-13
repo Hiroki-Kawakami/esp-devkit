@@ -286,6 +286,41 @@ bool sd(uint32_t kb) {
     return true;
 }
 
+struct Load {
+    bool up;
+    uint32_t ms;
+};
+
+void load_task(void* arg) {
+    static uint8_t pkt[HOSTED_MAX_PAYLOAD];
+    Load load = *static_cast<Load*>(arg);
+    delete static_cast<Load*>(arg);
+    auto* h = reinterpret_cast<hosted_test_hdr_t*>(pkt);
+    h->cmd = HOSTED_TEST_DATA;
+    int64_t end = esp_timer_get_time() + load.ms * 1000;
+    while (esp_timer_get_time() < end) {
+        if (load.up) {
+            hosted_host_test_send(pkt, sizeof(pkt), kWaitMs);
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+    }
+    control(HOSTED_TEST_SET_MODE, HOSTED_TEST_SINK, 0);
+    vTaskDelete(nullptr);
+}
+
+bool load(const char* dir, uint32_t ms) {
+    bool up = !strcmp(dir, "up") || !strcmp(dir, "both");
+    bool down = !strcmp(dir, "down") || !strcmp(dir, "both");
+    if (!up && !down) return false;
+    esp_err_t err = control(HOSTED_TEST_SET_MODE, HOSTED_TEST_SINK, 0);
+    if (err == ESP_OK && down) err = control(HOSTED_TEST_SOURCE, HOSTED_MAX_PAYLOAD, UINT32_MAX);
+    if (err != ESP_OK) return reply_err("load", err);
+    xTaskCreate(load_task, "sdio_load", 3072, new Load{up, ms}, 5, nullptr);
+    harness_reply("OK sdio load");
+    return true;
+}
+
 bool cmd_sdio(int argc, const char* const* argv, void*) {
     if (argc < 2) return false;
     const char* sub = argv[1];
@@ -302,6 +337,8 @@ bool cmd_sdio(int argc, const char* const* argv, void*) {
         return share(atoi(argv[2]));
     } else if (!strcmp(sub, "sd") && argc == 3) {
         return sd(atoi(argv[2]));
+    } else if (!strcmp(sub, "load") && argc == 4) {
+        return load(argv[2], atoi(argv[3]));
     } else if (!strcmp(sub, "echo") && argc >= 4) {
         return echo(clamp_size(atoi(argv[2])), atoi(argv[3]), argc > 4 ? atoi(argv[4]) : 0);
     } else {

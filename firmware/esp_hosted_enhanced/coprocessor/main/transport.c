@@ -15,6 +15,7 @@
 #include "freertos/task.h"
 
 #define TX_BUF_NUM   20
+#define CTRL_BUF_NUM 4
 #define RX_BUF_NUM   10
 #define TASK_PRIO    21
 
@@ -24,8 +25,13 @@
 static const char *TAG = "transport";
 
 static transport_cbs_t s_cbs;
+/* Control traffic has its own buffers, so a data flood cannot hold back RPC
+ * and HCI. */
 static QueueHandle_t s_tx_free;
+static QueueHandle_t s_ctrl_free;
+static uint8_t *s_ctrl_bufs;
 static TaskHandle_t s_ctrl_task;
+static QueueHandle_t s_data_queue;
 static volatile bool s_open;
 
 static void IRAM_ATTR h2s_event_cb(uint8_t pos) {
@@ -42,14 +48,30 @@ bool transport_is_open(void) {
     return s_open;
 }
 
-esp_err_t transport_send(hosted_if_t if_type, uint8_t flags, uint16_t seq,
-                         const void *data, uint16_t len, TickType_t wait) {
-    if (len > HOSTED_MAX_PAYLOAD) return ESP_ERR_INVALID_SIZE;
-    uint8_t *buf;
-    if (xQueueReceive(s_tx_free, &buf, wait) != pdTRUE) return ESP_ERR_TIMEOUT;
+static QueueHandle_t pool_of_if(hosted_if_t if_type) {
+    bool ctrl = if_type == HOSTED_IF_SERIAL || if_type == HOSTED_IF_PRIV || if_type == HOSTED_IF_HCI;
+    return ctrl ? s_ctrl_free : s_tx_free;
+}
 
-    hosted_header_t *h = (hosted_header_t *)buf;
-    *h = (hosted_header_t){
+static QueueHandle_t pool_of_buf(const uint8_t *buf) {
+    bool ctrl = buf >= s_ctrl_bufs && buf < s_ctrl_bufs + CTRL_BUF_NUM * HOSTED_BUF_SIZE;
+    return ctrl ? s_ctrl_free : s_tx_free;
+}
+
+uint8_t *transport_tx_get(hosted_if_t if_type, TickType_t wait) {
+    uint8_t *buf;
+    if (xQueueReceive(pool_of_if(if_type), &buf, wait) != pdTRUE) return NULL;
+    return buf + sizeof(hosted_header_t);
+}
+
+esp_err_t transport_tx_put(uint8_t *payload, hosted_if_t if_type, uint8_t flags, uint16_t seq,
+                           uint16_t len) {
+    uint8_t *buf = payload - sizeof(hosted_header_t);
+    if (len > HOSTED_MAX_PAYLOAD) {
+        xQueueSend(pool_of_buf(buf), &buf, 0);
+        return ESP_ERR_INVALID_SIZE;
+    }
+    *(hosted_header_t *)buf = (hosted_header_t){
         .if_type = if_type,
         .flags = flags,
         .len = len,
@@ -57,10 +79,18 @@ esp_err_t transport_send(hosted_if_t if_type, uint8_t flags, uint16_t seq,
         .seq_num = seq,
         .pkt_type = if_type == HOSTED_IF_PRIV ? HOSTED_PRIV_PKT_EVENT : 0,
     };
-    memcpy(buf + sizeof(hosted_header_t), data, len);
     esp_err_t err = sdio_slave_send_queue(buf, sizeof(hosted_header_t) + len, buf, portMAX_DELAY);
-    if (err != ESP_OK) xQueueSend(s_tx_free, &buf, 0);
+    if (err != ESP_OK) xQueueSend(pool_of_buf(buf), &buf, 0);
     return err;
+}
+
+esp_err_t transport_send(hosted_if_t if_type, uint8_t flags, uint16_t seq,
+                         const void *data, uint16_t len, TickType_t wait) {
+    if (len > HOSTED_MAX_PAYLOAD) return ESP_ERR_INVALID_SIZE;
+    uint8_t *payload = transport_tx_get(if_type, wait);
+    if (!payload) return ESP_ERR_TIMEOUT;
+    memcpy(payload, data, len);
+    return transport_tx_put(payload, if_type, flags, seq, len);
 }
 
 static void send_init_event(void) {
@@ -71,7 +101,7 @@ static void send_init_event(void) {
     const uint8_t tlv[][3] = {
         {HOSTED_TLV_CHIP_ID, 1, CHIP_ID_C6},
         {HOSTED_TLV_SDIO_MODE, 1, 1},
-        {HOSTED_TLV_CAPABILITY, 1, HOSTED_CAP_WLAN_SDIO},
+        {HOSTED_TLV_CAPABILITY, 1, s_cbs.caps},
         {HOSTED_TLV_TEST_RAW_TP, 1, 0},
         {HOSTED_TLV_TX_Q_SIZE, 1, TX_BUF_NUM},
         {HOSTED_TLV_RX_Q_SIZE, 1, RX_BUF_NUM},
@@ -117,45 +147,82 @@ static void tx_done_task(void *arg) {
     for (;;) {
         void *buf;
         if (sdio_slave_send_get_finished(&buf, portMAX_DELAY) == ESP_OK) {
-            xQueueSend(s_tx_free, &buf, 0);
+            xQueueSend(pool_of_buf(buf), &buf, 0);
         }
     }
 }
 
+typedef struct {
+    sdio_slave_buf_handle_t handle;
+    uint8_t *buf;
+    size_t size;
+} rx_item_t;
+
+static bool is_data(uint8_t if_type) {
+    return if_type == HOSTED_IF_STA || if_type == HOSTED_IF_TEST;
+}
+
+/* Handles the data or the control packets of a buffer; true when it also
+ * holds packets of the other kind. */
+static bool dispatch(const rx_item_t *item, bool data) {
+    bool other = false;
+    for (size_t pos = 0; item->size - pos >= sizeof(hosted_header_t);) {
+        const hosted_header_t *h = (const hosted_header_t *)(item->buf + pos);
+        uint16_t len = h->len;
+        if (h->offset != sizeof(hosted_header_t) || len == 0 ||
+            sizeof(hosted_header_t) + len > item->size - pos) {
+            break;
+        }
+        uint8_t *payload = item->buf + pos + sizeof(hosted_header_t);
+        pos += sizeof(hosted_header_t) + len;
+        if (is_data(h->if_type) != data) {
+            other = true;
+            continue;
+        }
+        switch (h->if_type) {
+        case HOSTED_IF_STA:
+            if (s_cbs.on_sta) s_cbs.on_sta(payload, len);
+            break;
+        case HOSTED_IF_TEST:
+            if (s_cbs.on_test) s_cbs.on_test(payload, len);
+            break;
+        case HOSTED_IF_SERIAL:
+            if (s_cbs.on_serial) s_cbs.on_serial(payload, len, h->flags);
+            break;
+        case HOSTED_IF_HCI:
+            if (s_cbs.on_hci) s_cbs.on_hci(h->pkt_type, payload, len);
+            break;
+        case HOSTED_IF_PRIV:
+            on_priv(payload, len);
+            break;
+        default:
+            break;
+        }
+    }
+    return other;
+}
+
+/* Data packets may hold their buffer for backpressure (a full Wi-Fi TX
+ * queue), so they run on their own task and control packets behind them in
+ * later buffers are not held up. */
 static void rx_task(void *arg) {
     for (;;) {
-        sdio_slave_buf_handle_t handle;
-        uint8_t *buf;
-        size_t size;
-        if (sdio_slave_recv(&handle, &buf, &size, portMAX_DELAY) != ESP_OK) continue;
-
-        for (size_t pos = 0; size - pos >= sizeof(hosted_header_t);) {
-            const hosted_header_t *h = (const hosted_header_t *)(buf + pos);
-            uint16_t len = h->len;
-            if (h->offset != sizeof(hosted_header_t) || len == 0 ||
-                sizeof(hosted_header_t) + len > size - pos) {
-                break;
-            }
-            uint8_t *payload = buf + pos + sizeof(hosted_header_t);
-            switch (h->if_type) {
-            case HOSTED_IF_STA:
-                if (s_cbs.on_sta) s_cbs.on_sta(payload, len);
-                break;
-            case HOSTED_IF_SERIAL:
-                if (s_cbs.on_serial) s_cbs.on_serial(payload, len, h->flags);
-                break;
-            case HOSTED_IF_TEST:
-                if (s_cbs.on_test) s_cbs.on_test(payload, len);
-                break;
-            case HOSTED_IF_PRIV:
-                on_priv(payload, len);
-                break;
-            default:
-                break;
-            }
-            pos += sizeof(hosted_header_t) + len;
+        rx_item_t item;
+        if (sdio_slave_recv(&item.handle, &item.buf, &item.size, portMAX_DELAY) != ESP_OK) continue;
+        if (dispatch(&item, false)) {
+            xQueueSend(s_data_queue, &item, portMAX_DELAY);
+        } else {
+            sdio_slave_recv_load_buf(item.handle);
         }
-        sdio_slave_recv_load_buf(handle);
+    }
+}
+
+static void data_task(void *arg) {
+    for (;;) {
+        rx_item_t item;
+        xQueueReceive(s_data_queue, &item, portMAX_DELAY);
+        dispatch(&item, true);
+        sdio_slave_recv_load_buf(item.handle);
     }
 }
 
@@ -168,13 +235,20 @@ esp_err_t transport_init(const transport_cbs_t *cbs) {
         if (!buf) return ESP_ERR_NO_MEM;
         xQueueSend(s_tx_free, &buf, 0);
     }
+    s_ctrl_free = xQueueCreate(CTRL_BUF_NUM, sizeof(uint8_t *));
+    s_ctrl_bufs = heap_caps_aligned_alloc(4, CTRL_BUF_NUM * HOSTED_BUF_SIZE, MALLOC_CAP_DMA);
+    if (!s_ctrl_bufs) return ESP_ERR_NO_MEM;
+    for (int i = 0; i < CTRL_BUF_NUM; i++) {
+        uint8_t *buf = s_ctrl_bufs + i * HOSTED_BUF_SIZE;
+        xQueueSend(s_ctrl_free, &buf, 0);
+    }
 
     xTaskCreate(ctrl_task, "h_ctrl", 3072, NULL, TASK_PRIO, &s_ctrl_task);
 
     sdio_slave_config_t config = {
         .timing = board_sdio_timing(),
         .sending_mode = SDIO_SLAVE_SEND_STREAM,
-        .send_queue_size = TX_BUF_NUM,
+        .send_queue_size = TX_BUF_NUM + CTRL_BUF_NUM,
         .recv_buffer_size = HOSTED_BUF_SIZE,
         .event_cb = h2s_event_cb,
         .flags = board_sdio_flags(),
@@ -198,6 +272,9 @@ esp_err_t transport_init(const transport_cbs_t *cbs) {
                                SDIO_SLAVE_HOSTINT_BIT6 | SDIO_SLAVE_HOSTINT_BIT7);
 
     xTaskCreate(tx_done_task, "h_txdone", 2048, NULL, TASK_PRIO + 1, NULL);
+    s_data_queue = xQueueCreate(RX_BUF_NUM, sizeof(rx_item_t));
+    if (!s_data_queue) return ESP_ERR_NO_MEM;
+    xTaskCreate(data_task, "h_data", 4096, NULL, TASK_PRIO, NULL);
     xTaskCreate(rx_task, "h_rx", 4096, NULL, TASK_PRIO, NULL);
     return sdio_slave_start();
 }

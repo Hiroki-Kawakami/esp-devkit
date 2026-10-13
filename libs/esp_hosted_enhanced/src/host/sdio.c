@@ -3,7 +3,8 @@
  * Copyright (c) 2026 Hiroki Kawakami
  *
  * The IDF sdmmc driver brings the card up and waits for DAT1; every command
- * after that is issued here directly and polled.
+ * after that is issued here directly. Short ones are polled, long transfers
+ * wait for the completion the IDF ISR queues.
  */
 
 #include "host/sdio.h"
@@ -15,6 +16,7 @@
 #include "esp_cache.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_private/sd_host_private.h"
 #include "esp_timer.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -50,6 +52,7 @@
 #define CACHE_LINE 64
 #define SMALL_LEN  CACHE_LINE
 #define TIMEOUT_US 20000
+#define IRQ_MIN_LEN 4096
 
 static const char *TAG = "hosted_sdio";
 
@@ -62,6 +65,10 @@ static bool s_polled;
 static bool s_card_ready;
 static int s_idf_depth;
 static uint32_t s_clock_div;
+static sd_host_sdmmc_ctlr_t *s_ctlr;
+
+/* Not in the public headers. */
+sd_host_slot_handle_t sdmmc_get_slot_handle(int slot_id);
 
 static SemaphoreHandle_t lock(void) {
     if (!s_lock) {
@@ -139,7 +146,47 @@ static void recover(void) {
     sdmmc_ll_clear_idsts_interrupt(&SDMMC, sdmmc_ll_get_idsts_interrupt_raw(&SDMMC));
 }
 
-static esp_err_t issue(sdmmc_hw_cmd_t cmd, uint32_t arg, uint32_t done) {
+static esp_err_t status_of(uint32_t st, uint32_t done) {
+    if (st & EV_ERR) {
+        return (st & (SDMMC_LL_EVENT_RCRC | SDMMC_LL_EVENT_DCRC)) ? ESP_ERR_INVALID_CRC : ESP_ERR_TIMEOUT;
+    }
+    return (st & done) == done ? ESP_OK : ESP_ERR_NOT_FINISHED;
+}
+
+static esp_err_t wait_polled(uint32_t done, int64_t t0) {
+    for (;;) {
+        uint32_t st = sdmmc_ll_get_interrupt_raw(&SDMMC);
+        esp_err_t err = status_of(st, done);
+        if (err == ESP_OK) sdmmc_ll_clear_interrupt(&SDMMC, done);
+        if (err != ESP_ERR_NOT_FINISHED) return err;
+        if (esp_timer_get_time() - t0 > TIMEOUT_US) return ESP_ERR_TIMEOUT;
+    }
+}
+
+/* The IDF ISR clears what it reports, so once enabled the events only come
+ * through its queue. */
+static esp_err_t wait_irq(uint32_t done) {
+    uint32_t st = 0;
+    esp_err_t err = ESP_ERR_NOT_FINISHED;
+    while (err == ESP_ERR_NOT_FINISHED) {
+        sd_host_sdmmc_event_t ev;
+        if (xQueueReceive(s_ctlr->event_queue, &ev, pdMS_TO_TICKS(TIMEOUT_US / 1000) + 1) != pdTRUE) {
+            err = ESP_ERR_TIMEOUT;
+            break;
+        }
+        st |= ev.sdmmc_status;
+        err = status_of(st, done);
+    }
+    sdmmc_ll_enable_interrupt(&SDMMC, EV_ERR | EV_DONE, false);
+    return err;
+}
+
+/* The ISR drops events while the controller's current slot has no driver. */
+static bool irq_usable(void) {
+    return s_ctlr && s_ctlr->slot[s_ctlr->cur_slot_id];
+}
+
+static esp_err_t issue(sdmmc_hw_cmd_t cmd, uint32_t arg, uint32_t done, bool irq) {
     int64_t t0 = esp_timer_get_time();
     while (!sdmmc_ll_is_command_taken(&SDMMC)) {
         if (esp_timer_get_time() - t0 > TIMEOUT_US) return ESP_ERR_TIMEOUT;
@@ -150,25 +197,15 @@ static esp_err_t issue(sdmmc_hw_cmd_t cmd, uint32_t arg, uint32_t done) {
     cmd.response_expect = 1;
     cmd.check_response_crc = 1;
     cmd.start_command = 1;
+    irq = irq && irq_usable();
+    if (irq) {
+        xQueueReset(s_ctlr->event_queue);
+        sdmmc_ll_enable_interrupt(&SDMMC, EV_ERR | EV_DONE, true);
+    }
     sdmmc_ll_set_command_arg(&SDMMC, arg);
     sdmmc_ll_set_command(&SDMMC, cmd);
 
-    esp_err_t err = ESP_OK;
-    for (;;) {
-        uint32_t st = sdmmc_ll_get_interrupt_raw(&SDMMC);
-        if (st & EV_ERR) {
-            err = (st & (SDMMC_LL_EVENT_RCRC | SDMMC_LL_EVENT_DCRC)) ? ESP_ERR_INVALID_CRC : ESP_ERR_TIMEOUT;
-            break;
-        }
-        if ((st & done) == done) {
-            sdmmc_ll_clear_interrupt(&SDMMC, done);
-            break;
-        }
-        if (esp_timer_get_time() - t0 > TIMEOUT_US) {
-            err = ESP_ERR_TIMEOUT;
-            break;
-        }
-    }
+    esp_err_t err = irq ? wait_irq(done) : wait_polled(done, t0);
     if (err == ESP_OK && ((SDMMC.resp[0] >> 8) & R5_ERRORS)) err = ESP_ERR_INVALID_RESPONSE;
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "CMD%d %08lx: %s", cmd.cmd_index, (unsigned long)arg, esp_err_to_name(err));
@@ -182,7 +219,7 @@ static esp_err_t cmd52(bool write, uint32_t addr, uint8_t in, uint8_t *out) {
     cmd.cmd_index = SD_IO_RW_DIRECT;
     uint32_t arg = (write ? SD_ARG_CMD52_WRITE : 0) | (FUNC << SD_ARG_CMD52_FUNC_SHIFT) |
                    ((addr & SD_ARG_CMD52_REG_MASK) << SD_ARG_CMD52_REG_SHIFT) | in;
-    esp_err_t err = issue(cmd, arg, SDMMC_LL_EVENT_CMD_DONE);
+    esp_err_t err = issue(cmd, arg, SDMMC_LL_EVENT_CMD_DONE, false);
     if (err == ESP_OK && out) *out = SDMMC.resp[0] & 0xff;
     return err;
 }
@@ -227,7 +264,7 @@ static esp_err_t cmd53(bool write, uint32_t addr, void *buf, size_t len) {
                    (block ? SD_ARG_CMD53_BLOCK_MODE : 0) | SD_ARG_CMD53_INCREMENT |
                    ((addr & SD_ARG_CMD53_REG_MASK) << SD_ARG_CMD53_REG_SHIFT) |
                    (count & SD_ARG_CMD53_LENGTH_MASK);
-    esp_err_t err = issue(cmd, arg, EV_DONE);
+    esp_err_t err = issue(cmd, arg, EV_DONE, len >= IRQ_MIN_LEN);
     sdmmc_ll_clear_idsts_interrupt(&SDMMC, sdmmc_ll_get_idsts_interrupt_raw(&SDMMC));
     if (!write) esp_cache_msync(buf, sync_len, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
     return err;
@@ -302,6 +339,8 @@ esp_err_t hosted_sdio_connect(uint32_t timeout_ms) {
         esp_err_t err = sdmmc_card_init(&host, &s_card);
         if (err == ESP_OK) err = fn_init();
         s_clock_div = sdmmc_ll_get_clock_div(&SDMMC);
+        sd_host_slot_handle_t slot = sdmmc_get_slot_handle(SLOT);
+        s_ctlr = slot ? __containerof(slot, sd_host_sdmmc_slot_t, drv)->ctlr : NULL;
         s_card_ready = err == ESP_OK;
         hosted_host_sdmmc_release();
         if (err == ESP_OK) return ESP_OK;

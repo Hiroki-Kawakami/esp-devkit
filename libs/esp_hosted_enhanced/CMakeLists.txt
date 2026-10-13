@@ -11,6 +11,9 @@ if(CONFIG_ESP_HOSTED_ENHANCED_HOST)
         "src/host/transport.c"
         "src/host/rpc.c"
         "src/host/wifi.c")
+    if(CONFIG_ESP_HOSTED_ENHANCED_BT)
+        list(APPEND srcs "src/host/bt.c")
+    endif()
     set(weak_srcs "esp_wifi_remote_weak.c")
     if(CONFIG_ESP_WIFI_REMOTE_EAP_ENABLED)
         list(APPEND weak_srcs "esp_eap_client_remote_weak.c")
@@ -28,7 +31,7 @@ idf_component_register(
     INCLUDE_DIRS "inc" ${rpc_INCLUDE_DIRS}
     PRIV_INCLUDE_DIRS "src"
     REQUIRES esp_driver_sdmmc
-    PRIV_REQUIRES sdmmc esp_driver_gpio esp_wifi esp_event esp_timer wpa_supplicant esp_mm esp_hal_sd)
+    PRIV_REQUIRES bt sdmmc esp_driver_gpio esp_wifi esp_event esp_timer wpa_supplicant esp_mm esp_hal_sd)
 
 if(CONFIG_ESP_HOSTED_ENHANCED_HOST)
     # Strong overrides of the esp_wifi weak hooks must not lose to the weak
@@ -37,4 +40,9 @@ if(CONFIG_ESP_HOSTED_ENHANCED_HOST)
     # esp_wifi forwards esp_wifi_* to the esp_wifi_remote_* defined here.
     idf_component_get_property(wifi_lib esp_wifi COMPONENT_LIB)
     target_link_libraries(${wifi_lib} PUBLIC ${COMPONENT_LIB})
+    if(CONFIG_ESP_HOSTED_ENHANCED_BT)
+        # NimBLE calls the ble_transport_* defined here.
+        idf_component_get_property(bt_lib bt COMPONENT_LIB)
+        target_link_libraries(${bt_lib} PUBLIC ${COMPONENT_LIB})
+    endif()
 endif()

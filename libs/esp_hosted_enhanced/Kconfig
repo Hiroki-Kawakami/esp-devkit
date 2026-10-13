@@ -40,6 +40,14 @@ config ESP_HOSTED_ENHANCED_PIN_RESET
     int "Coprocessor EN GPIO (-1: not wired)"
     default -1
 
+config ESP_HOSTED_ENHANCED_BT
+    bool "NimBLE controller on the coprocessor"
+    depends on BT_NIMBLE_ENABLED && BT_CONTROLLER_DISABLED && !BT_NIMBLE_TRANSPORT_UART
+    default y
+    help
+        Implement the NimBLE host transport over the coprocessor's HCI
+        interface. nimble_port_init() brings the link and the controller up.
+
 endif
 
 endmenu

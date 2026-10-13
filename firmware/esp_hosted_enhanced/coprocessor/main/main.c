@@ -7,6 +7,7 @@
 
 #include "bench.h"
 #include "board.h"
+#include "bt.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "logfwd.h"
@@ -44,8 +45,10 @@ void app_main(void) {
         .on_sta = safe ? NULL : wifi_on_host_packet,
         .on_serial = serial_on_packet,
         .on_test = safe ? NULL : bench_on_packet,
+        .on_hci = safe ? NULL : bt_on_host_packet,
         .on_log_enable = logfwd_enable,
         .on_open = safe ? on_open_safe : rpc_send_esp_init,
+        .caps = HOSTED_CAP_WLAN_SDIO | (safe ? 0 : HOSTED_CAP_BT_SDIO | HOSTED_CAP_BLE_ONLY),
         .ext_caps = HOSTED_EXT_CAP_LOG | HOSTED_EXT_CAP_RX_AGGR | (safe ? 0 : HOSTED_EXT_CAP_TEST),
     };
     ESP_ERROR_CHECK(transport_init(&cbs));

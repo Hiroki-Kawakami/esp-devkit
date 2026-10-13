@@ -18,7 +18,7 @@ static volatile uint32_t s_delay_us;
 static uint32_t s_packets;
 static uint32_t s_bytes;
 static uint32_t s_source_size;
-static uint32_t s_source_count;
+static volatile uint32_t s_source_count;
 
 static void reply(hosted_test_cmd_t cmd, uint32_t arg0, uint32_t arg1) {
     hosted_test_hdr_t h = {.cmd = cmd, .arg = {arg0, arg1}};
@@ -56,6 +56,7 @@ void bench_on_packet(const uint8_t *payload, uint16_t len) {
     case HOSTED_TEST_SET_MODE:
         s_mode = h.arg[0];
         s_delay_us = h.arg[1];
+        s_source_count = 0;
         s_packets = 0;
         s_bytes = 0;
         break;

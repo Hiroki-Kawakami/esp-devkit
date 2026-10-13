@@ -1,7 +1,8 @@
 # esp_hosted_enhanced coprocessor
 
-ESP32-C6 Wi-Fi coprocessor speaking the esp-hosted 2.12 SDIO protocol, so the
-stock esp-hosted host can drive it. It reports itself as 2.12.6.
+ESP32-C6 Wi-Fi and BLE coprocessor speaking the esp-hosted 2.12 SDIO
+protocol, so the stock esp-hosted host can drive it. It reports itself as
+2.12.6.
 
 ```sh
 nix develop -c ./run.sh                       # Tab5 on-board C6 -> build_tab5/
@@ -11,6 +12,21 @@ nix develop -c ./run.sh xiao -p PORT flash    # XIAO ESP32C6 over its own USB
 The Tab5 C6 is only reachable through the host: flash `build_tab5/*.bin` with
 `../development/c6flash.py`. The partition table matches the stock one
 (`otadata` + `ota_0` + `ota_1`), and the stock bootloader is kept.
+
+## BLE
+
+The controller is initialized, enabled, disabled and deinitialized by the
+host's FeatureControl requests, as with the stock firmware. HCI goes straight
+between the SDIO buffers and the controller's buffers instead of through VHCI;
+host ACL data waits (up to 100 ms) for a controller buffer, stalling the link
+meanwhile.
+
+## Data and control
+
+Wi-Fi and test packets from the host may hold their receive buffer while Wi-Fi
+cannot take a frame, which stalls the host through the buffer count. They are
+handled on their own task, so RPC and HCI packets arriving behind them still
+go through; those also have their own transmit buffers toward the host.
 
 ## Safe mode
 

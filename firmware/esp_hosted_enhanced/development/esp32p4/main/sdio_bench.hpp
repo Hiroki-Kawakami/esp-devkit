@@ -9,6 +9,7 @@
  *   sdio source <size> <count>        -> #OK sdio source <bytes> <us> <lost>
  *   sdio echo <size> <count> [gap]    -> #OK sdio echo <p50> <p99> <max> <lost>   (us)
  *   sdio share <count>                -> #OK sdio share <ok> <err> <bytes> <us>
+ *   sdio load up|down|both <ms>      keeps the link busy in the background
  *   sdio sd <kb>                      -> #OK sdio sd <bytes> <write us> <read us> <bad chunks> <sink bytes> <sink us>
  * `delay` holds each packet on the coprocessor; `gap` spaces the echo probes.
  */
