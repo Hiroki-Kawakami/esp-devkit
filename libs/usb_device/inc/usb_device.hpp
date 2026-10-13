@@ -138,6 +138,11 @@ public:
     // open by the time they are called.
     virtual void configured() {}
     virtual void unconfigured() {}
+    // The bus has idled for 3 ms while configured: the host suspended it or
+    // the cable is gone, which look the same. Followed by resumed() or by
+    // unconfigured().
+    virtual void suspended() {}
+    virtual void resumed() {}
     // false STALLs the SET_INTERFACE.
     virtual bool set_alternate(uint8_t interface, uint8_t alternate) { return alternate == 0; }
     // Class and vendor requests to the function's interfaces or endpoints,
@@ -172,6 +177,7 @@ public:
     void stop();
 
     bool configured() const;
+    bool suspended() const;
     Speed speed() const;
 
 private:

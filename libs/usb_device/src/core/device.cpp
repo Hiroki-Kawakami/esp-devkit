@@ -64,6 +64,7 @@ struct Device::State {
     SetupPacket pending_out = {};
     volatile Speed speed = Speed::Full;
     volatile uint8_t configuration = 0;
+    volatile bool suspended = false;
     bool started = false;
 
     static void task_main(void* arg);
@@ -77,6 +78,8 @@ struct Device::State {
     bool set_configuration(uint8_t value);
     bool set_interface(uint8_t interface, uint8_t alternate);
     void unconfigure();
+    void suspend();
+    void resume();
     void open_alternate(uint8_t interface, uint8_t alternate);
     void close_alternate(uint8_t interface);
     const detail::EndpointInfo* active_endpoint(uint8_t address) const;
@@ -97,7 +100,10 @@ void Device::State::task_main(void* arg) {
                 ESP_LOGI(TAG, "%s speed", event.speed == Speed::High ? "high" : "full");
                 break;
             case EventType::Suspend:
+                state->suspend();
+                break;
             case EventType::Resume:
+                state->resume();
                 break;
             case EventType::Setup:
                 state->handle_setup(event.setup);
@@ -209,12 +215,27 @@ void Device::State::close_alternate(uint8_t interface) {
 
 void Device::State::unconfigure() {
     if (configuration == 0) return;
+    suspended = false;
     // Transfers the controller finished before the endpoints closed would
     // otherwise reach the functions after unconfigured().
     for (size_t i = 0; i < alternates.size(); i++) close_alternate(static_cast<uint8_t>(i));
     complete_transfers();
     for (const auto& function : functions) function->unconfigured();
     configuration = 0;
+}
+
+void Device::State::suspend() {
+    if (configuration == 0 || suspended) return;
+    suspended = true;
+    for (const auto& function : functions) function->suspended();
+    ESP_LOGI(TAG, "suspended");
+}
+
+void Device::State::resume() {
+    if (!suspended) return;
+    suspended = false;
+    for (const auto& function : functions) function->resumed();
+    ESP_LOGI(TAG, "resumed");
 }
 
 bool Device::State::set_configuration(uint8_t value) {
@@ -470,6 +491,10 @@ void Device::stop() {
 
 bool Device::configured() const {
     return state_->configuration != 0;
+}
+
+bool Device::suspended() const {
+    return state_->suspended;
 }
 
 Speed Device::speed() const {

@@ -34,6 +34,14 @@ void Vendor::unconfigured() {
     if (config_.unconfigured) config_.unconfigured();
 }
 
+void Vendor::suspended() {
+    if (config_.suspended) config_.suspended();
+}
+
+void Vendor::resumed() {
+    if (config_.resumed) config_.resumed();
+}
+
 bool Vendor::control(const ControlRequest& request, uint8_t* data, size_t* bytes) {
     if ((request.request_type & kRecipientMask) == kRecipientInterface &&
         (request.index & 0xff) != interface_) {

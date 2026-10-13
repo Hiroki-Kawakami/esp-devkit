@@ -25,6 +25,8 @@ public:
         // Run on the device task.
         std::function<void()> configured;
         std::function<void()> unconfigured;
+        std::function<void()> suspended;
+        std::function<void()> resumed;
         std::function<bool(const ControlRequest&, uint8_t* data, size_t* bytes)> control;
     };
 
@@ -36,6 +38,8 @@ public:
     void describe(ConfigBuilder& config) override;
     void configured() override;
     void unconfigured() override;
+    void suspended() override;
+    void resumed() override;
     bool control(const ControlRequest& request, uint8_t* data, size_t* bytes) override;
 
 private:
