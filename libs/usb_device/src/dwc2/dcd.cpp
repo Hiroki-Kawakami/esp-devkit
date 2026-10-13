@@ -174,6 +174,8 @@ struct Ep {
     uint32_t chunk = 0;
     DmaDesc* descs = nullptr;
     int desc_count = 0;
+    uint8_t* scratch = nullptr;
+    uint32_t scratch_bytes = 0;
     Transfer* active = nullptr;
     Transfer* head = nullptr;
     Transfer* tail = nullptr;
@@ -293,6 +295,7 @@ struct Dcd::State {
 
     uint16_t current_frame() const;
     void iso_fill(Ep& ep);
+    void iso_queue(Ep& ep, uint8_t* buffer, uint32_t bytes, Transfer* transfer);
     void iso_start(Ep& ep);
     void iso_reap(Ep& ep);
     void iso_stopped(Ep& ep);
@@ -324,8 +327,11 @@ void Dcd::State::release() {
     for (int n = 0; n < kMaxEndpoints; n++) {
         heap_caps_free(in_eps[n].descs);
         heap_caps_free(out_eps[n].descs);
+        heap_caps_free(out_eps[n].scratch);
         in_eps[n].descs = nullptr;
         out_eps[n].descs = nullptr;
+        out_eps[n].scratch = nullptr;
+        out_eps[n].scratch_bytes = 0;
     }
     intr = nullptr;
     phy = nullptr;
@@ -745,36 +751,43 @@ uint16_t Dcd::State::current_frame() const {
 
 void Dcd::State::iso_fill(Ep& ep) {
     IsoRing& ring = ep.ring;
-    DmaDesc* descs = uncached(ep.descs);
     while (ep.head && ring.queued < kDescriptorsPerEndpoint) {
         Transfer* transfer = ep.head;
         ep.head = transfer->next;
         if (!ep.head) ep.tail = nullptr;
         transfer->next = nullptr;
-
-        const uint32_t bytes = transfer->length;
-        uint32_t status = kDescHostReady | kDescLast | kDescIoc;
-        if (ep.in) {
-            const uint32_t packets =
-                bytes ? (bytes + ep.max_packet_bytes - 1) / ep.max_packet_bytes : 1;
-            status |= (bytes & kDescIsoInBytesMask) | (packets << kDescIsoPidShift) |
-                      ((ring.frame & kDescIsoFrameMask) << kDescIsoFrameShift);
-            if (bytes % ep.max_packet_bytes) status |= kDescShort;
-            ring.frame = (ring.frame + ring.interval) & kFrameMask;
-        } else {
-            status |= bytes & kDescIsoOutBytesMask;
-        }
-        DmaDesc& desc = descs[ring.fill];
-        desc.buffer = dma_address(transfer->buffer);
-        desc.status = status;
-        // The newest descriptor ends the chain; the controller wraps to the
-        // first after the physical last one.
-        if (ring.fill > 0) descs[ring.fill - 1].status &= ~kDescLast;
-        ring.transfers[ring.fill] = transfer;
-        ring.fill = (ring.fill + 1) % kDescriptorsPerEndpoint;
-        ring.queued++;
+        iso_queue(ep, transfer->buffer, transfer->length, transfer);
     }
+    // An OUT ring left with no ready descriptor raises BNA again as soon as
+    // it is cleared, even once the endpoint is disabled, so what the host
+    // sends while no transfer is queued lands in the scratch buffer instead.
+    if (!ep.in && !ring.queued) iso_queue(ep, ep.scratch, ep.scratch_bytes, nullptr);
     memory_barrier();
+}
+
+void Dcd::State::iso_queue(Ep& ep, uint8_t* buffer, uint32_t bytes, Transfer* transfer) {
+    IsoRing& ring = ep.ring;
+    DmaDesc* descs = uncached(ep.descs);
+    uint32_t status = kDescHostReady | kDescLast | kDescIoc;
+    if (ep.in) {
+        const uint32_t packets =
+            bytes ? (bytes + ep.max_packet_bytes - 1) / ep.max_packet_bytes : 1;
+        status |= (bytes & kDescIsoInBytesMask) | (packets << kDescIsoPidShift) |
+                  ((ring.frame & kDescIsoFrameMask) << kDescIsoFrameShift);
+        if (bytes % ep.max_packet_bytes) status |= kDescShort;
+        ring.frame = (ring.frame + ring.interval) & kFrameMask;
+    } else {
+        status |= bytes & kDescIsoOutBytesMask;
+    }
+    DmaDesc& desc = descs[ring.fill];
+    desc.buffer = dma_address(buffer);
+    desc.status = status;
+    // The newest descriptor ends the chain; the controller wraps to the
+    // first after the physical last one.
+    if (ring.fill > 0) descs[ring.fill - 1].status &= ~kDescLast;
+    ring.transfers[ring.fill] = transfer;
+    ring.fill = (ring.fill + 1) % kDescriptorsPerEndpoint;
+    ring.queued++;
 }
 
 void Dcd::State::iso_start(Ep& ep) {
@@ -788,6 +801,7 @@ void Dcd::State::iso_start(Ep& ep) {
     if (!ring.queued) return;
     ring.running = true;
     dma(ep) = dma_address(ep.descs);
+    ints(ep) = kEpintBufferNotAvailable;
     ctl(ep) |= kEpctlEnable | kEpctlClearNak;
 }
 
@@ -799,12 +813,16 @@ void Dcd::State::iso_reap(Ep& ep) {
         if ((status >> kDescStatusShift) != kDescDmaDone) break;
         Transfer* transfer = ring.transfers[ring.reap];
         ring.transfers[ring.reap] = nullptr;
-        const uint32_t mask = ep.in ? kDescIsoInBytesMask : kDescIsoOutBytesMask;
-        const uint32_t remaining = status & mask;
-        const uint32_t actual = transfer->length > remaining ? transfer->length - remaining : 0;
-        complete(transfer,
-                 (status & kDescErrorMask) ? TransferStatus::Error : TransferStatus::Completed,
-                 actual);
+        if (transfer) {
+            const uint32_t mask = ep.in ? kDescIsoInBytesMask : kDescIsoOutBytesMask;
+            const uint32_t remaining = status & mask;
+            const uint32_t actual =
+                transfer->length > remaining ? transfer->length - remaining : 0;
+            complete(transfer,
+                     (status & kDescErrorMask) ? TransferStatus::Error
+                                               : TransferStatus::Completed,
+                     actual);
+        }
         ring.reap = (ring.reap + 1) % kDescriptorsPerEndpoint;
         ring.queued--;
     }
@@ -821,13 +839,14 @@ void Dcd::State::iso_stopped(Ep& ep) {
         const int index = (ring.fill - 1 - i + kDescriptorsPerEndpoint) % kDescriptorsPerEndpoint;
         Transfer* transfer = ring.transfers[index];
         ring.transfers[index] = nullptr;
+        if (!transfer) continue;
         transfer->next = ep.head;
         ep.head = transfer;
         if (!ep.tail) ep.tail = transfer;
     }
     ring.queued = 0;
     ring.running = false;
-    if (!ep.in && ep.head) {
+    if (!ep.in) {
         iso_start(ep);
     } else {
         update_nak_mask();
@@ -839,7 +858,7 @@ void Dcd::State::iso_cancel(Ep& ep, TransferStatus status) {
     if (ring.running) iso_reap(ep);
     for (int i = 0; i < ring.queued; i++) {
         const int index = (ring.reap + i) % kDescriptorsPerEndpoint;
-        complete(ring.transfers[index], status, 0);
+        if (ring.transfers[index]) complete(ring.transfers[index], status, 0);
         ring.transfers[index] = nullptr;
     }
     ring.queued = 0;
@@ -1066,6 +1085,17 @@ esp_err_t Dcd::open_endpoint(uint8_t address, EndpointType type, uint16_t max_pa
         if (!ep->descs) return ESP_ERR_NO_MEM;
         esp_cache_msync(ep->descs, bytes, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
     }
+    if (!ep->in && type == EndpointType::Isochronous && !ep->open) {
+        const uint32_t bytes = round_up(max_packet_bytes, s.out_alignment);
+        if (ep->scratch_bytes < bytes) {
+            heap_caps_free(ep->scratch);
+            ep->scratch_bytes = 0;
+            ep->scratch = static_cast<uint8_t*>(heap_caps_aligned_calloc(
+                s.out_alignment, 1, bytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
+            if (!ep->scratch) return ESP_ERR_NO_MEM;
+            ep->scratch_bytes = bytes;
+        }
+    }
 
     esp_err_t err = ESP_OK;
     portENTER_CRITICAL(&s.lock);
@@ -1099,6 +1129,7 @@ esp_err_t Dcd::open_endpoint(uint8_t address, EndpointType type, uint16_t max_pa
                      kEpctlActive | (ep->iso ? 0 : kEpctlSetData0) | kEpctlSetNak |
                      (fifo << kEpctlTxFifoShift);
         s.dev->daintmsk_reg.val |= 1u << (ep->number + (ep->in ? 0 : kDaintOutShift));
+        if (ep->iso && !ep->in) s.iso_start(*ep);
     }
     portEXIT_CRITICAL(&s.lock);
     return err;
@@ -1198,6 +1229,7 @@ void Dcd::flush(uint8_t address) {
     if (ep->open) {
         s.disable(*ep);
         s.cancel_all(*ep, TransferStatus::Canceled);
+        if (ep->iso && !ep->in) s.iso_start(*ep);
     }
     portEXIT_CRITICAL(&s.lock);
     s.send_pending_from_task();
