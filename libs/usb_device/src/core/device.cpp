@@ -72,6 +72,7 @@ struct Device::State {
     void handle_setup(const SetupPacket& setup);
     bool handle_standard(const SetupPacket& setup);
     void handle_function_request(const SetupPacket& setup);
+    bool reply_from_functions(const SetupPacket& setup);
     void handle_control_out(uint16_t length);
     bool call_functions(const SetupPacket& setup, uint8_t* data, size_t* bytes);
     bool get_descriptor(const SetupPacket& setup);
@@ -270,6 +271,7 @@ bool Device::State::handle_standard(const SetupPacket& setup) {
 
     switch (setup.bRequest) {
         case detail::kReqGetDescriptor:
+            if (recipient == detail::kReqRecipInterface) return reply_from_functions(setup);
             return recipient == detail::kReqRecipDevice && get_descriptor(setup);
         case detail::kReqSetAddress:
             if (recipient != detail::kReqRecipDevice || setup.wValue > 127) return false;
@@ -369,12 +371,7 @@ void Device::State::handle_function_request(const SetupPacket& setup) {
         return;
     }
     if (setup.bmRequestType & detail::kReqDirIn) {
-        size_t bytes = control_bytes;
-        if (!call_functions(setup, dcd.ep0_buffer(), &bytes)) {
-            dcd.ep0_stall();
-            return;
-        }
-        send(nullptr, std::min(bytes, control_bytes), setup.wLength);
+        if (!reply_from_functions(setup)) dcd.ep0_stall();
     } else if (setup.wLength == 0) {
         size_t bytes = 0;
         if (call_functions(setup, dcd.ep0_buffer(), &bytes)) {
@@ -388,6 +385,13 @@ void Device::State::handle_function_request(const SetupPacket& setup) {
         pending_out = setup;
         dcd.ep0_receive(setup.wLength);
     }
+}
+
+bool Device::State::reply_from_functions(const SetupPacket& setup) {
+    size_t bytes = control_bytes;
+    if (!call_functions(setup, dcd.ep0_buffer(), &bytes)) return false;
+    send(nullptr, std::min(bytes, control_bytes), setup.wLength);
+    return true;
 }
 
 void Device::State::handle_control_out(uint16_t length) {

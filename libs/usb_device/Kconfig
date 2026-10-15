@@ -22,4 +22,12 @@ config USBD_UAC
     help
         An isochronous audio stream from the host, with mute and volume.
 
+config USBD_HID
+    bool "HID function"
+    depends on USBD
+    default n
+    help
+        One HID interface with an interrupt IN endpoint, as a boot keyboard,
+        a boot mouse or with a report descriptor of the caller's.
+
 endmenu

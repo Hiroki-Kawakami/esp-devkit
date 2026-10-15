@@ -146,7 +146,8 @@ public:
     // false STALLs the SET_INTERFACE.
     virtual bool set_alternate(uint8_t interface, uint8_t alternate) { return alternate == 0; }
     // Class and vendor requests to the function's interfaces or endpoints,
-    // and those to the device that no earlier function took. For OUT, `data`
+    // and those to the device that no earlier function took, plus standard
+    // GET_DESCRIPTOR to its interfaces (class descriptors such as HID's). For OUT, `data`
     // holds what the host sent; for IN, `*bytes` is the room in `data` and is
     // set to the reply length. false STALLs.
     virtual bool control(const ControlRequest& request, uint8_t* data, size_t* bytes) {

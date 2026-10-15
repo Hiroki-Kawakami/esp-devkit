@@ -26,7 +26,8 @@ with more than one interface. A high-speed port builds the configuration for
 both speeds, for the device qualifier and the other-speed configuration.
 
 Endpoints are opened when the host selects the configuration or an alternate
-setting, and `configured()` runs after that. Class and vendor requests reach
+setting, and `configured()` runs after that. Class and vendor requests, and
+standard GET_DESCRIPTOR to an interface for class descriptors, reach
 `Function::control()`: those to an interface or endpoint go to its function,
 those to the device to each function in turn. The data stage of a control
 write is received before the call.
@@ -99,6 +100,22 @@ intervals are configuration too.
   changes reach the caller through callbacks on the device task, as do the
   stream starting and stopping and each received packet.
 
+## HID
+
+`Hid` (`CONFIG_USBD_HID`) is one HID interface with an interrupt IN endpoint.
+`Boot::Keyboard` and `Boot::Mouse` make it a boot interface and bring the
+report descriptor for `KeyboardReport` or `MouseReport`; with `Boot::None`
+the caller gives its own descriptor and the longest input report.
+
+- `send()` queues an input report from any task, and reports go out in order,
+  one per polling interval. Queued reports are dropped when the bus suspends
+  or the configuration goes.
+- The report descriptor is answered to the interface's GET_DESCRIPTOR, and
+  output reports come from SET_REPORT on the control pipe to a callback.
+- GET_REPORT returns the last input report sent with that ID. SET_IDLE is
+  accepted but reports are only sent on `send()`; a boot interface accepts
+  SET_PROTOCOL, and the boot layouts are the same under either protocol.
+
 ## Layout
 
 | path | what it is |
@@ -109,6 +126,7 @@ intervals are configuration too.
 | `src/dwc2/dcd.cpp` | the DWC2 controller |
 | `src/vendor/vendor.cpp` | the vendor-specific function |
 | `src/uac/uac.cpp` | the USB Audio Class 2.0 speaker |
+| `src/hid/hid.cpp` | the HID function |
 | `src/sim/dcd.cpp` | the simulator's controller, a USB/IP server |
 
 The core never touches hardware: the controller posts bus events and SETUP
