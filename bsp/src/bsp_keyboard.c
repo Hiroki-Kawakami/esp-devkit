@@ -22,9 +22,11 @@
 
 static const char *TAG = "bsp_keyboard";
 
-#define POLL_INTERVAL_MS   20
-#define DETECT_INTERVAL_MS 1000
-#define DRAIN_CHUNK        8
+#define POLL_INTERVAL_MS    20
+#define DETECT_INTERVAL_MS  1000
+#define RECHECK_INTERVAL_MS 100
+#define DISCONNECT_MISSES   3
+#define DRAIN_CHUNK         8
 
 static bsp_keyboard_t        *s_kb;
 static bsp_keyboard_mode_t    s_mode;
@@ -32,6 +34,7 @@ static bsp_keyboard_detect_t  s_detect;
 static SemaphoreHandle_t      s_lock;
 static volatile bool          s_connected;
 static bool                   s_reported;
+static uint8_t                s_misses;
 
 static bsp_keyboard_event_cb_t s_event_cb;
 static void                   *s_event_arg;
@@ -61,7 +64,32 @@ static bool connect_locked(void) {
         }
         s_connected = true;
     }
+    s_misses = 0;
     return true;
+}
+
+/* Caller holds s_lock. A bus glitch must not look like a detach, so AUTO
+ * re-probes a few times before giving up. */
+static void miss_locked(void) {
+    if (s_detect != BSP_KEYBOARD_DETECT_AUTO || ++s_misses >= DISCONNECT_MISSES) {
+        s_connected = false;
+        s_misses    = 0;
+    }
+}
+
+/* Caller holds s_lock. A polled provider's own polls notice it is gone. */
+static void check_locked(void) {
+    if (s_detect != BSP_KEYBOARD_DETECT_AUTO) return;
+    if (!s_connected) {
+        connect_locked();
+        return;
+    }
+    if (s_misses == 0 && s_kb->int_io == -1) return;
+    if (s_kb->probe(s_kb) == ESP_OK) {
+        s_misses = 0;
+    } else {
+        miss_locked();
+    }
 }
 
 static void report_connection(void) {
@@ -79,8 +107,8 @@ static uint32_t keyboard_tick(void *ctx) {
     if (!kb) return BSP_DISPATCH_IDLE;
 
     lock();
-    if (!s_connected && s_detect == BSP_KEYBOARD_DETECT_AUTO) connect_locked();
-    bool drain = s_connected;
+    check_locked();
+    bool drain = s_connected && s_misses == 0;
     unlock();
     report_connection();
 
@@ -91,7 +119,7 @@ static uint32_t keyboard_tick(void *ctx) {
         esp_err_t err = s_connected ? kb->poll(kb, events, DRAIN_CHUNK, &n) : ESP_ERR_INVALID_STATE;
         if (err != ESP_OK && s_connected) {
             ESP_LOGW(TAG, "poll: %s", esp_err_to_name(err));
-            s_connected = false;
+            miss_locked();
         }
         unlock();
         for (uint8_t i = 0; i < n; i++) emit(&events[i]);
@@ -102,7 +130,9 @@ static uint32_t keyboard_tick(void *ctx) {
     if (!s_connected) {
         return s_detect == BSP_KEYBOARD_DETECT_AUTO ? DETECT_INTERVAL_MS : BSP_DISPATCH_IDLE;
     }
-    return kb->int_io == -1 ? POLL_INTERVAL_MS : BSP_DISPATCH_IDLE;
+    if (s_misses > 0) return RECHECK_INTERVAL_MS;
+    if (kb->int_io == -1) return POLL_INTERVAL_MS;
+    return s_detect == BSP_KEYBOARD_DETECT_AUTO ? DETECT_INTERVAL_MS : BSP_DISPATCH_IDLE;
 }
 
 #ifdef ESP_PLATFORM

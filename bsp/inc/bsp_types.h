@@ -170,7 +170,7 @@ typedef enum {
 
 typedef enum {
     BSP_KEYBOARD_DETECT_MANUAL = 0,  /*!< connection checked at bsp_init and by bsp_keyboard_probe */
-    BSP_KEYBOARD_DETECT_AUTO   = 1,  /*!< probed periodically while disconnected */
+    BSP_KEYBOARD_DETECT_AUTO   = 1,  /*!< probed every second; disconnected after 3 misses 100 ms apart */
 } bsp_keyboard_detect_t;
 
 /* HID modifier byte bits, shared by HID and CHAR events. */
