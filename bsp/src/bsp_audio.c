@@ -549,6 +549,13 @@ esp_err_t bsp_audio_write(void *data, size_t len) {
     return s_audio->write(s_audio, data, len);
 }
 
+esp_err_t bsp_audio_get_queued(size_t *frames) {
+    if (!pcm_available() || !s_audio->queued) return ESP_ERR_NOT_SUPPORTED;
+    if (!frames) return ESP_ERR_INVALID_ARG;
+    if (!s_open) return ESP_ERR_INVALID_STATE;
+    return s_audio->queued(s_audio, frames);
+}
+
 esp_err_t bsp_audio_set_volume(int volume) {
     if (!pcm_available()) return ESP_ERR_NOT_SUPPORTED;
     if (volume < 0)               volume = 0;

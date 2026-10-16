@@ -6,7 +6,9 @@
 #include "es8388.h"
 #include <string.h>
 #include <stdlib.h>
+#include "esp_attr.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/i2s_std.h"
@@ -66,6 +68,14 @@ struct es8388_state {
     uint8_t dac_outputs;
     bool enabled;
     size_t ring_bytes;   /* total DMA buffer bytes of the current channel */
+    /* Bytes into the DMA's output since the last enable: written data plays
+     * after `ahead_bytes`, and `sent_bytes` have played by `sent_us`. */
+    portMUX_TYPE lock;
+    size_t ahead_bytes;
+    size_t written_bytes;
+    size_t sent_bytes;
+    size_t buffer_bytes;
+    int64_t sent_us;
     uint32_t rate;
     uint8_t  bits;
     uint8_t  channels;
@@ -87,6 +97,34 @@ static uint8_t volume_to_reg(int vol) {
     if (vol <= 0)   return 0xC0;
     if (vol >= 100) return 0x00;
     return (uint8_t)(((100 - vol) * 192 + 50) / 100);
+}
+
+static bool IRAM_ATTR on_sent(i2s_chan_handle_t handle, i2s_event_data_t *event, void *ctx) {
+    es8388_t s = ctx;
+    portENTER_CRITICAL_ISR(&s->lock);
+    s->sent_bytes += event->size;
+    s->buffer_bytes = event->size;
+    s->sent_us = esp_timer_get_time();
+    portEXIT_CRITICAL_ISR(&s->lock);
+    return false;
+}
+
+/* A buffer the writer did not refill in time plays again, pushing every byte
+ * written after it one buffer later. */
+static bool IRAM_ATTR on_send_q_ovf(i2s_chan_handle_t handle, i2s_event_data_t *event, void *ctx) {
+    es8388_t s = ctx;
+    portENTER_CRITICAL_ISR(&s->lock);
+    s->ahead_bytes += event->size;
+    portEXIT_CRITICAL_ISR(&s->lock);
+    return false;
+}
+
+static esp_err_t register_callbacks(es8388_t s) {
+    const i2s_event_callbacks_t callbacks = {
+        .on_sent = on_sent,
+        .on_send_q_ovf = on_send_q_ovf,
+    };
+    return i2s_channel_register_event_callback(s->tx, &callbacks, s);
 }
 
 static uint8_t bits_to_word_len(uint8_t bits) {
@@ -181,7 +219,9 @@ static esp_err_t recreate_channel(es8388_t s, uint32_t rate, uint8_t bits, uint8
             to_bit_width(bits), ch == 1 ? I2S_SLOT_MODE_MONO : I2S_SLOT_MODE_STEREO),
         .gpio_cfg = s->gpio_cfg,
     };
-    return i2s_channel_init_std_mode(s->tx, &std_cfg);
+    err = i2s_channel_init_std_mode(s->tx, &std_cfg);
+    if (err != ESP_OK) return err;
+    return register_callbacks(s);
 }
 
 static esp_err_t apply_format(es8388_t s, uint32_t rate, uint8_t bits, uint8_t ch) {
@@ -210,10 +250,19 @@ static esp_err_t apply_format(es8388_t s, uint32_t rate, uint8_t bits, uint8_t c
     }
     err = reg_write(s, REG_DACCONTROL1, (uint8_t)(bits_to_word_len(bits) << 3));
     if (err != ESP_OK) return err;
-    err = i2s_channel_enable(s->tx);
-    if (err != ESP_OK) return err;
     i2s_chan_info_t info;
     s->ring_bytes = i2s_channel_get_info(s->tx, &info) == ESP_OK ? info.total_dma_buf_size : 0;
+    /* Enabling starts the DMA on the ring as it is; the writer gets each
+     * buffer once it has played, so the first byte written plays a ring later. */
+    portENTER_CRITICAL(&s->lock);
+    s->ahead_bytes = s->ring_bytes;
+    s->written_bytes = 0;
+    s->sent_bytes = 0;
+    s->buffer_bytes = 0;
+    s->sent_us = esp_timer_get_time();
+    portEXIT_CRITICAL(&s->lock);
+    err = i2s_channel_enable(s->tx);
+    if (err != ESP_OK) return err;
     s->enabled = true;
     s->rate = rate; s->bits = bits; s->channels = ch;
     return ESP_OK;
@@ -225,6 +274,7 @@ esp_err_t es8388_init(const es8388_config_t *config, es8388_t *out) {
     es8388_t s = calloc(1, sizeof(*s));
     if (!s) return ESP_ERR_NO_MEM;
     s->volume = -1;
+    portMUX_INITIALIZE(&s->lock);
     s->dac_outputs = config->dac_outputs ? config->dac_outputs
                                          : (ES8388_OUT_LOUT1 | ES8388_OUT_ROUT1);
 
@@ -259,6 +309,8 @@ esp_err_t es8388_init(const es8388_config_t *config, es8388_t *out) {
     };
     ret = i2s_channel_init_std_mode(s->tx, &std_cfg);
     if (ret != ESP_OK) { ESP_LOGE(TAG, "i2s init_std: %d", ret); goto err_chan; }
+    ret = register_callbacks(s);
+    if (ret != ESP_OK) { ESP_LOGE(TAG, "i2s callbacks: %d", ret); goto err_chan; }
 
     ret = codec_reset(s);
     if (ret != ESP_OK) { ESP_LOGE(TAG, "codec reset failed"); goto err_chan; }
@@ -315,7 +367,29 @@ esp_err_t es8388_write(es8388_t s, const void *data, size_t len) {
     if (!s || !data) return ESP_ERR_INVALID_ARG;
     if (!s->enabled) return ESP_ERR_INVALID_STATE;
     size_t written = 0;
-    return i2s_channel_write(s->tx, data, len, &written, portMAX_DELAY);
+    esp_err_t err = i2s_channel_write(s->tx, data, len, &written, portMAX_DELAY);
+    portENTER_CRITICAL(&s->lock);
+    s->written_bytes += written;
+    portEXIT_CRITICAL(&s->lock);
+    return err;
+}
+
+esp_err_t es8388_queued(es8388_t s, size_t *frames) {
+    if (!s || !frames) return ESP_ERR_INVALID_ARG;
+    if (!s->enabled) return ESP_ERR_INVALID_STATE;
+    const size_t frame_bytes = (size_t)s->channels * s->bits / 8;
+    const int64_t now = esp_timer_get_time();
+    portENTER_CRITICAL(&s->lock);
+    const size_t end = s->ahead_bytes + s->written_bytes;
+    size_t played = s->sent_bytes;
+    const size_t buffer_bytes = s->buffer_bytes;
+    const int64_t since = now - s->sent_us;
+    portEXIT_CRITICAL(&s->lock);
+    size_t playing = (size_t)(since * s->rate / 1000000) * frame_bytes;
+    if (buffer_bytes && playing > buffer_bytes) playing = buffer_bytes;
+    played += playing;
+    *frames = end > played ? (end - played) / frame_bytes : 0;
+    return ESP_OK;
 }
 
 /* i2s_channel_disable() leaves the DMA descriptor buffers holding whatever was
@@ -334,6 +408,9 @@ esp_err_t es8388_drain(es8388_t s) {
         const size_t take = remain < sizeof(silence) ? remain : sizeof(silence);
         size_t written = 0;
         esp_err_t err = i2s_channel_write(s->tx, silence, take, &written, ES8388_DRAIN_TIMEOUT_MS);
+        portENTER_CRITICAL(&s->lock);
+        s->written_bytes += written;
+        portEXIT_CRITICAL(&s->lock);
         if (err != ESP_OK) return err;
         if (written == 0) break;
         remain -= written;

@@ -49,6 +49,9 @@ struct bsp_audio {
      * waveform, and so buffered audio can't survive into the next open. */
     esp_err_t (*drain)(bsp_audio_t *self);
 
+    /* Optional: frames written that the output has not played yet. */
+    esp_err_t (*queued)(bsp_audio_t *self, size_t *frames);
+
     /* Optional; power-transition use only (see the click-free contract). */
     esp_err_t (*set_hw_volume)(bsp_audio_t *self, int volume);   /* 0..100 */
     esp_err_t (*set_hw_mute)(bsp_audio_t *self, bool mute);

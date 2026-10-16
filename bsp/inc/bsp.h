@@ -246,6 +246,9 @@ esp_err_t bsp_audio_close(void);
 /* `data` is filtered in-place by the DSP chain — caller must own the buffer.
  * Blocks while the output is full (the device's natural pacing). */
 esp_err_t bsp_audio_write(void *data, size_t len);
+/* Frames written that have not played yet: the next write is heard after
+ * that many frames. NOT_SUPPORTED when the provider can't tell. */
+esp_err_t bsp_audio_get_queued(size_t *frames);
 
 /* 0..150, linear-in-dB: 0 = true silence, 100 = unity, >100 = digital boost
  * (SW-gain path only — the HW-codec fallback caps at 100). Click-free via the
