@@ -25,8 +25,9 @@ enum class DisplayPresentMode : uint8_t {
  *   Direct  - LVGL renders straight into the panel framebuffer. Cheapest, but
  *             the viewport must match the panel and set_rotation is rejected.
  *   Partial - LVGL renders chunks into small buffers that are blitted (and
- *             un-rotated) into the panel. Immediate only. A color_format other
- *             than the panel's needs BSP_DISPLAY_CAP_CONVERT.
+ *             un-rotated) into the framebuffer last presented. Immediate only.
+ *             A color_format other than the panel's needs
+ *             BSP_DISPLAY_CAP_CONVERT.
  *   Surface - LVGL renders into a full offscreen surface that is composited
  *             into the panel framebuffer. Needs a framebuffer. */
 enum class DisplayRenderMode : uint8_t {

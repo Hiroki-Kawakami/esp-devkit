@@ -156,6 +156,13 @@ struct DisplayManagerContext {
 
 namespace {
 
+int s_presented_framebuffer = 0;
+
+void present_framebuffer(int framebuffer_index) {
+    s_presented_framebuffer = framebuffer_index;
+    bsp_display_flush(framebuffer_index);
+}
+
 void free_owned_buffers(DisplayManagerContext &context) {
     if (!context.owns_buffers) return;
     heap_caps_free(context.buffer0);
@@ -477,9 +484,14 @@ void flush_framebuffer(DisplayManagerContext &display, DisplayFlushContext &flus
     if (display.render_path != DisplayRenderPath::Direct && !flush.last) return;
     if (flush.result != ESP_OK || !display.visible) return;
 
-    int framebuffer_index = display.render_path == DisplayRenderPath::Direct &&
-        flush.pixels == display.buffer1 ? 1 : 0;
-    bsp_display_flush(framebuffer_index);
+    int framebuffer_index = 0;
+    if (display.render_path == DisplayRenderPath::Direct) {
+        framebuffer_index = flush.pixels == display.buffer1 ? 1 : 0;
+    } else if (display.render_path == DisplayRenderPath::Partial) {
+        // The BSP blits partial chunks into the framebuffer on screen.
+        framebuffer_index = s_presented_framebuffer;
+    }
+    present_framebuffer(framebuffer_index);
 }
 
 void composite_immediate(DisplayManagerContext &display,
@@ -1044,7 +1056,7 @@ esp_err_t DisplayManager::present(int framebuffer_index) {
     void *framebuffer = bsp_display_get_frame_buffer(framebuffer_index);
     if (!framebuffer) return ESP_ERR_INVALID_ARG;
 
-    bsp_display_flush(framebuffer_index);
+    present_framebuffer(framebuffer_index);
     return ESP_OK;
 }
 
