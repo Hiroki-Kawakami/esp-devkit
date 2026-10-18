@@ -19,12 +19,13 @@ set(BOARD_DEVICE_SRCS
     "devices/ina226/ina226.c"
     "devices/bmi270/bmi270.c"
     "devices/bmi270/bmi270_config.c"
+    "devices/rx8130/rx8130.c"
     "devices/tab5_keyboard/tab5_keyboard.c"
     "driver/mipi_dsi/mipi_dsi.c"
     "driver/sd_mmc/sd_mmc.c")
 set(BOARD_DEVICE_PRIV_INCLUDE_DIRS
     "devices" "devices/ili9881c" "devices/st712x" "devices/gt911" "devices/pi4io"
-    "devices/es8388" "devices/ina226" "devices/bmi270" "devices/tab5_keyboard" "driver/mipi_dsi" "driver/sd_mmc")
+    "devices/es8388" "devices/ina226" "devices/bmi270" "devices/rx8130" "devices/tab5_keyboard" "driver/mipi_dsi" "driver/sd_mmc")
 set(BOARD_DEVICE_PRIV_REQUIRES
     driver esp_driver_ledc esp_driver_i2s esp_lcd vfs fatfs sdmmc esp_driver_sdmmc
     esp_hosted_enhanced)

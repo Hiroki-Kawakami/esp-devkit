@@ -143,7 +143,8 @@ esp_err_t bsp_rtc_time_is_valid(bool *out_valid) BSP_NONNULL(1);
 
 /* Countdown: after `ms` the chip asserts INT + latches the expiry flag (both
  * survive deep sleep); repeat = interval vs one-shot. Resolution/max span are
- * chip-specific; an unrepresentable span returns ESP_ERR_INVALID_ARG. */
+ * chip-specific; an unrepresentable span returns ESP_ERR_INVALID_ARG, one below
+ * the board's minimum ESP_ERR_NOT_SUPPORTED. */
 esp_err_t bsp_rtc_timer_start(uint32_t ms, bool repeat);
 esp_err_t bsp_rtc_timer_stop(void);
 esp_err_t bsp_rtc_timer_is_expired(bool *out_expired) BSP_NONNULL(1);

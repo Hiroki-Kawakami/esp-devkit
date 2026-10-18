@@ -6,7 +6,8 @@
  * the I2C bus shared by the touch chip and the two PI4IOE5V6408 I/O expanders,
  * runs the GT911 INT-pulse reset sequence required across LCD/TP_RST (both
  * routed through PI4IOE1), then hands off to tab5_panel_init for display +
- * touch and brings up the ES8388 audio. USB host and RTC are not wired here.
+ * touch and brings up the ES8388 audio and the RX8130 RTC. USB host is not
+ * wired here.
  */
 
 #include "bsp.h"
@@ -23,6 +24,7 @@
 #include "bsp_imu.h"
 #include "bsp_led.h"
 #include "bmi270.h"
+#include "rx8130.h"
 #include "tab5_keyboard.h"
 #include "sd_mmc.h"
 #include "sd_pwr_ctrl_by_on_chip_ldo.h"
@@ -45,6 +47,8 @@ static const char *TAG = "tab5";
 #define TAB5_TOUCH_PIN_INT GPIO_NUM_23
 
 #define TAB5_IMU_ADDR     0x68
+
+#define TAB5_RTC_TIMER_MIN_MS (60 * 1000)
 
 #define TAB5_EXT_I2C_PORT     I2C_NUM_1
 #define TAB5_EXT_I2C_PIN_SDA  GPIO_NUM_0
@@ -207,6 +211,25 @@ static esp_err_t power_init(i2c_master_bus_handle_t bus) {
     return ESP_OK;
 }
 
+/* RX8130 /IRQ pulses the power key, so every timer expiry resets the board. A timer
+ * left running would reset it again before the app could stop it; the minimum span
+ * keeps a boot-time window wide enough to recover by reflashing. */
+static esp_err_t rtc_init(i2c_master_bus_handle_t bus) {
+    bsp_rtc_t *rtc = NULL;
+    esp_err_t err = rx8130_rtc_create(&(rx8130_config_t){
+        .i2c_bus       = bus,
+        .int_io        = GPIO_NUM_NC,
+        .charge_backup = true,
+        .timer_min_ms  = TAB5_RTC_TIMER_MIN_MS,
+    }, &rtc);
+    if (err != ESP_OK) return err;
+    bsp_rtc_set_active(rtc);
+    if ((err = bsp_rtc_timer_stop()) != ESP_OK) {
+        ESP_LOGE(TAG, "rtc timer stop: %s", esp_err_to_name(err));
+    }
+    return ESP_OK;
+}
+
 static esp_err_t keyboard_init(const bsp_config_t *config) {
     i2c_master_bus_handle_t bus = NULL;
     esp_err_t err = i2c_bus_init(TAB5_EXT_I2C_PORT, TAB5_EXT_I2C_PIN_SDA, TAB5_EXT_I2C_PIN_SCL, &bus);
@@ -275,6 +298,10 @@ esp_err_t bsp_init(const bsp_config_t *config) {
 
     if ((err = imu_init(i2c_bus)) != ESP_OK) {
         ESP_LOGW(TAG, "imu unavailable: %s", esp_err_to_name(err));
+    }
+
+    if ((err = rtc_init(i2c_bus)) != ESP_OK) {
+        ESP_LOGW(TAG, "rtc unavailable: %s", esp_err_to_name(err));
     }
 
     if ((err = keyboard_init(config)) != ESP_OK) {

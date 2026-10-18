@@ -14,11 +14,13 @@
 #include "bsp_imu.h"
 #include "bsp_keyboard.h"
 #include "bsp_power.h"
+#include "bsp_rtc.h"
 #include "sdl_panel.h"
 #include "sim_keyboard.h"
 #include "imu_sim.h"
 #include "sdl_audio.h"
 #include "power_sim.h"
+#include "rtc_sim.h"
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -46,6 +48,9 @@ esp_err_t bsp_init(const bsp_config_t *config) {
 
     bsp_imu_t *imu = NULL;
     if (imu_sim_create(&imu) == ESP_OK) bsp_imu_set_active(imu);
+
+    bsp_rtc_t *rtc = NULL;
+    if (rtc_sim_create(&rtc) == ESP_OK) bsp_rtc_set_active(rtc);
 
     bsp_audio_t *audio = NULL;
     esp_err_t audio_err = sdl_audio_create(NULL, &audio);  /* PCM | SPEAKER */
