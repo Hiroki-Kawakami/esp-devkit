@@ -15,6 +15,7 @@ straight into the `simulator` executable (one binary → no separate library).
 idf_compat/
   include/            shim headers (what shared code #includes)
     esp_err.h esp_log.h esp_check.h esp_timer.h esp_heap_caps.h esp_mac.h
+    esp_app_desc.h
     esp_attr.h multi_heap.h
     nvs.h nvs_flash.h
     driver/           jpeg_decode.h ppa.h i2c_master.h
@@ -24,7 +25,8 @@ idf_compat/
     freertos/         host FreeRTOS API: FreeRTOS.h task.h queue.h semphr.h
                       event_groups.h timers.h portmacro.h
   src/                shim implementations
-    esp_err.c esp_timer.c esp_heap_caps.c multi_heap.c esp_mac.c nvs.c jpeg_decode.c ppa.c
+    esp_err.c esp_timer.c esp_heap_caps.c multi_heap.c esp_mac.c esp_app_desc.c nvs.c
+    jpeg_decode.c ppa.c
     i2c_master.c path_redirect.c
     freertos_port.c freertos_task.c freertos_queue.c
     freertos_event_groups.c freertos_timers.c
@@ -38,7 +40,7 @@ nothing is vendored. The same philosophy throughout: reimplement the API
 *contract* on host primitives, just enough for the simulator.
 
 - ESP-IDF APIs: `esp_err`, `esp_log`, `esp_check`, `esp_timer`, `esp_heap_caps`,
-  `multi_heap`, `esp_mac`, `esp_attr` (placement attributes, empty), and a file-backed
+  `multi_heap`, `esp_mac`, `esp_app_desc`, `esp_attr` (placement attributes, empty), and a file-backed
   `nvs` / `nvs_flash`.
 - The FreeRTOS API (`freertos/*.h`) on native pthreads — see below.
 - `driver/jpeg_decode` — IDF JPEG decode engine API, backed by libjpeg.
@@ -120,6 +122,15 @@ overrides made through the standard IDF APIs are process-local and already
 generated interface addresses remain cached when the base changes, matching
 IDF. Call `nvs_flash_sim_set_path()` before the first MAC API if overriding the
 NVS path. Separate virtual devices should use separate NVS files.
+
+## App description
+
+`esp_app_get_description()` returns a descriptor whose `version` follows IDF's
+`PROJECT_VER`: `-DPROJECT_VER=<ver>` when given, otherwise
+`git describe --always --tags --dirty` of the simulator project directory,
+evaluated at configure time (re-run cmake to pick up a new commit or tag).
+`project_name` is the simulator's CMake project name and `idf_ver` is
+`simulator`.
 
 ## PPA (Pixel-Processing Accelerator)
 

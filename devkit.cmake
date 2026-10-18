@@ -178,6 +178,31 @@ macro(devkit_simulator)
     endforeach()
     target_include_directories(simulator PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/main")
 
+    # Same resolution as IDF minus version.txt / project(VERSION), so
+    # -DPROJECT_VER=<ver> overrides it on both targets.
+    if(DEFINED PROJECT_VER)
+        set(_devkit_sim_project_ver "${PROJECT_VER}")
+    else()
+        set(_devkit_sim_project_ver "")
+        find_package(Git QUIET)
+        if(GIT_FOUND)
+            execute_process(
+                COMMAND "${GIT_EXECUTABLE}" describe --always --tags --dirty
+                WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+                OUTPUT_VARIABLE _devkit_sim_project_ver
+                OUTPUT_STRIP_TRAILING_WHITESPACE
+                ERROR_QUIET)
+        endif()
+        if(NOT _devkit_sim_project_ver)
+            set(_devkit_sim_project_ver 1)
+        endif()
+    endif()
+    string(SUBSTRING "${_devkit_sim_project_ver}" 0 31 _devkit_sim_project_ver)
+    message(STATUS "App \"${PROJECT_NAME}\" version: ${_devkit_sim_project_ver}")
+    set_source_files_properties("${DEVKIT_ROOT}/idf_compat/src/esp_app_desc.c"
+        PROPERTIES COMPILE_DEFINITIONS
+        "PROJECT_VER=\"${_devkit_sim_project_ver}\";PROJECT_NAME=\"${PROJECT_NAME}\"")
+
     # ---------------------------------------------------------------------------
     # Components (idf_component_register shim)
     # ---------------------------------------------------------------------------

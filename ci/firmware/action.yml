@@ -8,8 +8,11 @@ inputs:
   project-dir:
     description: ESP-IDF project directory, relative to the workspace.
     required: true
+  version:
+    description: App version passed as `-DPROJECT_VER`. Empty leaves it to IDF (`git describe`). Ignored when `command` is set.
+    default: ""
   command:
-    description: Build command run in the workspace. Defaults to `idf.py -C <project-dir> build merge-bin`.
+    description: Build command run in the workspace. Defaults to `idf.py -C <project-dir> [-DPROJECT_VER=<version>] build merge-bin`.
     default: ""
   artifact-name:
     description: Artifact name. Defaults to the project directory name.
@@ -31,10 +34,12 @@ runs:
       env:
         IMAGE_REF: ${{ inputs.image-ref }}
         PROJECT_DIR: ${{ inputs.project-dir }}
+        VERSION: ${{ inputs.version }}
         COMMAND: ${{ inputs.command }}
       run: |
+        version_arg=${VERSION:+-DPROJECT_VER=$VERSION}
         docker run --rm -v "$GITHUB_WORKSPACE:/work" -w /work "$IMAGE_REF" \
-          sh -euc "${COMMAND:-idf.py -C $PROJECT_DIR build merge-bin}"
+          sh -euc "${COMMAND:-idf.py -C $PROJECT_DIR $version_arg build merge-bin}"
 
     - id: files
       shell: bash

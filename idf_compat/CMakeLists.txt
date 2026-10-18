@@ -14,6 +14,7 @@ idf_component_register(
         "src/esp_heap_caps.c"
         "src/multi_heap.c"    # IDF multi_heap on a caller-owned region, first fit
         "src/esp_mac.c"
+        "src/esp_app_desc.c"
         "src/nvs.c"
         "src/jpeg_decode.c"   # IDF JPEG decode engine API, backed by libjpeg
         "src/ppa.c"           # IDF PPA (scale/rotate/mirror/blend/fill), CPU impl

@@ -7,7 +7,7 @@ environment `nix develop` gives locally:
 |---|---|
 | `lib.<system>.mkFwImage` (`flake.nix`) | the devShell's IDF environment (all toolchains, patched IDF) as a `streamLayeredImage`; `extraPackages` and `extraEnv` add project tools |
 | `ci/image` | builds the image inside `nixos/nix` and pushes it, unless the tag already exists |
-| `ci/firmware` | runs `idf.py -C <project-dir> build merge-bin` in the image and uploads `merged-binary.bin`, the app ELF and `sdkconfig` |
+| `ci/firmware` | runs `idf.py -C <project-dir> build merge-bin` in the image and uploads `merged-binary.bin`, the app ELF and `sdkconfig`; `version` sets `PROJECT_VER` |
 
 The project exposes the image from its flake and calls the actions by local
 path, so they always match the esp-devkit commit the submodule points at:
@@ -47,6 +47,19 @@ esp-devkit's `flake.nix` and `nix/`, and the project's `key-files` (default
 `flake.nix`). The esp-devkit rev is left out so that bumping the submodule for
 library changes reuses the image. Anything else the image depends on must be
 listed in `key-files`, or run with `force: true`.
+
+`version` is passed as `-DPROJECT_VER`, which IDF takes over `version.txt` and
+`git describe` (the checkout is shallow and the container's git may reject the
+workspace's ownership, so `git describe` is unreliable in CI). A tag-triggered
+workflow passes the tag name:
+
+```yaml
+      - uses: ./esp-devkit/ci/firmware
+        with:
+          image-ref: ${{ needs.image.outputs.image-ref }}
+          project-dir: esp32p4
+          version: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+```
 
 The build runs with `docker run` rather than `jobs.<id>.container`: Actions
 injects its glibc-linked Node into job containers, which cannot start in a Nix
