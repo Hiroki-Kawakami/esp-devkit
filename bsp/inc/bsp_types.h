@@ -147,9 +147,25 @@ typedef struct {
 } bsp_rtc_datetime_t;
 
 typedef enum {
-    BSP_POWER_CAP_BATTERY = 1 << 0,  /*!< battery voltage / level readable */
-    BSP_POWER_CAP_VBUS    = 1 << 1,  /*!< external supply (VBUS) presence readable */
+    BSP_POWER_CAP_BATTERY     = 1 << 0,  /*!< battery voltage / level readable */
+    BSP_POWER_CAP_EXTERNAL    = 1 << 1,  /*!< BATTERY / EXTERNAL status distinguishable */
+    BSP_POWER_CAP_CHARGE_CTRL = 1 << 2,  /*!< charging can be enabled / disabled */
+    BSP_POWER_CAP_CHARGE_FAST = 1 << 3,  /*!< BSP_POWER_CHARGE_FAST selectable */
+    BSP_POWER_CAP_CHARGE_STAT = 1 << 4,  /*!< CHARGING status reported */
 } bsp_power_caps_t;
+
+typedef enum {
+    BSP_POWER_STATUS_UNKNOWN,   /*!< no provider / read failed */
+    BSP_POWER_STATUS_BATTERY,   /*!< running on battery */
+    BSP_POWER_STATUS_EXTERNAL,  /*!< external power, not charging */
+    BSP_POWER_STATUS_CHARGING,  /*!< external power, charging */
+} bsp_power_status_t;
+
+typedef enum {
+    BSP_POWER_CHARGE_OFF,
+    BSP_POWER_CHARGE_NORMAL,
+    BSP_POWER_CHARGE_FAST,
+} bsp_power_charge_t;
 
 typedef enum {
     BSP_POWER_SWITCH_USB5V,   /*!< USB host 5V bus power */

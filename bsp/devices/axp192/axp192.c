@@ -196,8 +196,9 @@ static esp_err_t power_get_level(bsp_power_t *self, uint8_t *out_percent) {
     return ESP_OK;
 }
 
-static bool power_vbus_present(bsp_power_t *self) {
-    return axp192_vbus_present(((axp192_power_t *)self)->axp);
+static bsp_power_status_t power_get_status(bsp_power_t *self) {
+    return axp192_vbus_present(((axp192_power_t *)self)->axp)
+         ? BSP_POWER_STATUS_EXTERNAL : BSP_POWER_STATUS_BATTERY;
 }
 
 static esp_err_t power_deinit(bsp_power_t *self) {
@@ -213,10 +214,10 @@ esp_err_t axp192_power_create(axp192_handle_t h, uint32_t empty_mv, uint32_t ful
     p->axp      = h;
     p->empty_mv = empty_mv;
     p->full_mv  = full_mv;
-    p->base.caps = BSP_POWER_CAP_BATTERY | BSP_POWER_CAP_VBUS;
+    p->base.caps = BSP_POWER_CAP_BATTERY | BSP_POWER_CAP_EXTERNAL;
     p->base.get_battery_voltage = power_get_voltage;
     p->base.get_battery_level   = power_get_level;
-    p->base.vbus_present        = power_vbus_present;
+    p->base.get_status          = power_get_status;
     p->base.deinit              = power_deinit;
     *out_power = &p->base;
     return ESP_OK;

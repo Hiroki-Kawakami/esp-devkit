@@ -4,8 +4,9 @@
  *
  * Generic bsp_power provider for boards that sense the battery on an ADC pin
  * through a resistor divider (no fuel-gauge IC). Reports the divided-back
- * terminal voltage and a linear empty..full level; VBUS is optional (a sense
- * GPIO). The board fills adc_battery_config_t with its electrical constants.
+ * terminal voltage and a linear empty..full level; external-power status is
+ * optional (a VBUS sense GPIO). The board fills adc_battery_config_t with its
+ * electrical constants.
  */
 
 #pragma once
@@ -22,7 +23,7 @@ typedef struct {
     uint32_t      empty_mv;     /*!< 0% endpoint */
     uint32_t      full_mv;      /*!< 100% endpoint */
     uint8_t       samples;      /*!< averaged reads per query; 0 -> 16 */
-    gpio_num_t    vbus_gpio;    /*!< GPIO_NUM_NC -> no VBUS cap */
+    gpio_num_t    vbus_gpio;    /*!< GPIO_NUM_NC -> no EXTERNAL cap */
     bool          vbus_active_high;
 } adc_battery_config_t;
 

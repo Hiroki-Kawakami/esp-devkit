@@ -84,6 +84,8 @@ One command per line, `#` starts a comment, blank lines are ignored.
 | `imu <ax> <ay> <az> [<gx> <gy> <gz>]` | replace the IMU reading until `imu release` |
 | `imu rot0\|rot90\|rot180\|rot270\|face-up\|face-down` | resting pose matching that `bsp_imu_orientation_t` |
 | `imu release` | back to the board's sensor (the view rotation on the simulator) |
+| `power <percent> battery\|external` | simulator only: battery level and external supply the power provider reports |
+| `power release` | simulator only: back to 76% on external power |
 | `reset` | reboot the board and wait until the harness answers again; no-op on the simulator, which starts fresh every run |
 | `quit` | stop the script (implicit at end of file) |
 | anything else | sent verbatim — app commands registered with `harness_register()` |
@@ -209,6 +211,8 @@ up <id>                 -> #OK up
 btn <id> down|up        -> #OK btn
 imu <ax> <ay> <az> [<gx> <gy> <gz>] -> #OK imu
 imu release             -> #OK imu
+power <percent> battery|external -> #OK power
+power release           -> #OK power
 idle                    -> #OK idle 0|1
 snap [quality]          -> #OK snap <w> <h>, then #D <base64> lines, #END <bytes>
 quit                    -> #OK quit
@@ -240,6 +244,10 @@ and EOF on a piped stdin ends the run like `quit`.
 - Boards with an IMU get a stand-in provider whose accel follows the `r`/`l`
   view rotation, so rotating the window drives `bsp_imu_get_orientation`.
   Headless runs keep the initial rotation; `imu` injection overrides it.
+- Boards with a battery get a stand-in power provider with the device's caps
+  and voltage endpoints, starting at 76% on external power; `power` changes
+  it. With external power it reports CHARGING below 100% unless the app turned
+  charging off, on boards that report the charging state.
 - `libs/harness/src/harness.c` also compiles standalone into host unit tests
   that only need `harness_register` (see `libs/wifi/test/run.sh`).
 

@@ -75,9 +75,10 @@ static esp_err_t bat_get_level(bsp_power_t *self, uint8_t *out_percent) {
     return ESP_OK;
 }
 
-static bool bat_vbus_present(bsp_power_t *self) {
+static bsp_power_status_t bat_get_status(bsp_power_t *self) {
     adc_battery_t *bat = (adc_battery_t *)self;
-    return gpio_get_level(bat->vbus_gpio) == (bat->vbus_active_high ? 1 : 0);
+    return gpio_get_level(bat->vbus_gpio) == (bat->vbus_active_high ? 1 : 0)
+         ? BSP_POWER_STATUS_EXTERNAL : BSP_POWER_STATUS_BATTERY;
 }
 
 static esp_err_t bat_deinit(bsp_power_t *self) {
@@ -133,10 +134,10 @@ esp_err_t adc_battery_create(const adc_battery_config_t *config, bsp_power_t **o
             .mode         = GPIO_MODE_INPUT,
         };
         if (gpio_config(&in) == ESP_OK) {
-            bat->base.caps        |= BSP_POWER_CAP_VBUS;
-            bat->base.vbus_present = bat_vbus_present;
+            bat->base.caps      |= BSP_POWER_CAP_EXTERNAL;
+            bat->base.get_status = bat_get_status;
         } else {
-            ESP_LOGW(TAG, "vbus gpio config failed; VBUS disabled");
+            ESP_LOGW(TAG, "vbus gpio config failed; external status disabled");
         }
     }
 

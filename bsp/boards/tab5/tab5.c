@@ -28,6 +28,7 @@
 #include "sd_pwr_ctrl_by_on_chip_ldo.h"
 #include "tab5_panel.h"
 #include "tab5_audio.h"
+#include "tab5_power.h"
 #if CONFIG_ESP_HOSTED_ENHANCED_HOST
 #include "hosted_host.h"
 #endif
@@ -103,7 +104,7 @@ static esp_err_t io_expanders_init(i2c_master_bus_handle_t bus) {
         [4] = { PI4IO_PIN_MODE_OUTPUT, .initial_value = false },  // PWROFF_PLUSE
         [5] = { PI4IO_PIN_MODE_OUTPUT, .initial_value = false },  // nCHG_QC_EN
         [6] = { PI4IO_PIN_MODE_INPUT },                           // CHG_STAT
-        [7] = { PI4IO_PIN_MODE_OUTPUT, .initial_value = false },  // CHG_EN
+        [7] = { PI4IO_PIN_MODE_OUTPUT, .initial_value = true  },  // CHG_EN
     };
     return pi4io_init(bus, TAB5_PI4IOE2_ADDR, pi4ioe2_cfg, &s_pi4ioe2);
 }
@@ -195,6 +196,17 @@ static esp_err_t audio_init(const bsp_config_t *config, i2c_master_bus_handle_t 
     return ESP_OK;
 }
 
+static esp_err_t power_init(i2c_master_bus_handle_t bus) {
+    bsp_power_t *power = NULL;
+    esp_err_t err = tab5_power_create(&(tab5_power_config_t){
+        .i2c_bus     = bus,
+        .io_expander = s_pi4ioe2,
+    }, &power);
+    if (err != ESP_OK) return err;
+    bsp_power_set_active(power);
+    return ESP_OK;
+}
+
 static esp_err_t keyboard_init(const bsp_config_t *config) {
     i2c_master_bus_handle_t bus = NULL;
     esp_err_t err = i2c_bus_init(TAB5_EXT_I2C_PORT, TAB5_EXT_I2C_PIN_SDA, TAB5_EXT_I2C_PIN_SCL, &bus);
@@ -255,6 +267,10 @@ esp_err_t bsp_init(const bsp_config_t *config) {
 
     if ((err = audio_init(config, i2c_bus)) != ESP_OK) {
         ESP_LOGW(TAG, "audio unavailable: %s", esp_err_to_name(err));
+    }
+
+    if ((err = power_init(i2c_bus)) != ESP_OK) {
+        ESP_LOGW(TAG, "power unavailable: %s", esp_err_to_name(err));
     }
 
     if ((err = imu_init(i2c_bus)) != ESP_OK) {

@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 Hiroki Kawakami
  *
- * Model-agnostic power layer: dispatches the bsp_power_* sensing API through the
+ * Model-agnostic power layer: dispatches the bsp_power_* sensing / charger API through the
  * active provider (registered via bsp_power_set_active), plus weak defaults for
  * the power controls that a board with real power hardware overrides.
  */
@@ -30,9 +30,17 @@ esp_err_t bsp_power_get_battery_level(uint8_t *out_percent) {
     return s_power->get_battery_level(s_power, out_percent);
 }
 
-bool bsp_power_vbus_present(void) {
-    if (!s_power || !s_power->vbus_present) return false;
-    return s_power->vbus_present(s_power);
+bsp_power_status_t bsp_power_get_status(void) {
+    if (!s_power || !s_power->get_status) return BSP_POWER_STATUS_UNKNOWN;
+    return s_power->get_status(s_power);
+}
+
+esp_err_t bsp_power_set_charge(bsp_power_charge_t mode) {
+    if (!s_power || !s_power->set_charge) return ESP_ERR_NOT_SUPPORTED;
+    if (mode == BSP_POWER_CHARGE_FAST && !(s_power->caps & BSP_POWER_CAP_CHARGE_FAST)) {
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+    return s_power->set_charge(s_power, mode);
 }
 
 __attribute__((weak)) esp_err_t bsp_power_off(void) {

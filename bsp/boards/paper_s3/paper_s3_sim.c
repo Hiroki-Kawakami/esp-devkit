@@ -42,7 +42,13 @@ esp_err_t bsp_init(const bsp_config_t *config) {
     if (rtc_sim_create(&rtc) == ESP_OK) bsp_rtc_set_active(rtc);
 
     bsp_power_t *power = NULL;
-    if (power_sim_create(&power) == ESP_OK) bsp_power_set_active(power);
+    if (power_sim_create(&(power_sim_config_t){
+            .caps     = BSP_POWER_CAP_BATTERY | BSP_POWER_CAP_EXTERNAL,
+            .empty_mv = 3300,
+            .full_mv  = 4200,
+        }, &power) == ESP_OK) {
+        bsp_power_set_active(power);
+    }
 
     bsp_audio_t *audio = NULL;
     esp_err_t audio_err = sdl_audio_create(&(sdl_audio_config_t){ .tone_only = true }, &audio);

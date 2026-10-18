@@ -41,6 +41,15 @@ esp_err_t bsp_harness_keyboard_inject(const bsp_keyboard_event_t *event);
  * or to the simulator shortcuts (false). ESP_ERR_NOT_SUPPORTED on a device. */
 esp_err_t bsp_harness_sim_set_key_route(bool keyboard);
 
+/* Simulator only: battery level (0..100) and external supply reported by the
+ * simulated power provider; NULL restores the defaults (76%, external).
+ * ESP_ERR_NOT_SUPPORTED on a device or a board without one. */
+typedef struct {
+    uint8_t level;
+    bool    external;
+} bsp_harness_sim_power_t;
+esp_err_t bsp_harness_sim_power_inject(const bsp_harness_sim_power_t *state);
+
 bool      bsp_harness_imu_present(void);
 esp_err_t bsp_harness_imu_inject(const bsp_imu_sample_t *sample);
 

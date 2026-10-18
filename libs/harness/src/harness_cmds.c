@@ -166,6 +166,29 @@ static bool cmd_imu(int argc, const char *const *argv, void *user) {
     return true;
 }
 
+static bool cmd_power(int argc, const char *const *argv, void *user) {
+    (void)user;
+    esp_err_t err;
+    if (argc == 2 && !strcmp(argv[1], "release")) {
+        err = bsp_harness_sim_power_inject(NULL);
+    } else if (argc == 3 && (!strcmp(argv[2], "battery") || !strcmp(argv[2], "external"))) {
+        int level = atoi(argv[1]);
+        if (level < 0 || level > 100) {
+            harness_reply("ERR power: level 0..100");
+            return true;
+        }
+        err = bsp_harness_sim_power_inject(&(bsp_harness_sim_power_t){
+            .level    = (uint8_t)level,
+            .external = !strcmp(argv[2], "external"),
+        });
+    } else {
+        harness_reply("ERR power: need <percent> battery|external | release");
+        return true;
+    }
+    if (err != ESP_OK) harness_reply("ERR power: %s", esp_err_to_name(err));
+    return true;
+}
+
 static bool cmd_idle(int argc, const char *const *argv, void *user) {
     (void)argc; (void)argv; (void)user;
     harness_reply("OK idle %d", harness_is_idle() ? 1 : 0);
@@ -252,6 +275,7 @@ void harness_cmds_register(void) {
     harness_register("kbd",  cmd_kbd,        NULL);
     harness_register("simkeys", cmd_simkeys, NULL);
     harness_register("imu",  cmd_imu,        NULL);
+    harness_register("power", cmd_power,     NULL);
     harness_register("idle", cmd_idle,       NULL);
     harness_register("snap", cmd_snap,       NULL);
 }

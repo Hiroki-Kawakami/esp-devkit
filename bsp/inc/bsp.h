@@ -55,11 +55,16 @@ esp_err_t bsp_power_set_switch(bsp_power_switch_t sw, bool on);
 /* Battery / external-supply sensing (board-provided provider). caps == 0 when
  * no provider is registered; calls outside the caps -> ESP_ERR_NOT_SUPPORTED.
  * level is a linear 0..100 map of the terminal voltage between the board's
- * empty/full endpoints -- a coarse gauge, not a true state-of-charge. */
-uint32_t  bsp_power_get_caps(void);
-esp_err_t bsp_power_get_battery_voltage(uint32_t *out_mv) BSP_NONNULL(1);
-esp_err_t bsp_power_get_battery_level(uint8_t *out_percent) BSP_NONNULL(1);
-bool      bsp_power_vbus_present(void);
+ * empty/full endpoints -- a coarse gauge, not a true state-of-charge.
+ * get_status: UNKNOWN without CAP_EXTERNAL; EXTERNAL stands in for CHARGING
+ * without CAP_CHARGE_STAT. */
+uint32_t           bsp_power_get_caps(void);
+esp_err_t          bsp_power_get_battery_voltage(uint32_t *out_mv) BSP_NONNULL(1);
+esp_err_t          bsp_power_get_battery_level(uint8_t *out_percent) BSP_NONNULL(1);
+bsp_power_status_t bsp_power_get_status(void);
+
+/* Charger control. Needs CHARGE_CTRL (and CHARGE_FAST for BSP_POWER_CHARGE_FAST). */
+esp_err_t bsp_power_set_charge(bsp_power_charge_t mode);
 
 // MARK: Bus
 /* Bus handles the board initialized, for app-side device composition; NULL

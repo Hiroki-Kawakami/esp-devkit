@@ -1,26 +1,29 @@
 /*
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 Hiroki Kawakami
- *
- * Host-side bsp_power: level from SIMULATOR_BATTERY_PERCENT (default 76),
- * voltage derived linearly over a 1S Li-ion range, VBUS from SIMULATOR_VBUS
- * (present unless "0") -- the host behaves like a USB-powered device.
  */
 
 #include "power_sim.h"
-#include <stdlib.h>
-#include <string.h>
+#include "bsp_harness.h"
+#include <stdatomic.h>
 
-#define SIM_BATT_EMPTY_MV 3300u
-#define SIM_BATT_FULL_MV  4200u
+#define DEFAULT_LEVEL    76
+#define DEFAULT_EXTERNAL true
 
-static uint8_t sim_level(void) {
-    const char *env = getenv("SIMULATOR_BATTERY_PERCENT");
-    long v = env ? strtol(env, NULL, 10) : 76;
-    if (v < 0) v = 0;
-    if (v > 100) v = 100;
-    return (uint8_t)v;
-}
+/* level in bits 0-7, external in bit 8: one word so a reader never sees a torn pair. */
+static atomic_uint s_state = DEFAULT_LEVEL | (DEFAULT_EXTERNAL ? 1u << 8 : 0);
+static atomic_bool s_charge_on = true;
+static bool s_created;
+
+typedef struct {
+    bsp_power_t base;
+    uint32_t empty_mv;
+    uint32_t full_mv;
+} power_sim_t;
+
+static power_sim_t s_power;
+
+static uint8_t sim_level(void) { return (uint8_t)(atomic_load(&s_state) & 0xFF); }
 
 static esp_err_t sim_get_battery_level(bsp_power_t *self, uint8_t *out_percent) {
     (void)self;
@@ -29,26 +32,49 @@ static esp_err_t sim_get_battery_level(bsp_power_t *self, uint8_t *out_percent) 
 }
 
 static esp_err_t sim_get_battery_voltage(bsp_power_t *self, uint32_t *out_mv) {
-    (void)self;
-    *out_mv = SIM_BATT_EMPTY_MV + (uint32_t)sim_level() * (SIM_BATT_FULL_MV - SIM_BATT_EMPTY_MV) / 100u;
+    power_sim_t *p = (power_sim_t *)self;
+    *out_mv = p->empty_mv + (uint32_t)sim_level() * (p->full_mv - p->empty_mv) / 100u;
     return ESP_OK;
 }
 
-static bool sim_vbus_present(bsp_power_t *self) {
-    (void)self;
-    const char *env = getenv("SIMULATOR_VBUS");
-    return !(env && strcmp(env, "0") == 0);
+static bsp_power_status_t sim_get_status(bsp_power_t *self) {
+    uint32_t state = atomic_load(&s_state);
+    if (!((state >> 8) & 1)) return BSP_POWER_STATUS_BATTERY;
+    if ((self->caps & BSP_POWER_CAP_CHARGE_STAT) && atomic_load(&s_charge_on) && (state & 0xFF) < 100) {
+        return BSP_POWER_STATUS_CHARGING;
+    }
+    return BSP_POWER_STATUS_EXTERNAL;
 }
 
-static bsp_power_t s_power = {
-    .caps                = BSP_POWER_CAP_BATTERY | BSP_POWER_CAP_VBUS,
-    .get_battery_voltage = sim_get_battery_voltage,
-    .get_battery_level   = sim_get_battery_level,
-    .vbus_present        = sim_vbus_present,
-    .deinit              = NULL,
-};
+static esp_err_t sim_set_charge(bsp_power_t *self, bsp_power_charge_t mode) {
+    (void)self;
+    atomic_store(&s_charge_on, mode != BSP_POWER_CHARGE_OFF);
+    return ESP_OK;
+}
 
-esp_err_t power_sim_create(bsp_power_t **out_power) {
-    *out_power = &s_power;
+esp_err_t power_sim_create(const power_sim_config_t *config, bsp_power_t **out_power) {
+    if (!config || !out_power || config->full_mv <= config->empty_mv) return ESP_ERR_INVALID_ARG;
+    s_power = (power_sim_t){
+        .base = {
+            .caps                = config->caps,
+            .get_battery_voltage = sim_get_battery_voltage,
+            .get_battery_level   = sim_get_battery_level,
+        },
+        .empty_mv = config->empty_mv,
+        .full_mv  = config->full_mv,
+    };
+    if (config->caps & BSP_POWER_CAP_EXTERNAL)    s_power.base.get_status = sim_get_status;
+    if (config->caps & BSP_POWER_CAP_CHARGE_CTRL) s_power.base.set_charge = sim_set_charge;
+    s_created = true;
+    *out_power = &s_power.base;
+    return ESP_OK;
+}
+
+esp_err_t bsp_harness_sim_power_inject(const bsp_harness_sim_power_t *state) {
+    if (!s_created) return ESP_ERR_NOT_SUPPORTED;
+    if (state && state->level > 100) return ESP_ERR_INVALID_ARG;
+    uint8_t level  = state ? state->level : DEFAULT_LEVEL;
+    bool external  = state ? state->external : DEFAULT_EXTERNAL;
+    atomic_store(&s_state, level | (external ? 1u << 8 : 0));
     return ESP_OK;
 }

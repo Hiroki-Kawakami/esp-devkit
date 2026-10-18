@@ -36,6 +36,11 @@ esp_err_t bsp_harness_sim_set_key_route(bool keyboard) {
     (void)keyboard;
     return ESP_ERR_NOT_SUPPORTED;
 }
+
+esp_err_t bsp_harness_sim_power_inject(const bsp_harness_sim_power_t *state) {
+    (void)state;
+    return ESP_ERR_NOT_SUPPORTED;
+}
 #endif
 
 void bsp_harness_set_screenshot_cb(bsp_harness_screenshot_fn fn, void *user) {

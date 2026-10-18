@@ -13,10 +13,12 @@
 #include "bsp_audio.h"
 #include "bsp_imu.h"
 #include "bsp_keyboard.h"
+#include "bsp_power.h"
 #include "sdl_panel.h"
 #include "sim_keyboard.h"
 #include "imu_sim.h"
 #include "sdl_audio.h"
+#include "power_sim.h"
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -54,6 +56,16 @@ esp_err_t bsp_init(const bsp_config_t *config) {
         });
     } else {
         fprintf(stderr, "[sim] sdl_audio_create failed: %d\n", audio_err);
+    }
+
+    bsp_power_t *power = NULL;
+    if (power_sim_create(&(power_sim_config_t){
+            .caps     = BSP_POWER_CAP_BATTERY | BSP_POWER_CAP_EXTERNAL | BSP_POWER_CAP_CHARGE_CTRL
+                      | BSP_POWER_CAP_CHARGE_FAST | BSP_POWER_CAP_CHARGE_STAT,
+            .empty_mv = 6600,
+            .full_mv  = 8200,
+        }, &power) == ESP_OK) {
+        bsp_power_set_active(power);
     }
 
     bsp_keyboard_t *keyboard = NULL;
