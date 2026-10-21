@@ -6,6 +6,7 @@
 #pragma once
 #include "widgets/button.hpp"
 #include "widgets/fonts.hpp"
+#include "widgets/grid.hpp"
 #include "widgets/layout.hpp"
 #include "widgets/list.hpp"
 #include "widgets/modal.hpp"

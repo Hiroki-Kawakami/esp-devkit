@@ -8,6 +8,7 @@ set(UI_FRAMEWORK_SRCS
     "src/packed_font.cpp"
     "src/screen_manager.cpp"
     "src/widgets/common/fonts.cpp"
+    "src/widgets/common/grid.cpp"
     "src/widgets/common/layout.cpp")
 
 if(CONFIG_UI_FRAMEWORK_WIDGETS_PAPER)
