@@ -10,3 +10,4 @@
 #include "widgets/list.hpp"
 #include "widgets/modal.hpp"
 #include "widgets/navigation.hpp"
+#include "widgets/popover.hpp"

@@ -16,7 +16,8 @@ if(CONFIG_UI_FRAMEWORK_WIDGETS_PAPER)
         "src/widgets/paper/fonts.cpp"
         "src/widgets/paper/list.cpp"
         "src/widgets/paper/modal.cpp"
-        "src/widgets/paper/navigation.cpp")
+        "src/widgets/paper/navigation.cpp"
+        "src/widgets/paper/popover.cpp")
 elseif(CONFIG_UI_FRAMEWORK_WIDGETS_TAB5)
     list(APPEND UI_FRAMEWORK_SRCS
         "src/widgets/tab5/button.cpp"
@@ -24,7 +25,8 @@ elseif(CONFIG_UI_FRAMEWORK_WIDGETS_TAB5)
         "src/widgets/tab5/layout.cpp"
         "src/widgets/tab5/list.cpp"
         "src/widgets/tab5/modal.cpp"
-        "src/widgets/tab5/navigation.cpp")
+        "src/widgets/tab5/navigation.cpp"
+        "src/widgets/tab5/popover.cpp")
 endif()
 
 idf_component_register(
