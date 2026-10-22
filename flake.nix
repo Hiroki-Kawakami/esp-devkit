@@ -36,6 +36,7 @@
           patch -p1 -d $out < ${./nix/patches/ppa-srm-dig734-threshold.patch}
           patch -p1 -d $out < ${./nix/patches/p4-rev1-cpu-400mhz.patch}
           patch -p1 -d $out < ${./nix/patches/p4-rev1-psram-220mhz.patch}
+          patch -p1 -d $out < ${./nix/patches/fatfs-exfat.patch}
         '';
 
         idfToolchains = [
