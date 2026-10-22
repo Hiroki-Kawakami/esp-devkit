@@ -150,3 +150,17 @@ int unlink(const char *pathname) {
     char buf[PATH_BUF_MAX];
     return real(redirect(pathname, buf, sizeof(buf)));
 }
+
+int mkdir(const char *pathname, mode_t mode) {
+    static int (*real)(const char *, mode_t) = NULL;
+    if (!real) real = (int (*)(const char *, mode_t))dlsym(RTLD_NEXT, "mkdir");
+    char buf[PATH_BUF_MAX];
+    return real(redirect(pathname, buf, sizeof(buf)), mode);
+}
+
+int rmdir(const char *pathname) {
+    static int (*real)(const char *) = NULL;
+    if (!real) real = (int (*)(const char *))dlsym(RTLD_NEXT, "rmdir");
+    char buf[PATH_BUF_MAX];
+    return real(redirect(pathname, buf, sizeof(buf)));
+}

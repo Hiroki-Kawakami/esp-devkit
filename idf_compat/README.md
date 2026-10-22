@@ -172,7 +172,7 @@ addressing); a per-bus mutex mirrors the real driver's bus lock.
 
 `simulator/path_redirect.h` maps device mount points (`/sdcard`, ...) onto host
 directories. `src/path_redirect.c` defines `opendir` / `open` / `fopen` / `stat`
-/ `rename` / `unlink` in the executable, so the statically linked calls resolve
+/ `rename` / `unlink` / `mkdir` / `rmdir` in the executable, so the statically linked calls resolve
 there and are forwarded to the real libc with the translated path. fd-based
 calls (`read`, `lseek`, `fstat`, `readdir`) need no translation. Anything that
 must appear under a device path (the BSP's simulated SD card, a simulated USB
