@@ -203,7 +203,10 @@ static esp_err_t issue(sdmmc_hw_cmd_t cmd, uint32_t arg, uint32_t done, bool irq
         sdmmc_ll_enable_interrupt(&SDMMC, EV_ERR | EV_DONE, true);
     }
     sdmmc_ll_set_command_arg(&SDMMC, arg);
-    sdmmc_ll_set_command(&SDMMC, cmd);
+    /* sdmmc_ll_set_command() memcpy()s through a non-volatile pointer, which
+     * the compiler may store ahead of the argument: the command then runs
+     * with the previous argument and the late argument write raises HLE. */
+    SDMMC.cmd.val = cmd.val;
 
     esp_err_t err = irq ? wait_irq(done) : wait_polled(done, t0);
     if (err == ESP_OK && ((SDMMC.resp[0] >> 8) & R5_ERRORS)) err = ESP_ERR_INVALID_RESPONSE;
