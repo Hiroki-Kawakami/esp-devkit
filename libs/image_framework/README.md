@@ -30,6 +30,15 @@ The component compiles itself at `-O2` unless the project asked for `-O0` or
 `-O2` outright. At IDF's default the decode and resize loops run 1.4-1.6x
 slower for 2 KB of flash.
 
+## Orientation
+
+`imgf_resize_opts_t::orientation` turns or mirrors the picture while it is
+resized, so a picture stored on its side is shown upright without a second
+full-size buffer. The target size is the oriented one. A row of the resized
+picture may land as a column, so an oriented resizer only writes through
+`imgf_resizer_pop_row_into()`, which takes the whole destination: the row is
+packed as usual and then placed pixel by pixel.
+
 ## Measuring
 
 `firmware/imgf_bench` times decode, resize and the decode+resize pipeline on

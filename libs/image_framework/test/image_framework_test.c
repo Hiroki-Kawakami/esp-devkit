@@ -1486,6 +1486,71 @@ static void test_resizer_push_pop_drain(void) {
     imgf_resizer_destroy(r);
 }
 
+static void oriented_xy(imgf_orient_t o, int w, int h, int x, int y, int *ox, int *oy) {
+    switch (o) {
+    case IMGF_ORIENT_MIRROR_X:   *ox = w - 1 - x; *oy = y;         break;
+    case IMGF_ORIENT_ROT180:     *ox = w - 1 - x; *oy = h - 1 - y; break;
+    case IMGF_ORIENT_MIRROR_Y:   *ox = x;         *oy = h - 1 - y; break;
+    case IMGF_ORIENT_TRANSPOSE:  *ox = y;         *oy = x;         break;
+    case IMGF_ORIENT_ROT90:      *ox = h - 1 - y; *oy = x;         break;
+    case IMGF_ORIENT_TRANSVERSE: *ox = h - 1 - y; *oy = w - 1 - x; break;
+    case IMGF_ORIENT_ROT270:     *ox = y;         *oy = w - 1 - x; break;
+    default:                     *ox = x;         *oy = y;         break;
+    }
+}
+
+static void test_resize_orientation(void) {
+    enum { W = 3, H = 2 };
+    uint8_t src[W * H * 3];
+    for (int i = 0; i < W * H * 3; i++) src[i] = (uint8_t)(i * 7 + 1);
+    for (int o = IMGF_ORIENT_NONE; o <= IMGF_ORIENT_ROT270; o++) {
+        const bool swap = imgf_orient_swaps_axes((imgf_orient_t)o);
+        const int ow = swap ? H : W, oh = swap ? W : H;
+        imgf_resize_opts_t opts = {0};
+        opts.target_w = (uint16_t)ow;
+        opts.target_h = (uint16_t)oh;
+        opts.fit = IMGF_FIT_STRETCH;
+        opts.orientation = (imgf_orient_t)o;
+
+        uint8_t gray[W * H] = {0};
+        for (int i = 0; i < W * H; i++) gray[i] = src[i];
+        uint8_t got[W * H] = {0};
+        CHECK(imgf_resize_buffer(gray, W, H, W, IMGF_PIX_GRAY8, got, 0, &opts) == IMGF_OK);
+        uint8_t rgb[W * H * 3] = {0};
+        CHECK(imgf_resize_buffer(src, W, H, W * 3, IMGF_PIX_RGB888, rgb, 0, &opts) == IMGF_OK);
+        for (int y = 0; y < H; y++) {
+            for (int x = 0; x < W; x++) {
+                int ox, oy;
+                oriented_xy((imgf_orient_t)o, W, H, x, y, &ox, &oy);
+                CHECK(got[oy * ow + ox] == gray[y * W + x]);
+                CHECK(memcmp(rgb + (oy * ow + ox) * 3, src + (y * W + x) * 3, 3) == 0);
+            }
+        }
+    }
+
+    imgf_resize_opts_t opts = {0};
+    opts.target_w = 100;
+    opts.target_h = 100;
+    opts.fit = IMGF_FIT_CONTAIN;
+    opts.orientation = IMGF_ORIENT_ROT90;
+    uint16_t dw, dh;
+    CHECK(imgf_resize_compute_dst(200, 100, &opts, &dw, &dh) == IMGF_OK);
+    CHECK(dw == 50 && dh == 100);
+
+    opts.target_w = 3;
+    opts.target_h = 3;
+    imgf_err_t err;
+    imgf_resizer_t *r = imgf_resizer_create(6, 3, IMGF_PIX_RGB565, &opts, &err);
+    CHECK(r && err == IMGF_OK);
+    CHECK(imgf_resizer_dst_width(r) == 2 && imgf_resizer_dst_height(r) == 3);
+    uint16_t row[6] = {0};
+    for (int y = 0; y < 3; y++) CHECK(imgf_resizer_push_row(r, (const uint8_t *)row) >= 0);
+    uint8_t out[2 * 3 * 2];
+    CHECK(!imgf_resizer_pop_row(r, out));
+    CHECK(imgf_resizer_last_error(r) == IMGF_ERR_INVALID_ARG);
+    imgf_resizer_destroy(r);
+}
+
 /* ---- async ------------------------------------------------------------ */
 
 typedef struct {
@@ -1819,6 +1884,7 @@ int main(void) {
     test_resize_decoder_png();
     test_resize_decoder_jpeg();
     test_resizer_push_pop_drain();
+    test_resize_orientation();
 
     test_async_basic_throughput();
     test_async_start_poll_join();

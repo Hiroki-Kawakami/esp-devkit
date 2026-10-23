@@ -92,6 +92,10 @@ struct imgf_resizer {
     uint8_t  *pending;      /* dw * dst_bpp, packed and ready */
     uint8_t   pending_avail;
 
+    /* dw/dh above are before orientation */
+    imgf_orient_t orient;
+    uint8_t  *orow;         /* dw * dst_bpp, a row on its way to its oriented place */
+
     /* common state */
     int src_y_next;         /* next src row to push (0..sh) */
     int dst_y_next;         /* next dst row to pop (0..dh) */
@@ -102,12 +106,19 @@ struct imgf_resizer {
 
 /* ---- geometry --------------------------------------------------------- */
 
-imgf_err_t imgf_resize_compute_dst(uint16_t src_w, uint16_t src_h,
-                                   const imgf_resize_opts_t *opts,
-                                   uint16_t *out_w, uint16_t *out_h) {
+bool imgf_orient_swaps_axes(imgf_orient_t orientation) {
+    return orientation >= IMGF_ORIENT_TRANSPOSE;
+}
+
+static imgf_err_t compute_unoriented(uint16_t src_w, uint16_t src_h,
+                                     const imgf_resize_opts_t *opts,
+                                     uint16_t *out_w, uint16_t *out_h) {
     if (!opts || src_w == 0 || src_h == 0) return IMGF_ERR_INVALID_ARG;
+    if ((unsigned)opts->orientation > IMGF_ORIENT_ROT270) return IMGF_ERR_INVALID_ARG;
+    const bool swap = imgf_orient_swaps_axes(opts->orientation);
     int sw = src_w, sh = src_h;
-    int tw = opts->target_w, th = opts->target_h;
+    int tw = swap ? opts->target_h : opts->target_w;
+    int th = swap ? opts->target_w : opts->target_h;
     int dw, dh;
     if (opts->fit == IMGF_FIT_STRETCH) {
         if (tw <= 0 || th <= 0) return IMGF_ERR_INVALID_ARG;
@@ -132,6 +143,18 @@ imgf_err_t imgf_resize_compute_dst(uint16_t src_w, uint16_t src_h,
     if (dw > 0xFFFF || dh > 0xFFFF) return IMGF_ERR_TOO_LARGE;
     if (out_w) *out_w = (uint16_t)dw;
     if (out_h) *out_h = (uint16_t)dh;
+    return IMGF_OK;
+}
+
+imgf_err_t imgf_resize_compute_dst(uint16_t src_w, uint16_t src_h,
+                                   const imgf_resize_opts_t *opts,
+                                   uint16_t *out_w, uint16_t *out_h) {
+    uint16_t dw, dh;
+    const imgf_err_t e = compute_unoriented(src_w, src_h, opts, &dw, &dh);
+    if (e != IMGF_OK) return e;
+    const bool swap = imgf_orient_swaps_axes(opts->orientation);
+    if (out_w) *out_w = swap ? dh : dw;
+    if (out_h) *out_h = swap ? dw : dh;
     return IMGF_OK;
 }
 
@@ -452,6 +475,7 @@ static void resizer_free(imgf_resizer_t *r) {
     imgf_free(r->irow);      imgf_free(r->hrow);      imgf_free(r->vtmp);
     imgf_free(r->hrow_prev);
     imgf_free(r->vacc);      imgf_free(r->pending);
+    imgf_free(r->orow);
     imgf_free(r);
 }
 
@@ -470,7 +494,7 @@ imgf_resizer_t *imgf_resizer_create(uint16_t src_w, uint16_t src_h,
     }
 
     uint16_t dw16, dh16;
-    imgf_err_t e = imgf_resize_compute_dst(src_w, src_h, opts, &dw16, &dh16);
+    imgf_err_t e = compute_unoriented(src_w, src_h, opts, &dw16, &dh16);
     if (e != IMGF_OK) { if (out_err) *out_err = e; return NULL; }
 
     imgf_pixfmt_t dst_pf = opts->dst_pixfmt == IMGF_PIX_INHERIT ? src_pf : opts->dst_pixfmt;
@@ -501,6 +525,7 @@ imgf_resizer_t *imgf_resizer_create(uint16_t src_w, uint16_t src_h,
     r->h_round = 1u << (r->h_shift - 1);
     r->v_ready_max = -1;
     r->v_acc_dst_y = 0;
+    r->orient = opts->orientation;
 
     size_t dim = (size_t)r->dw * r->internal_ch;
     if (!r->src_direct) {
@@ -528,6 +553,10 @@ imgf_resizer_t *imgf_resizer_create(uint16_t src_w, uint16_t src_h,
         r->pending = (uint8_t *)rz_calloc((size_t)r->dw * r->dst_bpp, 1, r->caps);
         if (!r->vacc || !r->pending) goto oom;
     }
+    if (r->orient != IMGF_ORIENT_NONE) {
+        r->orow = (uint8_t *)rz_calloc((size_t)r->dw * r->dst_bpp, 1, r->caps);
+        if (!r->orow) goto oom;
+    }
 
     if (out_err) *out_err = IMGF_OK;
     return r;
@@ -540,8 +569,16 @@ oom:
 
 void imgf_resizer_destroy(imgf_resizer_t *r) { resizer_free(r); }
 
-uint16_t      imgf_resizer_dst_width  (const imgf_resizer_t *r) { return r ? (uint16_t)r->dw : 0; }
-uint16_t      imgf_resizer_dst_height (const imgf_resizer_t *r) { return r ? (uint16_t)r->dh : 0; }
+uint16_t imgf_resizer_dst_width(const imgf_resizer_t *r) {
+    if (!r) return 0;
+    return (uint16_t)(imgf_orient_swaps_axes(r->orient) ? r->dh : r->dw);
+}
+
+uint16_t imgf_resizer_dst_height(const imgf_resizer_t *r) {
+    if (!r) return 0;
+    return (uint16_t)(imgf_orient_swaps_axes(r->orient) ? r->dw : r->dh);
+}
+
 imgf_pixfmt_t imgf_resizer_dst_pixfmt (const imgf_resizer_t *r) { return r ? r->dst_pf : IMGF_PIX_INHERIT; }
 imgf_err_t    imgf_resizer_last_error (const imgf_resizer_t *r) { return r ? r->last_error : IMGF_ERR_INVALID_ARG; }
 
@@ -591,8 +628,7 @@ int imgf_resizer_push_row(imgf_resizer_t *r, const uint8_t *src_row) {
     return produced;
 }
 
-bool imgf_resizer_pop_row(imgf_resizer_t *r, uint8_t *dst_row) {
-    if (!r || !dst_row) return false;
+static bool pop_unoriented(imgf_resizer_t *r, uint8_t *dst_row) {
     if (r->dst_y_next >= r->dh) return false;
 
     if (r->v_up) {
@@ -625,6 +661,54 @@ bool imgf_resizer_pop_row(imgf_resizer_t *r, uint8_t *dst_row) {
     memcpy(dst_row, r->pending, (size_t)r->dw * r->dst_bpp);
     r->pending_avail = 0;
     r->dst_y_next++;
+    return true;
+}
+
+bool imgf_resizer_pop_row(imgf_resizer_t *r, uint8_t *dst_row) {
+    if (!r || !dst_row) return false;
+    if (r->orient != IMGF_ORIENT_NONE) {
+        r->last_error = IMGF_ERR_INVALID_ARG;
+        return false;
+    }
+    return pop_unoriented(r, dst_row);
+}
+
+/* Unoriented row y, pixel x lands at the address of x = 0 plus x steps. */
+static void place_row(const imgf_resizer_t *r, int y, const uint8_t *row,
+                      uint8_t *dst, size_t stride) {
+    const int w = r->dw, h = r->dh, bpp = r->dst_bpp;
+    const ptrdiff_t s = (ptrdiff_t)stride;
+    ptrdiff_t at, step;
+    switch (r->orient) {
+    case IMGF_ORIENT_MIRROR_X:   at = y * s + (ptrdiff_t)(w - 1) * bpp;           step = -bpp; break;
+    case IMGF_ORIENT_ROT180:     at = (h - 1 - y) * s + (ptrdiff_t)(w - 1) * bpp; step = -bpp; break;
+    case IMGF_ORIENT_MIRROR_Y:   at = (h - 1 - y) * s;                            step = bpp;  break;
+    case IMGF_ORIENT_TRANSPOSE:  at = (ptrdiff_t)y * bpp;                         step = s;    break;
+    case IMGF_ORIENT_ROT90:      at = (ptrdiff_t)(h - 1 - y) * bpp;               step = s;    break;
+    case IMGF_ORIENT_TRANSVERSE: at = (w - 1) * s + (ptrdiff_t)(h - 1 - y) * bpp; step = -s;   break;
+    case IMGF_ORIENT_ROT270:     at = (w - 1) * s + (ptrdiff_t)y * bpp;           step = -s;   break;
+    default:                     at = y * s;                                      step = bpp;  break;
+    }
+    uint8_t *d = dst + at;
+    if (bpp == 1) {
+        for (int x = 0; x < w; x++, d += step) *d = row[x];
+    } else if (bpp == 2) {
+        for (int x = 0; x < w; x++, d += step) memcpy(d, row + 2 * x, 2);
+    } else {
+        for (int x = 0; x < w; x++, d += step) {
+            d[0] = row[3 * x];
+            d[1] = row[3 * x + 1];
+            d[2] = row[3 * x + 2];
+        }
+    }
+}
+
+bool imgf_resizer_pop_row_into(imgf_resizer_t *r, uint8_t *dst, size_t dst_stride) {
+    if (!r || !dst) return false;
+    const int y = r->dst_y_next;
+    if (r->orient == IMGF_ORIENT_NONE) return pop_unoriented(r, dst + (size_t)y * dst_stride);
+    if (!pop_unoriented(r, r->orow)) return false;
+    place_row(r, y, r->orow, dst, dst_stride);
     return true;
 }
 
@@ -687,6 +771,7 @@ imgf_err_t imgf_resize_decoder(imgf_decoder_t *dec,
     }
 
     size_t row_stride = (size_t)dw * dst_bpp;
+    const int rows = imgf_orient_swaps_axes(opts->orientation) ? dw : dh;
     int out_row = 0;
 
     for (uint16_t sy = 0; sy < sh; sy++) {
@@ -701,20 +786,20 @@ imgf_err_t imgf_resize_decoder(imgf_decoder_t *dec,
             free(src_row); imgf_free(buf); imgf_resizer_destroy(r);
             return re;
         }
-        for (int i = 0; i < ready && out_row < dh; i++) {
-            imgf_resizer_pop_row(r, buf + (size_t)out_row * row_stride);
+        for (int i = 0; i < ready && out_row < rows; i++) {
+            imgf_resizer_pop_row_into(r, buf, row_stride);
             out_row++;
         }
     }
-    if (imgf_resizer_finish(r) > 0 && out_row < dh) {
-        imgf_resizer_pop_row(r, buf + (size_t)out_row * row_stride);
+    if (imgf_resizer_finish(r) > 0 && out_row < rows) {
+        imgf_resizer_pop_row_into(r, buf, row_stride);
         out_row++;
     }
 
     free(src_row);
     imgf_resizer_destroy(r);
 
-    if (out_row != dh) { imgf_free(buf); return IMGF_ERR_DECODE; }
+    if (out_row != rows) { imgf_free(buf); return IMGF_ERR_DECODE; }
 
     *out_data = buf;
     if (out_w) *out_w = dw;
@@ -749,11 +834,14 @@ imgf_err_t imgf_resize_buffer(const uint8_t *src, uint16_t src_w, uint16_t src_h
     size_t dst_size = (size_t)dh * dst_stride;
     bool overlap = (src <= dst && dst < src + src_size) ||
                    (dst <= src && src < dst + dst_size);
-    if (overlap && (dw > src_w || dh > src_h)) return IMGF_ERR_INVALID_ARG;
+    if (overlap && (dw > src_w || dh > src_h || opts->orientation != IMGF_ORIENT_NONE)) {
+        return IMGF_ERR_INVALID_ARG;
+    }
 
     imgf_resizer_t *r = imgf_resizer_create(src_w, src_h, src_pf, opts, &e);
     if (!r) return e;
 
+    const int rows = imgf_orient_swaps_axes(opts->orientation) ? dw : dh;
     int out_row = 0;
     for (uint16_t sy = 0; sy < src_h; sy++) {
         const uint8_t *srow = src + (size_t)sy * src_stride;
@@ -763,16 +851,16 @@ imgf_err_t imgf_resize_buffer(const uint8_t *src, uint16_t src_w, uint16_t src_h
             imgf_resizer_destroy(r);
             return re;
         }
-        for (int i = 0; i < ready && out_row < dh; i++) {
-            imgf_resizer_pop_row(r, dst + (size_t)out_row * dst_stride);
+        for (int i = 0; i < ready && out_row < rows; i++) {
+            imgf_resizer_pop_row_into(r, dst, dst_stride);
             out_row++;
         }
     }
-    if (imgf_resizer_finish(r) > 0 && out_row < dh) {
-        imgf_resizer_pop_row(r, dst + (size_t)out_row * dst_stride);
+    if (imgf_resizer_finish(r) > 0 && out_row < rows) {
+        imgf_resizer_pop_row_into(r, dst, dst_stride);
         out_row++;
     }
     imgf_resizer_destroy(r);
-    if (out_row != dh) return IMGF_ERR_DECODE;
+    if (out_row != rows) return IMGF_ERR_DECODE;
     return IMGF_OK;
 }

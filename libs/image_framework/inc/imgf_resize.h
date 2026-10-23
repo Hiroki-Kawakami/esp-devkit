@@ -23,17 +23,33 @@ typedef enum {
                             both zero -> identity sizing) */
 } imgf_fit_t;
 
+/* What is done to the resized picture on its way out, in the order of the
+ * eight TIFF/EXIF orientations. Rotations are clockwise. */
+typedef enum {
+    IMGF_ORIENT_NONE,
+    IMGF_ORIENT_MIRROR_X,
+    IMGF_ORIENT_ROT180,
+    IMGF_ORIENT_MIRROR_Y,
+    IMGF_ORIENT_TRANSPOSE,
+    IMGF_ORIENT_ROT90,
+    IMGF_ORIENT_TRANSVERSE,
+    IMGF_ORIENT_ROT270,
+} imgf_orient_t;
+
 typedef struct {
     uint16_t      target_w;
     uint16_t      target_h;
     imgf_fit_t    fit;
     imgf_pixfmt_t dst_pixfmt;     /* IMGF_PIX_INHERIT (0) = src と同じ */
     uint32_t      alloc_caps;
+    imgf_orient_t orientation;    /* target_w/h are in the oriented picture */
 } imgf_resize_opts_t;
+
+bool imgf_orient_swaps_axes(imgf_orient_t orientation);
 
 /* Resolves destination geometry without allocating. Useful when the caller
  * needs to know dst dims before allocating a destination buffer (e.g. for
- * imgf_resize_buffer with Contain). */
+ * imgf_resize_buffer with Contain). The size is the oriented one. */
 imgf_err_t imgf_resize_compute_dst(uint16_t src_w, uint16_t src_h,
                                    const imgf_resize_opts_t *opts,
                                    uint16_t *out_w, uint16_t *out_h);
@@ -53,6 +69,7 @@ imgf_resizer_t *imgf_resizer_create(uint16_t src_w, uint16_t src_h,
                                     imgf_err_t *out_err);
 void            imgf_resizer_destroy   (imgf_resizer_t *r);
 
+/* The oriented size, which is what pop_row_into() fills. */
 uint16_t        imgf_resizer_dst_width (const imgf_resizer_t *r);
 uint16_t        imgf_resizer_dst_height(const imgf_resizer_t *r);
 imgf_pixfmt_t   imgf_resizer_dst_pixfmt(const imgf_resizer_t *r);
@@ -66,6 +83,11 @@ int             imgf_resizer_push_row  (imgf_resizer_t *r, const uint8_t *src_ro
 /* Drains one ready destination row. Returns true if a row was written into
  * dst_row, false if no row is currently ready or all rows already popped. */
 bool            imgf_resizer_pop_row   (imgf_resizer_t *r, uint8_t *dst_row);
+
+/* pop_row() for a resizer with an orientation: the row lands wherever the
+ * orientation puts it in the whole destination picture. pop_row() fails on
+ * such a resizer, because a row may become a column. */
+bool            imgf_resizer_pop_row_into(imgf_resizer_t *r, uint8_t *dst, size_t dst_stride);
 
 /* After pushing all source rows, ask the resizer to finalize any residual
  * partial destination row (downscale-v with rounding leftover). Returns 1 if
@@ -91,8 +113,9 @@ imgf_err_t imgf_resize_decoder(imgf_decoder_t *dec,
 /* Resizes the fully-decoded buffer at `src` (src_w x src_h, src_pf) into
  * `dst`. dst_stride is the destination row stride in bytes; pass 0 for
  * tight packing (= dst_w * imgf_pixfmt_bpp(dst_pf)). dst may overlap src
- * (e.g. dst == src) ONLY when the resize is a downscale on every axis;
- * upscale + overlap returns IMGF_ERR_INVALID_ARG. */
+ * (e.g. dst == src) ONLY when the resize is a downscale on every axis and
+ * there is no orientation; anything else with overlap returns
+ * IMGF_ERR_INVALID_ARG. */
 imgf_err_t imgf_resize_buffer(const uint8_t *src, uint16_t src_w, uint16_t src_h,
                               size_t src_stride, imgf_pixfmt_t src_pf,
                               uint8_t *dst, size_t dst_stride,
