@@ -76,7 +76,7 @@ esp_err_t harness_capture(imgf_sink_t sink, int quality) {
     harness_lock();
     ierr = imgf_encoder_bind_sink(enc, sink);
     if (ierr == IMGF_OK) {
-        imgf_stream_t stream = { row_source_read, &src };
+        imgf_stream_t stream = { row_source_read, &src, NULL };
         ierr = imgf_encoder_encode_stream(enc, stream, row, NULL);
     }
     harness_unlock();

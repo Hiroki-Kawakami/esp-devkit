@@ -9,10 +9,11 @@ ROOT=$(CDPATH= cd -- "$DIR/.." && pwd)
 OUT=$(mktemp -d)
 trap 'rm -rf "$OUT"' EXIT
 
-SRCS=$(find "$ROOT/src" -name '*.c')
+CMPF=$(CDPATH= cd -- "$ROOT/../compression_framework" && pwd)
+SRCS=$(find "$ROOT/src" "$CMPF/src" -name '*.c')
 
 gcc -std=c11 -Wall -Wextra -Werror -O2 \
-    -I "$ROOT/inc" -I "$ROOT/src" \
+    -I "$ROOT/inc" -I "$ROOT/src" -I "$CMPF/inc" \
     "$DIR/image_framework_test.c" $SRCS \
     -lm -lpthread \
     -o "$OUT/imgf_test"

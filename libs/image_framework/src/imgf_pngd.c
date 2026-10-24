@@ -11,11 +11,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "cmpf_inflate.h"
 #include "imgf_alloc.h"
 #include "imgf_breader.h"
 #include "imgf_decoder.h"
 #include "imgf_decoder_internal.h"
-#include "imgf_inflate.h"
 #include "imgf_pngd.h"
 
 typedef struct {
@@ -32,8 +32,8 @@ typedef struct {
     uint8_t        br_ready;
 
     idat_source_t   idat;
-    imgf_inflate_t  inflate;
-    uint8_t         inflate_ready;
+    cmpf_inflate_t  inflate;
+    uint8_t        *window;
 
     uint8_t  bitdepth;
     uint8_t  colortype;
@@ -265,9 +265,10 @@ static imgf_err_t pngd_open(imgf_decoder_t *base, imgf_stream_t src,
 
     if (d->colortype == 3 && d->palette_count == 0) return IMGF_ERR_DECODE;
 
-    imgf_inflate_src_t isrc = { idat_refill, &d->idat };
-    if (!imgf_inflate_init(&d->inflate, isrc)) return IMGF_ERR_DECODE;
-    d->inflate_ready = 1;
+    d->window = (uint8_t *)imgf_alloc(CMPF_INFLATE_WINDOW_BYTES, 0);
+    if (!d->window) return IMGF_ERR_OOM;
+    cmpf_src_t isrc = { idat_refill, &d->idat };
+    if (!cmpf_inflate_init(&d->inflate, isrc, d->window)) return IMGF_ERR_DECODE;
 
     d->base.width  = (uint16_t)w;
     d->base.height = (uint16_t)h;
@@ -290,8 +291,8 @@ static bool pngd_next_row(imgf_decoder_t *base, uint8_t *dst) {
     if (d->row >= base->height) return false;
     size_t need = 1 + d->rowbytes;
 
-    size_t got = imgf_inflate_read(&d->inflate, d->filtbuf, need);
-    if (got != need || imgf_inflate_failed(&d->inflate)) {
+    size_t got = cmpf_inflate_read(&d->inflate, d->filtbuf, need);
+    if (got != need || cmpf_inflate_failed(&d->inflate)) {
         base->last_error = IMGF_ERR_TRUNCATED;
         return false;
     }
@@ -308,7 +309,7 @@ static bool pngd_next_row(imgf_decoder_t *base, uint8_t *dst) {
 
 static void pngd_destroy(imgf_decoder_t *base) {
     pngd_t *d = (pngd_t *)base;
-    if (d->inflate_ready) imgf_inflate_deinit(&d->inflate);
+    imgf_free(d->window);
     if (d->br_ready) imgf_breader_deinit(&d->br);
     free(d->prev);
     free(d->cur);

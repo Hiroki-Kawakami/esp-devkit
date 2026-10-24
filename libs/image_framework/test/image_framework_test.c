@@ -4,7 +4,8 @@
  *
  * Host unit tests for image_framework — no ESP-IDF, no hardware.
  * Compiled by test/run.sh (gcc, C11). Cases group around: stream wrappers,
- * sniff, decoder vtable lifecycle, JPEG decoder, PNG decoder.
+ * sniff, decoder vtable lifecycle, JPEG decoder, PNG decoder, BMP/GIF/TIFF
+ * decoders.
  */
 
 #include <stdbool.h>
@@ -15,6 +16,8 @@
 
 #include "imgf_alloc.h"
 #include "imgf_async.h"
+#include "imgf_bmpd.h"
+#include "imgf_gifd.h"
 #include "imgf_decoder.h"
 #include "imgf_dither.h"
 #include "imgf_encoder.h"
@@ -26,9 +29,11 @@
 #include "imgf_resize.h"
 #include "imgf_sniff.h"
 #include "imgf_stream.h"
+#include "imgf_tiffd.h"
 #include "imgf_types.h"
 
 #include "jpeg_fixtures.h"
+#include "pillow_fixtures.h"
 #include "png_fixtures.h"
 
 static int g_failures = 0;
@@ -120,7 +125,7 @@ static int onebyte_read(void *user, void *dst, size_t n) {
 
 static void test_custom_stream_callback(void) {
     onebyte_state_t st = { kPngRgb2x2, sizeof kPngRgb2x2 };
-    imgf_stream_t s = { onebyte_read, &st };
+    imgf_stream_t s = { onebyte_read, &st, NULL };
     imgf_decoder_t *d = imgf_pngd_create();
     CHECK(imgf_decoder_open(d, s, NULL) == IMGF_OK);
     CHECK(imgf_decoder_width(d) == 2 && imgf_decoder_height(d) == 2);
@@ -135,6 +140,11 @@ static void test_sniff(void) {
     const uint8_t junk[8] = {0, 1, 2, 3, 4, 5, 6, 7};
     CHECK(imgf_sniff(png, 8) == IMGF_FMT_PNG);
     CHECK(imgf_sniff(jpeg, 3) == IMGF_FMT_JPEG);
+    CHECK(imgf_sniff("BM", 2) == IMGF_FMT_BMP);
+    CHECK(imgf_sniff("GIF89a", 6) == IMGF_FMT_GIF);
+    CHECK(imgf_sniff("GIF87a", 6) == IMGF_FMT_GIF);
+    CHECK(imgf_sniff("II*\0", 4) == IMGF_FMT_TIFF);
+    CHECK(imgf_sniff("MM\0*", 4) == IMGF_FMT_TIFF);
     CHECK(imgf_sniff(junk, 8) == IMGF_FMT_UNKNOWN);
     CHECK(imgf_sniff(png, 4) == IMGF_FMT_UNKNOWN);
 }
@@ -147,6 +157,18 @@ static void test_sniff_factory_dispatch(void) {
     imgf_decoder_destroy(d);
 
     d = imgf_make_decoder(imgf_sniff(kPngRgb2x2, sizeof kPngRgb2x2));
+    CHECK(d != NULL);
+    imgf_decoder_destroy(d);
+
+    d = imgf_make_decoder(imgf_sniff(kBmp24, sizeof kBmp24));
+    CHECK(d != NULL);
+    imgf_decoder_destroy(d);
+
+    d = imgf_make_decoder(imgf_sniff(kGif, sizeof kGif));
+    CHECK(d != NULL);
+    imgf_decoder_destroy(d);
+
+    d = imgf_make_decoder(imgf_sniff(kTiffRgb, sizeof kTiffRgb));
     CHECK(d != NULL);
     imgf_decoder_destroy(d);
 
@@ -514,6 +536,186 @@ static void test_png_signature_only(void) {
     imgf_err_t err;
     imgf_decoder_t *d = open_png(sig, sizeof sig, &st, &err);
     CHECK(err == IMGF_ERR_TRUNCATED);
+    imgf_decoder_destroy(d);
+}
+
+/* ---- BMP / GIF / TIFF (against Pillow) ------------------------------- */
+
+/* Decodes every row and compares it with what Pillow made of the same file. */
+static bool decodes_like_pillow(imgf_decoder_t *d, const void *bytes, size_t len,
+                                const uint8_t *pixels, int w, int h, imgf_pixfmt_t pixfmt,
+                                int tol) {
+    imgf_buffer_source_t st;
+    bool ok = imgf_decoder_open(d, imgf_stream_from_buffer(&st, bytes, len), NULL) == IMGF_OK;
+    ok = ok && imgf_decoder_width(d) == w && imgf_decoder_height(d) == h &&
+         imgf_decoder_pixfmt(d) == pixfmt;
+    const size_t stride = (size_t)w * imgf_pixfmt_bpp(pixfmt);
+    uint8_t *row = (uint8_t *)malloc(stride ? stride : 1);
+    for (int y = 0; ok && y < h; y++) {
+        ok = imgf_decoder_next_row(d, row);
+        for (size_t i = 0; ok && i < stride; i++) {
+            ok = near_value(row[i], pixels[(size_t)y * stride + i], tol);
+            if (!ok) fprintf(stderr, "  row %d byte %u: %u, want %u\n", y, (unsigned)i, row[i],
+                             pixels[(size_t)y * stride + i]);
+        }
+    }
+    ok = ok && !imgf_decoder_next_row(d, row);
+    free(row);
+    imgf_decoder_destroy(d);
+    return ok;
+}
+
+#define LIKE_PILLOW(create, name, pixfmt, tol)                                             \
+    decodes_like_pillow(create(), k##name, sizeof k##name, k##name##Pixels, k##name##W,   \
+                        k##name##H, pixfmt, tol)
+
+static void test_bmp_like_pillow(void) {
+    CHECK(LIKE_PILLOW(imgf_bmpd_create, Bmp1, IMGF_PIX_RGB888, 0));
+    CHECK(LIKE_PILLOW(imgf_bmpd_create, Bmp4, IMGF_PIX_RGB888, 0));
+    CHECK(LIKE_PILLOW(imgf_bmpd_create, Bmp8, IMGF_PIX_RGB888, 0));
+    CHECK(LIKE_PILLOW(imgf_bmpd_create, Bmp24, IMGF_PIX_RGB888, 0));
+    CHECK(LIKE_PILLOW(imgf_bmpd_create, Bmp24Os2, IMGF_PIX_RGB888, 0));
+    CHECK(LIKE_PILLOW(imgf_bmpd_create, Bmp16, IMGF_PIX_RGB888, 1));
+    CHECK(LIKE_PILLOW(imgf_bmpd_create, Bmp565, IMGF_PIX_RGB888, 1));
+    CHECK(LIKE_PILLOW(imgf_bmpd_create, Bmp32, IMGF_PIX_RGB888, 0));
+    CHECK(LIKE_PILLOW(imgf_bmpd_create, Bmp32V5, IMGF_PIX_RGB888, 0));
+    CHECK(LIKE_PILLOW(imgf_bmpd_create, BmpRle8, IMGF_PIX_RGB888, 0));
+    CHECK(LIKE_PILLOW(imgf_bmpd_create, BmpRle4, IMGF_PIX_RGB888, 0));
+}
+
+static void test_gif_like_pillow(void) {
+    CHECK(LIKE_PILLOW(imgf_gifd_create, Gif, IMGF_PIX_RGB888, 0));
+    CHECK(LIKE_PILLOW(imgf_gifd_create, GifInterlaced, IMGF_PIX_RGB888, 0));
+    CHECK(LIKE_PILLOW(imgf_gifd_create, GifTransparent, IMGF_PIX_RGB888, 0));
+    CHECK(LIKE_PILLOW(imgf_gifd_create, GifAnimated, IMGF_PIX_RGB888, 0));
+    CHECK(LIKE_PILLOW(imgf_gifd_create, GifOffset, IMGF_PIX_RGB888, 0));
+}
+
+static void test_gif_truncated(void) {
+    imgf_buffer_source_t st;
+    imgf_decoder_t *d = imgf_gifd_create();
+    CHECK(imgf_decoder_open(d, imgf_stream_from_buffer(&st, kGif, sizeof kGif - 40), NULL) ==
+          IMGF_OK);
+    uint8_t row[kGifW * 3];
+    while (imgf_decoder_next_row(d, row)) {
+    }
+    CHECK(imgf_decoder_last_error(d) == IMGF_ERR_TRUNCATED);
+    imgf_decoder_destroy(d);
+}
+
+static void test_tiff_like_pillow(void) {
+    CHECK(LIKE_PILLOW(imgf_tiffd_create, TiffGray, IMGF_PIX_GRAY8, 0));
+    CHECK(LIKE_PILLOW(imgf_tiffd_create, TiffRgb, IMGF_PIX_RGB888, 0));
+    CHECK(LIKE_PILLOW(imgf_tiffd_create, TiffPalette, IMGF_PIX_RGB888, 0));
+    CHECK(LIKE_PILLOW(imgf_tiffd_create, TiffRgba, IMGF_PIX_RGB888, 1));
+    CHECK(LIKE_PILLOW(imgf_tiffd_create, TiffGrayAlpha, IMGF_PIX_GRAY8, 1));
+    CHECK(LIKE_PILLOW(imgf_tiffd_create, TiffBilevel, IMGF_PIX_GRAY8, 0));
+    CHECK(LIKE_PILLOW(imgf_tiffd_create, TiffTiled, IMGF_PIX_RGB888, 0));
+    CHECK(LIKE_PILLOW(imgf_tiffd_create, TiffTiledBig, IMGF_PIX_RGB888, 0));
+    CHECK(LIKE_PILLOW(imgf_tiffd_create, TiffWhite4, IMGF_PIX_GRAY8, 0));
+    CHECK(LIKE_PILLOW(imgf_tiffd_create, TiffRgb16, IMGF_PIX_RGB888, 0));
+    CHECK(LIKE_PILLOW(imgf_tiffd_create, TiffAssociated, IMGF_PIX_RGB888, 0));
+}
+
+static void test_tiff_without_seek(void) {
+    onebyte_state_t st = { kTiffRgb, sizeof kTiffRgb };
+    imgf_stream_t s = { onebyte_read, &st, NULL };
+    imgf_decoder_t *d = imgf_tiffd_create();
+    CHECK(imgf_decoder_open(d, s, NULL) == IMGF_ERR_UNSUPPORTED);
+    imgf_decoder_destroy(d);
+}
+
+static void test_tiff_truncated(void) {
+    imgf_buffer_source_t st;
+    imgf_decoder_t *d = imgf_tiffd_create();
+    CHECK(imgf_decoder_open(d, imgf_stream_from_buffer(&st, kTiffTiled, 200), NULL) ==
+          IMGF_ERR_TRUNCATED);
+    imgf_decoder_destroy(d);
+}
+
+/* A 24-bit BMP wide enough that the rows are read back several chunks at a
+ * time, in either row order. */
+static uint8_t *make_wide_bmp(int w, int h, bool top_down, size_t *len) {
+    const size_t stride = ((size_t)w * 3 + 3) & ~(size_t)3;
+    *len = 54 + stride * (size_t)h;
+    uint8_t *b = (uint8_t *)calloc(*len, 1);
+    const int32_t sh = top_down ? -h : h;
+    b[0] = 'B';
+    b[1] = 'M';
+    b[10] = 54;
+    b[14] = 40;
+    memcpy(b + 18, &w, 4);
+    memcpy(b + 22, &sh, 4);
+    b[26] = 1;
+    b[28] = 24;
+    for (int y = 0; y < h; y++) {
+        uint8_t *row = b + 54 + stride * (size_t)(top_down ? y : h - 1 - y);
+        for (int x = 0; x < w; x++) {
+            row[3 * x + 0] = (uint8_t)(x + y);
+            row[3 * x + 1] = (uint8_t)(x >> 4);
+            row[3 * x + 2] = (uint8_t)(y * 9);
+        }
+    }
+    return b;
+}
+
+static bool wide_bmp_rows_ok(imgf_decoder_t *d, int w, int h) {
+    uint8_t *row = (uint8_t *)malloc((size_t)w * 3);
+    bool ok = true;
+    for (int y = 0; ok && y < h; y++) {
+        ok = imgf_decoder_next_row(d, row);
+        for (int x = 0; ok && x < w; x++) {
+            ok = row[3 * x] == (uint8_t)(y * 9) && row[3 * x + 1] == (uint8_t)(x >> 4) &&
+                 row[3 * x + 2] == (uint8_t)(x + y);
+        }
+    }
+    ok = ok && !imgf_decoder_next_row(d, row);
+    free(row);
+    return ok;
+}
+
+static void test_bmp_chunks(void) {
+    const int w = 3001, h = 13;
+    for (int top_down = 0; top_down < 2; top_down++) {
+        size_t len;
+        uint8_t *b = make_wide_bmp(w, h, top_down, &len);
+        imgf_buffer_source_t st;
+        imgf_decoder_t *d = imgf_bmpd_create();
+        CHECK(imgf_decoder_open(d, imgf_stream_from_buffer(&st, b, len), NULL) == IMGF_OK);
+        CHECK(wide_bmp_rows_ok(d, w, h));
+        imgf_decoder_destroy(d);
+        free(b);
+    }
+}
+
+static void test_bmp_without_seek(void) {
+    const int w = 3001, h = 13;
+    for (int top_down = 0; top_down < 2; top_down++) {
+        size_t len;
+        uint8_t *b = make_wide_bmp(w, h, top_down, &len);
+        onebyte_state_t st = { b, len };
+        imgf_stream_t s = { onebyte_read, &st, NULL };
+        imgf_decoder_t *d = imgf_bmpd_create();
+        imgf_err_t err = imgf_decoder_open(d, s, NULL);
+        if (top_down) {
+            CHECK(err == IMGF_OK);
+            CHECK(wide_bmp_rows_ok(d, w, h));
+        } else {
+            CHECK(err == IMGF_ERR_UNSUPPORTED);
+        }
+        imgf_decoder_destroy(d);
+        free(b);
+    }
+}
+
+static void test_bmp_truncated(void) {
+    imgf_buffer_source_t st;
+    imgf_decoder_t *d = imgf_bmpd_create();
+    CHECK(imgf_decoder_open(d, imgf_stream_from_buffer(&st, kBmp24, sizeof kBmp24 - 20), NULL) ==
+          IMGF_OK);
+    uint8_t row[kBmp24W * 3];
+    CHECK(!imgf_decoder_next_row(d, row));
+    CHECK(imgf_decoder_last_error(d) == IMGF_ERR_TRUNCATED);
     imgf_decoder_destroy(d);
 }
 
@@ -1865,6 +2067,16 @@ int main(void) {
     test_png_gradient_inflate();
     test_png_truncated_idat();
     test_png_signature_only();
+
+    test_bmp_like_pillow();
+    test_bmp_chunks();
+    test_bmp_without_seek();
+    test_bmp_truncated();
+    test_gif_like_pillow();
+    test_gif_truncated();
+    test_tiff_like_pillow();
+    test_tiff_without_seek();
+    test_tiff_truncated();
 
     test_pixfmt_bpp();
     test_resize_rgb888_to_bgr888();

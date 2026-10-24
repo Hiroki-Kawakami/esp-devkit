@@ -16,12 +16,19 @@ static int buffer_read(void *user, void *dst, size_t n) {
     return (int)k;
 }
 
+static int buffer_seek(void *user, size_t pos) {
+    imgf_buffer_source_t *s = (imgf_buffer_source_t *)user;
+    if (pos > s->len) return -1;
+    s->pos = pos;
+    return 0;
+}
+
 imgf_stream_t imgf_stream_from_buffer(imgf_buffer_source_t *state,
                                       const void *data, size_t len) {
     state->data = (const uint8_t *)data;
     state->len  = len;
     state->pos  = 0;
-    imgf_stream_t s = { buffer_read, state };
+    imgf_stream_t s = { buffer_read, state, buffer_seek };
     return s;
 }
 
@@ -40,13 +47,23 @@ static int file_read(void *user, void *dst, size_t n) {
     return (int)got;
 }
 
+static int file_seek(void *user, size_t pos) {
+    imgf_file_source_t *s = (imgf_file_source_t *)user;
+    if (s->limited && pos > s->length) return -1;
+    if (fseek(s->fp, s->offset + (long)pos, SEEK_SET) != 0) return -1;
+    s->seeked = 1;
+    if (s->limited) s->remaining = s->length - pos;
+    return 0;
+}
+
 imgf_stream_t imgf_stream_from_file(imgf_file_source_t *state,
                                     FILE *fp, long offset, size_t length) {
     state->fp        = fp;
     state->offset    = offset;
+    state->length    = length;
     state->remaining = length;
     state->limited   = length != 0 ? 1 : 0;
     state->seeked    = 0;
-    imgf_stream_t s = { file_read, state };
+    imgf_stream_t s = { file_read, state, file_seek };
     return s;
 }

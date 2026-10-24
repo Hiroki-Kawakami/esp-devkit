@@ -1,12 +1,13 @@
 set(IMGF_SRCS
         "src/imgf_alloc.c"
         "src/imgf_async.c"
+        "src/imgf_bmpd.c"
         "src/imgf_breader.c"
         "src/imgf_decoder.c"
         "src/imgf_dither.c"
         "src/imgf_encoder.c"
         "src/imgf_err.c"
-        "src/imgf_inflate.c"
+        "src/imgf_gifd.c"
         "src/imgf_jpegd.c"
         "src/imgf_jpege.c"
         "src/imgf_pngd.c"
@@ -14,7 +15,8 @@ set(IMGF_SRCS
         "src/imgf_recolor.c"
         "src/imgf_resize.c"
         "src/imgf_sniff.c"
-        "src/imgf_stream.c")
+        "src/imgf_stream.c"
+        "src/imgf_tiffd.c")
 
 if(IDF_TARGET STREQUAL "esp32p4")
     list(APPEND IMGF_SRCS "src/imgf_pie_p4.S")
@@ -24,7 +26,7 @@ idf_component_register(
     SRCS ${IMGF_SRCS}
     INCLUDE_DIRS "inc"
     PRIV_INCLUDE_DIRS "src"
-    PRIV_REQUIRES heap freertos)
+    PRIV_REQUIRES heap freertos compression_framework)
 
 # A codec is where the size and debug optimization levels cost the most: the
 # decode and resize loops run 1.4-1.6x slower on ESP32-P4 than at -O2, for 2 KB

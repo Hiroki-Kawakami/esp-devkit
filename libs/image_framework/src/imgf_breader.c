@@ -14,6 +14,7 @@ bool imgf_breader_init(imgf_breader_t *br, imgf_stream_t src) {
     br->buf = (uint8_t *)imgf_alloc(IMGF_BREADER_BUF_SIZE, 0);
     br->len = 0;
     br->pos = 0;
+    br->end = 0;
     return br->buf != NULL;
 }
 
@@ -27,7 +28,9 @@ void imgf_breader_deinit(imgf_breader_t *br) {
 static size_t source_read(imgf_breader_t *br, void *dst, size_t n) {
     if (!br->src.read) return 0;
     int got = br->src.read(br->src.user, dst, n);
-    return got > 0 ? (size_t)got : 0;
+    size_t k = got > 0 ? (size_t)got : 0;
+    br->end += k;
+    return k;
 }
 
 size_t imgf_breader_read(imgf_breader_t *br, void *dst, size_t n) {
@@ -59,4 +62,31 @@ int imgf_breader_byte(imgf_breader_t *br) {
         if (br->len == 0) return -1;
     }
     return br->buf[br->pos++];
+}
+
+size_t imgf_breader_tell(const imgf_breader_t *br) {
+    return br->end - br->len + br->pos;
+}
+
+bool imgf_breader_seek(imgf_breader_t *br, size_t pos) {
+    size_t start = br->end - br->len;
+    if (pos >= start && pos <= br->end) {
+        br->pos = pos - start;
+        return true;
+    }
+    if (br->src.seek) {
+        if (br->src.seek(br->src.user, pos) < 0) return false;
+        br->len = 0;
+        br->pos = 0;
+        br->end = pos;
+        return true;
+    }
+    if (pos < br->end) return false;
+    uint8_t tmp[64];
+    while (imgf_breader_tell(br) < pos) {
+        size_t k = pos - imgf_breader_tell(br);
+        if (k > sizeof tmp) k = sizeof tmp;
+        if (imgf_breader_read(br, tmp, k) != k) return false;
+    }
+    return true;
 }

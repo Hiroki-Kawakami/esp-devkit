@@ -26,12 +26,18 @@ typedef struct {
     uint8_t      *buf;
     size_t        len;
     size_t        pos;
+    size_t        end;
 } imgf_breader_t;
 
 bool   imgf_breader_init  (imgf_breader_t *br, imgf_stream_t src);
 void   imgf_breader_deinit(imgf_breader_t *br);
 size_t imgf_breader_read  (imgf_breader_t *br, void *dst, size_t n);
 int    imgf_breader_byte  (imgf_breader_t *br);  /* -1 = EOF */
+
+/* Positions are from the start of the stream. A seek inside the window or
+ * forward over a stream without seek() is served by the reader itself. */
+size_t imgf_breader_tell  (const imgf_breader_t *br);
+bool   imgf_breader_seek  (imgf_breader_t *br, size_t pos);
 
 #ifdef __cplusplus
 }

@@ -3,14 +3,11 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
-#include "imgf_inflate.h"
+#include "cmpf_inflate.h"
 
 #include <string.h>
 
-#include "imgf_alloc.h"
-
-#define IMGF_INFLATE_WIN_SIZE 32768u
-#define IMGF_INFLATE_WIN_MASK 32767u
+#define CMPF_INFLATE_WIN_MASK (CMPF_INFLATE_WINDOW_BYTES - 1)
 
 static const uint16_t kLenBase[29] = {
     3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31,
@@ -27,7 +24,7 @@ static const uint8_t kDistExtra[30] = {
 static const uint8_t kClOrder[19] = {
     16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15};
 
-static int next_byte(imgf_inflate_t *z) {
+static int next_byte(cmpf_inflate_t *z) {
     if (z->in_avail == 0) {
         z->in_ptr = z->src.refill(z->src.user, &z->in_avail);
         if (z->in_avail == 0) { z->eof = 1; return -1; }
@@ -36,7 +33,7 @@ static int next_byte(imgf_inflate_t *z) {
     return *z->in_ptr++;
 }
 
-static uint32_t bits(imgf_inflate_t *z, int need) {
+static uint32_t bits(cmpf_inflate_t *z, int need) {
     uint32_t val = z->bitbuf;
     while (z->bitcnt < need) {
         int c = next_byte(z);
@@ -55,7 +52,7 @@ static int reverse_bits(int c, int len) {
     return r;
 }
 
-static int decode_slow(imgf_inflate_t *z, const imgf_inflate_huff_t *h) {
+static int decode_slow(cmpf_inflate_t *z, const cmpf_inflate_huff_t *h) {
     int code = 0, first = 0, index = 0;
     for (int len = 1; len <= 15; len++) {
         code |= (int)bits(z, 1);
@@ -69,14 +66,14 @@ static int decode_slow(imgf_inflate_t *z, const imgf_inflate_huff_t *h) {
     return -1;
 }
 
-static int decode_sym(imgf_inflate_t *z, const imgf_inflate_huff_t *h) {
-    while (z->bitcnt < IMGF_INFLATE_FAST_BITS) {
+static int decode_sym(cmpf_inflate_t *z, const cmpf_inflate_huff_t *h) {
+    while (z->bitcnt < CMPF_INFLATE_FAST_BITS) {
         int c = next_byte(z);
         if (c < 0) c = 0;
         z->bitbuf |= (uint32_t)c << z->bitcnt;
         z->bitcnt += 8;
     }
-    uint16_t e = h->fast[z->bitbuf & (IMGF_INFLATE_FAST_SIZE - 1)];
+    uint16_t e = h->fast[z->bitbuf & (CMPF_INFLATE_FAST_SIZE - 1)];
     if (e) {
         int len = e >> 9;
         z->bitbuf >>= len;
@@ -86,10 +83,10 @@ static int decode_sym(imgf_inflate_t *z, const imgf_inflate_huff_t *h) {
     return decode_slow(z, h);
 }
 
-static int construct(imgf_inflate_huff_t *h, const uint8_t *lengths, int n) {
+static int construct(cmpf_inflate_huff_t *h, const uint8_t *lengths, int n) {
     for (int i = 0; i < 16; i++) h->count[i] = 0;
     for (int s = 0; s < n; s++) h->count[lengths[s]]++;
-    for (int i = 0; i < IMGF_INFLATE_FAST_SIZE; i++) h->fast[i] = 0;
+    for (int i = 0; i < CMPF_INFLATE_FAST_SIZE; i++) h->fast[i] = 0;
     if (h->count[0] == n) return 0;
 
     int left = 1;
@@ -115,16 +112,16 @@ static int construct(imgf_inflate_huff_t *h, const uint8_t *lengths, int n) {
         int len = lengths[s];
         if (!len) continue;
         int c = next_code[len]++;
-        if (len <= IMGF_INFLATE_FAST_BITS) {
+        if (len <= CMPF_INFLATE_FAST_BITS) {
             int rev = reverse_bits(c, len);
-            for (int j = rev; j < IMGF_INFLATE_FAST_SIZE; j += (1 << len))
+            for (int j = rev; j < CMPF_INFLATE_FAST_SIZE; j += (1 << len))
                 h->fast[j] = (uint16_t)((len << 9) | s);
         }
     }
     return left;
 }
 
-static void build_fixed(imgf_inflate_t *z) {
+static void build_fixed(cmpf_inflate_t *z) {
     uint8_t lengths[288];
     int i = 0;
     for (; i < 144; i++) lengths[i] = 8;
@@ -138,7 +135,7 @@ static void build_fixed(imgf_inflate_t *z) {
     construct(&z->dist, dlen, 30);
 }
 
-static bool build_dynamic(imgf_inflate_t *z) {
+static bool build_dynamic(cmpf_inflate_t *z) {
     int hlit  = (int)bits(z, 5) + 257;
     int hdist = (int)bits(z, 5) + 1;
     int hclen = (int)bits(z, 4) + 4;
@@ -146,7 +143,7 @@ static bool build_dynamic(imgf_inflate_t *z) {
 
     uint8_t cl_lengths[19] = {0};
     for (int i = 0; i < hclen; i++) cl_lengths[kClOrder[i]] = (uint8_t)bits(z, 3);
-    imgf_inflate_huff_t cl;
+    cmpf_inflate_huff_t cl;
     if (construct(&cl, cl_lengths, 19) < 0) return false;
 
     uint8_t lengths[286 + 30] = {0};
@@ -176,10 +173,10 @@ static bool build_dynamic(imgf_inflate_t *z) {
     return true;
 }
 
-bool imgf_inflate_init(imgf_inflate_t *z, imgf_inflate_src_t src) {
+bool cmpf_inflate_init(cmpf_inflate_t *z, cmpf_src_t src, uint8_t *window) {
     memset(z, 0, sizeof *z);
     z->src = src;
-    z->win = (uint8_t *)imgf_alloc(IMGF_INFLATE_WIN_SIZE, 0);
+    z->win = window;
     if (!z->win) return false;
 
     int cmf = next_byte(z);
@@ -191,14 +188,7 @@ bool imgf_inflate_init(imgf_inflate_t *z, imgf_inflate_src_t src) {
     return true;
 }
 
-void imgf_inflate_deinit(imgf_inflate_t *z) {
-    if (z->win) {
-        imgf_free(z->win);
-        z->win = NULL;
-    }
-}
-
-size_t imgf_inflate_read(imgf_inflate_t *z, uint8_t *out, size_t n) {
+size_t cmpf_inflate_read(cmpf_inflate_t *z, uint8_t *out, size_t n) {
     size_t produced = 0;
     while (produced < n && !z->ended && !z->err) {
         if (!z->block_active) {
@@ -236,7 +226,7 @@ size_t imgf_inflate_read(imgf_inflate_t *z, uint8_t *out, size_t n) {
                 uint8_t b = (uint8_t)c;
                 out[produced++] = b;
                 z->win[z->wpos] = b;
-                z->wpos = (z->wpos + 1) & IMGF_INFLATE_WIN_MASK;
+                z->wpos = (z->wpos + 1) & CMPF_INFLATE_WIN_MASK;
                 z->stored_rem--;
             }
             if (z->stored_rem == 0) {
@@ -249,10 +239,10 @@ size_t imgf_inflate_read(imgf_inflate_t *z, uint8_t *out, size_t n) {
         while (produced < n) {
             if (z->copy_rem > 0) {
                 while (produced < n && z->copy_rem > 0) {
-                    uint8_t b = z->win[(z->wpos - z->copy_dist) & IMGF_INFLATE_WIN_MASK];
+                    uint8_t b = z->win[(z->wpos - z->copy_dist) & CMPF_INFLATE_WIN_MASK];
                     out[produced++] = b;
                     z->win[z->wpos] = b;
-                    z->wpos = (z->wpos + 1) & IMGF_INFLATE_WIN_MASK;
+                    z->wpos = (z->wpos + 1) & CMPF_INFLATE_WIN_MASK;
                     z->copy_rem--;
                 }
                 if (z->copy_rem > 0) break;
@@ -265,7 +255,7 @@ size_t imgf_inflate_read(imgf_inflate_t *z, uint8_t *out, size_t n) {
                 uint8_t b = (uint8_t)sym;
                 out[produced++] = b;
                 z->win[z->wpos] = b;
-                z->wpos = (z->wpos + 1) & IMGF_INFLATE_WIN_MASK;
+                z->wpos = (z->wpos + 1) & CMPF_INFLATE_WIN_MASK;
             } else if (sym == 256) {
                 z->block_active = 0;
                 if (z->bfinal) z->ended = 1;

@@ -20,9 +20,10 @@ case "$TARGET" in
     mkdir -p "$OUT"
     python3 "$HERE/app/gen_assets.py" "$OUT/imgf_bench_assets.h" 960 540
     IMGF="$ROOT/libs/image_framework"
+    CMPF="$ROOT/libs/compression_framework"
     gcc -std=c11 -Wall -Wextra -O2 \
-        -I "$IMGF/inc" -I "$IMGF/src" -I "$HERE/app" -I "$OUT" \
-        "$HERE/host/main.c" "$HERE/app/imgf_bench.c" "$IMGF"/src/*.c \
+        -I "$IMGF/inc" -I "$IMGF/src" -I "$CMPF/inc" -I "$HERE/app" -I "$OUT" \
+        "$HERE/host/main.c" "$HERE/app/imgf_bench.c" "$IMGF"/src/*.c "$CMPF"/src/*.c \
         -lm -lpthread \
         -o "$OUT/imgf_bench"
     "$OUT/imgf_bench"

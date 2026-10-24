@@ -25,6 +25,7 @@ include("${DEVKIT_ROOT}/tools/protogen/protogen.cmake")
 set(DEVKIT_DEVICE_COMPONENTS
     bsp
     libs/audio_framework
+    libs/compression_framework
     libs/esp_hosted_enhanced
     libs/harness
     libs/image_framework
@@ -43,6 +44,7 @@ set(DEVKIT_SIMULATOR_COMPONENTS
     idf_compat
     bsp
     libs/audio_framework
+    libs/compression_framework
     libs/harness
     libs/image_framework
     libs/jpeg_decode_enhanced

@@ -17,6 +17,9 @@ typedef enum {
     IMGF_FMT_UNKNOWN,
     IMGF_FMT_JPEG,
     IMGF_FMT_PNG,
+    IMGF_FMT_BMP,
+    IMGF_FMT_GIF,
+    IMGF_FMT_TIFF,
 } imgf_format_t;
 
 /* Inspects the first up-to-8 bytes of a container header. The stream itself

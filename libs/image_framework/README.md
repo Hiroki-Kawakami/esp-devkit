@@ -9,6 +9,25 @@ kernel has a C counterpart that writes exactly the same bytes, so the same
 build runs on the host simulator and on a board that has no PIE, and
 `firmware/imgf_bench` checks the two agree by comparing output checksums.
 
+## Decoders
+
+JPEG, PNG, BMP, GIF and TIFF, each in `imgf_<format>d.h`; `imgf_sniff()` picks
+one from the first bytes. Inflate and LZW come from `compression_framework`.
+
+**`imgf_stream_t` has an optional `seek()`**, because two formats store their
+rows out of order: a TIFF's IFD and strips may be anywhere in the file (libtiff
+puts the IFD last), and an ordinary BMP is stored bottom-up. Reading the file
+into memory instead would cost a whole encoded picture of PSRAM; seeking costs
+one window refill per jump. A bottom-up BMP is read back in chunks of rows from
+the end, so the reader is not refilled for every row. Without `seek()`, those
+a TIFF and a bottom-up BMP return `IMGF_ERR_UNSUPPORTED`; everything else
+still works.
+
+The host tests compare BMP, GIF and TIFF against what Pillow decodes the same
+file to (`test/gen_pillow_fixtures.py`). Pillow cannot write most of the BMP
+variants, tiles or a GIF with fewer than 8 literal bits, so the generator writes
+those itself and only uses Pillow to decode them.
+
 ## Using it on ESP32-P4
 
 PIE's lazy register save writes 128-bit vectors to the calling task's stack,
