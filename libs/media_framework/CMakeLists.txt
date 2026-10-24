@@ -1,4 +1,5 @@
 set(MEDF_SRCS
+        "src/medf_alac.c"
         "src/medf_avi_demux.c"
         "src/medf_buffer.c"
         "src/medf_es_demux.c"

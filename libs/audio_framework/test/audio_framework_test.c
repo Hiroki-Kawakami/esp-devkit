@@ -11,6 +11,7 @@
 #include <unistd.h>
 
 #include "audf_adpcm.h"
+#include "audf_alac.h"
 #include "audf_convert.h"
 #include "audf_drift.h"
 #include "audf_eq.h"
@@ -646,6 +647,93 @@ static void test_flac(void) {
     audf_decoder_destroy(dec);
 }
 
+/* ---- alac ---- */
+
+static void alac_cookie(uint8_t c[AUDF_ALAC_COOKIE_BYTES], uint8_t version, uint8_t bits, uint8_t channels) {
+    static const uint8_t base[AUDF_ALAC_COOKIE_BYTES] = {
+        0, 0, 0, 16, 0, 16, 40, 10, 14, 2, 0, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xac, 0x44,
+    };
+    memcpy(c, base, AUDF_ALAC_COOKIE_BYTES);
+    c[4] = version;
+    c[5] = bits;
+    c[9] = channels;
+}
+
+/* One element of verbatim samples; frames below 16 make it a partial frame. */
+static void alac_element(bitwriter_t *w, uint32_t tag, int frames, int bits, const int32_t *const *channels,
+                         int count) {
+    put_bits(w, tag, 3);
+    put_bits(w, 0, 4);
+    put_bits(w, 0, 12);
+    put_bits(w, (frames < 16 ? 8 : 0) | 1, 4);
+    if (frames < 16) put_bits(w, (uint32_t)frames, 32);
+    for (int i = 0; i < frames; i++) {
+        for (int ch = 0; ch < count; ch++) put_bits(w, (uint32_t)channels[ch][i] & ((1u << bits) - 1), bits);
+    }
+}
+
+static void test_alac(void) {
+    uint8_t cookie[AUDF_ALAC_COOKIE_BYTES];
+    audf_alac_config_t cfg = { .cookie = cookie, .cookie_len = sizeof(cookie) };
+    audf_decoder_t *dec = NULL;
+    alac_cookie(cookie, 0, 32, 2);
+    CHECK(audf_alac_decoder_create(&cfg, &dec) == ESP_ERR_NOT_SUPPORTED, "32-bit rejected");
+    alac_cookie(cookie, 1, 16, 2);
+    CHECK(audf_alac_decoder_create(&cfg, &dec) == ESP_ERR_NOT_SUPPORTED, "newer version rejected");
+
+    int32_t left[16], right[16];
+    for (int i = 0; i < 16; i++) {
+        left[i] = i * 3001 - 24000;
+        right[i] = 7 - i * 911;
+    }
+    alac_cookie(cookie, 0, 16, 2);
+    CHECK(audf_alac_decoder_create(&cfg, &dec) == ESP_OK, "16-bit stereo");
+    CHECK(audf_decoder_fmt(dec) == AUDF_FMT_S16 && audf_decoder_channels(dec) == 2 &&
+          audf_decoder_max_frames(dec) == 16 && audf_alac_decoder_rate(dec) == 44100, "16-bit format");
+    bitwriter_t w = { 0 };
+    alac_element(&w, 1, 16, 16, (const int32_t *const[]){ left, right }, 2);
+    put_bits(&w, 7, 3);
+    size_t len = (w.bits + 7) / 8;
+    int16_t pcm16[32];
+    size_t frames = 0;
+    CHECK(audf_decoder_decode(dec, w.buf, len, pcm16, &frames) == ESP_OK && frames == 16, "verbatim pair");
+    bool same = true;
+    for (int i = 0; i < 16; i++) same &= pcm16[i * 2] == left[i] && pcm16[i * 2 + 1] == right[i];
+    CHECK(same, "verbatim pair decodes as written");
+    CHECK(audf_decoder_decode(dec, w.buf, len - 8, pcm16, &frames) == ESP_ERR_INVALID_SIZE, "short frame");
+
+    memset(&w, 0, sizeof(w));
+    alac_element(&w, 1, 10, 16, (const int32_t *const[]){ left, right }, 2);
+    CHECK(audf_decoder_decode(dec, w.buf, (w.bits + 7) / 8, pcm16, &frames) == ESP_OK && frames == 10,
+          "partial frame");
+
+    memset(&w, 0, sizeof(w));
+    put_bits(&w, 7, 3);
+    CHECK(audf_decoder_decode(dec, w.buf, 1, pcm16, &frames) == ESP_ERR_NOT_SUPPORTED, "missing channels");
+    memset(&w, 0, sizeof(w));
+    alac_element(&w, 0, 16, 16, (const int32_t *const[]){ left }, 1);
+    alac_element(&w, 1, 16, 16, (const int32_t *const[]){ left, right }, 2);
+    CHECK(audf_decoder_decode(dec, w.buf, (w.bits + 7) / 8, pcm16, &frames) == ESP_ERR_NOT_SUPPORTED,
+          "extra channels");
+    memset(&w, 0, sizeof(w));
+    put_bits(&w, 2, 3);
+    CHECK(audf_decoder_decode(dec, w.buf, 1, pcm16, &frames) == ESP_ERR_INVALID_RESPONSE, "coupling element");
+    audf_decoder_destroy(dec);
+
+    alac_cookie(cookie, 0, 20, 1);
+    CHECK(audf_alac_decoder_create(&cfg, &dec) == ESP_OK && audf_decoder_fmt(dec) == AUDF_FMT_S32, "20-bit");
+    for (int i = 0; i < 16; i++) left[i] = i * 61001 - 500000;
+    memset(&w, 0, sizeof(w));
+    alac_element(&w, 0, 16, 20, (const int32_t *const[]){ left }, 1);
+    int32_t pcm32[16];
+    CHECK(audf_decoder_decode(dec, w.buf, (w.bits + 7) / 8, pcm32, &frames) == ESP_OK && frames == 16,
+          "verbatim single");
+    same = true;
+    for (int i = 0; i < 16; i++) same &= pcm32[i] == left[i] * 16;
+    CHECK(same, "20-bit decodes at 24-bit scale");
+    audf_decoder_destroy(dec);
+}
+
 /* ---- graph ---- */
 
 typedef struct {
@@ -861,6 +949,7 @@ int main(void) {
     test_drift();
     test_adpcm();
     test_flac();
+    test_alac();
     test_graph_push_chain();
     test_graph_pull_mix();
     test_graph_push_mixer();

@@ -109,11 +109,12 @@ top-level element starts without tracking the hierarchy.
 - **Tracks.** The first video track must be `V_MJPEG`, `V_MPEG4/ISO/AVC` or
   `V_MPEG2` (their `CodecPrivate`, avcC or a sequence header, is handed up
   raw). Audio is `A_PCM/INT/LIT`, `A_MPEG/L3`, `A_AAC*`, `A_OPUS`, `A_FLAC`,
-  or `A_MS/ACM` whose WAVEFORMATEX is IMA ADPCM (`0x0011`); anything else is
-  ignored as unsupported. `CodecPrivate` is handed up as-is, except for
+  `A_ALAC`, or `A_MS/ACM` whose WAVEFORMATEX is IMA ADPCM (`0x0011`); anything
+  else is ignored as unsupported. `CodecPrivate` is handed up as-is, except for
   `A_MS/ACM`, where the rate, channels and block align come from the
-  WAVEFORMATEX and only its extra bytes are passed on, and `A_FLAC`, where
-  only the STREAMINFO body is, and the format comes from it. A track with
+  WAVEFORMATEX and only its extra bytes are passed on, and `A_FLAC` and
+  `A_ALAC`, where only the STREAMINFO body or the 24-byte ALACSpecificConfig
+  is, and the format comes from it. A track with
   `ContentEncodings` (header stripping, compression) is unsupported.
 - **Lacing.** A laced audio block is split and each frame is a packet of its
   own, because raw AAC and Opus frames carry no length and a decoder cannot
@@ -172,11 +173,12 @@ time; a seek rebuilds it by walking the runs, which are few.
   `m2v1`, or `mp4v` whose esds says MJPEG (object type 0x6C, which is what
   ffmpeg writes for MJPEG in `.mp4`) or MPEG-2 video (0x60-0x65). Audio is
   `mp4a` with an AAC or MP3 object type (the esds may sit inside a QuickTime
-  `wave`), `.mp3`, `Opus`, `fLaC`, or 16-bit `sowt`. QuickTime sound
+  `wave`), `.mp3`, `Opus`, `fLaC`, `alac` (its `alac` box directly or inside a
+  QuickTime `wave`), or 16-bit `sowt`. QuickTime sound
   descriptions v1/v2 are longer, and their extra header is skipped.
-- **`dfLa` is cut to its STREAMINFO body**, which is what a FLAC decoder takes,
-  and the rate comes from there: the sample entry's 16.16 rate cannot hold
-  more than 65535 Hz.
+- **`dfLa` is cut to its STREAMINFO body and `alac` to its
+  ALACSpecificConfig**, which is what the decoders take, and the rate comes
+  from there: the sample entry's 16.16 rate cannot hold more than 65535 Hz.
 - **A file needs one usable track.** With no video track, seek moves the audio
   cursor and reports its own pts, `stss` and the keyframe index stay
   video-only, and the duration falls back to the audio `mdhd` when `mvhd` has

@@ -4,6 +4,7 @@
  */
 
 #include "medf_mp4.h"
+#include "medf_alac.h"
 #include "medf_flac.h"
 
 #include <math.h>
@@ -44,6 +45,7 @@ static const char *TAG = "medf_mp4_demux";
 #define BOX_WAVE FOURCC('w', 'a', 'v', 'e')
 #define BOX_DOPS FOURCC('d', 'O', 'p', 's')
 #define BOX_DFLA FOURCC('d', 'f', 'L', 'a')
+#define BOX_ALAC FOURCC('a', 'l', 'a', 'c')
 #define BOX_UDTA FOURCC('u', 'd', 't', 'a')
 #define BOX_META FOURCC('m', 'e', 't', 'a')
 #define BOX_ILST FOURCC('i', 'l', 's', 't')
@@ -69,6 +71,7 @@ static const char *TAG = "medf_mp4_demux";
 #define ENTRY_MP3  FOURCC('.', 'm', 'p', '3')
 #define ENTRY_OPUS FOURCC('O', 'p', 'u', 's')
 #define ENTRY_FLAC FOURCC('f', 'L', 'a', 'C')
+#define ENTRY_ALAC FOURCC('a', 'l', 'a', 'c')
 #define ENTRY_SOWT FOURCC('s', 'o', 'w', 't')
 
 #define OTI_MPEG4_AUDIO     0x40
@@ -668,6 +671,12 @@ static bool find_esds(span_t children, span_t *esds) {
     return span_find(children, BOX_WAVE, &wave) && span_find(wave, BOX_ESDS, esds);
 }
 
+static bool find_alac(span_t children, span_t *alac) {
+    if (span_find(children, BOX_ALAC, alac)) return true;
+    span_t wave;
+    return span_find(children, BOX_WAVE, &wave) && span_find(wave, BOX_ALAC, alac);
+}
+
 static void identify_audio(track_t *track) {
     track->codec = MEDF_MP4_AUDIO_CODEC_UNSUPPORTED;
     uint32_t type = 0;
@@ -726,6 +735,15 @@ static void identify_audio(track_t *track) {
         track->codec = MEDF_MP4_AUDIO_CODEC_FLAC;
         track->codec_private = (span_t){ si, si + MEDF_FLAC_STREAMINFO_BYTES };
         medf_flac_streaminfo_format(si, &track->sample_rate, &track->channels, &track->bits);
+        break;
+    }
+    case ENTRY_ALAC: {
+        if (!find_alac(children, &body)) break;
+        const uint8_t *cookie = medf_alac_find_cookie(body.p, span_size(body));
+        if (!cookie) break;
+        track->codec = MEDF_MP4_AUDIO_CODEC_ALAC;
+        track->codec_private = (span_t){ cookie, cookie + MEDF_ALAC_COOKIE_BYTES };
+        medf_alac_cookie_format(cookie, &track->sample_rate, &track->channels, &track->bits);
         break;
     }
     case ENTRY_SOWT:
@@ -995,6 +1013,7 @@ static const char *audio_codec_name(medf_mp4_audio_codec_t codec) {
     case MEDF_MP4_AUDIO_CODEC_AAC: return "AAC";
     case MEDF_MP4_AUDIO_CODEC_OPUS: return "Opus";
     case MEDF_MP4_AUDIO_CODEC_FLAC: return "FLAC";
+    case MEDF_MP4_AUDIO_CODEC_ALAC: return "ALAC";
     default: return "unsupported";
     }
 }

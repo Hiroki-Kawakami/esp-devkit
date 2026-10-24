@@ -4,6 +4,7 @@
  */
 
 #include "medf_mkv.h"
+#include "medf_alac.h"
 #include "medf_flac.h"
 
 #include <math.h>
@@ -447,6 +448,7 @@ static const char *audio_codec_name(medf_mkv_audio_codec_t codec) {
     case MEDF_MKV_AUDIO_CODEC_AAC: return "AAC";
     case MEDF_MKV_AUDIO_CODEC_OPUS: return "Opus";
     case MEDF_MKV_AUDIO_CODEC_FLAC: return "FLAC";
+    case MEDF_MKV_AUDIO_CODEC_ALAC: return "ALAC";
     default: return "unsupported";
     }
 }
@@ -480,6 +482,18 @@ static void use_audio_track(medf_mkv_demux_t *demux, const track_t *track) {
                                             &demux->info.audio.channels,
                                             &demux->info.audio.bits_per_sample);
                 keep_audio_private(demux, si, MEDF_FLAC_STREAMINFO_BYTES);
+            }
+        } else if (strcmp(track->codec, "A_ALAC") == 0) {
+            const uint8_t *cookie = track->codec_private
+                                        ? medf_alac_find_cookie(track->codec_private,
+                                                                track->codec_private_size)
+                                        : NULL;
+            if (cookie) {
+                codec = MEDF_MKV_AUDIO_CODEC_ALAC;
+                medf_alac_cookie_format(cookie, &demux->info.audio.sample_rate,
+                                        &demux->info.audio.channels,
+                                        &demux->info.audio.bits_per_sample);
+                keep_audio_private(demux, cookie, MEDF_ALAC_COOKIE_BYTES);
             }
         } else if (strcmp(track->codec, "A_MS/ACM") == 0) {
             codec = use_wave_format(demux, track);

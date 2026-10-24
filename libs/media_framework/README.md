@@ -14,6 +14,7 @@ caller's. Container-specific behaviour is in
 | `medf_avi.h`, `medf_wav.h` | RIFF demuxers on one chunk walk (`src/medf_riff.c`) |
 | `medf_es.h` | MP3 and ADTS AAC elementary streams |
 | `medf_flac.h` | native FLAC, and STREAMINFO for FLAC in other containers |
+| `medf_alac.h` | the ALAC config inside a magic cookie, for MP4 and Matroska |
 | `medf_mkv.h` | Matroska |
 | `medf_mp4.h` | ISO BMFF / QuickTime |
 

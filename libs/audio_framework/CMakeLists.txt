@@ -9,6 +9,7 @@ set(AUDF_SRCS
         "src/audf_aac_sbr_hf.c"
         "src/audf_aac_tables.c"
         "src/audf_adpcm.c"
+        "src/audf_alac.c"
         "src/audf_alloc.c"
         "src/audf_codec.c"
         "src/audf_convert.c"
