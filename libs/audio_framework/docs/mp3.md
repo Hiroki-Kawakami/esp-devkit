@@ -1,7 +1,8 @@
 # MP3 decoder (`audf_mp3`)
 
 `inc/audf_mp3.h`: MPEG-1, 2 and 2.5 audio Layer III (MP3) and MPEG-1 and 2
-Layer II (MP2), plain C on every target. Written from ISO/IEC 11172-3 and
+Layer II (MP2), with PIE kernels on the ESP32-P4 and a C build everywhere
+else; both produce the same samples. Written from ISO/IEC 11172-3 and
 13818-3; the Huffman tables, the synthesis window and the Layer II allocation
 tables are the standard's Annex B.
 
@@ -50,29 +51,66 @@ tables are the standard's Annex B.
   at q/8 and multiplied by 16. The quarter-step gains 2^(k/4) are Q27: at Q14
   their 2^-16 error made loud passages differ from the reference by one LSB
   in two samples out of five.
-- **Products take the high word of a 32 × 32 multiply** (`mp3_mulh`, one
-  `mulh` on RV32) against Q31 coefficients: the alias butterflies, the IMDCT
-  (an 18 × 18 DCT-IV, three 6 × 6 for short blocks), the synthesis matrixing
-  (a 32-point DCT-II split into even and odd halves down to one point) and the
-  window. A 64-bit multiply-accumulate is several instructions on RV32; with
-  them a 128 kbps stereo stream took 18 % of a core instead of 10 %.
+- **Long products split both sides into 16-bit halves**, x = xh · 2^16 + xl
+  and c = ch · 2^16 + cl with xl, cl signed (`mp3_split`), because the PIE
+  multiplies only 16 × 16. `xl · cl` is dropped.
+  - The IMDCT (18 × 18 DCT-IV) and the synthesis matrixing (a 32-point DCT-II
+    folded once into a 16-point DCT-II and a 16-point DCT-IV) are dot
+    products: `sat(Σ xh·ch) + sat((Σ xh·cl + xl·ch) >> 16)`, about
+    `Σ (x · c) >> 32` against Q31 coefficients, rounded down once per sum.
+    The first DCT-II row is all ones and is a plain sum, since 1.0 has no Q31
+    split.
+  - The window is per output: `Σ vh·c + ((vl·c) >> 16)` over 22 rows of
+    16-bit window parts. The standard's D[i] are multiples of 2^-16 up to
+    1.144, so the four central tap rows take two or three parts, and the
+    window is exact up to the floor of each low product (`SYNTH_FLOOR_BIAS`
+    adds half of them back). The signs of V are folded into the parts, so the
+    64 values a block writes are the matrixing output without negation, kept
+    twice (at `off` and `off + 1024`) so that no tap wraps.
+  - The alias butterflies, the short-block IMDCT and the window of the IMDCT
+    output stay scalar, as the high word of a 32 × 32 multiply (`mp3_mulh`,
+    one `mulh` on RV32). A 64-bit multiply-accumulate is several instructions
+    there.
 - **The IMDCT and the synthesis DCT run on block floating point**: the input
-  is shifted up until its largest value sits just under 2^27 (2^26 for the
+  is shifted up until its largest value sits just under 2^27 (2^25 for the
   DCT, whose butterflies add 32 values), and the result is shifted back.
-  Without it the truncation of the high-word products, at 2^-23, raised the
-  difference to the reference by a quarter. A constant added to correct the
-  truncation instead adds a DC offset wherever the input is zero.
-- The window keeps the standard's D[i] (multiples of 2^-16) × 2^30 and V × 4;
-  the sum of |D| over one output's 16 taps is at most 2.73, so the sum stays
-  in 32 bits.
+  Without it, rounding at 2^-23 raised the difference to the reference by a
+  quarter. A constant added to correct the rounding instead adds a DC offset
+  wherever the input is zero.
+- Synthesis input is PCM × 2^23 and V is × 2^24, clamped at ±32 so that the
+  window sum (Σ|D| ≤ 2.73 over one output's taps) stays in 32 bits. IMDCT
+  outputs and overlaps are clamped at ±32 for the same reason.
 - Why not a fast IMDCT through a DCT-II (y[m] + y[m−1] is the DCT-II of
   2 cos(π(2k+1)/72) x[k]): its recursion amplifies the rounding of the 32-bit
   products into errors of several LSB, and with 64-bit products it is slower
   than the direct form.
 
 Memory is one 36.6 KB block from `alloc_caps` (two 8 KB synthesis buffers,
-the reservoir, spectra, overlap and subband rows). The decoding stack stays
-under 2.2 KB.
+the reservoir, spectra, overlap and subband rows), 16-byte aligned. The
+decoding stack stays under 2 KB.
+
+## PIE kernels
+
+`src/audf_mp3_pie_p4.S` on the ESP32-P4; elsewhere the C versions in
+`src/audf_mp3_kernels_c.c` run, which return the same integers, so host and
+device decode the same samples. `audf_mp3_kernel_selftest()` runs both on
+random input (`mp3kerneltest` on the Tab5).
+
+| kernel | use |
+|---|---|
+| `mp3_k_dot16` | the two 16-point halves of the synthesis DCT |
+| `mp3_k_dot24` | the IMDCT, 18 inputs padded to 24 |
+| `mp3_k_window` | the synthesis window, 8 outputs per vector |
+
+- The dot kernels keep x in q0-q5 and stream the coefficient rows through
+  `esp.vmulas.s16.xacc.ld.ip`; `esp.srs.s.xacc` reads each 40-bit sum out
+  with its shift and saturation.
+- The window runs all high halves with SAR 0, then all low halves with SAR
+  16 through `esp.vmul.s32.s16xs16`, as the AAC QMF windows do. The rows'
+  offsets are immediates in the kernel and must follow `mp3_window_off`.
+- The AAC decoder's notes on this chip apply (`docs/aac.md#pie-kernels`):
+  a `fence` after vector stores, the registers PIE can address with, and CFG
+  not being saved per task, so every decode call runs `mp3_k_prepare()`.
 
 ## Speed
 
@@ -80,15 +118,17 @@ Decoding a clip held in PSRAM on an ESP32-P4 rev 1 at 360 MHz, with the
 decoder in PSRAM; cost is a percentage of one core. The clips are
 `l3_44_128`, `l3_44_320` and `l2_44_256` from `test/make_mp3_material.sh`.
 
-| clip | cost | stack |
-|---|---|---|
-| Layer III, 44.1 kHz stereo, 128 kbps | 10.2 % | 2140 B |
-| Layer III, 44.1 kHz stereo, 320 kbps | 12.2 % | 2184 B |
-| Layer II, 44.1 kHz stereo, 256 kbps | 7.1 % | 1896 B |
+| clip | cost | scalar C | stack |
+|---|---|---|---|
+| Layer III, 44.1 kHz stereo, 128 kbps | 6.9 % | 10.2 % | 1988 B |
+| Layer III, 44.1 kHz stereo, 320 kbps | 8.5 % | 12.2 % | 1988 B |
+| Layer II, 44.1 kHz stereo, 256 kbps | 4.8 % | 7.1 % | 1716 B |
 
-At 320 kbps the synthesis filterbank takes about half of the time, the IMDCT
-and overlap 30 %, Huffman decoding and requantization 8 % each. The decoder in
-internal RAM is no faster.
+"Scalar C" is the same decoder with every product a `mulh`. At 320 kbps the
+synthesis takes about 42 % of the time (the window kernel a third of it, the
+rest the scalar steps around the kernels), the IMDCT and overlap 28 %, Huffman
+decoding 12 % and requantization 10 %. One IMDCT is 650 cycles in the kernel
+and about as much again around it. The decoder in internal RAM is no faster.
 
 ## Checking it
 

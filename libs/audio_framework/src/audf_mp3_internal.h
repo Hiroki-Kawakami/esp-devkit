@@ -42,7 +42,8 @@ typedef struct {
 } mp3_bits_t;
 
 typedef struct {
-    int32_t  v[2048];
+    int16_t __attribute__((aligned(16))) vh[2048];
+    int16_t __attribute__((aligned(16))) vl[2048];
     unsigned off;
 } mp3_synth_t;
 
@@ -76,14 +77,6 @@ static inline uint32_t mp3_bits_get(mp3_bits_t *b, unsigned n) {
     const uint32_t v = mp3_bits_show(b) >> (32 - n);
     b->pos += n;
     return v;
-}
-
-static inline int32_t mp3_sat(int64_t v) {
-    return v > INT32_MAX ? INT32_MAX : v < -INT32_MAX ? -INT32_MAX : (int32_t)v;
-}
-
-static inline int32_t mp3_mul31(int32_t a, int32_t b) {
-    return (int32_t)(((int64_t)a * b) >> 31);
 }
 
 static inline int32_t mp3_mulh(int32_t a, int32_t b) {

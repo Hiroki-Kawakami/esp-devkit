@@ -41,6 +41,10 @@ bool      audf_mp3_parse_header(const uint8_t *p, audf_mp3_header_t *out);
 esp_err_t audf_mp3_decoder_create(const audf_mp3_config_t *config, audf_decoder_t **out);
 /* The sample rate of the last decoded frame. */
 uint32_t  audf_mp3_decoder_rate(const audf_decoder_t *dec);
+/* Runs the SIMD kernels against their C versions on random input; returns the
+ * number of mismatching calls (-1 without memory), always 0 where there is no
+ * SIMD version. */
+int       audf_mp3_kernel_selftest(uint32_t seed, int iterations);
 
 #ifdef __cplusplus
 }

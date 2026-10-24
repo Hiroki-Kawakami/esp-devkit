@@ -7,12 +7,14 @@
 
 #include "audf_alloc.h"
 #include "audf_mp3_internal.h"
+#include "audf_mp3_kernels.h"
 
 #define SYNTH_FRAC   23
 #define SYNTH_IN_MAX ((1 << 26) - 1)
 #define SYNTH_V_MAX  (1 << 28)
-#define SYNTH_V_UP   2
-#define SYNTH_OUT    (SYNTH_FRAC + SYNTH_V_UP - 2)
+#define SYNTH_V_FRAC (SYNTH_FRAC + 1)
+/* Half of the 22 window rows, whose low products each round down. */
+#define SYNTH_FLOOR_BIAS 11
 
 static const uint16_t s_kbps[3][15] = {
     { 0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384 },
@@ -57,66 +59,56 @@ bool audf_mp3_parse_header(const uint8_t *p, audf_mp3_header_t *out) {
     return true;
 }
 
-/* tmp holds 3 * (n - 1) values. */
-static void dct2(const int32_t *x, int32_t *out, int n, int32_t *tmp) {
-    static const int32_t *const s_dct4[17] = {
-        [1] = mp3_dct4_1, [2] = mp3_dct4_2, [4] = mp3_dct4_4, [8] = mp3_dct4_8, [16] = mp3_dct4_16,
-    };
-    if (n < 2) {
-        out[0] = x[0];
-        return;
-    }
-    const int h = n >> 1;
-    int32_t *e = tmp, *o = tmp + h, *eo = tmp + 2 * h;
-    for (int k = 0; k < h; k++) {
-        e[k] = x[k] + x[n - 1 - k];
-        o[k] = x[k] - x[n - 1 - k];
-    }
-    dct2(e, eo, h, tmp + 3 * h);
-    const int32_t *c = s_dct4[h];
-    for (int r = 0; r < h; r++) {
-        int32_t acc = 0;
-#pragma GCC unroll 16
-        for (int k = 0; k < h; k++) acc += mp3_mulh(o[k], c[r * h + k]);
-        out[2 * r] = eo[r];
-        out[2 * r + 1] = mp3_sat((int64_t)acc * 2);
-    }
+static inline int32_t to_v(int32_t v) {
+    return (v > SYNTH_V_MAX ? SYNTH_V_MAX : v < -SYNTH_V_MAX ? -SYNTH_V_MAX : v) * (1 << (SYNTH_V_FRAC - SYNTH_FRAC));
 }
 
 static void synth(mp3_synth_t *s, const int32_t *in, int16_t *out, int stride) {
-    int32_t x[32], X[32], tmp[93];
+    int32_t x[32];
     uint32_t mag = 0;
     for (int k = 0; k < 32; k++) {
         const int32_t v = (in[k] + (1 << (MP3_FRAC - SYNTH_FRAC - 1))) >> (MP3_FRAC - SYNTH_FRAC);
         x[k] = v > SYNTH_IN_MAX ? SYNTH_IN_MAX : v < -SYNTH_IN_MAX ? -SYNTH_IN_MAX : v;
         mag |= (uint32_t)(x[k] < 0 ? -x[k] : x[k]);
     }
-    const int sh = mp3_headroom_of(mag, 26);
-    if (sh) {
-        for (int k = 0; k < 32; k++) x[k] *= 1 << sh;
+    const int sh = mp3_headroom_of(mag, 25);
+    int16_t __attribute__((aligned(16))) eh[16], el[16], oh[16], ol[16];
+    int32_t e0 = 0;
+    for (int k = 0; k < 16; k++) {
+        const int32_t a = x[k] * (1 << sh), b = x[31 - k] * (1 << sh);
+        e0 += a + b;
+        mp3_split(eh + k, el + k, a + b);
+        mp3_split(oh + k, ol + k, a - b);
     }
-    dct2(x, X, 32, tmp);
-    const int32_t round = 1 << sh >> 1;
-    for (int k = 0; k < 32; k++) {
-        const int32_t v = (X[k] + round) >> sh;
-        X[k] = (v > SYNTH_V_MAX ? SYNTH_V_MAX : v < -SYNTH_V_MAX ? -SYNTH_V_MAX : v) * (1 << SYNTH_V_UP);
-    }
-    s->off = (s->off - 64) & 1023;
-    int32_t *v = s->v + s->off;
-    for (int i = 0; i < 16; i++) v[i] = v[i + 1024] = X[16 + i];
-    v[16] = v[16 + 1024] = 0;
-    for (int i = 17; i < 48; i++) v[i] = v[i + 1024] = -X[48 - i];
-    for (int i = 48; i < 64; i++) v[i] = v[i + 1024] = -X[i - 48];
+    int32_t even[16], odd[16];
+    mp3_k_dot16(even + 1, eh, el, mp3_dct16e_split, 15);
+    mp3_k_dot16(odd, oh, ol, mp3_dct16_split, 16);
 
-    const int32_t *D = mp3_synth_window;
+    int16_t __attribute__((aligned(16))) xh[32], xl[32];
+    const int32_t round = 1 << sh >> 1;
+    for (int r = 0; r < 16; r++) {
+        mp3_split(xh + 2 * r, xl + 2 * r, to_v(((r ? 2 * even[r] : e0) + round) >> sh));
+        mp3_split(xh + 2 * r + 1, xl + 2 * r + 1, to_v((2 * odd[r] + round) >> sh));
+    }
+
+    s->off = (s->off - 64) & 1023;
+    int16_t *vh = s->vh + s->off, *vl = s->vl + s->off;
+    memcpy(vh, xh + 16, 16 * sizeof(int16_t));
+    memcpy(vl, xl + 16, 16 * sizeof(int16_t));
+    vh[16] = vl[16] = 0;
+    for (int i = 17; i < 48; i++) {
+        vh[i] = xh[48 - i];
+        vl[i] = xl[48 - i];
+    }
+    memcpy(vh + 48, xh, 16 * sizeof(int16_t));
+    memcpy(vl + 48, xl, 16 * sizeof(int16_t));
+    memcpy(vh + 1024, vh, 64 * sizeof(int16_t));
+    memcpy(vl + 1024, vl, 64 * sizeof(int16_t));
+
+    int32_t __attribute__((aligned(16))) acc[32];
+    mp3_k_window(acc, vh, vl, mp3_window_split);
     for (int j = 0; j < 32; j++) {
-        int32_t acc = 8;
-#pragma GCC unroll 8
-        for (int i = 0; i < 8; i++) {
-            acc += mp3_mulh(D[64 * i + j], v[128 * i + j]);
-            acc += mp3_mulh(D[64 * i + 32 + j], v[128 * i + 96 + j]);
-        }
-        const int32_t y = (acc + (1 << (SYNTH_OUT - 16))) >> (SYNTH_OUT - 15);
+        const int32_t y = (acc[j] + SYNTH_FLOOR_BIAS + (1 << (SYNTH_V_FRAC - 16))) >> (SYNTH_V_FRAC - 15);
         out[j * stride] = (int16_t)(y > 32767 ? 32767 : y < -32768 ? -32768 : y);
     }
 }
@@ -149,6 +141,7 @@ static esp_err_t decode(audf_decoder_t *dec, const void *frame, size_t len, void
         return layer1 ? ESP_ERR_NOT_SUPPORTED : ESP_ERR_INVALID_RESPONSE;
     }
     if (len < d->f.h.bytes) return ESP_ERR_INVALID_SIZE;
+    mp3_k_prepare();
     memcpy(d->frame, p, d->f.h.bytes);
     memset(d->frame + d->f.h.bytes, 0, MP3_PAD);
 
@@ -178,8 +171,9 @@ static const audf_decoder_ops_t s_ops = {
 
 esp_err_t audf_mp3_decoder_create(const audf_mp3_config_t *config, audf_decoder_t **out) {
     if (!config || !out || config->channels < 1 || config->channels > 2) return ESP_ERR_INVALID_ARG;
-    mp3_dec_t *d = audf_calloc(1, sizeof(*d), config->alloc_caps);
+    mp3_dec_t *d = audf_malloc_aligned(16, sizeof(*d), config->alloc_caps);
     if (!d) return ESP_ERR_NO_MEM;
+    memset(d, 0, sizeof(*d));
     d->base.ops = &s_ops;
     d->base.fmt = AUDF_FMT_S16;
     d->base.channels = config->channels;

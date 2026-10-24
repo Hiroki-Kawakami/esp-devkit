@@ -22,6 +22,7 @@ set(AUDF_SRCS
         "src/audf_mixer.c"
         "src/audf_mp3.c"
         "src/audf_mp3_l2.c"
+        "src/audf_mp3_kernels_c.c"
         "src/audf_mp3_l3.c"
         "src/audf_mp3_tables.c"
         "src/audf_opus.c"
@@ -36,7 +37,7 @@ set(AUDF_SRCS
         "src/audf_sync.c")
 
 if(IDF_TARGET STREQUAL "esp32p4")
-    list(APPEND AUDF_SRCS "src/audf_aac_pie_p4.S")
+    list(APPEND AUDF_SRCS "src/audf_aac_pie_p4.S" "src/audf_mp3_pie_p4.S")
 endif()
 
 idf_component_register(

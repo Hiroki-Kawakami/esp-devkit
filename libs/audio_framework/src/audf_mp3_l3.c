@@ -6,8 +6,10 @@
 #include <string.h>
 
 #include "audf_mp3_internal.h"
+#include "audf_mp3_kernels.h"
 
 #define XR_MAX (1 << 27)
+#define Z_MAX  (1 << 29)
 
 typedef struct {
     uint16_t part23;
@@ -388,25 +390,26 @@ static void antialias(int32_t *x, int sblimit) {
     }
 }
 
+static inline int32_t clamp_z(int32_t v) {
+    return v > Z_MAX ? Z_MAX : v < -Z_MAX ? -Z_MAX : v;
+}
+
 static void imdct36(const int32_t *in, int32_t *ov, int32_t *out, const int32_t *win) {
-    int32_t x[18], z[18];
+    int16_t __attribute__((aligned(16))) xh[24], xl[24];
+    int32_t z[18];
     const int s = mp3_headroom(in, 18, 27);
     const int32_t round = 1 << s >> 1;
-    for (int k = 0; k < 18; k++) x[k] = in[k] * (1 << s);
-    for (int m = 0; m < 18; m++) {
-        const int32_t *c = mp3_imdct18 + 18 * m;
-        int32_t acc = 0;
-#pragma GCC unroll 18
-        for (int k = 0; k < 18; k++) acc += mp3_mulh(x[k], c[k]);
-        z[m] = (2 * acc + round) >> s;
-    }
+    for (int k = 0; k < 18; k++) mp3_split(xh + k, xl + k, in[k] * (1 << s));
+    for (int k = 18; k < 24; k++) xh[k] = xl[k] = 0;
+    mp3_k_dot24(z, xh, xl, mp3_imdct18_split, 18);
+    for (int m = 0; m < 18; m++) z[m] = clamp_z((2 * z[m] + round) >> s);
     for (int n = 0; n < 18; n++) {
         const int32_t y = n < 9 ? z[n + 9] : -z[26 - n];
-        out[32 * n] = mp3_sat((int64_t)mp3_mul31(y, win[n]) + ov[n]);
+        out[32 * n] = 2 * mp3_mulh(y, win[n]) + ov[n];
     }
     for (int n = 18; n < 36; n++) {
         const int32_t y = n < 27 ? -z[26 - n] : -z[n - 27];
-        ov[n - 18] = mp3_mul31(y, win[n]);
+        ov[n - 18] = 2 * mp3_mulh(y, win[n]);
     }
 }
 
@@ -424,16 +427,16 @@ static void imdct12x3(const int32_t *in, int32_t *ov, int32_t *out) {
             int32_t acc = 0;
 #pragma GCC unroll 6
             for (int k = 0; k < 6; k++) acc += mp3_mulh(x[6 * w + k], c[k]);
-            z[m] = (2 * acc + round) >> s;
+            z[m] = clamp_z((2 * acc + round) >> s);
         }
         for (int n = 0; n < 12; n++) {
             const int32_t y = n < 3 ? z[n + 3] : n < 9 ? -z[8 - n] : -z[n - 9];
-            buf[6 + 6 * w + n] = mp3_sat((int64_t)buf[6 + 6 * w + n] + mp3_mul31(y, win[n]));
+            buf[6 + 6 * w + n] += 2 * mp3_mulh(y, win[n]);
         }
     }
     for (int n = 0; n < 18; n++) {
-        out[32 * n] = mp3_sat((int64_t)buf[n] + ov[n]);
-        ov[n] = buf[18 + n];
+        out[32 * n] = buf[n] + ov[n];
+        ov[n] = clamp_z(buf[18 + n]);
     }
 }
 
