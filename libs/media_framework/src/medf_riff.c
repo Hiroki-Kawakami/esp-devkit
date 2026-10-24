@@ -29,6 +29,8 @@ medf_riff_audio_codec_t medf_riff_audio_codec_of_tag(uint16_t format_tag) {
         return MEDF_RIFF_AUDIO_CODEC_PCM;
     case RIFF_WAVE_FORMAT_MP3:
         return MEDF_RIFF_AUDIO_CODEC_MP3;
+    case RIFF_WAVE_FORMAT_MPEG:
+        return MEDF_RIFF_AUDIO_CODEC_MP2;
     case RIFF_WAVE_FORMAT_IMA_ADPCM:
         return MEDF_RIFF_AUDIO_CODEC_ADPCM_IMA;
     case RIFF_WAVE_FORMAT_AAC:
@@ -45,6 +47,7 @@ const char *medf_riff_audio_codec_name(medf_riff_audio_codec_t codec) {
     case MEDF_RIFF_AUDIO_CODEC_NONE: return "none";
     case MEDF_RIFF_AUDIO_CODEC_PCM: return "PCM";
     case MEDF_RIFF_AUDIO_CODEC_MP3: return "MP3";
+    case MEDF_RIFF_AUDIO_CODEC_MP2: return "MP2";
     case MEDF_RIFF_AUDIO_CODEC_ADPCM_IMA: return "IMA ADPCM";
     case MEDF_RIFF_AUDIO_CODEC_AAC: return "AAC";
     default: return "unsupported";

@@ -48,12 +48,13 @@ packet boundaries at all).
 - **The walk does not stop at `data`**, because `LIST INFO` is written after
   the audio as often as before it, and stepping over a chunk is a seek.
 
-## MP3 and ADTS AAC
+## MP3, MP2 and ADTS AAC
 
-Both are self-delimiting frames with no container: the ID3/APE trimming, the
+All are self-delimiting frames with no container: the ID3/APE trimming, the
 resync and the byte-to-time seek are the same code, and only the frame header
-parser differs. The codec is decided at open by trying MP3 and then AAC on the
-first frames.
+parser differs. The codec is decided at open by trying MPEG audio and then AAC
+on the first frames; the first MPEG frame's layer says MP3 (Layer III) or MP2
+(Layer II), and frames only chain to frames of the same layer.
 
 - **A sync word only counts when three frames chain into each other.**
   Compressed payload is full of `FF` bytes, so a single header match finds
@@ -138,9 +139,10 @@ top-level element starts without tracking the hierarchy.
 
 - **Tracks.** The first video track must be `V_MJPEG`, `V_MPEG4/ISO/AVC` or
   `V_MPEG2` (their `CodecPrivate`, avcC or a sequence header, is handed up
-  raw). Audio is `A_PCM/INT/LIT`, `A_MPEG/L3`, `A_AAC*`, `A_OPUS`, `A_FLAC`,
-  `A_ALAC`, or `A_MS/ACM` whose WAVEFORMATEX is IMA ADPCM (`0x0011`); anything
-  else is ignored as unsupported. `CodecPrivate` is handed up as-is, except for
+  raw). Audio is `A_PCM/INT/LIT`, `A_MPEG/L3`, `A_MPEG/L2`, `A_AAC*`,
+  `A_OPUS`, `A_FLAC`, `A_ALAC`, or `A_MS/ACM` whose WAVEFORMATEX is IMA ADPCM
+  (`0x0011`); anything else is ignored as unsupported. `CodecPrivate` is
+  handed up as-is, except for
   `A_MS/ACM`, where the rate, channels and block align come from the
   WAVEFORMATEX and only its extra bytes are passed on, and `A_FLAC` and
   `A_ALAC`, where only the STREAMINFO body or the 24-byte ALACSpecificConfig
@@ -202,9 +204,10 @@ time; a seek rebuilds it by walking the runs, which are few.
   then the `tkhd` enabled flag. Video is `avc1`/`avc3` (`avcC`), `jpeg`/`mjpa`,
   `m2v1`, or `mp4v` whose esds says MJPEG (object type 0x6C, which is what
   ffmpeg writes for MJPEG in `.mp4`) or MPEG-2 video (0x60-0x65). Audio is
-  `mp4a` with an AAC or MP3 object type (the esds may sit inside a QuickTime
-  `wave`), `.mp3`, `Opus`, `fLaC`, `alac` (its `alac` box directly or inside a
-  QuickTime `wave`), or 16-bit `sowt`. QuickTime sound
+  `mp4a` with an AAC or MPEG audio object type, reported as MP3 whatever the
+  layer (the esds may sit inside a QuickTime `wave`), `.mp3`, `Opus`, `fLaC`,
+  `alac` (its `alac` box directly or inside a QuickTime `wave`), or 16-bit
+  `sowt`. QuickTime sound
   descriptions v1/v2 are longer, and their extra header is skipped.
 - **`dfLa` is cut to its STREAMINFO body and `alac` to its
   ALACSpecificConfig**, which is what the decoders take, and the rate comes

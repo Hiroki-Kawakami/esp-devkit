@@ -25,6 +25,7 @@ typedef struct {
     uint32_t samples;
     uint32_t sample_rate;
     uint8_t channels;
+    uint8_t layer;
 } frame_t;
 
 struct medf_es_demux {
@@ -46,6 +47,8 @@ static uint32_t be32(const uint8_t *p) {
 }
 
 static bool parse_mpeg(const uint8_t *h, frame_t *frame) {
+    static const uint16_t kBitrateV1L2[15] = { 0,   32,  48,  56,  64,  80,  96, 112,
+                                               128, 160, 192, 224, 256, 320, 384 };
     static const uint16_t kBitrateV1[15] = { 0,   32,  40,  48,  56,  64,  80, 96,
                                              112, 128, 160, 192, 224, 256, 320 };
     static const uint16_t kBitrateV2[15] = { 0,  8,  16, 24, 32,  40,  48,  56,
@@ -60,23 +63,26 @@ static bool parse_mpeg(const uint8_t *h, frame_t *frame) {
     if (h[0] != 0xFF || (h[1] & 0xE0) != 0xE0) return false;
     const uint8_t version = (h[1] >> 3) & 3;
     const uint8_t layer = (h[1] >> 1) & 3;
-    if (version == 1 || layer != 1) return false;
+    if (version == 1 || (layer != 1 && layer != 2) || (version == 0 && layer == 2)) return false;
 
     const uint8_t bitrate_index = h[2] >> 4;
     const uint8_t rate_index = (h[2] >> 2) & 3;
     if (bitrate_index == 0 || bitrate_index == 15 || rate_index == 3) return false;
 
     const bool version1 = version == 3;
+    const bool layer2 = layer == 2;
     const uint32_t bitrate =
-        (version1 ? kBitrateV1[bitrate_index] : kBitrateV2[bitrate_index]) * 1000u;
+        (version1 ? (layer2 ? kBitrateV1L2 : kBitrateV1)[bitrate_index] : kBitrateV2[bitrate_index]) *
+        1000u;
     const uint32_t rate = kRates[version][rate_index];
     if (!rate) return false;
 
     const uint32_t padding = (h[2] >> 1) & 1;
-    frame->samples = version1 ? 1152 : 576;
+    frame->samples = version1 || layer2 ? 1152 : 576;
     frame->sample_rate = rate;
     frame->channels = ((h[3] >> 6) & 3) == 3 ? 1 : 2;
-    frame->size = (version1 ? 144u : 72u) * bitrate / rate + padding;
+    frame->layer = layer2 ? 2 : 3;
+    frame->size = frame->samples / 8 * bitrate / rate + padding;
     return frame->size > 4;
 }
 
@@ -118,6 +124,7 @@ static bool frames_chain(medf_es_demux_t *demux, off_t offset, frame_t *first) {
             return false;
         }
         if (i == 0) *first = frame;
+        if (frame.layer != first->layer) return false;
         offset += frame.size;
         if (offset > demux->data_end) return false;
         if (offset == demux->data_end) break;
@@ -280,11 +287,12 @@ medf_es_demux_t *medf_es_demux_open(const char *path, const medf_arena_t *arena,
         demux->info.codec = MEDF_ES_CODEC_NONE;
     }
     if (demux->info.codec == MEDF_ES_CODEC_NONE) {
-        *error = "no MP3 or AAC frames in this file";
+        *error = "no MP3, MP2 or AAC frames in this file";
         medf_es_demux_close(demux);
         return NULL;
     }
 
+    if (frame.layer == 2) demux->info.codec = MEDF_ES_CODEC_MP2;
     demux->data_start = first;
     demux->info.sample_rate = frame.sample_rate;
     demux->info.channels = frame.channels;
@@ -308,7 +316,9 @@ medf_es_demux_t *medf_es_demux_open(const char *path, const medf_arena_t *arena,
             : 0;
 
     ESP_LOGI(TAG, "%s: %s %u Hz x%u, %lld us%s", path,
-             demux->info.codec == MEDF_ES_CODEC_AAC ? "AAC" : "MP3",
+             demux->info.codec == MEDF_ES_CODEC_AAC   ? "AAC"
+             : demux->info.codec == MEDF_ES_CODEC_MP2 ? "MP2"
+                                                      : "MP3",
              (unsigned)demux->info.sample_rate, (unsigned)demux->info.channels,
              (long long)demux->info.duration_us, demux->info.duration_exact ? "" : " (estimated)");
 

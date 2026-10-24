@@ -20,6 +20,7 @@
 #include "audf_gain.h"
 #include "audf_graph.h"
 #include "audf_mixer.h"
+#include "audf_mp3.h"
 #include "audf_resampler.h"
 
 #ifndef M_PI
@@ -734,6 +735,58 @@ static void test_alac(void) {
     audf_decoder_destroy(dec);
 }
 
+/* ---- mp3 ---- */
+
+static void test_mp3(void) {
+    audf_mp3_header_t h;
+    CHECK(audf_mp3_parse_header((const uint8_t[]){ 0xff, 0xfb, 0x90, 0x00 }, &h) && h.layer == 3 &&
+          h.rate == 44100 && h.channels == 2 && h.bytes == 417 && h.frames == 1152, "MPEG-1 Layer III");
+    CHECK(audf_mp3_parse_header((const uint8_t[]){ 0xff, 0xfb, 0x92, 0xc0 }, &h) && h.bytes == 418 &&
+          h.channels == 1, "padding, mono");
+    CHECK(audf_mp3_parse_header((const uint8_t[]){ 0xff, 0xf3, 0x80, 0x00 }, &h) && h.rate == 22050 &&
+          h.bytes == 208 && h.frames == 576, "MPEG-2 Layer III");
+    CHECK(audf_mp3_parse_header((const uint8_t[]){ 0xff, 0xe3, 0x80, 0x00 }, &h) && h.rate == 11025, "MPEG-2.5");
+    CHECK(audf_mp3_parse_header((const uint8_t[]){ 0xff, 0xfd, 0xa4, 0xc0 }, &h) && h.layer == 2 &&
+          h.rate == 48000 && h.bytes == 576 && h.frames == 1152, "MPEG-1 Layer II");
+    CHECK(audf_mp3_parse_header((const uint8_t[]){ 0xff, 0xf5, 0x80, 0x00 }, &h) && h.bytes == 417 &&
+          h.frames == 1152, "MPEG-2 Layer II");
+    CHECK(!audf_mp3_parse_header((const uint8_t[]){ 0xff, 0xff, 0x90, 0x00 }, &h), "Layer I refused");
+    CHECK(!audf_mp3_parse_header((const uint8_t[]){ 0xff, 0xfb, 0x00, 0x00 }, &h), "free format refused");
+    CHECK(!audf_mp3_parse_header((const uint8_t[]){ 0xff, 0xe5, 0x80, 0x00 }, &h), "MPEG-2.5 Layer II refused");
+
+    audf_decoder_t *dec = NULL;
+    CHECK(audf_mp3_decoder_create(&(audf_mp3_config_t){ .channels = 3 }, &dec) == ESP_ERR_INVALID_ARG, "3 channels");
+    CHECK(audf_mp3_decoder_create(&(audf_mp3_config_t){ .channels = 2 }, &dec) == ESP_OK, "stereo decoder");
+    CHECK(audf_decoder_fmt(dec) == AUDF_FMT_S16 && audf_decoder_max_frames(dec) == AUDF_MP3_MAX_FRAMES, "format");
+
+    static uint8_t frame[576];
+    static int16_t pcm[AUDF_MP3_MAX_FRAMES * 2];
+    size_t frames = 0;
+    memset(frame, 0, sizeof(frame));
+    memcpy(frame, (const uint8_t[]){ 0xff, 0xfb, 0x90, 0x00 }, 4);
+    memset(pcm, 0x5a, sizeof(pcm));
+    CHECK(audf_decoder_decode(dec, frame, 417, pcm, &frames) == ESP_OK && frames == 1152, "empty Layer III");
+    bool silent = true;
+    for (size_t i = 0; i < frames * 2; i++) silent &= pcm[i] == 0;
+    CHECK(silent && audf_mp3_decoder_rate(dec) == 44100, "empty Layer III is silence");
+    CHECK(audf_decoder_decode(dec, frame, 416, pcm, &frames) == ESP_ERR_INVALID_SIZE, "short frame");
+
+    frame[4] = 0x80;
+    audf_decoder_reset(dec);
+    CHECK(audf_decoder_decode(dec, frame, 417, pcm, &frames) == ESP_OK && frames == 1152 && pcm[0] == 0,
+          "lost reservoir decodes as silence");
+
+    memset(frame, 0, sizeof(frame));
+    memcpy(frame, (const uint8_t[]){ 0xff, 0xfd, 0xa4, 0xc0 }, 4);
+    CHECK(audf_decoder_decode(dec, frame, 576, pcm, &frames) == ESP_OK && frames == 1152 &&
+          audf_mp3_decoder_rate(dec) == 48000, "mono Layer II into a stereo decoder");
+    memcpy(frame, (const uint8_t[]){ 0xff, 0xff, 0x90, 0x00 }, 4);
+    CHECK(audf_decoder_decode(dec, frame, 417, pcm, &frames) == ESP_ERR_NOT_SUPPORTED, "Layer I");
+    frame[0] = 0;
+    CHECK(audf_decoder_decode(dec, frame, 417, pcm, &frames) == ESP_ERR_INVALID_RESPONSE, "no sync");
+    audf_decoder_destroy(dec);
+}
+
 /* ---- graph ---- */
 
 typedef struct {
@@ -950,6 +1003,7 @@ int main(void) {
     test_adpcm();
     test_flac();
     test_alac();
+    test_mp3();
     test_graph_push_chain();
     test_graph_pull_mix();
     test_graph_push_mixer();

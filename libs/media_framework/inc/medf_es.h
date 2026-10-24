@@ -18,6 +18,7 @@ extern "C" {
 typedef enum {
     MEDF_ES_CODEC_NONE,
     MEDF_ES_CODEC_MP3,
+    MEDF_ES_CODEC_MP2,
     MEDF_ES_CODEC_AAC,
 } medf_es_codec_t;
 

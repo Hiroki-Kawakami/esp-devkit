@@ -444,6 +444,7 @@ static const char *audio_codec_name(medf_mkv_audio_codec_t codec) {
     case MEDF_MKV_AUDIO_CODEC_NONE: return "none";
     case MEDF_MKV_AUDIO_CODEC_PCM: return "PCM";
     case MEDF_MKV_AUDIO_CODEC_MP3: return "MP3";
+    case MEDF_MKV_AUDIO_CODEC_MP2: return "MP2";
     case MEDF_MKV_AUDIO_CODEC_ADPCM_IMA: return "IMA ADPCM";
     case MEDF_MKV_AUDIO_CODEC_AAC: return "AAC";
     case MEDF_MKV_AUDIO_CODEC_OPUS: return "Opus";
@@ -465,6 +466,8 @@ static void use_audio_track(medf_mkv_demux_t *demux, const track_t *track) {
             codec = MEDF_MKV_AUDIO_CODEC_PCM;
         } else if (strcmp(track->codec, "A_MPEG/L3") == 0) {
             codec = MEDF_MKV_AUDIO_CODEC_MP3;
+        } else if (strcmp(track->codec, "A_MPEG/L2") == 0) {
+            codec = MEDF_MKV_AUDIO_CODEC_MP2;
         } else if (strncmp(track->codec, "A_AAC", 5) == 0) {
             codec = MEDF_MKV_AUDIO_CODEC_AAC;
             keep_audio_private(demux, track->codec_private, track->codec_private_size);
