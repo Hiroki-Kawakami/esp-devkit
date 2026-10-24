@@ -99,6 +99,36 @@ read and skipped) and hands out one frame per packet.
 - **The length is STREAMINFO's sample count**, or the last frame's end when
   that is 0.
 
+## Ogg Opus
+
+`medf_ogg_demux` reads the first logical stream of the file, which must be
+Opus (RFC 7845); other streams multiplexed with it are skipped by serial
+number, and a stream chained after it (a new BOS page once audio has started)
+ends the file. Pages are checked against their CRC.
+
+- **A packet is a view when it ends on the page it starts on.** One that
+  continues onto later pages is gathered into a PSRAM copy, which the demuxer
+  owns until `medf_ogg_demux_release()` (its ref has the top two bits set, so
+  it never collides with a buffer ref); up to 32 copies can be in flight. A
+  packet cut short by a page that does not continue it is dropped and reading
+  goes on.
+- **OpusTags is read where it lies**, through a byte stream across the
+  segments of its pages (`medf_tags_read_vorbis_comment_stream`), so a
+  multi-page cover in METADATA_BLOCK_PICTURE is decoded from base64 straight
+  into the cover, without the packet being joined first; without
+  `want_cover` it is skipped.
+- **Time is the sample count minus the stream's first sample and the
+  pre-skip.** The first sample is the first audio page's granule position
+  minus the samples of the packets that end on it, as RFC 7845 defines it, so
+  a stream cut out of a longer one starts at 0. The first packets, which the
+  pre-skip covers, come out with negative times. The length comes from the
+  last granule position found in the file's tail.
+- **Seeking is a bisection over bytes on granule positions**, then a walk
+  over the pages and packets up to the one holding the target. It lands on
+  the start of that packet. The decoder needs about 80 ms before it to settle
+  (RFC 7845's pre-roll); that is the caller's, which seeks earlier and drops
+  what it does not want.
+
 ## Matroska
 
 `medf_mkv_demux` walks the stream flat: `Cluster` and `BlockGroup` are entered,

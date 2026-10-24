@@ -1,7 +1,8 @@
 # media_framework
 
 Media file containers: a read-ahead file buffer, tags and cover art, and
-demuxers for AVI, WAV, MP3/ADTS AAC elementary streams, Matroska and MP4.
+demuxers for AVI, WAV, MP3/ADTS AAC elementary streams, FLAC, Ogg Opus,
+Matroska and MP4.
 Demuxers hand out packets as views into the buffer; decoding them is the
 caller's. Container-specific behaviour is in
 [`docs/containers.md`](docs/containers.md).
@@ -15,6 +16,7 @@ caller's. Container-specific behaviour is in
 | `medf_es.h` | MP3 and ADTS AAC elementary streams |
 | `medf_flac.h` | native FLAC, and STREAMINFO for FLAC in other containers |
 | `medf_alac.h` | the ALAC config inside a magic cookie, for MP4 and Matroska |
+| `medf_ogg.h` | Ogg Opus |
 | `medf_mkv.h` | Matroska |
 | `medf_mp4.h` | ISO BMFF / QuickTime |
 

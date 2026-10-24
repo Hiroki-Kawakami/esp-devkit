@@ -9,6 +9,8 @@
 
 #include "medf_tags.h"
 
+#include "esp_heap_caps.h"
+
 #define VORBIS_COMMENT_PEEK_BYTES 256
 
 static bool read_exact(medf_buffer_t *reader, off_t at, void *out, size_t size) {
@@ -50,31 +52,129 @@ static bool key_is(const char *key, size_t len, const char *name) {
     return strlen(name) == len && strncasecmp(key, name, len) == 0;
 }
 
+static int base64_value(uint8_t c) {
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+    if (c >= '0' && c <= '9') return c - '0' + 52;
+    if (c == '+') return 62;
+    if (c == '/') return 63;
+    return -1;
+}
+
+/* Decodes base64 in place and returns the byte count. */
+static size_t base64_decode(uint8_t *data, size_t size) {
+    uint32_t bits = 0;
+    int count = 0;
+    size_t out = 0;
+    for (size_t i = 0; i < size; i++) {
+        const int v = base64_value(data[i]);
+        if (v < 0) continue;
+        bits = bits << 6 | (uint32_t)v;
+        count += 6;
+        if (count >= 8) {
+            count -= 8;
+            data[out++] = (uint8_t)(bits >> count);
+        }
+    }
+    return out;
+}
+
+/* A FLAC PICTURE block in memory, as METADATA_BLOCK_PICTURE carries it. */
+static void adopt_picture_block(medf_tags_t *tags, uint8_t *owner, uint8_t *block, size_t size) {
+    if (size < 32) {
+        heap_caps_free(owner);
+        return;
+    }
+    const bool front = be32(block) == 3;
+    size_t at = 8 + (size_t)be32(block + 4);
+    if (at + 4 > size) {
+        heap_caps_free(owner);
+        return;
+    }
+    at += 4 + (size_t)be32(block + at);
+    if (at + 20 > size) {
+        heap_caps_free(owner);
+        return;
+    }
+    const uint32_t length = be32(block + at + 16);
+    at += 20;
+    if (!length || length > size - at) {
+        heap_caps_free(owner);
+        return;
+    }
+    medf_tags_adopt_cover(tags, owner, block + at, length, front);
+}
+
+typedef struct {
+    medf_buffer_t *reader;
+    off_t at;
+} file_stream_t;
+
+static bool file_read(void *ctx, void *out, size_t size) {
+    file_stream_t *f = ctx;
+    if (!read_exact(f->reader, f->at, out, size)) return false;
+    f->at += (off_t)size;
+    return true;
+}
+
+static bool file_skip(void *ctx, size_t size) {
+    ((file_stream_t *)ctx)->at += (off_t)size;
+    return true;
+}
+
 bool medf_tags_read_vorbis_comment(medf_buffer_t *reader, off_t offset, uint32_t size,
                                    medf_tags_t *tags) {
-    const off_t end = offset + size;
+    file_stream_t file = { reader, offset };
+    const medf_stream_t in = { &file, file_read, file_skip };
+    return medf_tags_read_vorbis_comment_stream(&in, size, tags, false);
+}
+
+bool medf_tags_read_vorbis_comment_stream(const medf_stream_t *in, uint32_t size, medf_tags_t *tags,
+                                          bool want_cover) {
+    uint32_t left = size;
     uint8_t word[4];
-    if (size < 8 || !read_exact(reader, offset, word, 4)) return false;
-    off_t at = offset + 4 + (off_t)le32(word);
-    if (at + 4 > end || !read_exact(reader, at, word, 4)) return false;
+    if (left < 8 || !in->read(in->ctx, word, 4)) return false;
+    left -= 4;
+    const uint32_t vendor = le32(word);
+    if (vendor > left - 4 || !in->skip(in->ctx, vendor)) return false;
+    left -= vendor;
+    if (!in->read(in->ctx, word, 4)) return false;
+    left -= 4;
     uint32_t count = le32(word);
-    at += 4;
 
     char track[MEDF_TAG_SHORT_BYTES] = "";
     uint32_t total = 0;
     char text[VORBIS_COMMENT_PEEK_BYTES];
-    for (; count && at + 4 <= end; count--) {
-        if (!read_exact(reader, at, word, 4)) return false;
+    for (; count && left >= 4; count--) {
+        if (!in->read(in->ctx, word, 4)) return false;
+        left -= 4;
         const uint32_t len = le32(word);
-        at += 4;
-        if (len > (uint64_t)(end - at)) return false;
+        if (len > left) return false;
+        left -= len;
         const size_t peek = len < sizeof(text) ? len : sizeof(text);
-        if (!read_exact(reader, at, text, peek)) return false;
-        at += len;
+        if (!in->read(in->ctx, text, peek)) return false;
 
         const char *eq = memchr(text, '=', peek);
+        const size_t key_len = eq ? (size_t)(eq - text) : 0;
+        if (eq && key_is(text, key_len, "METADATA_BLOCK_PICTURE")) {
+            const size_t encoded = len - key_len - 1;
+            uint8_t *owner = NULL;
+            if (want_cover && encoded / 4 * 3 <= MEDF_COVER_MAX_BYTES + 1024) {
+                owner = heap_caps_malloc(encoded, MALLOC_CAP_SPIRAM);
+            }
+            if (owner) {
+                const size_t first = peek - key_len - 1;
+                memcpy(owner, eq + 1, first);
+                if (!in->read(in->ctx, owner + first, encoded - first)) {
+                    heap_caps_free(owner);
+                    return false;
+                }
+                adopt_picture_block(tags, owner, owner, base64_decode(owner, encoded));
+                continue;
+            }
+        }
+        if (len > peek && !in->skip(in->ctx, len - peek)) return false;
         if (!eq) continue;
-        const size_t key_len = (size_t)(eq - text);
         const char *value = eq + 1;
         const size_t value_len = peek - key_len - 1;
         medf_tag_field_t field;

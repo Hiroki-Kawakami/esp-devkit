@@ -20,6 +20,14 @@ set(AUDF_SRCS
         "src/audf_gain.c"
         "src/audf_graph.c"
         "src/audf_mixer.c"
+        "src/audf_opus.c"
+        "src/audf_opus_bands.c"
+        "src/audf_opus_celt.c"
+        "src/audf_opus_mdct.c"
+        "src/audf_opus_rc.c"
+        "src/audf_opus_silk.c"
+        "src/audf_opus_silk_tables.c"
+        "src/audf_opus_tables.c"
         "src/audf_resampler.c"
         "src/audf_sync.c")
 
@@ -33,13 +41,14 @@ idf_component_register(
     PRIV_INCLUDE_DIRS "src"
     PRIV_REQUIRES freertos)
 
-# The AAC decoder's float control path (TNS, SBR, PS) must round the
-# same on the host and the device, which a fused multiply-add would break.
-set(AUDF_AAC_SRCS ${AUDF_SRCS})
-list(FILTER AUDF_AAC_SRCS INCLUDE REGEX "audf_aac")
-set(AUDF_AAC_OPTIONS -ffp-contract=off -fno-math-errno)
+# The AAC and Opus decoders' float control paths (TNS, SBR, PS; CELT band
+# gains) must round the same on the host and the device, which a fused
+# multiply-add would break.
+set(AUDF_FLOAT_SRCS ${AUDF_SRCS})
+list(FILTER AUDF_FLOAT_SRCS INCLUDE REGEX "audf_aac|audf_opus")
+set(AUDF_FLOAT_OPTIONS -ffp-contract=off -fno-math-errno)
 if(ESP_PLATFORM AND NOT CONFIG_COMPILER_OPTIMIZATION_NONE
                 AND NOT CONFIG_COMPILER_OPTIMIZATION_PERF)
-    list(APPEND AUDF_AAC_OPTIONS -O2)
+    list(APPEND AUDF_FLOAT_OPTIONS -O2)
 endif()
-set_source_files_properties(${AUDF_AAC_SRCS} PROPERTIES COMPILE_OPTIONS "${AUDF_AAC_OPTIONS}")
+set_source_files_properties(${AUDF_FLOAT_SRCS} PROPERTIES COMPILE_OPTIONS "${AUDF_FLOAT_OPTIONS}")

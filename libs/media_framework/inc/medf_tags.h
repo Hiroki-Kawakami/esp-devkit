@@ -110,9 +110,21 @@ bool medf_tags_read_id3v2(medf_buffer_t *reader, off_t offset, off_t *end, medf_
 /* `end` is the end of the 128 byte ID3v1 block, i.e. the end of the file. */
 bool medf_tags_read_id3v1(medf_buffer_t *reader, off_t end, medf_tags_t *tags);
 
+/* A sequential byte source, for tags whose bytes are not contiguous in the
+ * file. */
+typedef struct {
+    void *ctx;
+    bool (*read)(void *ctx, void *out, size_t size);
+    bool (*skip)(void *ctx, size_t size);
+} medf_stream_t;
+
 /* Reads a Vorbis comment body of `size` bytes at `offset`. */
 bool medf_tags_read_vorbis_comment(medf_buffer_t *reader, off_t offset, uint32_t size,
                                    medf_tags_t *tags);
+/* The same from a stream; with `want_cover` a METADATA_BLOCK_PICTURE (a base64
+ * FLAC PICTURE block) becomes the cover. */
+bool medf_tags_read_vorbis_comment_stream(const medf_stream_t *in, uint32_t size, medf_tags_t *tags,
+                                          bool want_cover);
 
 /* Reads a FLAC PICTURE body, with the same `want_cover` rule as ID3v2.
  * `have_front` carries across the pictures of one file and starts false. */

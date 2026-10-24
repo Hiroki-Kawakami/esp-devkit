@@ -67,13 +67,15 @@ starts over after `audf_fifo_flush`.
 Decoders and encoders take one encoded frame at a time; containers are parsed
 by the caller. IMA ADPCM uses the WAV block layout (format tag 0x11). The AAC
 decoder (LC, HE-AAC v1 and v2) is described in
-[`docs/aac.md`](docs/aac.md), the FLAC decoder in [`docs/flac.md`](docs/flac.md)
-and the ALAC decoder in [`docs/alac.md`](docs/alac.md).
+[`docs/aac.md`](docs/aac.md), the FLAC decoder in [`docs/flac.md`](docs/flac.md),
+the ALAC decoder in [`docs/alac.md`](docs/alac.md) and the Opus decoder in
+[`docs/opus.md`](docs/opus.md).
 
 ## Testing
 
 `test/run.sh` builds and runs the host test (inside the nix dev shell). The AAC,
-FLAC and ALAC decoders have their own host tools and material scripts; see
-[`docs/aac.md`](docs/aac.md#checking-it),
-[`docs/flac.md`](docs/flac.md#checking-it) and
-[`docs/alac.md`](docs/alac.md#checking-it).
+FLAC, ALAC and Opus decoders have their own host tools and material scripts;
+see [`docs/aac.md`](docs/aac.md#checking-it),
+[`docs/flac.md`](docs/flac.md#checking-it),
+[`docs/alac.md`](docs/alac.md#checking-it) and
+[`docs/opus.md`](docs/opus.md#checking-it).
