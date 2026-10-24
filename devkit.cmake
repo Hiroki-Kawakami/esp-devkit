@@ -30,6 +30,7 @@ set(DEVKIT_DEVICE_COMPONENTS
     libs/image_framework
     libs/jpeg_decode_enhanced
     libs/lvgl
+    libs/media_framework
     libs/sensors
     libs/ui_framework
     libs/usb_device
@@ -46,6 +47,7 @@ set(DEVKIT_SIMULATOR_COMPONENTS
     libs/image_framework
     libs/jpeg_decode_enhanced
     libs/lvgl
+    libs/media_framework
     libs/sensors
     libs/ui_framework
     libs/usb_device
