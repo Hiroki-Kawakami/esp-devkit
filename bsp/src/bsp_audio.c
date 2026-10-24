@@ -529,24 +529,31 @@ esp_err_t bsp_audio_close(void) {
 esp_err_t bsp_audio_write(void *data, size_t len) {
     if (!pcm_available() || !s_audio->write) return ESP_ERR_NOT_SUPPORTED;
     if (!s_open) return ESP_ERR_INVALID_STATE;
-    if (s_eq && !s_dsp_bypass) {
-        int16_t *pcm = data;
-        size_t frames = len / (sizeof(int16_t) * s_dsp_channels);
-        while (frames > 0) {
-            const size_t n = frames < BSP_DSP_CHUNK ? frames : BSP_DSP_CHUNK;
-            const size_t samples = n * s_dsp_channels;
-            audf_convert(pcm, AUDF_FMT_S16, s_dsp_buf, AUDF_FMT_S32, samples);
-            audf_eq_process(s_eq, s_dsp_buf, s_dsp_buf, n);
-            audf_gain_process(s_gain, s_dsp_buf, s_dsp_buf, n);
-            if (s_dsp_channels == 2) {
-                audf_mixer_process(s_mixer, (const void *const[]){ s_dsp_buf }, s_dsp_buf, n);
-            }
-            audf_convert(s_dsp_buf, AUDF_FMT_S32, pcm, AUDF_FMT_S16, samples);
-            pcm += samples;
-            frames -= n;
+    if (!s_eq || s_dsp_bypass) return s_audio->write(s_audio, data, len);
+
+    /* Each chunk is written as soon as it is processed: a provider may drop a
+     * partly filled DMA buffer when its next write comes late, and processing
+     * a whole long buffer before writing any of it was late enough. */
+    int16_t *pcm = data;
+    const size_t frame_bytes = sizeof(int16_t) * s_dsp_channels;
+    size_t frames = len / frame_bytes;
+    while (frames > 0) {
+        const size_t n = frames < BSP_DSP_CHUNK ? frames : BSP_DSP_CHUNK;
+        const size_t samples = n * s_dsp_channels;
+        audf_convert(pcm, AUDF_FMT_S16, s_dsp_buf, AUDF_FMT_S32, samples);
+        audf_eq_process(s_eq, s_dsp_buf, s_dsp_buf, n);
+        audf_gain_process(s_gain, s_dsp_buf, s_dsp_buf, n);
+        if (s_dsp_channels == 2) {
+            audf_mixer_process(s_mixer, (const void *const[]){ s_dsp_buf }, s_dsp_buf, n);
         }
+        audf_convert(s_dsp_buf, AUDF_FMT_S32, pcm, AUDF_FMT_S16, samples);
+        esp_err_t err = s_audio->write(s_audio, pcm, n * frame_bytes);
+        if (err != ESP_OK) return err;
+        pcm += samples;
+        frames -= n;
     }
-    return s_audio->write(s_audio, data, len);
+    const size_t rest = len % frame_bytes;
+    return rest ? s_audio->write(s_audio, pcm, rest) : ESP_OK;
 }
 
 esp_err_t bsp_audio_get_queued(size_t *frames) {
