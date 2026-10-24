@@ -13,6 +13,7 @@ set(AUDF_SRCS
         "src/audf_codec.c"
         "src/audf_convert.c"
         "src/audf_drift.c"
+        "src/audf_flac.c"
         "src/audf_eq.c"
         "src/audf_fifo.c"
         "src/audf_gain.c"

@@ -110,6 +110,15 @@ bool medf_tags_read_id3v2(medf_buffer_t *reader, off_t offset, off_t *end, medf_
 /* `end` is the end of the 128 byte ID3v1 block, i.e. the end of the file. */
 bool medf_tags_read_id3v1(medf_buffer_t *reader, off_t end, medf_tags_t *tags);
 
+/* Reads a Vorbis comment body of `size` bytes at `offset`. */
+bool medf_tags_read_vorbis_comment(medf_buffer_t *reader, off_t offset, uint32_t size,
+                                   medf_tags_t *tags);
+
+/* Reads a FLAC PICTURE body, with the same `want_cover` rule as ID3v2.
+ * `have_front` carries across the pictures of one file and starts false. */
+bool medf_tags_read_flac_picture(medf_buffer_t *reader, off_t offset, uint32_t size,
+                                 medf_tags_t *tags, bool want_cover, bool *have_front);
+
 #ifdef __cplusplus
 }
 #endif

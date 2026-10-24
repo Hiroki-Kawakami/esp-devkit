@@ -13,6 +13,7 @@ caller's. Container-specific behaviour is in
 | `medf_riff.h` | the audio codec ids AVI and WAV share |
 | `medf_avi.h`, `medf_wav.h` | RIFF demuxers on one chunk walk (`src/medf_riff.c`) |
 | `medf_es.h` | MP3 and ADTS AAC elementary streams |
+| `medf_flac.h` | native FLAC, and STREAMINFO for FLAC in other containers |
 | `medf_mkv.h` | Matroska |
 | `medf_mp4.h` | ISO BMFF / QuickTime |
 
@@ -61,7 +62,8 @@ out views of that memory instead of copying packets out. File I/O is
 
 `medf_tags_t` is filled by every demuxer. ID3 lives here rather than in the
 elementary-stream demuxer because it turns up in more than one container: a
-WAV or AVI `id3 ` chunk is the same bytes.
+WAV or AVI `id3 ` chunk is the same bytes. Vorbis comments and the FLAC
+`PICTURE` block are here for the same reason, since Ogg carries both.
 
 - **Text is fixed-size UTF-8 inside the struct, not heap strings**, so the info
   structs are plain values a caller copies out of. The cover art is the only

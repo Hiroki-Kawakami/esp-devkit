@@ -4,6 +4,7 @@
  */
 
 #include "medf_mp4.h"
+#include "medf_flac.h"
 
 #include <math.h>
 #include <string.h>
@@ -42,6 +43,7 @@ static const char *TAG = "medf_mp4_demux";
 #define BOX_ESDS FOURCC('e', 's', 'd', 's')
 #define BOX_WAVE FOURCC('w', 'a', 'v', 'e')
 #define BOX_DOPS FOURCC('d', 'O', 'p', 's')
+#define BOX_DFLA FOURCC('d', 'f', 'L', 'a')
 #define BOX_UDTA FOURCC('u', 'd', 't', 'a')
 #define BOX_META FOURCC('m', 'e', 't', 'a')
 #define BOX_ILST FOURCC('i', 'l', 's', 't')
@@ -66,6 +68,7 @@ static const char *TAG = "medf_mp4_demux";
 #define ENTRY_MP4A FOURCC('m', 'p', '4', 'a')
 #define ENTRY_MP3  FOURCC('.', 'm', 'p', '3')
 #define ENTRY_OPUS FOURCC('O', 'p', 'u', 's')
+#define ENTRY_FLAC FOURCC('f', 'L', 'a', 'C')
 #define ENTRY_SOWT FOURCC('s', 'o', 'w', 't')
 
 #define OTI_MPEG4_AUDIO     0x40
@@ -716,6 +719,15 @@ static void identify_audio(track_t *track) {
         track->channels = body.p[1];
         track->opus = true;
         break;
+    case ENTRY_FLAC: {
+        if (!span_find(children, BOX_DFLA, &body) || span_size(body) < 4) break;
+        const uint8_t *si = medf_flac_find_streaminfo(body.p + 4, span_size(body) - 4);
+        if (!si) break;
+        track->codec = MEDF_MP4_AUDIO_CODEC_FLAC;
+        track->codec_private = (span_t){ si, si + MEDF_FLAC_STREAMINFO_BYTES };
+        medf_flac_streaminfo_format(si, &track->sample_rate, &track->channels, &track->bits);
+        break;
+    }
     case ENTRY_SOWT:
         if (track->bits != 16 || !track->channels) break;
         track->codec = MEDF_MP4_AUDIO_CODEC_PCM;
@@ -982,6 +994,7 @@ static const char *audio_codec_name(medf_mp4_audio_codec_t codec) {
     case MEDF_MP4_AUDIO_CODEC_MP3: return "MP3";
     case MEDF_MP4_AUDIO_CODEC_AAC: return "AAC";
     case MEDF_MP4_AUDIO_CODEC_OPUS: return "Opus";
+    case MEDF_MP4_AUDIO_CODEC_FLAC: return "FLAC";
     default: return "unsupported";
     }
 }

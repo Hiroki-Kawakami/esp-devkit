@@ -15,6 +15,7 @@
 #include "audf_drift.h"
 #include "audf_eq.h"
 #include "audf_fifo.h"
+#include "audf_flac.h"
 #include "audf_gain.h"
 #include "audf_graph.h"
 #include "audf_mixer.h"
@@ -525,6 +526,126 @@ static void test_adpcm(void) {
     audf_decoder_destroy(dec);
 }
 
+/* ---- flac ---- */
+
+typedef struct {
+    uint8_t buf[512];
+    size_t  bits;
+} bitwriter_t;
+
+static void put_bits(bitwriter_t *w, uint32_t v, int n) {
+    for (int i = n - 1; i >= 0; i--, w->bits++) {
+        if (v >> i & 1) w->buf[w->bits / 8] |= (uint8_t)(0x80 >> (w->bits % 8));
+    }
+}
+
+static uint32_t crc_bits(const uint8_t *p, size_t n, int width, uint32_t poly) {
+    uint32_t crc = 0;
+    const uint32_t top = 1u << (width - 1), mask = (top << 1) - 1;
+    for (size_t i = 0; i < n; i++) {
+        crc ^= (uint32_t)p[i] << (width - 8);
+        for (int b = 0; b < 8; b++) crc = (crc & top ? crc << 1 ^ poly : crc << 1) & mask;
+    }
+    return crc;
+}
+
+static void flac_streaminfo(uint8_t si[AUDF_FLAC_STREAMINFO_BYTES], uint8_t channels, uint8_t bps) {
+    memset(si, 0, AUDF_FLAC_STREAMINFO_BYTES);
+    si[1] = 16;
+    si[3] = 16;
+    const uint32_t rate = 44100;
+    si[10] = (uint8_t)(rate >> 12);
+    si[11] = (uint8_t)(rate >> 4);
+    si[12] = (uint8_t)((rate & 15) << 4 | (channels - 1) << 1 | (bps - 1) >> 4);
+    si[13] = (uint8_t)((bps - 1) << 4);
+}
+
+/* One frame of verbatim subframes, 16 samples per channel. */
+static size_t flac_frame(uint8_t *out, uint32_t rate_code, uint32_t assignment, uint32_t size_code, int bps,
+                         const int32_t *const *channels, int count) {
+    bitwriter_t w = { 0 };
+    put_bits(&w, 0x3FFE, 14);
+    put_bits(&w, 0, 2);
+    put_bits(&w, 6, 4);
+    put_bits(&w, rate_code, 4);
+    put_bits(&w, assignment, 4);
+    put_bits(&w, size_code, 3);
+    put_bits(&w, 0, 1);
+    put_bits(&w, 0, 8);
+    put_bits(&w, 15, 8);
+    put_bits(&w, crc_bits(w.buf, w.bits / 8, 8, 0x07), 8);
+    for (int ch = 0; ch < count; ch++) {
+        const bool side = (assignment == 8 || assignment == 10) ? ch == 1 : assignment == 9 && ch == 0;
+        put_bits(&w, 1 << 1, 8);
+        for (int i = 0; i < 16; i++) put_bits(&w, (uint32_t)channels[ch][i], bps + side);
+    }
+    w.bits = (w.bits + 7) / 8 * 8;
+    put_bits(&w, crc_bits(w.buf, w.bits / 8, 16, 0x8005), 16);
+    memcpy(out, w.buf, w.bits / 8);
+    return w.bits / 8;
+}
+
+static void test_flac(void) {
+    uint8_t si[AUDF_FLAC_STREAMINFO_BYTES];
+    audf_flac_config_t cfg = { .streaminfo = si, .streaminfo_len = sizeof(si) };
+    audf_decoder_t *dec = NULL;
+    flac_streaminfo(si, 2, 32);
+    CHECK(audf_flac_decoder_create(&cfg, &dec) == ESP_ERR_NOT_SUPPORTED, "32-bit rejected");
+
+    int32_t left[16], right[16], mid[16], side[16];
+    for (int i = 0; i < 16; i++) {
+        left[i] = i * 3001 - 24000;
+        right[i] = 7 - i * 911;
+    }
+    flac_streaminfo(si, 2, 16);
+    CHECK(audf_flac_decoder_create(&cfg, &dec) == ESP_OK, "16-bit stereo");
+    CHECK(audf_decoder_fmt(dec) == AUDF_FMT_S16 && audf_decoder_max_frames(dec) == 16 &&
+          audf_flac_decoder_rate(dec) == 44100, "16-bit format");
+    uint8_t frame[512];
+    size_t len = flac_frame(frame, 0, 1, 4, 16, (const int32_t *const[]){ left, right }, 2);
+    int16_t pcm16[32];
+    size_t frames = 0;
+    CHECK(audf_decoder_decode(dec, frame, len, pcm16, &frames) == ESP_OK && frames == 16, "independent");
+    bool same = true;
+    for (int i = 0; i < 16; i++) same &= pcm16[i * 2] == left[i] && pcm16[i * 2 + 1] == right[i];
+    CHECK(same, "independent channels decode as written");
+
+    memset(pcm16, 0x5a, sizeof(pcm16));
+    frame[len / 2] ^= 0x10;
+    CHECK(audf_decoder_decode(dec, frame, len, pcm16, &frames) == ESP_ERR_INVALID_CRC, "corrupt frame");
+    CHECK(pcm16[0] == 0x5a5a && pcm16[31] == 0x5a5a, "corrupt frame leaves pcm alone");
+    frame[len / 2] ^= 0x10;
+    CHECK(audf_decoder_decode(dec, frame, len - 1, pcm16, &frames) == ESP_ERR_INVALID_SIZE, "short frame");
+    CHECK(audf_decoder_decode(dec, frame, 5, pcm16, &frames) == ESP_ERR_INVALID_SIZE, "short header");
+    len = flac_frame(frame, 10, 1, 4, 16, (const int32_t *const[]){ left, right }, 2);
+    CHECK(audf_decoder_decode(dec, frame, len, pcm16, &frames) == ESP_ERR_NOT_SUPPORTED, "other rate");
+    audf_decoder_destroy(dec);
+
+    flac_streaminfo(si, 2, 20);
+    CHECK(audf_flac_decoder_create(&cfg, &dec) == ESP_OK && audf_decoder_fmt(dec) == AUDF_FMT_S32, "20-bit");
+    for (int i = 0; i < 16; i++) {
+        left[i] = i * 61001 - 500000;
+        right[i] = 300001 - i * 37003;
+        mid[i] = (left[i] + right[i]) >> 1;
+        side[i] = left[i] - right[i];
+    }
+    int32_t pcm32[32];
+    const struct {
+        uint32_t assignment;
+        const int32_t *a, *b;
+    } modes[] = { { 8, left, side }, { 9, side, right }, { 10, mid, side } };
+    for (size_t m = 0; m < sizeof(modes) / sizeof(modes[0]); m++) {
+        len = flac_frame(frame, 0, modes[m].assignment, 5, 20,
+                         (const int32_t *const[]){ modes[m].a, modes[m].b }, 2);
+        CHECK(audf_decoder_decode(dec, frame, len, pcm32, &frames) == ESP_OK, "stereo mode %u",
+              (unsigned)modes[m].assignment);
+        same = true;
+        for (int i = 0; i < 16; i++) same &= pcm32[i * 2] == left[i] * 16 && pcm32[i * 2 + 1] == right[i] * 16;
+        CHECK(same, "stereo mode %u restores both channels at 24-bit scale", (unsigned)modes[m].assignment);
+    }
+    audf_decoder_destroy(dec);
+}
+
 /* ---- graph ---- */
 
 typedef struct {
@@ -739,6 +860,7 @@ int main(void) {
     test_fifo();
     test_drift();
     test_adpcm();
+    test_flac();
     test_graph_push_chain();
     test_graph_pull_mix();
     test_graph_push_mixer();
