@@ -20,9 +20,10 @@ typedef enum {
     IMGF_FMT_BMP,
     IMGF_FMT_GIF,
     IMGF_FMT_TIFF,
+    IMGF_FMT_WEBP,
 } imgf_format_t;
 
-/* Inspects the first up-to-8 bytes of a container header. The stream itself
+/* Inspects the first up-to-12 bytes of a container header. The stream itself
  * does not have peek; the caller decides how to look ahead (read into a small
  * buffer, then rewind for FILE*; or just inspect the head of a memory blob). */
 imgf_format_t   imgf_sniff       (const void *header, size_t len);

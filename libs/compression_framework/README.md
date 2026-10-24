@@ -24,6 +24,7 @@ caller from the number of bytes it got.
 
 ## Tests
 
-`test/run.sh` builds and runs the host tests with gcc. `test/gen_fixtures.py`
-writes `cmpf_fixtures.h` with Pillow (libtiff for TIFF); the streams decode to
+`test/run.sh` builds and runs the host tests with gcc. It first has
+`test/gen_fixtures.py` write `cmpf_fixtures.h` with Pillow (libtiff for TIFF),
+inside `nix-shell`; the fixtures are not kept in git. The streams decode to
 patterns the test regenerates in C.

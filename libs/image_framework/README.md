@@ -11,22 +11,42 @@ build runs on the host simulator and on a board that has no PIE, and
 
 ## Decoders
 
-JPEG, PNG, BMP, GIF and TIFF, each in `imgf_<format>d.h`; `imgf_sniff()` picks
-one from the first bytes. Inflate and LZW come from `compression_framework`.
+JPEG, PNG, BMP, GIF, TIFF and WebP, each in `imgf_<format>d.h`; `imgf_sniff()`
+picks one from the first bytes. Inflate and LZW come from
+`compression_framework`.
 
-**`imgf_stream_t` has an optional `seek()`**, because two formats store their
+**`imgf_stream_t` has an optional `seek()`**, because three formats store their
 rows out of order: a TIFF's IFD and strips may be anywhere in the file (libtiff
-puts the IFD last), and an ordinary BMP is stored bottom-up. Reading the file
-into memory instead would cost a whole encoded picture of PSRAM; seeking costs
-one window refill per jump. A bottom-up BMP is read back in chunks of rows from
-the end, so the reader is not refilled for every row. Without `seek()`, those
-a TIFF and a bottom-up BMP return `IMGF_ERR_UNSUPPORTED`; everything else
-still works.
+puts the IFD last), an ordinary BMP is stored bottom-up, and a lossy WebP keeps
+the modes of every macroblock in one partition and their coefficients in up to
+eight others, with its ALPH plane in a chunk of its own before them. Reading the
+file into memory instead would cost a whole encoded picture of PSRAM; seeking
+costs one window refill per jump. A bottom-up BMP is read back in chunks of rows
+from the end, so the reader is not refilled for every row; a WebP reads each
+partition through a window of its own. Without `seek()`, a TIFF, a bottom-up
+BMP and a lossy WebP return `IMGF_ERR_UNSUPPORTED`; everything else still works.
 
-The host tests compare BMP, GIF and TIFF against what Pillow decodes the same
-file to (`test/gen_pillow_fixtures.py`). Pillow cannot write most of the BMP
-variants, tiles or a GIF with fewer than 8 literal bits, so the generator writes
-those itself and only uses Pillow to decode them.
+**WebP output matches libwebp byte for byte**, including its fancy chroma
+upsampling and its YUV to RGB arithmetic, which is what lets the host tests hold
+it to Pillow's output exactly. A lossless WebP may copy from up to about a million pixels back, so
+its decoder keeps a window of that many pixels, 4 bytes each, rather than the
+whole picture; a smaller picture is held whole.
+
+The host tests compare BMP, GIF, TIFF and WebP against what Pillow decodes the
+same file to (`test/gen_pillow_fixtures.py`, `test/gen_webp_fixtures.py`).
+Pillow cannot write most of the BMP variants, tiles or a GIF with fewer than 8
+literal bits, so the generator writes those itself and only uses Pillow to
+decode them. The WebP files come from cwebp, and from libvpx for a VP8 frame
+with several token partitions, which cwebp cannot write; a lossless stream
+larger than the decoder's window is assembled by the generator and checked by
+hash.
+
+The fixtures are not kept in git. `test/run.sh` runs the generators inside
+`nix-shell`, which brings in libjpeg, cwebp, ffmpeg and Pillow, into a
+temporary directory before it builds the tests, so the encoders may differ from
+one run to the next. The expected pixels are made from the same files, and the
+generator checks that the libvpx frame still uses every partition and the loop
+filter.
 
 ## Using it on ESP32-P4
 

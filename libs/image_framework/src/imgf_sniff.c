@@ -12,6 +12,7 @@
 #include "imgf_jpegd.h"
 #include "imgf_pngd.h"
 #include "imgf_tiffd.h"
+#include "imgf_webpd.h"
 
 imgf_format_t imgf_sniff(const void *header, size_t len) {
     const uint8_t *h = (const uint8_t *)header;
@@ -30,6 +31,9 @@ imgf_format_t imgf_sniff(const void *header, size_t len) {
     if (len >= 4 && (memcmp(h, "II*\0", 4) == 0 || memcmp(h, "MM\0*", 4) == 0)) {
         return IMGF_FMT_TIFF;
     }
+    if (len >= 12 && memcmp(h, "RIFF", 4) == 0 && memcmp(h + 8, "WEBP", 4) == 0) {
+        return IMGF_FMT_WEBP;
+    }
     if (len >= 2 && h[0] == 'B' && h[1] == 'M') {
         return IMGF_FMT_BMP;
     }
@@ -43,6 +47,7 @@ imgf_decoder_t *imgf_make_decoder(imgf_format_t fmt) {
         case IMGF_FMT_BMP:  return imgf_bmpd_create();
         case IMGF_FMT_GIF:  return imgf_gifd_create();
         case IMGF_FMT_TIFF: return imgf_tiffd_create();
+        case IMGF_FMT_WEBP: return imgf_webpd_create();
         default:            return NULL;
     }
 }

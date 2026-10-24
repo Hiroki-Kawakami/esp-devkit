@@ -4,7 +4,7 @@
  *
  * Host unit tests for image_framework — no ESP-IDF, no hardware.
  * Compiled by test/run.sh (gcc, C11). Cases group around: stream wrappers,
- * sniff, decoder vtable lifecycle, JPEG decoder, PNG decoder, BMP/GIF/TIFF
+ * sniff, decoder vtable lifecycle, JPEG decoder, PNG decoder, BMP/GIF/TIFF/WebP
  * decoders.
  */
 
@@ -31,10 +31,12 @@
 #include "imgf_stream.h"
 #include "imgf_tiffd.h"
 #include "imgf_types.h"
+#include "imgf_webpd.h"
 
 #include "jpeg_fixtures.h"
 #include "pillow_fixtures.h"
 #include "png_fixtures.h"
+#include "webp_fixtures.h"
 
 static int g_failures = 0;
 
@@ -145,6 +147,8 @@ static void test_sniff(void) {
     CHECK(imgf_sniff("GIF87a", 6) == IMGF_FMT_GIF);
     CHECK(imgf_sniff("II*\0", 4) == IMGF_FMT_TIFF);
     CHECK(imgf_sniff("MM\0*", 4) == IMGF_FMT_TIFF);
+    CHECK(imgf_sniff("RIFF\0\0\0\0WEBP", 12) == IMGF_FMT_WEBP);
+    CHECK(imgf_sniff("RIFF\0\0\0\0WAVE", 12) == IMGF_FMT_UNKNOWN);
     CHECK(imgf_sniff(junk, 8) == IMGF_FMT_UNKNOWN);
     CHECK(imgf_sniff(png, 4) == IMGF_FMT_UNKNOWN);
 }
@@ -169,6 +173,10 @@ static void test_sniff_factory_dispatch(void) {
     imgf_decoder_destroy(d);
 
     d = imgf_make_decoder(imgf_sniff(kTiffRgb, sizeof kTiffRgb));
+    CHECK(d != NULL);
+    imgf_decoder_destroy(d);
+
+    d = imgf_make_decoder(imgf_sniff(kWebpLossy, sizeof kWebpLossy));
     CHECK(d != NULL);
     imgf_decoder_destroy(d);
 
@@ -629,6 +637,97 @@ static void test_tiff_truncated(void) {
     imgf_buffer_source_t st;
     imgf_decoder_t *d = imgf_tiffd_create();
     CHECK(imgf_decoder_open(d, imgf_stream_from_buffer(&st, kTiffTiled, 200), NULL) ==
+          IMGF_ERR_TRUNCATED);
+    imgf_decoder_destroy(d);
+}
+
+static void test_webp_like_pillow(void) {
+    CHECK(LIKE_PILLOW(imgf_webpd_create, WebpLossy, IMGF_PIX_RGB888, 0));
+    CHECK(LIKE_PILLOW(imgf_webpd_create, WebpLossySimple, IMGF_PIX_RGB888, 0));
+    CHECK(LIKE_PILLOW(imgf_webpd_create, WebpLossyNoFilter, IMGF_PIX_RGB888, 0));
+    CHECK(LIKE_PILLOW(imgf_webpd_create, WebpLossyQ100, IMGF_PIX_RGB888, 0));
+    CHECK(LIKE_PILLOW(imgf_webpd_create, WebpLossyParts, IMGF_PIX_RGB888, 0));
+    CHECK(LIKE_PILLOW(imgf_webpd_create, WebpLossless, IMGF_PIX_RGB888, 0));
+    CHECK(LIKE_PILLOW(imgf_webpd_create, WebpLosslessZ9, IMGF_PIX_RGB888, 0));
+    CHECK(LIKE_PILLOW(imgf_webpd_create, WebpLosslessAlpha, IMGF_PIX_RGB888, 1));
+    CHECK(LIKE_PILLOW(imgf_webpd_create, WebpPalette2, IMGF_PIX_RGB888, 0));
+    CHECK(LIKE_PILLOW(imgf_webpd_create, WebpPalette4, IMGF_PIX_RGB888, 0));
+    CHECK(LIKE_PILLOW(imgf_webpd_create, WebpPalette16, IMGF_PIX_RGB888, 0));
+    CHECK(LIKE_PILLOW(imgf_webpd_create, WebpPalette200, IMGF_PIX_RGB888, 0));
+    CHECK(LIKE_PILLOW(imgf_webpd_create, WebpAlpha, IMGF_PIX_RGB888, 1));
+    CHECK(LIKE_PILLOW(imgf_webpd_create, WebpAlphaHorizontal, IMGF_PIX_RGB888, 1));
+    CHECK(LIKE_PILLOW(imgf_webpd_create, WebpAlphaVertical, IMGF_PIX_RGB888, 1));
+    CHECK(LIKE_PILLOW(imgf_webpd_create, WebpAlphaGradient, IMGF_PIX_RGB888, 1));
+    CHECK(LIKE_PILLOW(imgf_webpd_create, WebpAnimated, IMGF_PIX_RGB888, 1));
+    CHECK(LIKE_PILLOW(imgf_webpd_create, WebpAnimOffset, IMGF_PIX_RGB888, 0));
+}
+
+/* More pixels than a lossless decoder keeps, with copies from nearly as far
+ * back as the format allows. */
+static void test_webp_far_copies(void) {
+    imgf_buffer_source_t st;
+    imgf_decoder_t *d = imgf_webpd_create();
+    CHECK(imgf_decoder_open(d, imgf_stream_from_buffer(&st, kWebpFar, sizeof kWebpFar), NULL) ==
+          IMGF_OK);
+    CHECK(imgf_decoder_width(d) == kWebpFarW && imgf_decoder_height(d) == kWebpFarH);
+    uint8_t *row = (uint8_t *)malloc(kWebpFarW * 3);
+    uint32_t hash = 0x811c9dc5u;
+    bool ok = true;
+    for (int y = 0; ok && y < kWebpFarH; y++) {
+        ok = imgf_decoder_next_row(d, row);
+        for (int i = 0; ok && i < kWebpFarW * 3; i++) hash = (hash ^ row[i]) * 0x01000193u;
+    }
+    CHECK(ok);
+    CHECK(hash == kWebpFarHash);
+    free(row);
+    imgf_decoder_destroy(d);
+}
+
+static void test_webp_without_seek(void) {
+    onebyte_state_t st = { kWebpLossless, sizeof kWebpLossless };
+    imgf_stream_t s = { onebyte_read, &st, NULL };
+    imgf_decoder_t *d = imgf_webpd_create();
+    CHECK(imgf_decoder_open(d, s, NULL) == IMGF_OK);
+    uint8_t row[kWebpLosslessW * 3];
+    bool ok = true;
+    for (int y = 0; ok && y < kWebpLosslessH; y++) {
+        ok = imgf_decoder_next_row(d, row) &&
+             memcmp(row, kWebpLosslessPixels + y * sizeof row, sizeof row) == 0;
+    }
+    CHECK(ok);
+    imgf_decoder_destroy(d);
+
+    const unsigned char *const seeking[] = { kWebpLossy, kWebpAlphaHorizontal };
+    const size_t sizes[] = { sizeof kWebpLossy, sizeof kWebpAlphaHorizontal };
+    for (int i = 0; i < 2; i++) {
+        onebyte_state_t one = { seeking[i], sizes[i] };
+        imgf_stream_t os = { onebyte_read, &one, NULL };
+        d = imgf_webpd_create();
+        CHECK(imgf_decoder_open(d, os, NULL) == IMGF_ERR_UNSUPPORTED);
+        imgf_decoder_destroy(d);
+    }
+}
+
+static void test_webp_truncated(void) {
+    const unsigned char *const files[] = { kWebpLossy, kWebpLossless, kWebpAlpha };
+    const size_t sizes[] = { sizeof kWebpLossy, sizeof kWebpLossless, sizeof kWebpAlpha };
+    for (int i = 0; i < 3; i++) {
+        imgf_buffer_source_t st;
+        imgf_decoder_t *d = imgf_webpd_create();
+        imgf_err_t err = imgf_decoder_open(d, imgf_stream_from_buffer(&st, files[i], sizes[i] - 60),
+                                           NULL);
+        if (err == IMGF_OK) {
+            uint8_t row[64 * 3];
+            while (imgf_decoder_next_row(d, row)) {
+            }
+            err = imgf_decoder_last_error(d);
+        }
+        CHECK(err == IMGF_ERR_TRUNCATED);
+        imgf_decoder_destroy(d);
+    }
+    imgf_buffer_source_t st;
+    imgf_decoder_t *d = imgf_webpd_create();
+    CHECK(imgf_decoder_open(d, imgf_stream_from_buffer(&st, kWebpLossy, 20), NULL) ==
           IMGF_ERR_TRUNCATED);
     imgf_decoder_destroy(d);
 }
@@ -2077,6 +2176,10 @@ int main(void) {
     test_tiff_like_pillow();
     test_tiff_without_seek();
     test_tiff_truncated();
+    test_webp_like_pillow();
+    test_webp_far_copies();
+    test_webp_without_seek();
+    test_webp_truncated();
 
     test_pixfmt_bpp();
     test_resize_rgb888_to_bgr888();

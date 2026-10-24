@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Generates png_fixtures.h: small PNGs (built with the stdlib zlib encoder) used
 # by the host tests to exercise the in-tree PNG decoder + streaming inflate.
-# Regenerate: python3 gen_fixtures.py > png_fixtures.h
+# run.sh runs it as: python3 gen_fixtures.py > png_fixtures.h
 import struct
 import zlib
 

@@ -2,7 +2,7 @@
  * Generates jpeg_fixtures.h: small baseline and progressive JPEGs (built with
  * libjpeg) used by the host tests to exercise the in-tree JPEG decoder. JPEG is lossy, so the
  * tests assert dimensions + approximate pixel values, not exact bytes.
- * Regenerate: cc gen_jpeg.c $(pkg-config --cflags --libs libjpeg) -o gen && ./gen > jpeg_fixtures.h
+ * run.sh builds and runs it: cc gen_jpeg.c $(pkg-config --cflags --libs libjpeg) -o gen && ./gen > jpeg_fixtures.h
  */
 #include <stddef.h>
 #include <stdio.h>

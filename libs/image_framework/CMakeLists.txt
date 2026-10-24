@@ -16,7 +16,10 @@ set(IMGF_SRCS
         "src/imgf_resize.c"
         "src/imgf_sniff.c"
         "src/imgf_stream.c"
-        "src/imgf_tiffd.c")
+        "src/imgf_tiffd.c"
+        "src/imgf_webpd.c"
+        "src/imgf_webpd_vp8.c"
+        "src/imgf_webpd_vp8l.c")
 
 if(IDF_TARGET STREQUAL "esp32p4")
     list(APPEND IMGF_SRCS "src/imgf_pie_p4.S")

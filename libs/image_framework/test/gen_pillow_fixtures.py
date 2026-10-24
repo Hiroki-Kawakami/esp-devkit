@@ -3,7 +3,7 @@
 # (or gray) pixels Pillow decodes it to as the expected output. Files Pillow
 # cannot write (RLE, bitfields, OS/2 headers, ...) are assembled here and only
 # decoded by Pillow.
-# Regenerate: python3 gen_pillow_fixtures.py > pillow_fixtures.h
+# run.sh runs it as: python3 gen_pillow_fixtures.py > pillow_fixtures.h
 import io
 import struct
 import zlib

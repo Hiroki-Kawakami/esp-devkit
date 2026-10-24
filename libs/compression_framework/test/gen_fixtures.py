@@ -3,7 +3,7 @@
 # writers produce (Pillow, with libtiff for TIFF), over patterns the test
 # regenerates in C. Pillow and ffmpeg always write GIF with 8-bit literals, so
 # the narrow case is encoded here and checked by having Pillow decode it.
-# Regenerate: python3 gen_fixtures.py > cmpf_fixtures.h
+# run.sh runs it as: python3 gen_fixtures.py > cmpf_fixtures.h
 import io
 import struct
 import zlib
