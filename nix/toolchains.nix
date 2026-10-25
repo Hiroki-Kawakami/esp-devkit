@@ -48,6 +48,22 @@ let
     };
   };
 
+  # libclang only, for bindgen. Pinned from esp-idf v6.1 tools/tools.json (esp-clang-libs).
+  clangReleaseTag = "esp-21.1.3_20260408";
+  clangVersion = pkgs.lib.removePrefix "esp-" clangReleaseTag;
+
+  clangLibsUrl = hostTriple:
+    "https://github.com/espressif/llvm-project/releases/download/${clangReleaseTag}/libs-clang-${clangReleaseTag}-${hostTriple}.tar.xz";
+
+  clangSources = {
+    esp-clang = {
+      "aarch64-darwin" = { url = clangLibsUrl "aarch64-apple-darwin"; sha256 = "b524f0f36c6b8897b5dc2a85f66102cc44a2d1dcfdde15fa96796b7c1778b8d3"; };
+      "x86_64-darwin"  = { url = clangLibsUrl "x86_64-apple-darwin";  sha256 = "2e3c51ffa570f7f3ea562686b3fef1a1c07a541096ac291b9bb8bfbac7b82f9c"; };
+      "x86_64-linux"   = { url = clangLibsUrl "x86_64-linux-gnu";     sha256 = "c75406f5f0a1fe9692cdf6e6628cbbdf3f25e5721bb58d5e5540ea756d1197f3"; };
+      "aarch64-linux"  = { url = clangLibsUrl "aarch64-linux-gnu";    sha256 = "a3d89fcb12b59b7b96a20c05e32a4c7ffe3400f965c153310137ffa02e27ec38"; };
+    };
+  };
+
   pickFrom = set: name:
     let s = set.${name}.${system} or (throw "esp toolchain ${name}: unsupported system ${system}");
     in pkgs.fetchurl { inherit (s) url sha256; };
@@ -120,5 +136,11 @@ in {
   riscv32 = mkToolchain "riscv32-esp-elf";
   xtensaGdb = mkGdb "xtensa-esp-elf-gdb";
   riscv32Gdb = mkGdb "riscv32-esp-elf-gdb";
+  clangLibs = mkUnpacked {
+    name = "esp-clang";
+    ver = clangVersion;
+    src = pickFrom clangSources "esp-clang";
+    extraBuildInputs = [ pkgs.zlib pkgs.zstd pkgs.libxml2 pkgs.ncurses ];
+  };
   inherit romElfs;
 }

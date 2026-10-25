@@ -13,6 +13,7 @@
         lib = pkgs.lib;
 
         toolchains = import ./nix/toolchains.nix { inherit pkgs system; };
+        rust = import ./nix/rust.nix { inherit pkgs system; inherit (toolchains) clangLibs; };
         pythonEnv = (import ./nix/python-env.nix { inherit pkgs; }).pythonEnv;
         # tools/resgen; kept off PATH so it never shadows the IDF python3.
         resgenPython = pkgs.python3.withPackages (ps: [ ps.freetype-py ps.pillow ps.resvg-py ps.fonttools ]);
@@ -47,6 +48,8 @@
         ];
 
         idfPackages = [ pythonEnv ] ++ idfToolchains ++ [
+          rust.rustc
+          rust.bindgen
           pkgs.cmake
           pkgs.ninja
           pkgs.gperf
