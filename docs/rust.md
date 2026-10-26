@@ -123,6 +123,32 @@ nothing.
 cmake --build firmware/rust_hello/simulator/build --target rust_test
 ```
 
+## Editor
+
+Configuring a build (device or simulator) writes `rust-project.json` into its
+build directory: every crate with its root, dependencies, `--cfg`s, target and
+`OUT_DIR`, plus the toolchain's sysroot. Point rust-analyzer at the build being
+worked on, e.g. in Zed's `.zed/settings.json`:
+
+```json
+{
+  "lsp": {
+    "rust-analyzer": {
+      "initialization_options": {
+        "linkedProjects": ["firmware/rust_hello/esp32p4/build/rust-project.json"]
+      }
+    }
+  }
+}
+```
+
+The devShell (not the CI image) provides `rust-analyzer`. Zed prefers a
+rust-analyzer on the project environment's `PATH` over the one it downloads,
+and takes that environment from the shell (direnv included), which also puts
+the toolchain's `rustc` there for rust-analyzer's target queries. The toolchain
+has no cargo; rust-analyzer logs that `cargo metadata` failed on the sysroot
+and loads it without.
+
 ## Runtime (`libs/rust_rt`)
 
 - The allocator shim (`__rust_alloc` and friends) forwards to `malloc`/`free`,
@@ -158,6 +184,8 @@ cmake --build firmware/rust_hello/simulator/build --target rust_test
   gets the toolchain's libc headers as `-isystem` (`picolibc/include` with
   `CONFIG_LIBC_PICOLIBC`, then `<triple>/include`); gcc finds them through
   IDF's `-specs`.
+- The CI firmware image (`mkFwImage`) carries rustc and bindgen with the rest
+  of the devShell's IDF environment.
 - rustc and bindgen are looked up when CMake configures; after a toolchain
   update, reconfigure (`idf.py reconfigure`, or `cmake -S ... -B ...` for the
   simulator) so the build uses the new paths and rebuilds every crate.

@@ -116,6 +116,8 @@
             pkgs.libjpeg
             pkgs.zlib
             pkgs.pkg-config
+            # Editor language server for the Rust crates (docs/rust.md)
+            pkgs.rust-analyzer
           ];
           shellHook = ''
             ${lib.concatStringsSep "\n" (lib.mapAttrsToList (k: v: "export ${k}=${lib.escapeShellArg v}") idfEnv)}
