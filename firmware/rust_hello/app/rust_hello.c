@@ -4,6 +4,7 @@
  */
 
 #include "rust_hello.h"
+#include "rust_hello_weight.h"
 
 uint32_t rust_hello_checksum(const uint8_t *data, size_t len) {
     uint32_t sum = 0;

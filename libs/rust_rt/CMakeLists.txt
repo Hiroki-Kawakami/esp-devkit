@@ -7,3 +7,6 @@ get_property(libdir GLOBAL PROPERTY DEVKIT_RUST_TARGET_LIBDIR)
 # libgcc ahead of compiler_builtins so the intrinsics both define resolve to libgcc.
 target_link_libraries(${COMPONENT_LIB} INTERFACE
     "${libdir}/liballoc.rlib" "${libdir}/libcore.rlib" gcc "${libdir}/libcompiler_builtins.rlib")
+# Rust objects carry .note.GNU-stack and Xtensa GCC's do not, so ld would warn
+# that the latter imply an executable stack.
+target_link_options(${COMPONENT_LIB} INTERFACE "-Wl,-z,noexecstack")

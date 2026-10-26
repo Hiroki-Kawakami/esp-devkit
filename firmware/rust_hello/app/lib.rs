@@ -9,18 +9,15 @@ extern crate alloc;
 
 use alloc::format;
 use alloc::vec::Vec;
-use core::ffi::{c_char, c_int, c_void};
+use core::ffi::c_int;
 
-unsafe extern "C" {
-    fn bsp_init(config: *const c_void) -> c_int;
-    fn esp_get_free_heap_size() -> u32;
-    fn vTaskDelay(ticks: u32);
-    fn printf(format: *const c_char, ...) -> c_int;
-    fn rust_hello_checksum(data: *const u8, len: usize) -> u32;
+mod ffi {
+    #![allow(dead_code, non_camel_case_types, non_snake_case, non_upper_case_globals)]
+    include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 }
 
 fn log(line: &str) {
-    unsafe { printf(c"%.*s\n".as_ptr(), line.len() as c_int, line.as_ptr()) };
+    unsafe { ffi::printf(c"%.*s\n".as_ptr(), line.len() as c_int, line.as_ptr()) };
 }
 
 #[unsafe(no_mangle)]
@@ -29,13 +26,13 @@ pub extern "C" fn rust_hello_weight(byte: u8) -> u32 {
 }
 
 pub fn run() {
-    let err = unsafe { bsp_init(core::ptr::null()) };
+    let err = unsafe { ffi::bsp_init(core::ptr::null()) };
     if err != 0 {
         log(&format!("rust_hello: bsp_init failed: {err}"));
     }
 
     let bytes: Vec<u8> = (0..=255).collect();
-    let checksum = unsafe { rust_hello_checksum(bytes.as_ptr(), bytes.len()) };
+    let checksum = unsafe { ffi::rust_hello_checksum(bytes.as_ptr(), bytes.len()) };
     let wide: Vec<u64> = (1..=8).map(|i| u64::MAX / i).collect();
     let quotient = u128::from(wide[2]) * 1_000_000_007 / 13;
     let third = 1.0f64 / 3.0;
@@ -50,9 +47,9 @@ pub fn run() {
     loop {
         log(&format!(
             "rust_hello: {seconds}s free={}",
-            unsafe { esp_get_free_heap_size() }
+            unsafe { ffi::esp_get_free_heap_size() }
         ));
         seconds += 1;
-        unsafe { vTaskDelay(sdkconfig::CONFIG_FREERTOS_HZ as u32) };
+        unsafe { ffi::vTaskDelay(sdkconfig::CONFIG_FREERTOS_HZ as u32) };
     }
 }

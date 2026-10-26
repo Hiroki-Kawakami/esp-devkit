@@ -41,6 +41,37 @@ devkit_rust_crate(ROOT "main.rs")
 `firmware/rust_hello` is a working example: a Rust-only main and an app
 component mixing C and Rust.
 
+## C headers
+
+```cmake
+devkit_rust_crate(ROOT "lib.rs"
+    BINDGEN_HEADERS "bsp.h" "freertos/FreeRTOS.h" "freertos/task.h" "rust_hello.h"
+    EXPORT_HEADERS "rust_hello_weight.h")
+```
+
+```rust
+mod ffi {
+    #![allow(dead_code, non_camel_case_types, non_snake_case, non_upper_case_globals)]
+    include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
+}
+```
+
+- Headers are named as they are `#include`d, in include order, and bindgen
+  parses them with the component's include directories and definitions plus
+  IDF's build-wide ones. Only items declared in a listed header are bound,
+  with the types they use. An API declared in a header that a listed header
+  includes needs that header listed too (`xTaskCreatePinnedToCore` is in
+  `freertos/idf_additions.h`, not `freertos/task.h`).
+- `static inline` functions get a C wrapper compiled into the component, so
+  they are callable like any other function. Function-like macros are not
+  bound.
+- `EXPORT_HEADERS` are C APIs implemented in Rust. Each function they declare
+  must be defined at the crate root (or re-exported there) with the
+  declaration's signature; a missing definition or a different signature
+  fails the build. A header is either all Rust or not listed here.
+- Bindings are regenerated when a header changes and the crate rebuilds only
+  if the bindings did.
+
 ## Build
 
 - rustc emits the crate's object into the build's `rust/` directory, and the
@@ -72,6 +103,8 @@ component mixing C and Rust.
   ahead of `compiler_builtins` so the intrinsics both define come from libgcc.
   `compiler_builtins` only contributes what libgcc lacks, such as the 128-bit
   `__udivti3`/`__umodti3`.
+- It adds `-z noexecstack` to the link: Rust objects carry `.note.GNU-stack`
+  and Xtensa GCC's do not, which ld otherwise warns about.
 
 ## Toolchain (`nix/rust.nix`)
 
@@ -84,7 +117,9 @@ component mixing C and Rust.
   `rustc --target <triple>` finds them.
 - bindgen is nixpkgs' bindgen rebuilt with the `runtime` feature and wrapped to
   load esp-clang's libclang (`esp-clang-libs` in `nix/toolchains.nix`), which
-  parses the Xtensa targets.
+  parses the Xtensa targets. libclang gets the toolchain's libc headers as
+  `-isystem` (`picolibc/include` with `CONFIG_LIBC_PICOLIBC`, then
+  `<triple>/include`); gcc finds them through IDF's `-specs`.
 
 ### compiler_builtins patch
 
@@ -129,6 +164,12 @@ The toolchain is pinned by `releaseTag` and the tarball hashes in
    nightly.
 6. **esp-clang** is pinned from IDF's `tools/tools.json` and follows the IDF
    version, not rustc.
+7. **bindgen** (nixpkgs) writes a top-level `const` parameter of a `static
+   inline` function into its C wrapper as a pointee `const`. The wrapper
+   source is compiled with `-Wno-duplicate-decl-specifier
+   -Wno-discarded-qualifiers` for that (`_devkit_rust_bindgen` in
+   `tools/rust/rust.cmake`); drop them once bindgen generates correct
+   wrappers.
 
 A new IDF target needs its Rust target in `_devkit_rust_triple`
 (`tools/rust/rust.cmake`) and, if new, in the `targets` list of `nix/rust.nix`.
