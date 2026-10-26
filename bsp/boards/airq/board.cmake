@@ -22,3 +22,4 @@ set(BOARD_DEVICE_PRIV_REQUIRES
     driver esp_driver_spi esp_driver_gpio esp_driver_ledc esp_driver_i2c esp_adc)
 
 set(BOARD_SIM_SRCS "boards/airq/airq_sim.c")
+set(BOARD_SIM_PRIV_REQUIRES sensors)

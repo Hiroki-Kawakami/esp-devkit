@@ -12,10 +12,10 @@
 # we shim it to fold the component's sources / include dirs straight into
 # the `simulator` executable.
 #
-# REQUIRES do not affect C/C++: everything links into a single binary so
-# include dirs are global, and IDF-only requirements (driver, nvs_flash, ...)
-# simply have no host counterpart. They are recorded for devkit_rust_crate(),
-# whose crate dependencies follow them.
+# REQUIRES only decide which components devkit_simulator() adds
+# (requirements.cmake reads them beforehand); everything added links into a
+# single binary, so include dirs are global. They are also recorded for
+# devkit_rust_crate(), whose crate dependencies follow them.
 function(idf_component_register)
     cmake_parse_arguments(C "" ""
         "SRCS;INCLUDE_DIRS;PRIV_INCLUDE_DIRS;REQUIRES;PRIV_REQUIRES;EMBED_FILES;EMBED_TXTFILES"

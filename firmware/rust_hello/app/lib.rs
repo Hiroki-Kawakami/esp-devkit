@@ -25,11 +25,6 @@ pub extern "C" fn rust_hello_weight(byte: u8) -> u32 {
     u32::from(byte) * 3 + 1
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn app_entry() {
-    run();
-}
-
 pub fn run() {
     let config: ffi::bsp_config_t = unsafe { core::mem::zeroed() };
     let err = unsafe { ffi::bsp_init(&config) };

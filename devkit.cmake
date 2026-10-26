@@ -106,8 +106,11 @@ endmacro()
 #                  [MAIN_SRCS src...] [COMPONENT_DIRS dir...])
 #
 # Builds the `simulator` host executable: host deps, an
-# idf_component_register() shim that folds devkit components straight into the
-# executable, then adds devkit components + COMPONENT_DIRS as subdirectories.
+# idf_component_register() shim that folds components straight into the
+# executable, then adds the COMPONENT_DIRS components, idf_compat and the devkit
+# components they reach through REQUIRES/PRIV_REQUIRES as subdirectories.
+# MAIN_SRCS defaults to main/main.cpp if present; otherwise main() runs
+# app_main(), which a COMPONENT_DIRS component (e.g. main) defines.
 macro(devkit_simulator)
     cmake_parse_arguments(DEVKIT_SIM ""
         "BOARD;DEFAULT_ROTATION;SDKCONFIG;SAVEDEFCONFIG"
@@ -122,7 +125,11 @@ macro(devkit_simulator)
         set(DEVKIT_SIM_DEFAULT_ROTATION 0)
     endif()
     if(NOT DEVKIT_SIM_MAIN_SRCS)
-        set(DEVKIT_SIM_MAIN_SRCS main/main.cpp)
+        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/main/main.cpp")
+            set(DEVKIT_SIM_MAIN_SRCS main/main.cpp)
+        else()
+            set(DEVKIT_SIM_MAIN_SRCS "${DEVKIT_ROOT}/tools/simulator/app_main.c")
+        endif()
     endif()
     if(NOT DEVKIT_SIM_SDKCONFIG)
         set(DEVKIT_SIM_SDKCONFIG "${CMAKE_CURRENT_SOURCE_DIR}/sdkconfig")
@@ -169,8 +176,9 @@ macro(devkit_simulator)
     target_compile_definitions(simulator PRIVATE
         SDL_DISABLE_ARM_NEON_H
         SDL_MAIN_HANDLED)
+    # libm is otherwise only implied when g++ links, i.e. a C++ component is in.
     target_link_libraries(simulator SDL2::SDL2 Threads::Threads
-        PkgConfig::JPEG ${CMAKE_DL_LIBS})
+        PkgConfig::JPEG ${CMAKE_DL_LIBS} m)
 
     # Initial host-view rotation of the SDL window (r/l keys change it at runtime).
     set(SIM_DEFAULT_ROTATION ${DEVKIT_SIM_DEFAULT_ROTATION} CACHE STRING
@@ -217,35 +225,43 @@ macro(devkit_simulator)
     # parameters (${ARGN}, ...) into anything textually inside it, which would
     # corrupt the shim functions' own ${ARGN}. include() is not subject to
     # that substitution.
-    include("${DEVKIT_ROOT}/cmake/sim_shim.cmake")
+    include("${DEVKIT_ROOT}/tools/simulator/shim.cmake")
 
     set(DEVKIT_SIM_COMPONENT_PATHS "")
     foreach(_devkit_comp ${DEVKIT_SIMULATOR_COMPONENTS})
         list(APPEND DEVKIT_SIM_COMPONENT_PATHS "${DEVKIT_ROOT}/${_devkit_comp}")
     endforeach()
+    set(DEVKIT_SIM_ROOTS "${DEVKIT_ROOT}/idf_compat")
     foreach(_devkit_dir ${DEVKIT_SIM_COMPONENT_DIRS})
         if(NOT IS_ABSOLUTE "${_devkit_dir}")
             set(_devkit_dir "${CMAKE_CURRENT_SOURCE_DIR}/${_devkit_dir}")
         endif()
         if(EXISTS "${_devkit_dir}/CMakeLists.txt")
             list(APPEND DEVKIT_SIM_COMPONENT_PATHS "${_devkit_dir}")
+            list(APPEND DEVKIT_SIM_ROOTS "${_devkit_dir}")
         else()
             file(GLOB _devkit_children LIST_DIRECTORIES true "${_devkit_dir}/*")
             list(SORT _devkit_children)
             foreach(_devkit_child ${_devkit_children})
                 if(EXISTS "${_devkit_child}/CMakeLists.txt")
                     list(APPEND DEVKIT_SIM_COMPONENT_PATHS "${_devkit_child}")
+                    list(APPEND DEVKIT_SIM_ROOTS "${_devkit_child}")
                 endif()
             endforeach()
         endif()
     endforeach()
 
-    include("${DEVKIT_ROOT}/cmake/sim_kconfig.cmake")
+    include("${DEVKIT_ROOT}/tools/simulator/kconfig.cmake")
     devkit_simulator_kconfig(
         SDKCONFIG "${DEVKIT_SIM_SDKCONFIG}"
         SDKCONFIG_DEFAULTS ${DEVKIT_SIM_SDKCONFIG_DEFAULTS}
         SAVEDEFCONFIG "${DEVKIT_SIM_SAVEDEFCONFIG}"
         COMPONENT_PATHS ${DEVKIT_SIM_COMPONENT_PATHS})
+
+    include("${DEVKIT_ROOT}/tools/simulator/components.cmake")
+    devkit_simulator_components(DEVKIT_SIM_COMPONENT_PATHS
+        ROOTS ${DEVKIT_SIM_ROOTS}
+        PATHS ${DEVKIT_SIM_COMPONENT_PATHS})
 
     foreach(_devkit_comp ${DEVKIT_SIM_COMPONENT_PATHS})
         get_filename_component(_devkit_comp_name "${_devkit_comp}" NAME)

@@ -32,7 +32,7 @@ set(BSP_COMMON_SRCS
 set(BSP_DEVICE_COMMON_SRCS
     "src/bsp_sd.c")
 
-if(CMAKE_BUILD_EARLY_EXPANSION)
+if(CMAKE_BUILD_EARLY_EXPANSION AND NOT CONFIG_DEVKIT_SIMULATOR)
     # IDF extracts each component's requirements before Kconfig runs, so the
     # concrete board (CONFIG_BSP_BOARD_*) is not knowable here. Only PRIV_REQUIRES
     # matters at this phase, so declare the union of every same-target board's
@@ -51,7 +51,9 @@ if(CMAKE_BUILD_EARLY_EXPANSION)
     list(REMOVE_DUPLICATES _bsp_union_reqs)
     set(BOARD_DEVICE_PRIV_REQUIRES ${_bsp_union_reqs})
 else()
-    # Real configure pass: Kconfig has resolved the board for both targets.
+    # Real configure pass: Kconfig has resolved the board for both targets. The
+    # simulator resolves Kconfig before reading requirements, so its early
+    # expansion takes this branch too.
     if(CONFIG_BSP_BOARD_CORE)
         set(BSP_BOARD core)
     elseif(CONFIG_BSP_BOARD_PAPER)
@@ -82,7 +84,7 @@ else()
     endif()
     # board.cmake fills BOARD_TARGET, BOARD_DEVICE_SRCS /
     # BOARD_DEVICE_PRIV_INCLUDE_DIRS / BOARD_DEVICE_PRIV_REQUIRES (device) and
-    # BOARD_SIM_SRCS (simulator).
+    # BOARD_SIM_SRCS / BOARD_SIM_PRIV_REQUIRES (simulator).
     include("${CMAKE_CURRENT_LIST_DIR}/boards/${BSP_BOARD}/board.cmake")
 endif()
 
@@ -117,5 +119,7 @@ else()
             "simulator/sim_button.c"
             "simulator/sim_keyboard.c"
         INCLUDE_DIRS "inc"
-        PRIV_INCLUDE_DIRS "inc_private" "simulator")
+        PRIV_INCLUDE_DIRS "inc_private" "simulator"
+        REQUIRES audio_framework
+        PRIV_REQUIRES ${BOARD_SIM_PRIV_REQUIRES})
 endif()

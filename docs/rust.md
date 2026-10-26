@@ -47,7 +47,7 @@ component mixing C and Rust.
 ```cmake
 devkit_rust_crate(ROOT "lib.rs"
     BINDGEN_HEADERS "bsp.h" "freertos/FreeRTOS.h" "freertos/task.h" "rust_hello.h"
-    EXPORT_HEADERS "rust_hello_weight.h")
+    EXPORT_HEADERS "rust_hello_export.h")
 ```
 
 ```rust
@@ -98,7 +98,9 @@ mod ffi {
 In the simulator build the crates target the host (`rustc -vV`'s host triple)
 and their objects link into the `simulator` executable with the C/C++ sources.
 The idf_component_register shim records `REQUIRES`/`PRIV_REQUIRES`, so crate
-dependencies are the same as on the device.
+dependencies are the same as on the device. A Rust main component defining
+`app_main` works there as on the device: without `MAIN_SRCS`, the simulator's
+`main()` calls it (`firmware/rust_hello/simulator`).
 
 - The simulator's Kconfig lacks IDF's options (`CONFIG_FREERTOS_HZ`,
   `CONFIG_SPIRAM`, ...). `#[cfg(CONFIG_*)]` on such an option is false there
@@ -108,8 +110,6 @@ dependencies are the same as on the device.
   not bound; wrap them in a C function in the component.
 - bindgen takes the host compiler's system include directories from the
   compiler itself, since the Nix wrapper supplies them.
-- Every simulator build compiles `rust_rt`, as the simulator builds all listed
-  components.
 
 `devkit_rust_crate(... TESTS)` adds `rust_test_<crate>`, which builds the
 crate's `#[test]`s with `rustc --test` and runs them; `rust_test` runs all of
@@ -154,12 +154,13 @@ cmake --build firmware/rust_hello/simulator/build --target rust_test
 - bindgen is nixpkgs' bindgen rebuilt with the `runtime` feature and wrapped to
   load esp-clang's libclang (`esp-clang-libs` in `nix/toolchains.nix`), which
   parses the Xtensa targets. The wrapper also passes `-resource-dir`: loaded
-  at runtime on Linux, libclang does not find its builtin headers.
+  at runtime on Linux, libclang does not find its builtin headers. libclang
+  gets the toolchain's libc headers as `-isystem` (`picolibc/include` with
+  `CONFIG_LIBC_PICOLIBC`, then `<triple>/include`); gcc finds them through
+  IDF's `-specs`.
 - rustc and bindgen are looked up when CMake configures; after a toolchain
   update, reconfigure (`idf.py reconfigure`, or `cmake -S ... -B ...` for the
-  simulator) so the build uses the new paths and rebuilds every crate. libclang gets the toolchain's libc headers as
-  `-isystem` (`picolibc/include` with `CONFIG_LIBC_PICOLIBC`, then
-  `<triple>/include`); gcc finds them through IDF's `-specs`.
+  simulator) so the build uses the new paths and rebuilds every crate.
 
 ### compiler_builtins patch
 

@@ -110,7 +110,7 @@ function(devkit_simulator_kconfig)
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
         "${DEVKIT_ROOT}/Kconfig.simulator"
         "${KCONFIG_SDKCONFIG}"
-        "${DEVKIT_ROOT}/cmake/sim_kconfig.cmake")
+        "${DEVKIT_ROOT}/tools/simulator/kconfig.cmake")
     foreach(_devkit_input ${_devkit_kconfigs} ${_devkit_defaults_files})
         set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
             "${_devkit_input}")

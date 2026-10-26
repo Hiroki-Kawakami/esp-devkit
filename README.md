@@ -36,6 +36,12 @@ The BSP board is selected with `CONFIG_BSP_BOARD_*` in the simulator's own
 `SAVEDEFCONFIG`. The configuration paths default to `sdkconfig` and
 `sdkconfig.defaults` in the simulator wrapper directory.
 
+The simulator builds `idf_compat`, the `COMPONENT_DIRS` components and the
+components they transitively `REQUIRES`/`PRIV_REQUIRES` (as registered for the
+simulator; IDF-only names are ignored). `MAIN_SRCS` defaults to `main/main.cpp`
+when it exists; otherwise `main()` calls `app_main()`, which a component such
+as `COMPONENT_DIRS main` defines as on the device.
+
 Shared components can expose compile-time options in their `Kconfig` file.
 Simulator builds use their own sdkconfig, independently of the ESP-IDF target:
 ```sh

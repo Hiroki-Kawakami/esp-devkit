@@ -25,5 +25,6 @@ if(ESP_PLATFORM)
 else()
     idf_component_register(
         SRCS ${HARNESS_COMMON_SRCS} "src/harness_stdio.c"
-        INCLUDE_DIRS "inc")
+        INCLUDE_DIRS "inc"
+        REQUIRES bsp image_framework)
 endif()
