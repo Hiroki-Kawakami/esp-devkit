@@ -186,6 +186,25 @@ unsafe { ffi::heap_caps_malloc(size, caps.bits()) };
 - Not provided: `iter`/`iter_names`, parsing, the `Flags` trait, unnamed
   (`const _`) flags.
 
+`guard(value, f)` runs `f(value)` when the guard goes out of scope;
+`Guard::into_inner(g)` returns the value without running `f`. The guard
+derefs to the value. `defer! { ... }` runs statements at the end of the
+scope and cannot be cancelled.
+
+```rust
+pub fn open() -> Result<Sensor, EspError> {
+    let bus = devkit::guard(new_bus()?, |b| unsafe { ffi::i2c_del_master_bus(b); });
+    let dev = devkit::guard(add_device(*bus)?, |d| unsafe { ffi::i2c_master_bus_rm_device(d); });
+    check(unsafe { ffi::sensor_reset(*dev) })?;
+    Ok(Sensor { bus: Guard::into_inner(bus), dev: Guard::into_inner(dev) })
+}
+```
+
+- Guards run in reverse order of creation, on scope end, `return` and `?`,
+  never on panic (panic=abort).
+- `let _ = guard(...)` drops, and so runs, the guard immediately; bind it to
+  a name.
+
 ## Runtime (`libs/rust_rt`)
 
 - The allocator shim (`__rust_alloc` and friends) forwards to `malloc`/`free`,

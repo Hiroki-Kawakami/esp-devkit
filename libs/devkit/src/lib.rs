@@ -6,3 +6,6 @@
 #![cfg_attr(not(test), no_std)]
 
 mod bitflags;
+mod defer;
+
+pub use defer::{Guard, guard};
