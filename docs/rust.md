@@ -149,6 +149,43 @@ the toolchain's `rustc` there for rust-analyzer's target queries. The toolchain
 has no cargo; rust-analyzer logs that `cargo metadata` failed on the sysroot
 and loads it without.
 
+## Crates
+
+### `devkit` (`libs/devkit`)
+
+IDF-independent utilities, `core` only.
+
+`bitflags!` declares a flags type with a subset of the bitflags 2.x syntax:
+
+```rust
+devkit::bitflags! {
+    pub struct Caps: u32 {
+        const DMA = ffi::MALLOC_CAP_DMA;
+        const INTERNAL = ffi::MALLOC_CAP_INTERNAL;
+        const DMA_INTERNAL = Self::DMA.bits() | Self::INTERNAL.bits();
+    }
+}
+
+let caps = Caps::DMA | Caps::INTERNAL;
+unsafe { ffi::heap_caps_malloc(size, caps.bits()) };
+```
+
+- The type is `#[repr(transparent)]` over any primitive integer, signed ones
+  included. `Clone`, `Copy`, `PartialEq`, `Eq`, `Hash` and `Debug` are always
+  implemented; derive others (`PartialOrd`, `Ord`, `Default`) as needed.
+- `empty`, `all`, `bits`, `from_bits` (`None` if a bit no flag defines is
+  set), `from_bits_truncate`, `from_bits_retain`, `is_empty`, `is_all`,
+  `contains`, `intersects`, `union`, `intersection`, `difference`,
+  `symmetric_difference`, `complement`, `insert`, `remove`, `toggle`, `set`,
+  all `const fn`; operators `| & ^ - !` and the assigning forms.
+- Only `complement`/`!` and `from_bits_truncate` drop undefined bits; every
+  other operation keeps them.
+- `Debug` prints `Caps(DMA | INTERNAL | 0x40)`, `Caps(0x0)` when empty. Flags
+  are named in declaration order when all their bits are set and some are not
+  yet named; the rest is printed in hex.
+- Not provided: `iter`/`iter_names`, parsing, the `Flags` trait, unnamed
+  (`const _`) flags.
+
 ## Runtime (`libs/rust_rt`)
 
 - The allocator shim (`__rust_alloc` and friends) forwards to `malloc`/`free`,

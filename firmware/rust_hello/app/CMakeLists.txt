@@ -2,7 +2,7 @@
 idf_component_register(
     SRCS "rust_hello.c"
     INCLUDE_DIRS "."
-    PRIV_REQUIRES bsp esp_timer rust_rt)
+    PRIV_REQUIRES bsp devkit esp_timer rust_rt)
 devkit_rust_crate(ROOT "lib.rs" TESTS
     BINDGEN_HEADERS "bsp.h" "esp_timer.h" "freertos/FreeRTOS.h" "freertos/task.h" "stdio.h"
                     "rust_hello.h"

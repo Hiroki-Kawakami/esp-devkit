@@ -27,6 +27,7 @@ set(DEVKIT_DEVICE_COMPONENTS
     bsp
     libs/audio_framework
     libs/compression_framework
+    libs/devkit
     libs/esp_hosted_enhanced
     libs/harness
     libs/image_framework
@@ -47,6 +48,7 @@ set(DEVKIT_SIMULATOR_COMPONENTS
     bsp
     libs/audio_framework
     libs/compression_framework
+    libs/devkit
     libs/harness
     libs/image_framework
     libs/jpeg_decode_enhanced
