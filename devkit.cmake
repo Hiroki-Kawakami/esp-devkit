@@ -20,6 +20,7 @@ set(DEVKIT_ROOT ${CMAKE_CURRENT_LIST_DIR})
 
 include("${DEVKIT_ROOT}/tools/resgen/resgen.cmake")
 include("${DEVKIT_ROOT}/tools/protogen/protogen.cmake")
+include("${DEVKIT_ROOT}/tools/rust/rust.cmake")
 
 # Device-side components, in EXTRA_COMPONENT_DIRS order.
 set(DEVKIT_DEVICE_COMPONENTS
@@ -32,6 +33,7 @@ set(DEVKIT_DEVICE_COMPONENTS
     libs/jpeg_decode_enhanced
     libs/lvgl
     libs/media_framework
+    libs/rust_rt
     libs/sensors
     libs/ui_framework
     libs/usb_device

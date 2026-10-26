@@ -39,7 +39,7 @@ let
     mkdir -p $out_dir
     common="--target ${target} --edition 2024 --crate-type rlib -Copt-level=3 -Cpanic=abort -Cdebuginfo=1 -Cembed-bitcode=no -Zforce-unstable-if-unmarked --cap-lints allow"
     $out/bin/rustc $common --crate-name core $src_lib/core/src/lib.rs --out-dir $out_dir
-    # No feature "mem": memcpy and friends come from newlib/ROM. codegen-units=10000 puts
+    # No feature "mem": memcpy and friends come from libc/ROM. codegen-units=10000 puts
     # each intrinsic in its own archive member so libgcc's copies are never pulled alongside.
     $out/bin/rustc $common --crate-name compiler_builtins $src_lib/compiler-builtins/compiler-builtins/src/lib.rs \
       --cfg 'feature="compiler-builtins"' --cfg 'feature="unmangled-names"' --cfg 'feature="arch"' \
@@ -72,6 +72,7 @@ let
       rust-src-nightly/install.sh --prefix=$out --disable-ldconfig
       ${lib.optionalString pkgs.stdenv.isLinux "autoPatchelf $out"}
       src_lib=$out/lib/rustlib/src/rust/library
+      patch -p1 -d $src_lib < ${./patches/compiler-builtins-no-libm.patch}
       ${lib.concatMapStrings buildSysroot targets}
       runHook postInstall
     '';

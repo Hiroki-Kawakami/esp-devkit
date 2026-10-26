@@ -55,3 +55,5 @@ files.
   images and the compressed font packs drawn by `PackedFont`.
 - [CI firmware build](docs/ci.md) — GitHub Actions build of the firmware in a
   Nix-built image of the devShell's IDF environment.
+- [Rust](docs/rust.md) — Rust crates inside IDF components without Cargo, the
+  pinned toolchain and what to check when upgrading it.

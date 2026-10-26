@@ -1,0 +1,47 @@
+Stops compiler_builtins from exporting libm (sinf, powf, sqrtf, fmaf, ...):
+both the libm_intrinsics! expansions and the hand-written lgamma_r/lgammaf_r.
+It exports them on every target but Windows and Apple, with no feature or cfg
+to turn that off. g++ moves -lc/-lm to the end of the link, after the sysroot
+rlibs, so these copies satisfy the firmware's C references ahead of picolibc,
+whose RISC-V/Xtensa sqrtf/fmaf etc. are FPU instructions where these are
+generic software. Paths are relative to rust-src's library/.
+
+--- a/compiler-builtins/compiler-builtins/src/math/mod.rs
++++ b/compiler-builtins/compiler-builtins/src/math/mod.rs
+@@ -6,15 +6,7 @@
+ pub(crate) mod libm_math;
+ 
+ macro_rules! libm_intrinsics {
+-    ($(fn $fun:ident($($iid:ident : $ity:ty),+) -> $oty:ty;)+) => {
+-        intrinsics! {
+-            $(
+-                pub extern "C" fn $fun($($iid: $ity),+) -> $oty {
+-                    $crate::math::libm_math::$fun($($iid),+)
+-                }
+-            )+
+-        }
+-    }
++    ($(fn $fun:ident($($iid:ident : $ity:ty),+) -> $oty:ty;)+) => {};
+ }
+ 
+ /// This set of functions is well tested in `libm` and known to provide similar performance to
+@@ -193,19 +185,4 @@
+         fn tgamma(x: f64) -> f64;
+         fn tgammaf(x: f32) -> f32;
+     }
+-
+-    // allow for windows (and other targets)
+-    intrinsics! {
+-        pub extern "C" fn lgamma_r(x: f64, s: &mut i32) -> f64 {
+-            let r = super::libm_math::lgamma_r(x);
+-            *s = r.1;
+-            r.0
+-        }
+-
+-        pub extern "C" fn lgammaf_r(x: f32, s: &mut i32) -> f32 {
+-            let r = super::libm_math::lgammaf_r(x);
+-            *s = r.1;
+-            r.0
+-        }
+-    }
+ }
