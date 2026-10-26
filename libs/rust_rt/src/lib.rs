@@ -8,7 +8,9 @@
 #![feature(rustc_attrs)]
 #![allow(internal_features)]
 
-use core::ffi::{c_int, c_void};
+#[cfg(not(target_os = "none"))]
+use core::ffi::c_int;
+use core::ffi::c_void;
 use core::fmt::{self, Write};
 use core::mem::Alignment;
 use core::panic::PanicInfo;

@@ -180,6 +180,7 @@ function(_devkit_rust_init)
         "-Cdebuginfo=2"
         "-Cdebug-assertions=${debug_assertions}"
         "-Zbinary-dep-depinfo"
+        "--check-cfg=cfg(test)"
         "--color=always"
         "-Ldependency=${out}")
     if(opt STREQUAL "0" OR opt STREQUAL "1")
