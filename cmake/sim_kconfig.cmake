@@ -82,7 +82,8 @@ function(devkit_simulator_kconfig)
     set(_devkit_kconfgen_outputs
         --output header "${_devkit_sdkconfig_header}"
         --output cmake "${_devkit_sdkconfig_cmake}"
-        --output json "${_devkit_sdkconfig_json}")
+        --output json "${_devkit_sdkconfig_json}"
+        --output json_menus "${_devkit_config_dir}/kconfig_menus.json")
     if(NOT EXISTS "${KCONFIG_SDKCONFIG}")
         list(APPEND _devkit_kconfgen_outputs
             --output config "${KCONFIG_SDKCONFIG}")

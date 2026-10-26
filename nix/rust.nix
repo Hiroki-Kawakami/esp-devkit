@@ -86,8 +86,11 @@ let
   bindgen = pkgs.runCommandLocal "bindgen-esp-${bindgenUnwrapped.version}" {
     nativeBuildInputs = [ pkgs.makeWrapper ];
   } ''
+    # Loaded at runtime on Linux, libclang resolves its resource directory to a
+    # relative lib/clang/<version> and misses its builtin headers (stddef.h).
     makeWrapper ${bindgenUnwrapped}/bin/bindgen $out/bin/bindgen \
-      --set LIBCLANG_PATH ${clangLibs}/lib
+      --set LIBCLANG_PATH ${clangLibs}/lib \
+      --set BINDGEN_EXTRA_CLANG_ARGS "-resource-dir $(echo ${clangLibs}/lib/clang/*)"
   '';
 in {
   inherit rustc bindgen;

@@ -3,7 +3,8 @@
 Rust crates build inside ordinary IDF components, next to C/C++, without Cargo.
 `rustc` runs from the IDF CMake/ninja build; one component is one crate, and the
 crate graph follows the components' `REQUIRES`/`PRIV_REQUIRES`. Crates are
-`#![no_std]` with `alloc`. The simulator build does not take Rust crates yet.
+`#![no_std]` with `alloc`. The same component CMakeLists build the crates into
+the host simulator.
 
 ## Usage
 
@@ -92,6 +93,36 @@ mod ffi {
 | esp32p4, esp32s31 | `riscv32imafc-unknown-none-elf` |
 | esp32c5, esp32c6, esp32c61, esp32h2, esp32h21 | `riscv32imac-unknown-none-elf` |
 
+## Simulator and host tests
+
+In the simulator build the crates target the host (`rustc -vV`'s host triple)
+and their objects link into the `simulator` executable with the C/C++ sources.
+The idf_component_register shim records `REQUIRES`/`PRIV_REQUIRES`, so crate
+dependencies are the same as on the device.
+
+- The simulator's Kconfig lacks IDF's options (`CONFIG_FREERTOS_HZ`,
+  `CONFIG_SPIRAM`, ...). `#[cfg(CONFIG_*)]` on such an option is false there
+  without a warning (`-Aunexpected_cfgs`); the device build still checks the
+  names. `sdkconfig::` constants exist only for options in the build's Kconfig.
+- Values that C gets from macros (`pdMS_TO_TICKS()`, `configTICK_RATE_HZ`) are
+  not bound; wrap them in a C function in the component.
+- bindgen takes the host compiler's system include directories from the
+  compiler itself, since the Nix wrapper supplies them.
+- Every simulator build compiles `rust_rt`, as the simulator builds all listed
+  components.
+
+`devkit_rust_crate(... TESTS)` adds `rust_test_<crate>`, which builds the
+crate's `#[test]`s with `rustc --test` and runs them; `rust_test` runs all of
+them. The crate root must be `#![cfg_attr(not(test), no_std)]`: the test
+harness needs std. Tests run with `-Zpanic-abort-tests`. The executable links
+only Rust (rustc links it), so code reached from a test cannot call C; code that
+only non-test paths reach is dropped by the linker. On the device `TESTS` does
+nothing.
+
+```sh
+cmake --build firmware/rust_hello/simulator/build --target rust_test
+```
+
 ## Runtime (`libs/rust_rt`)
 
 - The allocator shim (`__rust_alloc` and friends) forwards to `malloc`/`free`,
@@ -105,6 +136,11 @@ mod ffi {
   `__udivti3`/`__umodti3`.
 - It adds `-z noexecstack` to the link: Rust objects carry `.note.GNU-stack`
   and Xtensa GCC's do not, which ld otherwise warns about.
+- On the host it uses the toolchain's own `alloc`/`core` (no
+  `compiler_builtins`; the host libgcc/compiler-rt covers it), `malloc` and
+  `posix_memalign`, and prints the panic to stderr before `abort()`. The host
+  sysroot is built with panic=unwind, so `rust_rt` defines an empty
+  `rust_eh_personality` for its unwind tables.
 
 ## Toolchain (`nix/rust.nix`)
 
@@ -117,7 +153,11 @@ mod ffi {
   `rustc --target <triple>` finds them.
 - bindgen is nixpkgs' bindgen rebuilt with the `runtime` feature and wrapped to
   load esp-clang's libclang (`esp-clang-libs` in `nix/toolchains.nix`), which
-  parses the Xtensa targets. libclang gets the toolchain's libc headers as
+  parses the Xtensa targets. The wrapper also passes `-resource-dir`: loaded
+  at runtime on Linux, libclang does not find its builtin headers.
+- rustc and bindgen are looked up when CMake configures; after a toolchain
+  update, reconfigure (`idf.py reconfigure`, or `cmake -S ... -B ...` for the
+  simulator) so the build uses the new paths and rebuilds every crate. libclang gets the toolchain's libc headers as
   `-isystem` (`picolibc/include` with `CONFIG_LIBC_PICOLIBC`, then
   `<triple>/include`); gcc finds them through IDF's `-specs`.
 

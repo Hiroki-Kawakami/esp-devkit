@@ -2,8 +2,8 @@
 idf_component_register(
     SRCS "rust_hello.c"
     INCLUDE_DIRS "."
-    PRIV_REQUIRES bsp rust_rt)
-devkit_rust_crate(ROOT "lib.rs"
-    BINDGEN_HEADERS "bsp.h" "esp_system.h" "freertos/FreeRTOS.h" "freertos/task.h" "stdio.h"
+    PRIV_REQUIRES bsp esp_timer rust_rt)
+devkit_rust_crate(ROOT "lib.rs" TESTS
+    BINDGEN_HEADERS "bsp.h" "esp_timer.h" "freertos/FreeRTOS.h" "freertos/task.h" "stdio.h"
                     "rust_hello.h"
-    EXPORT_HEADERS "rust_hello_weight.h")
+    EXPORT_HEADERS "rust_hello_export.h")

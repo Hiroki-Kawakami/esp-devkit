@@ -52,6 +52,7 @@ set(DEVKIT_SIMULATOR_COMPONENTS
     libs/jpeg_decode_enhanced
     libs/lvgl
     libs/media_framework
+    libs/rust_rt
     libs/sensors
     libs/ui_framework
     libs/usb_device

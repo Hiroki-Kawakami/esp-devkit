@@ -3,7 +3,7 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
-#![no_std]
+#![cfg_attr(not(test), no_std)]
 
 extern crate alloc;
 
@@ -25,8 +25,14 @@ pub extern "C" fn rust_hello_weight(byte: u8) -> u32 {
     u32::from(byte) * 3 + 1
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn app_entry() {
+    run();
+}
+
 pub fn run() {
-    let err = unsafe { ffi::bsp_init(core::ptr::null()) };
+    let config: ffi::bsp_config_t = unsafe { core::mem::zeroed() };
+    let err = unsafe { ffi::bsp_init(&config) };
     if err != 0 {
         log(&format!("rust_hello: bsp_init failed: {err}"));
     }
@@ -46,10 +52,19 @@ pub fn run() {
     let mut seconds = 0u32;
     loop {
         log(&format!(
-            "rust_hello: {seconds}s free={}",
-            unsafe { ffi::esp_get_free_heap_size() }
+            "rust_hello: {seconds}s uptime={}ms",
+            unsafe { ffi::esp_timer_get_time() } / 1000
         ));
         seconds += 1;
-        unsafe { ffi::vTaskDelay(sdkconfig::CONFIG_FREERTOS_HZ as u32) };
+        unsafe { ffi::vTaskDelay(ffi::rust_hello_ms_to_ticks(1000)) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn weight_is_affine() {
+        assert_eq!(super::rust_hello_weight(0), 1);
+        assert_eq!(super::rust_hello_weight(255), 766);
     }
 }
