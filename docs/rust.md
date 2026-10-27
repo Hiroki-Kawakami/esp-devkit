@@ -223,6 +223,33 @@ unsafe { ffi::fopen(path.as_c_str().as_ptr(), c"rb".as_ptr()) };
   writes are ignored until `clear()`.
 - It derefs to `str`; `Display` and `Debug` format it as a string.
 
+`ByteReader` and `ByteWriter` read and write integers and floats of either
+byte order over a slice, failing with `OutOfBounds`:
+
+```rust
+let mut r = ByteReader::new(data);
+let size = r.u32_be()? as usize;
+let kind = r.array::<4>()?;
+let mut body = r.sub(size - 8)?;
+let timescale = body.at(20)?.u32_be()?;
+
+let mut w = ByteWriter::new(&mut buf);
+let len_at = w.reserve(2)?;
+w.put_u16_le(cid)?;
+w.put_bytes(payload)?;
+w.set_u16_le(len_at, (w.position() - len_at - 2) as u16)?;
+send(w.written());
+```
+
+- `u8`, `i8`, `{u,i}{16,32,64}_{le,be}`, `u24_{le,be}` (as `u32`) and
+  `f{32,64}_{le,be}`; the writer has `put_` and `set_` for each. A failed
+  read or write leaves the position and the buffer unchanged.
+- `bytes`, `rest` and `sub` borrow from the data, not the reader.
+- `sub(n)` returns a reader over the next `n` bytes and skips them; `at(offset)`
+  returns a reader from `offset` of the reader's data, without moving it.
+- `reserve(n)` writes `n` zeros and returns their position; `set_*` overwrite
+  bytes already written. The u24 writers drop the high byte.
+
 ## Runtime (`libs/rust_rt`)
 
 - The allocator shim (`__rust_alloc` and friends) forwards to `malloc`/`free`,
