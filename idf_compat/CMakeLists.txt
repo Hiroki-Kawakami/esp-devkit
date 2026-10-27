@@ -11,6 +11,7 @@ idf_component_register(
         # hand-written host shims (ESP-IDF APIs)
         "src/esp_err.c"
         "src/esp_log.c"
+        "src/esp_system.c"
         "src/esp_timer.c"
         "src/esp_heap_caps.c"
         "src/multi_heap.c"    # IDF multi_heap on a caller-owned region, first fit

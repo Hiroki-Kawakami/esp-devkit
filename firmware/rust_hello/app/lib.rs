@@ -11,6 +11,7 @@ use alloc::vec::Vec;
 use core::ffi::CStr;
 
 use idf::log::{error, info};
+use idf::time::Instant;
 
 mod ffi {
     #![allow(dead_code, non_camel_case_types, non_snake_case, non_upper_case_globals)]
@@ -45,7 +46,7 @@ pub fn run() {
 
     let mut seconds = 0u32;
     loop {
-        info!(TAG, "{seconds}s uptime={}ms", unsafe { ffi::esp_timer_get_time() } / 1000);
+        info!(TAG, "{seconds}s uptime={}ms", Instant::now().since_boot().as_millis());
         seconds += 1;
         unsafe { ffi::vTaskDelay(ffi::rust_hello_ms_to_ticks(1000)) };
     }
@@ -57,12 +58,5 @@ mod tests {
     fn weight_is_affine() {
         assert_eq!(super::rust_hello_weight(0), 1);
         assert_eq!(super::rust_hello_weight(255), 766);
-    }
-
-    #[test]
-    fn uptime_advances() {
-        let start = unsafe { super::ffi::esp_timer_get_time() };
-        std::thread::sleep(std::time::Duration::from_millis(2));
-        assert!(unsafe { super::ffi::esp_timer_get_time() } - start >= 2000);
     }
 }

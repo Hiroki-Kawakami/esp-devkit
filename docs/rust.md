@@ -314,6 +314,10 @@ info!(TAG, "fps={fps:.1}");
   `macro_rules!` cannot be exported from a module; use the `idf::log` paths.
 - In the simulator, idf_compat prints up to Info, without colors.
 
+`idf::time::Instant` is `std::time::Instant` over `esp_timer_get_time()`, with
+microsecond resolution, plus `since_boot()`. `idf::system::restart()` calls
+`esp_restart()`; in the simulator it exits with status 0.
+
 ## Runtime (`libs/rust_rt`)
 
 - The allocator shim (`__rust_alloc` and friends) forwards to `malloc`/`free`,
