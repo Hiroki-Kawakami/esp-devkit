@@ -6,7 +6,8 @@
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use core::cell::UnsafeCell;
-use core::ffi::c_void;
+use core::ffi::{CStr, c_void};
+use core::marker::PhantomData;
 use core::ptr;
 use core::time::Duration;
 
@@ -39,6 +40,40 @@ pub fn sleep(d: Duration) {
 
 pub fn yield_now() {
     unsafe { sys::vTaskDelay(0) }
+}
+
+pub fn current() -> Thread {
+    Thread { handle: unsafe { sys::xTaskGetCurrentTaskHandle() }, _not_send: PhantomData }
+}
+
+// Only the task itself holds one, so the handle cannot outlive the task.
+pub struct Thread {
+    handle: sys::TaskHandle_t,
+    _not_send: PhantomData<*const ()>,
+}
+
+impl Thread {
+    pub fn name(&self) -> &str {
+        let name = unsafe { CStr::from_ptr(sys::pcTaskGetName(self.handle)) };
+        name.to_str().unwrap_or("")
+    }
+
+    pub fn priority(&self) -> u32 {
+        unsafe { sys::uxTaskPriorityGet(self.handle) as u32 }
+    }
+
+    pub fn set_priority(&self, priority: u32) {
+        unsafe { sys::vTaskPrioritySet(self.handle, priority as _) }
+    }
+
+    pub fn core_affinity(&self) -> Option<u32> {
+        let core = unsafe { sys::xTaskGetCoreID(self.handle) };
+        (core != NO_AFFINITY).then_some(core as u32)
+    }
+
+    pub fn stack_high_water_mark(&self) -> usize {
+        unsafe { sys::uxTaskGetStackHighWaterMark(self.handle) as usize }
+    }
 }
 
 pub fn spawn<F, T>(f: F) -> JoinHandle<T>
@@ -192,7 +227,8 @@ impl<T> JoinHandle<T> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Builder, NAME_LEN, sleep, spawn, ticks};
+    use super::{Builder, NAME_LEN, current, sleep, spawn, ticks};
+    use crate::system::{CORE_COUNT, core_id};
     use crate::heap::Caps;
     use crate::time::Instant;
     use core::time::Duration;
@@ -242,6 +278,35 @@ mod tests {
             sleep(Duration::from_millis(5));
         }
         h.join();
+    }
+
+    #[test]
+    fn current_task_attributes() {
+        let h = Builder::new()
+            .name("probe")
+            .stack_size(16 * 1024)
+            .priority(3)
+            .core(Some(1))
+            .spawn(|| {
+                let me = current();
+                let before = me.priority();
+                me.set_priority(4);
+                (String::from(me.name()), before, me.priority(), me.core_affinity(),
+                 me.stack_high_water_mark())
+            })
+            .unwrap();
+        let (name, before, after, core, stack) = h.join();
+        assert_eq!(name, "probe");
+        assert_eq!((before, after), (3, 4));
+        assert_eq!(core, Some(1));
+        assert!(stack > 0);
+        assert_eq!(spawn(|| current().core_affinity()).join(), None);
+    }
+
+    #[test]
+    fn core_id_is_in_range() {
+        assert!(CORE_COUNT >= 1);
+        assert!(core_id() < CORE_COUNT);
     }
 
     #[test]

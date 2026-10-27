@@ -1,6 +1,7 @@
 /*
  * Host counterpart of ESP-IDF's <freertos/idf_additions.h>: the *WithCaps task
- * functions. The stack caps are ignored on the host.
+ * functions and xTaskGetCoreID(). The stack caps are ignored on the host, and
+ * the core a task is pinned to is recorded but not enforced.
  */
 #pragma once
 
@@ -17,6 +18,7 @@ BaseType_t xTaskCreatePinnedToCoreWithCaps(TaskFunction_t pvTaskCode, const char
                                            TaskHandle_t *pvCreatedTask, BaseType_t xCoreID,
                                            UBaseType_t uxMemoryCaps);
 void vTaskDeleteWithCaps(TaskHandle_t xTaskToDelete);
+BaseType_t xTaskGetCoreID(TaskHandle_t xTask);
 
 #ifdef __cplusplus
 }

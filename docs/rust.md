@@ -319,6 +319,9 @@ info!(TAG, "fps={fps:.1}");
 `idf::time::Instant` is `std::time::Instant` over `esp_timer_get_time()`, with
 microsecond resolution, plus `since_boot()`. `idf::system::restart()` calls
 `esp_restart()`; in the simulator it exits with status 0.
+`idf::system::CORE_COUNT` is `CONFIG_FREERTOS_NUMBER_OF_CORES` and `core_id()`
+the core running the caller, which an unpinned task may leave right after the
+call.
 
 `idf::heap::Caps` is the `MALLOC_CAP_*` bitflags and is itself a
 `core::alloc::Allocator` over `heap_caps_*`:
@@ -360,6 +363,11 @@ let frames = h.join();
   detaches the task.
 - `stack_caps` creates the task with `xTaskCreatePinnedToCoreWithCaps`. When
   such a task ends, IDF starts a short-lived task to free its stack.
+- `current()` returns the calling task as a `Thread`: `name`, `priority`,
+  `set_priority`, `core_affinity` (`None` if not pinned) and
+  `stack_high_water_mark` (bytes). It is not `Send`, so it cannot outlive the
+  task. In the simulator the high water mark is the requested stack size, and
+  the thread running `app_main` is not a task (empty name, no stack).
 - `sleep(d)` waits at least `d`: it rounds up to ticks of `CONFIG_FREERTOS_HZ`
   and adds one, since `vTaskDelay(n)` can end up to a tick early. The same
   rounding applies to every timeout in `idf::sync`. `yield_now()` is

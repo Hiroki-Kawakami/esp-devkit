@@ -54,6 +54,9 @@ static inline void portMUX_INITIALIZE(portMUX_TYPE *m) { if (m) { m->owner = 0; 
 #define pdMS_TO_TICKS_FLOOR(ms)          pdMS_TO_TICKS(ms)
 #define portYIELD_CORE(x)                ((void)0)
 
+/* Always 0: tasks are host threads, not bound to a core. */
+BaseType_t xPortGetCoreID(void);
+
 #include <sched.h>
 
 #ifdef __cplusplus

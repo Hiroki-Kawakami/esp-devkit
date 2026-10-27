@@ -11,7 +11,8 @@ foreach(f ${CLANG_ARGS})
 endforeach()
 
 set(tmp_rs "${OUT_RS}.tmp")
-set(tmp_c "${STATIC_C}.tmp")
+# bindgen gives the wrapper path a .c extension, replacing any other.
+set(tmp_c "${STATIC_C}.tmp.c")
 file(REMOVE "${tmp_c}")
 execute_process(
     COMMAND "${BINDGEN}" "${HEADER}" ${options}

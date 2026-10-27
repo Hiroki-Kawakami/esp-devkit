@@ -22,6 +22,8 @@ typedef struct TCB {
     TaskFunction_t  code;
     void           *param;
     UBaseType_t     priority;
+    BaseType_t      core;
+    uint32_t        stack_size;
     /* notification state (single index) */
     pthread_mutex_t ntf_mtx;
     pthread_cond_t  ntf_cv;
@@ -48,16 +50,19 @@ static void *trampoline(void *arg) {
     return NULL;
 }
 
-BaseType_t xTaskCreate(TaskFunction_t pxTaskCode, const char *pcName,
-                       const configSTACK_DEPTH_TYPE usStackDepth, void *pvParameters,
-                       UBaseType_t uxPriority, TaskHandle_t *pxCreatedTask) {
-    (void)usStackDepth; /* host pthread default stack is plenty */
+/* The host pthread default stack is plenty; usStackDepth is only reported back. */
+static BaseType_t create_task(TaskFunction_t pxTaskCode, const char *pcName,
+                              configSTACK_DEPTH_TYPE usStackDepth, void *pvParameters,
+                              UBaseType_t uxPriority, TaskHandle_t *pxCreatedTask,
+                              BaseType_t xCoreID) {
     TCB_t *t = (TCB_t *)calloc(1, sizeof(TCB_t));
     if (!t) return pdFAIL;
     if (pcName) { strncpy(t->name, pcName, sizeof(t->name) - 1); }
     t->code = pxTaskCode;
     t->param = pvParameters;
     t->priority = uxPriority;
+    t->core = xCoreID;
+    t->stack_size = usStackDepth;
     pthread_mutex_init(&t->ntf_mtx, NULL);
     pthread_cond_init(&t->ntf_cv, NULL);
 
@@ -72,12 +77,19 @@ BaseType_t xTaskCreate(TaskFunction_t pxTaskCode, const char *pcName,
     return pdPASS;
 }
 
+BaseType_t xTaskCreate(TaskFunction_t pxTaskCode, const char *pcName,
+                       const configSTACK_DEPTH_TYPE usStackDepth, void *pvParameters,
+                       UBaseType_t uxPriority, TaskHandle_t *pxCreatedTask) {
+    return create_task(pxTaskCode, pcName, usStackDepth, pvParameters, uxPriority,
+                       pxCreatedTask, tskNO_AFFINITY);
+}
+
 BaseType_t xTaskCreatePinnedToCore(TaskFunction_t pxTaskCode, const char *pcName,
                                    const configSTACK_DEPTH_TYPE usStackDepth,
                                    void *pvParameters, UBaseType_t uxPriority,
                                    TaskHandle_t *pxCreatedTask, BaseType_t xCoreID) {
-    (void)xCoreID;
-    return xTaskCreate(pxTaskCode, pcName, usStackDepth, pvParameters, uxPriority, pxCreatedTask);
+    return create_task(pxTaskCode, pcName, usStackDepth, pvParameters, uxPriority,
+                       pxCreatedTask, xCoreID);
 }
 
 BaseType_t xTaskCreatePinnedToCoreWithCaps(TaskFunction_t pvTaskCode, const char *pcName,
@@ -146,6 +158,16 @@ UBaseType_t uxTaskPriorityGet(TaskHandle_t xTask) {
 void vTaskPrioritySet(TaskHandle_t xTask, UBaseType_t uxNewPriority) {
     TCB_t *t = xTask ? (TCB_t *)xTask : current_tcb();
     if (t) t->priority = uxNewPriority; /* not enforced on the host */
+}
+
+UBaseType_t uxTaskGetStackHighWaterMark(TaskHandle_t xTask) {
+    TCB_t *t = xTask ? (TCB_t *)xTask : current_tcb();
+    return t ? t->stack_size : 0;
+}
+
+BaseType_t xTaskGetCoreID(TaskHandle_t xTask) {
+    TCB_t *t = xTask ? (TCB_t *)xTask : current_tcb();
+    return t ? t->core : tskNO_AFFINITY;
 }
 
 /* --- notifications --- */

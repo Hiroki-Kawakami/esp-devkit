@@ -7,6 +7,14 @@ config DEVKIT_SIMULATOR
         Internal platform marker for Kconfig options that are available only
         in the host simulator build.
 
+config FREERTOS_NUMBER_OF_CORES
+    int "FreeRTOS number of cores"
+    range 1 2
+    default 2
+    help
+        configNUMBER_OF_CORES of the host FreeRTOS API. Core pinning is
+        recorded but not enforced.
+
 config FREERTOS_HZ
     int "FreeRTOS tick rate (Hz)"
     default 100

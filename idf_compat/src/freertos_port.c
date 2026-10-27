@@ -90,3 +90,7 @@ void vTaskStartScheduler(void) {
      * forever to honour the "never returns" contract if anything calls it. */
     for (;;) pause();
 }
+
+BaseType_t xPortGetCoreID(void) {
+    return 0;
+}

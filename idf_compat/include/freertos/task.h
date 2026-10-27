@@ -47,6 +47,8 @@ TickType_t    xTaskGetTickCountFromISR(void);
 TaskHandle_t  xTaskGetCurrentTaskHandle(void);
 const char   *pcTaskGetName(TaskHandle_t xTask);
 UBaseType_t   uxTaskPriorityGet(TaskHandle_t xTask);
+/* The host cannot measure stack use: reports the whole requested stack. */
+UBaseType_t   uxTaskGetStackHighWaterMark(TaskHandle_t xTask);
 void          vTaskPrioritySet(TaskHandle_t xTask, UBaseType_t uxNewPriority);
 BaseType_t    xTaskGetSchedulerState(void);
 

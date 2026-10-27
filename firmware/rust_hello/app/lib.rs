@@ -15,6 +15,7 @@ use core::time::Duration;
 use idf::heap::{self, Caps};
 use idf::log::{error, info};
 use idf::sync::{Mutex, channel};
+use idf::system::{CORE_COUNT, core_id};
 use idf::thread::{self, Builder};
 use idf::time::Instant;
 
@@ -73,6 +74,9 @@ pub fn run() {
     let ids = [rx.recv(), rx.recv()];
     let results: Vec<u32> = workers.into_iter().map(|w| w.join()).collect();
     info!(TAG, "workers: total={} ids={ids:?} results={results:?}", *total.lock());
+    let me = thread::current();
+    info!(TAG, "task {} on core {}/{CORE_COUNT}, stack high water mark {}", me.name(), core_id(),
+          me.stack_high_water_mark());
 
     let mut seconds = 0u32;
     loop {
