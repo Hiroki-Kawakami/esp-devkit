@@ -9,7 +9,9 @@ mod bitflags;
 mod byte_cursor;
 mod defer;
 mod fmt_buf;
+mod static_lease;
 
 pub use byte_cursor::{ByteReader, ByteWriter, OutOfBounds};
 pub use defer::{Guard, guard};
 pub use fmt_buf::FmtBuf;
+pub use static_lease::{Lease, StaticLease};

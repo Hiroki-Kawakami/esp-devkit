@@ -250,6 +250,26 @@ send(w.written());
 - `reserve(n)` writes `n` zeros and returns their position; `set_*` overwrite
   bytes already written. The u24 writers drop the high byte.
 
+`StaticLease<T>` lends a `static` value to one owner at a time, e.g. a large
+internal-RAM buffer that subsystems hand over to each other:
+
+```rust
+#[repr(C, align(64))]
+struct SharedSram([u8; SHARED_SRAM_BYTES]);
+
+static SRAM: StaticLease<SharedSram> = StaticLease::new(SharedSram([0; SHARED_SRAM_BYTES]));
+
+let mut lease = SRAM.take().ok_or(Busy)?;
+let (front, back) = lease.0.split_at_mut(SHARED_SRAM_BYTES / 2);
+```
+
+- `take()` returns `None` while a `Lease` is alive and never waits. Dropping
+  the `Lease` returns the value; the next owner sees what was left in it.
+- Size and alignment come from `T`. A zero-initialized `static` lands in
+  `.bss`, which IDF places in internal RAM.
+- Pointers passed to C from a lease are not tracked: C must be done with them
+  before the `Lease` is dropped.
+
 ## Runtime (`libs/rust_rt`)
 
 - The allocator shim (`__rust_alloc` and friends) forwards to `malloc`/`free`,
