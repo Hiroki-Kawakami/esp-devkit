@@ -4,7 +4,6 @@
  */
 
 #include "rust_hello.h"
-#include "freertos/FreeRTOS.h"
 #include "rust_hello_export.h"
 
 uint32_t rust_hello_checksum(const uint8_t *data, size_t len) {
@@ -13,8 +12,4 @@ uint32_t rust_hello_checksum(const uint8_t *data, size_t len) {
         sum = sum * 31 + rust_hello_weight(data[i]);
     }
     return sum;
-}
-
-uint32_t rust_hello_ms_to_ticks(uint32_t ms) {
-    return pdMS_TO_TICKS(ms);
 }

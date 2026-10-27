@@ -23,7 +23,7 @@ idf_compat/
     simulator/        sim-only APIs with no device counterpart: i2c_master_sim.h
                       path_redirect.h
     freertos/         host FreeRTOS API: FreeRTOS.h task.h queue.h semphr.h
-                      event_groups.h timers.h portmacro.h
+                      event_groups.h timers.h portmacro.h idf_additions.h
   src/                shim implementations
     esp_err.c esp_log.c esp_system.c esp_timer.c esp_heap_caps.c multi_heap.c esp_mac.c esp_app_desc.c nvs.c
     jpeg_decode.c ppa.c
@@ -220,9 +220,12 @@ With the compat layer, `xTaskCreate()` works anywhere, anytime.
   sections. Ordinary task code is genuinely parallel.
 - **Priorities are not enforced** — host OS scheduling, best-effort.
 - **No ISRs** — `*FromISR` variants forward to the blocking calls (zero timeout)
-  and `portYIELD_FROM_ISR` is a no-op.
-- **Tick rate** `configTICK_RATE_HZ = 100`, matching the device, so
-  `pdMS_TO_TICKS()` and raw tick delays match both targets. Tick is derived from
+  and `portYIELD_FROM_ISR` is a no-op. The kernel functions IDF's macros expand
+  to (`xQueueCreateMutex`, `xQueueSemaphoreTake`, `xQueueGiveFromISR`, ...)
+  exist as functions too, for callers that cannot use the macros (Rust).
+- **Tick rate** `configTICK_RATE_HZ = CONFIG_FREERTOS_HZ` (`Kconfig.simulator`,
+  default 100), as on the device, so `pdMS_TO_TICKS()` and raw tick delays match
+  both targets. Tick is derived from
   `CLOCK_MONOTONIC`, not a periodic interrupt.
 
 ### How to grow it

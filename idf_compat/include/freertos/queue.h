@@ -28,6 +28,25 @@ BaseType_t xQueuePeek(QueueHandle_t xQueue, void *pvBuffer, TickType_t xTicksToW
 BaseType_t xQueueReset(QueueHandle_t xQueue);
 
 UBaseType_t uxQueueMessagesWaiting(QueueHandle_t xQueue);
+
+/* Kernel functions IDF's macros expand to. queueQUEUE_TYPE_* only selects the
+ * semaphore kind. */
+#define queueQUEUE_TYPE_BASE               ((uint8_t)0U)
+#define queueQUEUE_TYPE_MUTEX              ((uint8_t)1U)
+#define queueQUEUE_TYPE_COUNTING_SEMAPHORE ((uint8_t)2U)
+#define queueQUEUE_TYPE_BINARY_SEMAPHORE   ((uint8_t)3U)
+#define queueQUEUE_TYPE_RECURSIVE_MUTEX    ((uint8_t)4U)
+QueueHandle_t xQueueGenericCreate(UBaseType_t uxQueueLength, UBaseType_t uxItemSize,
+                                  uint8_t ucQueueType);
+QueueHandle_t xQueueCreateMutex(uint8_t ucQueueType);
+QueueHandle_t xQueueCreateCountingSemaphore(UBaseType_t uxMaxCount, UBaseType_t uxInitialCount);
+BaseType_t xQueueSemaphoreTake(QueueHandle_t xQueue, TickType_t xTicksToWait);
+BaseType_t xQueueGenericSendFromISR(QueueHandle_t xQueue, const void *pvItemToQueue,
+                                    BaseType_t *pxHigherPriorityTaskWoken,
+                                    BaseType_t xCopyPosition);
+BaseType_t xQueueGiveFromISR(QueueHandle_t xQueue, BaseType_t *pxHigherPriorityTaskWoken);
+BaseType_t xQueueReceiveFromISR(QueueHandle_t xQueue, void *pvBuffer,
+                                BaseType_t *pxHigherPriorityTaskWoken);
 UBaseType_t uxQueueSpacesAvailable(QueueHandle_t xQueue);
 
 #define xQueueSend(q, item, ticks)        xQueueGenericSend((q), (item), (ticks), queueSEND_TO_BACK)
@@ -38,7 +57,6 @@ UBaseType_t uxQueueSpacesAvailable(QueueHandle_t xQueue);
 #define xQueueSendFromISR(q, item, woken)        (((void)(woken)), xQueueGenericSend((q), (item), 0, queueSEND_TO_BACK))
 #define xQueueSendToBackFromISR(q, item, woken)  (((void)(woken)), xQueueGenericSend((q), (item), 0, queueSEND_TO_BACK))
 #define xQueueSendToFrontFromISR(q, item, woken) (((void)(woken)), xQueueGenericSend((q), (item), 0, queueSEND_TO_FRONT))
-#define xQueueReceiveFromISR(q, buf, woken)      (((void)(woken)), xQueueReceive((q), (buf), 0))
 #define xQueuePeekFromISR(q, buf)                xQueuePeek((q), (buf), 0)
 #define uxQueueMessagesWaitingFromISR(q)         uxQueueMessagesWaiting(q)
 

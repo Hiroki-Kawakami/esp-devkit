@@ -8,6 +8,7 @@
  */
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/idf_additions.h"
 #include "freertos_internal.h"
 
 #include <pthread.h>
@@ -77,6 +78,20 @@ BaseType_t xTaskCreatePinnedToCore(TaskFunction_t pxTaskCode, const char *pcName
                                    TaskHandle_t *pxCreatedTask, BaseType_t xCoreID) {
     (void)xCoreID;
     return xTaskCreate(pxTaskCode, pcName, usStackDepth, pvParameters, uxPriority, pxCreatedTask);
+}
+
+BaseType_t xTaskCreatePinnedToCoreWithCaps(TaskFunction_t pvTaskCode, const char *pcName,
+                                           const configSTACK_DEPTH_TYPE usStackDepth,
+                                           void *pvParameters, UBaseType_t uxPriority,
+                                           TaskHandle_t *pvCreatedTask, BaseType_t xCoreID,
+                                           UBaseType_t uxMemoryCaps) {
+    (void)uxMemoryCaps;
+    return xTaskCreatePinnedToCore(pvTaskCode, pcName, usStackDepth, pvParameters, uxPriority,
+                                   pvCreatedTask, xCoreID);
+}
+
+void vTaskDeleteWithCaps(TaskHandle_t xTaskToDelete) {
+    vTaskDelete(xTaskToDelete);
 }
 
 void vTaskDelete(TaskHandle_t xTask) {

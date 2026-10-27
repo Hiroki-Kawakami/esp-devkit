@@ -16,6 +16,8 @@
 #include <stdint.h>
 #include <stddef.h>
 
+#include "sdkconfig.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -27,9 +29,9 @@ typedef uint32_t      TickType_t;
 typedef uint8_t       StackType_t;
 #define portMAX_DELAY ((TickType_t)0xffffffffUL)
 
-/* --- config (host). Tick rate matches the device (CONFIG_FREERTOS_HZ=100) so
+/* --- config (host). The tick rate is CONFIG_FREERTOS_HZ as on the device, so
  *     raw tick delays and pdMS_TO_TICKS() behave identically on both targets. */
-#define configTICK_RATE_HZ        ((TickType_t)100)
+#define configTICK_RATE_HZ        ((TickType_t)CONFIG_FREERTOS_HZ)
 #define configMAX_PRIORITIES      (25)
 #define configMINIMAL_STACK_SIZE  ((uint16_t)2048)
 #define configSTACK_DEPTH_TYPE    uint32_t

@@ -344,6 +344,44 @@ let free = heap::free_size(Caps::DEFAULT);
 - In the simulator the caps are ignored and the size queries report a fixed
   256 MiB.
 
+`idf::thread` follows `std::thread` on FreeRTOS tasks:
+
+```rust
+let h = thread::Builder::new().name("decoder").stack_size(16 * 1024).priority(6)
+    .core(Some(1)).stack_caps(Caps::SPIRAM).spawn(move || decode(input))?;
+let frames = h.join();
+```
+
+- `spawn(f)` uses the defaults (name `task`, 8192-byte stack, priority 5, no
+  core affinity) and panics if the task cannot be created;
+  `Builder::spawn` returns `Err(Error::NO_MEM)` instead. Names longer than 15
+  bytes are cut.
+- `join()` returns the value directly (a panic aborts). Dropping the handle
+  detaches the task.
+- `stack_caps` creates the task with `xTaskCreatePinnedToCoreWithCaps`. When
+  such a task ends, IDF starts a short-lived task to free its stack.
+- `sleep(d)` waits at least `d`: it rounds up to ticks of `CONFIG_FREERTOS_HZ`
+  and adds one, since `vTaskDelay(n)` can end up to a tick early. The same
+  rounding applies to every timeout in `idf::sync`. `yield_now()` is
+  `vTaskDelay(0)`.
+
+`idf::sync` wraps FreeRTOS queue objects, created in `new` (`try_new` returns
+`NO_MEM` instead of panicking). A `static` needs a lazy wrapper.
+
+- `Mutex<T>`: a FreeRTOS mutex (priority inheritance). `lock()` returns the
+  guard directly; the guard is not `Send`, as the task that took the mutex
+  must give it.
+- `Semaphore::new(initial, max)`: a counting semaphore; `new(0, 1)` is a
+  binary one. `give()` returns `false` at `max`.
+- `channel::<T>(capacity)`: a bounded FreeRTOS queue; values are moved in and
+  out by copy. Senders and receivers can both be cloned; there is no
+  disconnection, so `recv()` waits even when every sender is gone. Values
+  left in the queue are dropped with the last handle.
+- `give_from_isr`, `try_take_from_isr`, `try_send_from_isr` and
+  `try_recv_from_isr` are for interrupt handlers and request the context
+  switch themselves when they wake a higher-priority task. The other methods
+  must not be called from an ISR.
+
 ## Runtime (`libs/rust_rt`)
 
 - The allocator shim (`__rust_alloc` and friends) forwards to `malloc`/`free`,

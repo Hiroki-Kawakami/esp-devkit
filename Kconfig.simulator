@@ -7,6 +7,13 @@ config DEVKIT_SIMULATOR
         Internal platform marker for Kconfig options that are available only
         in the host simulator build.
 
+config FREERTOS_HZ
+    int "FreeRTOS tick rate (Hz)"
+    default 100
+    help
+        configTICK_RATE_HZ of the host FreeRTOS API. Set it to the device's
+        value to get the same tick rounding.
+
 menu "Component config"
 
 source "$COMPONENT_KCONFIGS_SOURCE_FILE"

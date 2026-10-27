@@ -10,7 +10,9 @@ extern crate alloc;
 mod error;
 pub mod heap;
 pub mod log;
+pub mod sync;
 pub mod system;
+pub mod thread;
 pub mod time;
 
 pub use error::{Error, Result};

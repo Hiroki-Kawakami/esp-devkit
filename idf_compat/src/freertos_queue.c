@@ -200,3 +200,40 @@ BaseType_t freertos_sem_give_recursive(SemaphoreHandle_t s) {
 UBaseType_t uxSemaphoreGetCount(SemaphoreHandle_t s) {
     return uxQueueMessagesWaiting(s);
 }
+
+/* --- kernel functions IDF's macros expand to --- */
+QueueHandle_t xQueueGenericCreate(UBaseType_t uxQueueLength, UBaseType_t uxItemSize,
+                                  uint8_t ucQueueType) {
+    (void)ucQueueType;
+    return xQueueCreate(uxQueueLength, uxItemSize);
+}
+
+QueueHandle_t xQueueCreateMutex(uint8_t ucQueueType) {
+    return freertos_sem_create(1, 1, ucQueueType == queueQUEUE_TYPE_RECURSIVE_MUTEX ? 2 : 1);
+}
+
+QueueHandle_t xQueueCreateCountingSemaphore(UBaseType_t uxMaxCount, UBaseType_t uxInitialCount) {
+    return freertos_sem_create(uxMaxCount, uxInitialCount, 0);
+}
+
+BaseType_t xQueueSemaphoreTake(QueueHandle_t xQueue, TickType_t xTicksToWait) {
+    return freertos_sem_take(xQueue, xTicksToWait);
+}
+
+BaseType_t xQueueGenericSendFromISR(QueueHandle_t xQueue, const void *pvItemToQueue,
+                                    BaseType_t *pxHigherPriorityTaskWoken,
+                                    BaseType_t xCopyPosition) {
+    if (pxHigherPriorityTaskWoken) *pxHigherPriorityTaskWoken = pdFALSE;
+    return xQueueGenericSend(xQueue, pvItemToQueue, 0, xCopyPosition);
+}
+
+BaseType_t xQueueGiveFromISR(QueueHandle_t xQueue, BaseType_t *pxHigherPriorityTaskWoken) {
+    if (pxHigherPriorityTaskWoken) *pxHigherPriorityTaskWoken = pdFALSE;
+    return freertos_sem_give(xQueue);
+}
+
+BaseType_t xQueueReceiveFromISR(QueueHandle_t xQueue, void *pvBuffer,
+                                BaseType_t *pxHigherPriorityTaskWoken) {
+    if (pxHigherPriorityTaskWoken) *pxHigherPriorityTaskWoken = pdFALSE;
+    return xQueueReceive(xQueue, pvBuffer, 0);
+}
