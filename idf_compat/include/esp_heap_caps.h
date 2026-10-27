@@ -6,6 +6,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "multi_heap.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -22,18 +24,28 @@ extern "C" {
 #define MALLOC_CAP_RTCRAM      (1 << 15)
 #define MALLOC_CAP_SPM         (1 << 16)
 #define MALLOC_CAP_TCM         MALLOC_CAP_SPM  // v6.0 renamed TCM->SPM; TCM kept as a deprecated alias
+#define MALLOC_CAP_DMA_DESC_AHB (1 << 17)
+#define MALLOC_CAP_DMA_DESC_AXI (1 << 18)
 #define MALLOC_CAP_CACHE_ALIGNED (1 << 19)
+#define MALLOC_CAP_SIMD        (1 << 20)
+#define MALLOC_CAP_SPIRAM_NO_ENC (1 << 21)
 #define MALLOC_CAP_INVALID     (1 << 31)
 
 void *heap_caps_malloc(size_t size, uint32_t caps);
 void *heap_caps_calloc(size_t n, size_t size, uint32_t caps);
 void *heap_caps_realloc(void *ptr, size_t size, uint32_t caps);
 void *heap_caps_aligned_alloc(size_t alignment, size_t size, uint32_t caps);
+void *heap_caps_aligned_calloc(size_t alignment, size_t n, size_t size, uint32_t caps);
 void  heap_caps_free(void *ptr);
 
-// Largest allocatable contiguous block for the given caps. On the host there is
-// no fragmentation model, so report a large value (the host heap always fits).
+// Size queries. The host heap has no fixed size or fragmentation model, so
+// these report one large value (the host heap always fits) and get_info()
+// leaves the block counts at 0.
+size_t heap_caps_get_free_size(uint32_t caps);
+size_t heap_caps_get_minimum_free_size(uint32_t caps);
 size_t heap_caps_get_largest_free_block(uint32_t caps);
+size_t heap_caps_get_total_size(uint32_t caps);
+void heap_caps_get_info(multi_heap_info_t *info, uint32_t caps);
 
 // Size of the block that contains ptr. Backed by the platform allocator's
 // usable-size query; returns 0 if that is unavailable.

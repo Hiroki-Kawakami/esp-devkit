@@ -180,6 +180,9 @@ function(_devkit_rust_init)
         "-Cdebuginfo=2"
         "-Cdebug-assertions=${debug_assertions}"
         "-Zbinary-dep-depinfo"
+        # For every crate rather than per crate root, as it will be once stable.
+        "-Zcrate-attr=feature(allocator_api)"
+        "-Aunused_features"
         "--check-cfg=cfg(test)"
         "--color=always"
         "-Ldependency=${out}")

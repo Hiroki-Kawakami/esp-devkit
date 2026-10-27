@@ -10,6 +10,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 use core::ffi::CStr;
 
+use idf::heap::{self, Caps};
 use idf::log::{error, info};
 use idf::time::Instant;
 
@@ -43,6 +44,10 @@ pub fn run() {
     );
     #[cfg(CONFIG_SPIRAM)]
     info!(TAG, "PSRAM enabled");
+
+    let free = heap::free_size(Caps::DMA);
+    let dma: Vec<u8, Caps> = Vec::with_capacity_in(4096, Caps::DMA | Caps::INTERNAL);
+    info!(TAG, "dma buffer at {:p}, free DMA {free} -> {}", dma.as_ptr(), heap::free_size(Caps::DMA));
 
     let mut seconds = 0u32;
     loop {

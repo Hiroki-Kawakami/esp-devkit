@@ -36,6 +36,8 @@ devkit_rust_crate(ROOT "main.rs")
   `&str`. Each enabled bool option is also a `--cfg`, so
   `#[cfg(CONFIG_SPIRAM)]` works.
 - `EDITION` defaults to 2024.
+- `allocator_api` is enabled in every crate (`-Zcrate-attr`), so
+  `Vec<T, A>`, `Box::new_in` and the like need no `#![feature]`.
 - `app_main` in Rust is `#[unsafe(no_mangle)] pub extern "C" fn app_main()`. The
   main component keeps `WHOLE_ARCHIVE ON` as with C.
 
@@ -318,6 +320,30 @@ info!(TAG, "fps={fps:.1}");
 microsecond resolution, plus `since_boot()`. `idf::system::restart()` calls
 `esp_restart()`; in the simulator it exits with status 0.
 
+`idf::heap::Caps` is the `MALLOC_CAP_*` bitflags and is itself a
+`core::alloc::Allocator` over `heap_caps_*`:
+
+```rust
+use idf::heap::{self, Caps};
+
+let mut buf: Vec<u8, Caps> = Vec::with_capacity_in(4096, Caps::DMA | Caps::INTERNAL);
+let frame = Box::new_in([0u16; 320 * 240], Caps::SPIRAM);
+let free = heap::free_size(Caps::DEFAULT);
+```
+
+- `MALLOC_CAP_8BIT`/`32BIT` are `ACCESS_8BIT`/`ACCESS_32BIT`. `EXEC` exists
+  only with `CONFIG_HEAP_HAS_EXEC_HEAP`, as in C.
+- Alignments above 4 bytes (the TLSF guarantee) use
+  `heap_caps_aligned_alloc`/`_calloc`; `grow`/`shrink` use `heap_caps_realloc`
+  otherwise. Any `Caps` value frees any block.
+- `free_size`, `minimum_free_size`, `largest_free_block`, `total_size` and
+  `info` take the same caps. `esp_get_free_heap_size()` is
+  `free_size(Caps::DEFAULT)`, `esp_get_free_internal_heap_size()` is
+  `free_size(Caps::ACCESS_8BIT | Caps::DMA | Caps::INTERNAL)` and
+  `esp_get_minimum_free_heap_size()` is `minimum_free_size(Caps::DEFAULT)`.
+- In the simulator the caps are ignored and the size queries report a fixed
+  256 MiB.
+
 ## Runtime (`libs/rust_rt`)
 
 - The allocator shim (`__rust_alloc` and friends) forwards to `malloc`/`free`,
@@ -399,7 +425,9 @@ The toolchain is pinned by `releaseTag` and the tarball hashes in
    other: a missing name fails the link, a changed type does not.
 5. **Unstable features used by rust_rt** (`rustc_attrs`'s
    `#[rustc_std_internal_symbol]`, `ptr_alignment_type`) may change with
-   nightly.
+   nightly. Once `allocator_api` is stable, drop its `-Zcrate-attr` and
+   `-Aunused_features` from the common rustc arguments in
+   `tools/rust/rust.cmake`.
 6. **esp-clang** is pinned from IDF's `tools/tools.json` and follows the IDF
    version, not rustc.
 7. **bindgen** (nixpkgs) writes a top-level `const` parameter of a `static

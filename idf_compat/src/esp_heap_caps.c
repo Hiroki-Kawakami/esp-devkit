@@ -1,5 +1,6 @@
 #include "esp_heap_caps.h"
 #include <stdlib.h>
+#include <string.h>
 #if defined(__APPLE__)
 #include <malloc/malloc.h>
 #elif defined(__GLIBC__)
@@ -32,13 +33,45 @@ void *heap_caps_aligned_alloc(size_t alignment, size_t size, uint32_t caps) {
     return p;  // freeable with heap_caps_free()/free()
 }
 
+void *heap_caps_aligned_calloc(size_t alignment, size_t n, size_t size, uint32_t caps) {
+    if (size && n > SIZE_MAX / size) return NULL;
+    void *p = heap_caps_aligned_alloc(alignment, n * size, caps);
+    if (p) memset(p, 0, n * size);
+    return p;
+}
+
 void heap_caps_free(void *ptr) {
     free(ptr);
 }
 
+#define HOST_HEAP_SIZE ((size_t)256 * 1024 * 1024)
+
+size_t heap_caps_get_free_size(uint32_t caps) {
+    (void)caps;
+    return HOST_HEAP_SIZE;
+}
+
+size_t heap_caps_get_minimum_free_size(uint32_t caps) {
+    (void)caps;
+    return HOST_HEAP_SIZE;
+}
+
 size_t heap_caps_get_largest_free_block(uint32_t caps) {
     (void)caps;
-    return (size_t)256 * 1024 * 1024;  // host heap always fits
+    return HOST_HEAP_SIZE;
+}
+
+size_t heap_caps_get_total_size(uint32_t caps) {
+    (void)caps;
+    return HOST_HEAP_SIZE;
+}
+
+void heap_caps_get_info(multi_heap_info_t *info, uint32_t caps) {
+    (void)caps;
+    memset(info, 0, sizeof(*info));
+    info->total_free_bytes = HOST_HEAP_SIZE;
+    info->largest_free_block = HOST_HEAP_SIZE;
+    info->minimum_free_bytes = HOST_HEAP_SIZE;
 }
 
 size_t heap_caps_get_containing_block_size(void *ptr) {

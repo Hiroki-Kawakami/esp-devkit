@@ -8,6 +8,7 @@
 extern crate alloc;
 
 mod error;
+pub mod heap;
 pub mod log;
 pub mod system;
 pub mod time;
