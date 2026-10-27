@@ -1,11 +1,11 @@
 #pragma once
 // Host counterpart of ESP-IDF <esp_log.h>. Logs to stderr in roughly the IDF
 // format ("<L> (<ms>) <tag>: <msg>"). Level filtering is not implemented:
-// E/W/I always print, D/V are compiled out, and esp_log_level_set() is a no-op
-// kept only for source compatibility.
+// E/W/I always print, D/V are compiled out (esp_log_level_get() reports INFO for
+// every tag), and esp_log_level_set() is a no-op kept only for source
+// compatibility.
 #include <stdint.h>
 #include <stdio.h>
-#include <time.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -20,11 +20,10 @@ typedef enum {
     ESP_LOG_VERBOSE,
 } esp_log_level_t;
 
-static inline uint32_t esp_log_timestamp(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint32_t)((uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u);
-}
+uint32_t esp_log_timestamp(void);
+esp_log_level_t esp_log_level_get(const char *tag);
+void esp_log_write(esp_log_level_t level, const char *tag, const char *format, ...)
+    __attribute__((format(printf, 3, 4)));
 
 #define esp_log_level_set(tag, level) ((void)(tag), (void)(level))
 

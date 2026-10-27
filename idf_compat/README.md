@@ -25,7 +25,7 @@ idf_compat/
     freertos/         host FreeRTOS API: FreeRTOS.h task.h queue.h semphr.h
                       event_groups.h timers.h portmacro.h
   src/                shim implementations
-    esp_err.c esp_timer.c esp_heap_caps.c multi_heap.c esp_mac.c esp_app_desc.c nvs.c
+    esp_err.c esp_log.c esp_timer.c esp_heap_caps.c multi_heap.c esp_mac.c esp_app_desc.c nvs.c
     jpeg_decode.c ppa.c
     i2c_master.c path_redirect.c
     freertos_port.c freertos_task.c freertos_queue.c

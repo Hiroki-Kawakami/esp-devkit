@@ -273,6 +273,47 @@ let (front, back) = lease.0.split_at_mut(SHARED_SRAM_BYTES / 2);
 - Pointers passed to C from a lease are not tracked: C must be done with them
   before the `Lease` is dropped.
 
+### `idf` (`libs/idf`)
+
+Safe wrappers for ESP-IDF APIs. `idf::sys` is the raw bindgen output, public
+for APIs `idf` does not wrap yet.
+
+`idf::Error` is a non-zero `esp_err_t`; wrapped APIs return
+`idf::Result<T>`. For a C call that returns `esp_err_t`:
+
+```rust
+idf::Error::check(unsafe { ffi::bsp_init(&config) })?;
+if let Some(err) = idf::Error::from_code(rc) { ... }
+```
+
+- Constants for the generic codes in `esp_err.h` (`Error::NO_MEM`,
+  `Error::TIMEOUT`, ...); component-specific codes belong to their crates.
+- `Display` prints `ESP_ERR_NO_MEM (0x101)`. `name()` is `esp_err_to_name()`,
+  `UNKNOWN ERROR` on the device without `CONFIG_ESP_ERR_TO_NAME_LOOKUP`.
+
+`idf::log::{error, warn, info, debug, verbose}!` log in IDF's format, so the
+lines read like `ESP_LOGx` output in `idf.py monitor`:
+
+```rust
+use idf::log::info;
+
+const TAG: &CStr = c"app";
+info!(TAG, "fps={fps:.1}");
+```
+
+- A level above `CONFIG_LOG_MAXIMUM_LEVEL` compiles to nothing; otherwise the
+  tag's runtime level (`esp_log_level_get`) is checked before the arguments
+  are evaluated. `log::enabled(level, tag)` is the same check.
+- The message is formatted into a 256-byte stack buffer, and again into a
+  `String` if it does not fit. Each line is one `esp_log_write` (log v1, with
+  the prefix built from `CONFIG_LOG_COLORS` and
+  `CONFIG_LOG_TIMESTAMP_SOURCE_*`) or one `esp_log` (log v2, which adds the
+  prefix itself).
+- Binary log mode (`CONFIG_LOG_MODE_BINARY_EN`) is not supported.
+- The macros are exported at the crate root as `__log_*` only because
+  `macro_rules!` cannot be exported from a module; use the `idf::log` paths.
+- In the simulator, idf_compat prints up to Info, without colors.
+
 ## Runtime (`libs/rust_rt`)
 
 - The allocator shim (`__rust_alloc` and friends) forwards to `malloc`/`free`,

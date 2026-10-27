@@ -30,6 +30,7 @@ set(DEVKIT_DEVICE_COMPONENTS
     libs/devkit
     libs/esp_hosted_enhanced
     libs/harness
+    libs/idf
     libs/image_framework
     libs/jpeg_decode_enhanced
     libs/lvgl
@@ -50,6 +51,7 @@ set(DEVKIT_SIMULATOR_COMPONENTS
     libs/compression_framework
     libs/devkit
     libs/harness
+    libs/idf
     libs/image_framework
     libs/jpeg_decode_enhanced
     libs/lvgl
