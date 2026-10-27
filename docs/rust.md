@@ -374,7 +374,21 @@ let frames = h.join();
   `vTaskDelay(0)`.
 
 `idf::sync` wraps FreeRTOS queue objects, created in `new` (`try_new` returns
-`NO_MEM` instead of panicking). A `static` needs a lazy wrapper.
+`NO_MEM` instead of panicking). In a `static`, wrap them in `LazyLock`:
+
+```rust
+static STATE: LazyLock<Mutex<State>> = LazyLock::new(|| Mutex::new(State::default()));
+static CONFIG: OnceLock<Config> = OnceLock::new();
+let cfg = CONFIG.get_or_try_init(load_config)?;
+```
+
+- `OnceLock` and `LazyLock` follow std. `get_or_try_init` leaves the cell
+  empty when `f` fails, so a later call retries. A task that finds another
+  one initializing waits a tick at a time (`vTaskDelay(1)`), not spinning, so
+  a lower-priority initializer still runs. Initializing the same cell from its
+  own `f` waits forever.
+- `OnceLock::get` never waits and is the only one usable from an ISR: `None`
+  while uninitialized or being initialized.
 
 - `Mutex<T>`: a FreeRTOS mutex (priority inheritance). `lock()` returns the
   guard directly; the guard is not `Send`, as the task that took the mutex

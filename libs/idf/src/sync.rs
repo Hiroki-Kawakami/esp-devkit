@@ -5,11 +5,14 @@
 
 use alloc::sync::Arc;
 use core::cell::UnsafeCell;
+use core::convert::Infallible;
 use core::ffi::c_void;
+use core::fmt;
 use core::marker::PhantomData;
 use core::mem::{ManuallyDrop, MaybeUninit};
 use core::ops::{Deref, DerefMut};
 use core::ptr;
+use core::sync::atomic::{AtomicU8, Ordering};
 use core::time::Duration;
 
 use crate::thread::{MAX_DELAY, ticks};
@@ -334,9 +337,148 @@ impl<T> Receiver<T> {
     }
 }
 
+const INCOMPLETE: u8 = 0;
+const RUNNING: u8 = 1;
+const COMPLETE: u8 = 2;
+
+pub struct OnceLock<T> {
+    state: AtomicU8,
+    value: UnsafeCell<MaybeUninit<T>>,
+}
+
+unsafe impl<T: Send> Send for OnceLock<T> {}
+unsafe impl<T: Send + Sync> Sync for OnceLock<T> {}
+
+impl<T> OnceLock<T> {
+    pub const fn new() -> Self {
+        Self { state: AtomicU8::new(INCOMPLETE), value: UnsafeCell::new(MaybeUninit::uninit()) }
+    }
+
+    pub fn get(&self) -> Option<&T> {
+        (self.state.load(Ordering::Acquire) == COMPLETE).then(|| unsafe { self.get_unchecked() })
+    }
+
+    pub fn get_mut(&mut self) -> Option<&mut T> {
+        (*self.state.get_mut() == COMPLETE).then(|| unsafe { self.value.get_mut().assume_init_mut() })
+    }
+
+    pub fn set(&self, value: T) -> core::result::Result<(), T> {
+        let mut value = Some(value);
+        self.get_or_init(|| value.take().unwrap_or_else(|| unreachable!()));
+        match value {
+            None => Ok(()),
+            Some(value) => Err(value),
+        }
+    }
+
+    pub fn get_or_init(&self, f: impl FnOnce() -> T) -> &T {
+        match self.get_or_try_init(|| Ok::<T, Infallible>(f())) {
+            Ok(value) => value,
+            Err(never) => match never {},
+        }
+    }
+
+    // Another task initializing is waited for a tick at a time rather than spun
+    // on, so a lower-priority initializer still gets to run.
+    pub fn get_or_try_init<E>(&self, f: impl FnOnce() -> core::result::Result<T, E>) -> core::result::Result<&T, E> {
+        loop {
+            match self.state.compare_exchange(INCOMPLETE, RUNNING, Ordering::Acquire, Ordering::Acquire) {
+                Ok(_) => break,
+                Err(COMPLETE) => return Ok(unsafe { self.get_unchecked() }),
+                Err(_) => unsafe { sys::vTaskDelay(1) },
+            }
+        }
+        match f() {
+            Ok(value) => {
+                unsafe { (*self.value.get()).write(value) };
+                self.state.store(COMPLETE, Ordering::Release);
+                Ok(unsafe { self.get_unchecked() })
+            }
+            Err(e) => {
+                self.state.store(INCOMPLETE, Ordering::Release);
+                Err(e)
+            }
+        }
+    }
+
+    pub fn into_inner(mut self) -> Option<T> {
+        self.take()
+    }
+
+    pub fn take(&mut self) -> Option<T> {
+        if *self.state.get_mut() != COMPLETE {
+            return None;
+        }
+        *self.state.get_mut() = INCOMPLETE;
+        Some(unsafe { self.value.get_mut().assume_init_read() })
+    }
+
+    unsafe fn get_unchecked(&self) -> &T {
+        unsafe { (*self.value.get()).assume_init_ref() }
+    }
+}
+
+impl<T> Default for OnceLock<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T: fmt::Debug> fmt::Debug for OnceLock<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.get() {
+            Some(value) => f.debug_tuple("OnceLock").field(value).finish(),
+            None => f.write_str("OnceLock(<uninit>)"),
+        }
+    }
+}
+
+impl<T> Drop for OnceLock<T> {
+    fn drop(&mut self) {
+        drop(self.take());
+    }
+}
+
+pub struct LazyLock<T, F = fn() -> T> {
+    once: OnceLock<T>,
+    init: UnsafeCell<Option<F>>,
+}
+
+unsafe impl<T: Send + Sync, F: Send> Sync for LazyLock<T, F> {}
+
+impl<T, F: FnOnce() -> T> LazyLock<T, F> {
+    pub const fn new(f: F) -> Self {
+        Self { once: OnceLock::new(), init: UnsafeCell::new(Some(f)) }
+    }
+
+    // Only the task that wins the OnceLock touches `init`.
+    pub fn force(this: &Self) -> &T {
+        this.once.get_or_init(|| match unsafe { (*this.init.get()).take() } {
+            Some(f) => f(),
+            None => unreachable!(),
+        })
+    }
+}
+
+impl<T, F: FnOnce() -> T> Deref for LazyLock<T, F> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        Self::force(self)
+    }
+}
+
+impl<T: fmt::Debug, F> fmt::Debug for LazyLock<T, F> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.once.get() {
+            Some(value) => f.debug_tuple("LazyLock").field(value).finish(),
+            None => f.write_str("LazyLock(<uninit>)"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Mutex, Semaphore, channel};
+    use super::{LazyLock, Mutex, OnceLock, Semaphore, channel};
     use crate::thread::{sleep, spawn};
     use crate::time::Instant;
     use alloc::sync::Arc;
@@ -461,5 +603,90 @@ mod tests {
         tx.send(());
         assert_eq!(tx.try_send(()), Err(()));
         assert_eq!(rx.recv(), ());
+    }
+
+    #[test]
+    fn once_lock_initializes_once() {
+        static CELL: OnceLock<u32> = OnceLock::new();
+        static CALLS: AtomicUsize = AtomicUsize::new(0);
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                spawn(|| {
+                    *CELL.get_or_init(|| {
+                        CALLS.fetch_add(1, Ordering::Relaxed);
+                        sleep(Duration::from_millis(20));
+                        7
+                    })
+                })
+            })
+            .collect();
+        for h in handles {
+            assert_eq!(h.join(), 7);
+        }
+        assert_eq!(CALLS.load(Ordering::Relaxed), 1);
+        assert_eq!(CELL.get(), Some(&7));
+    }
+
+    #[test]
+    fn get_does_not_wait_for_an_initializer() {
+        let cell = Arc::new(OnceLock::<u32>::new());
+        let (started, release) = (Arc::new(Semaphore::new(0, 1)), Arc::new(Semaphore::new(0, 1)));
+        let h = {
+            let (cell, started, release) = (cell.clone(), started.clone(), release.clone());
+            spawn(move || {
+                cell.get_or_init(|| {
+                    started.give();
+                    release.take();
+                    1
+                });
+            })
+        };
+        started.take();
+        assert_eq!(cell.get(), None);
+        release.give();
+        h.join();
+        assert_eq!(cell.get(), Some(&1));
+    }
+
+    #[test]
+    fn once_lock_retries_after_an_error() {
+        let cell = OnceLock::new();
+        assert_eq!(cell.get_or_try_init(|| Err::<u32, &str>("busy")), Err("busy"));
+        assert_eq!(cell.get(), None);
+        assert_eq!(cell.get_or_try_init(|| Ok::<u32, &str>(3)), Ok(&3));
+        assert_eq!(cell.get_or_try_init(|| Err::<u32, &str>("unused")), Ok(&3));
+    }
+
+    #[test]
+    fn once_lock_set_take_and_drop() {
+        let mut cell = OnceLock::new();
+        assert_eq!(cell.set(String::from("a")), Ok(()));
+        assert_eq!(cell.set(String::from("b")), Err(String::from("b")));
+        cell.get_mut().unwrap().push('!');
+        assert_eq!(format!("{cell:?}"), "OnceLock(\"a!\")");
+        assert_eq!(cell.take().as_deref(), Some("a!"));
+        assert_eq!(format!("{cell:?}"), "OnceLock(<uninit>)");
+        cell.set(String::from("c")).unwrap();
+        assert_eq!(cell.into_inner().as_deref(), Some("c"));
+
+        let tracked = Arc::new(());
+        let cell = OnceLock::new();
+        cell.set(tracked.clone()).unwrap();
+        drop(cell);
+        assert_eq!(Arc::strong_count(&tracked), 1);
+    }
+
+    #[test]
+    fn lazy_lock_initializes_on_first_use() {
+        static CALLS: AtomicUsize = AtomicUsize::new(0);
+        static LAZY: LazyLock<Mutex<u32>> = LazyLock::new(|| {
+            CALLS.fetch_add(1, Ordering::Relaxed);
+            Mutex::new(10)
+        });
+        assert_eq!(format!("{:?}", LazyLock::new(|| 1)), "LazyLock(<uninit>)");
+        assert_eq!(CALLS.load(Ordering::Relaxed), 0);
+        *LAZY.lock() += 1;
+        assert_eq!(*LazyLock::force(&LAZY).lock(), 11);
+        assert_eq!(CALLS.load(Ordering::Relaxed), 1);
     }
 }

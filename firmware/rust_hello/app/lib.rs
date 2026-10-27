@@ -7,14 +7,13 @@
 
 extern crate alloc;
 
-use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::ffi::CStr;
 use core::time::Duration;
 
 use idf::heap::{self, Caps};
 use idf::log::{error, info};
-use idf::sync::{Mutex, channel};
+use idf::sync::{LazyLock, Mutex, channel};
 use idf::system::{CORE_COUNT, core_id};
 use idf::thread::{self, Builder};
 use idf::time::Instant;
@@ -25,6 +24,8 @@ mod ffi {
 }
 
 const TAG: &CStr = c"rust_hello";
+
+static TOTAL: LazyLock<Mutex<u32>> = LazyLock::new(|| Mutex::new(0));
 
 #[unsafe(no_mangle)]
 pub extern "C" fn rust_hello_weight(byte: u8) -> u32 {
@@ -54,16 +55,15 @@ pub fn run() {
     let dma: Vec<u8, Caps> = Vec::with_capacity_in(4096, Caps::DMA | Caps::INTERNAL);
     info!(TAG, "dma buffer at {:p}, free DMA {free} -> {}", dma.as_ptr(), heap::free_size(Caps::DMA));
 
-    let total = Arc::new(Mutex::new(0u32));
     let (tx, rx) = channel::<u32>(2);
     let workers: Vec<_> = (1..=2)
         .map(|id| {
-            let (total, tx) = (total.clone(), tx.clone());
+            let tx = tx.clone();
             Builder::new()
                 .name("rust_worker")
                 .spawn(move || {
                     for i in 1..=10 {
-                        *total.lock() += i * id;
+                        *TOTAL.lock() += i * id;
                     }
                     tx.send(id);
                     id * 100
@@ -73,7 +73,7 @@ pub fn run() {
         .collect();
     let ids = [rx.recv(), rx.recv()];
     let results: Vec<u32> = workers.into_iter().map(|w| w.join()).collect();
-    info!(TAG, "workers: total={} ids={ids:?} results={results:?}", *total.lock());
+    info!(TAG, "workers: total={} ids={ids:?} results={results:?}", *TOTAL.lock());
     let me = thread::current();
     info!(TAG, "task {} on core {}/{CORE_COUNT}, stack high water mark {}", me.name(), core_id(),
           me.stack_high_water_mark());
