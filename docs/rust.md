@@ -205,6 +205,24 @@ pub fn open() -> Result<Sensor, EspError> {
 - `let _ = guard(...)` drops, and so runs, the guard immediately; bind it to
   a name.
 
+`FmtBuf<N>` is a `core::fmt::Write` target in an `N`-byte array, for
+formatting without the heap and for passing the result to C:
+
+```rust
+let path = FmtBuf::<64>::from_fmt(format_args!("{}/{}", MOUNT, name));
+if path.is_truncated() {
+    return Err(...);
+}
+unsafe { ffi::fopen(path.as_c_str().as_ptr(), c"rb".as_ptr()) };
+```
+
+- The text is always NUL-terminated, so it holds `N - 1` bytes. `as_c_str()`
+  ends at the first NUL, `as_str()` keeps everything written.
+- On overflow it keeps what fits, cut at a character boundary, sets
+  `is_truncated()` and returns `Err`, so `write!` stops formatting. Later
+  writes are ignored until `clear()`.
+- It derefs to `str`; `Display` and `Debug` format it as a string.
+
 ## Runtime (`libs/rust_rt`)
 
 - The allocator shim (`__rust_alloc` and friends) forwards to `malloc`/`free`,

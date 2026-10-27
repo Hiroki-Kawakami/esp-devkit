@@ -7,5 +7,7 @@
 
 mod bitflags;
 mod defer;
+mod fmt_buf;
 
 pub use defer::{Guard, guard};
+pub use fmt_buf::FmtBuf;
