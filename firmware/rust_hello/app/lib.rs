@@ -62,4 +62,11 @@ mod tests {
         assert_eq!(super::rust_hello_weight(0), 1);
         assert_eq!(super::rust_hello_weight(255), 766);
     }
+
+    #[test]
+    fn uptime_advances() {
+        let start = unsafe { super::ffi::esp_timer_get_time() };
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        assert!(unsafe { super::ffi::esp_timer_get_time() } - start >= 2000);
+    }
 }

@@ -114,10 +114,13 @@ dependencies are the same as on the device. A Rust main component defining
 `devkit_rust_crate(... TESTS)` adds `rust_test_<crate>`, which builds the
 crate's `#[test]`s with `rustc --test` and runs them; `rust_test` runs all of
 them. The crate root must be `#![cfg_attr(not(test), no_std)]`: the test
-harness needs std. Tests run with `-Zpanic-abort-tests`. The executable links
-only Rust (rustc links it), so code reached from a test cannot call C; code that
-only non-test paths reach is dropped by the linker. On the device `TESTS` does
-nothing.
+harness needs std. Tests run with `-Zpanic-abort-tests`. rustc links the
+executable from the Rust crates and an archive of idf_compat
+(`devkit_sim_idf_compat`, compiled with the simulator's flags), so tests can
+call the IDF and FreeRTOS APIs idf_compat provides. Other C, including the
+component's own sources and bindgen's `static inline` wrappers, is not linked:
+code reached from a test cannot call it, and code that only non-test paths reach
+is dropped by the linker. On the device `TESTS` does nothing.
 
 ```sh
 cmake --build firmware/rust_hello/simulator/build --target rust_test

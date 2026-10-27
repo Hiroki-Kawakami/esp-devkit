@@ -326,7 +326,11 @@ function(_devkit_rust_test name out gen root edition deps)
         string(APPEND args_content "$<$<BOOL:${dep_rlib}>:--extern=${dep}=${dep_rlib}\n>")
         list(APPEND dep_rlibs "${dep_rlib}")
     endforeach()
-    string(APPEND args_content "${root}\n")
+    set(compat devkit_sim_idf_compat)
+    string(APPEND args_content
+        "-Clink-arg=$<TARGET_FILE:${compat}>\n"
+        "-Clink-arg=$<JOIN:$<TARGET_PROPERTY:${compat},DEVKIT_RUST_LINK_ARGS>,\n-Clink-arg=>\n"
+        "${root}\n")
     file(GENERATE OUTPUT "${out}/${name}.test.args" CONTENT "${args_content}")
 
     add_custom_command(
@@ -341,7 +345,7 @@ function(_devkit_rust_test name out gen root edition deps)
                 -P "${DEVKIT_RUST_DIR}/rust_crate.cmake"
         DEPENDS "${root}" "${out}/${name}.test.args" "${out}/common.args" "${out}/sdkconfig.args"
                 "${out}/libsdkconfig.rlib" "${DEVKIT_RUST_DIR}/rust_crate.cmake" ${dep_rlibs}
-                ${ARGN}
+                "$<TARGET_FILE:${compat}>" ${ARGN}
         DEPFILE "${out}/${name}.test.d"
         COMMENT "rustc --test ${name}"
         VERBATIM)

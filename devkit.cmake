@@ -269,4 +269,22 @@ macro(devkit_simulator)
         get_filename_component(_devkit_comp_name "${_devkit_comp}" NAME)
         add_subdirectory("${_devkit_comp}" "${CMAKE_BINARY_DIR}/components/${_devkit_comp_name}")
     endforeach()
+
+    # Host test executables are linked by rustc; this archive gives them the
+    # idf_compat API, compiled as for the simulator.
+    if(TARGET rust_test)
+        get_property(_devkit_compat_srcs GLOBAL PROPERTY DEVKIT_SIM_SRCS_idf_compat)
+        add_library(devkit_sim_idf_compat STATIC EXCLUDE_FROM_ALL ${_devkit_compat_srcs})
+        target_include_directories(devkit_sim_idf_compat PRIVATE
+            $<TARGET_PROPERTY:simulator,INCLUDE_DIRECTORIES>)
+        target_compile_definitions(devkit_sim_idf_compat PRIVATE
+            $<TARGET_PROPERTY:simulator,COMPILE_DEFINITIONS>)
+        target_compile_options(devkit_sim_idf_compat PRIVATE
+            $<TARGET_PROPERTY:simulator,COMPILE_OPTIONS>)
+        set(_devkit_compat_link ${JPEG_LINK_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT})
+        foreach(_devkit_lib ${CMAKE_DL_LIBS} m)
+            list(APPEND _devkit_compat_link "-l${_devkit_lib}")
+        endforeach()
+        set_property(TARGET devkit_sim_idf_compat PROPERTY DEVKIT_RUST_LINK_ARGS ${_devkit_compat_link})
+    endif()
 endmacro()

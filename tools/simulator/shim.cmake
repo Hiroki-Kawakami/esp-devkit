@@ -15,24 +15,28 @@
 # REQUIRES only decide which components devkit_simulator() adds
 # (requirements.cmake reads them beforehand); everything added links into a
 # single binary, so include dirs are global. They are also recorded for
-# devkit_rust_crate(), whose crate dependencies follow them.
+# devkit_rust_crate(), whose crate dependencies follow them, and the sources
+# for the idf_compat archive that host test executables link.
 function(idf_component_register)
     cmake_parse_arguments(C "" ""
         "SRCS;INCLUDE_DIRS;PRIV_INCLUDE_DIRS;REQUIRES;PRIV_REQUIRES;EMBED_FILES;EMBED_TXTFILES"
         ${ARGN})
+    get_filename_component(_component_name "${CMAKE_CURRENT_SOURCE_DIR}" NAME)
+    set(_component_srcs "")
     foreach(src ${C_SRCS})
         if(NOT IS_ABSOLUTE "${src}")
             set(src "${CMAKE_CURRENT_SOURCE_DIR}/${src}")
         endif()
         target_sources(simulator PRIVATE "${src}")
+        list(APPEND _component_srcs "${src}")
     endforeach()
+    set_property(GLOBAL PROPERTY DEVKIT_SIM_SRCS_${_component_name} ${_component_srcs})
     foreach(dir ${C_INCLUDE_DIRS} ${C_PRIV_INCLUDE_DIRS})
         if(NOT IS_ABSOLUTE "${dir}")
             set(dir "${CMAKE_CURRENT_SOURCE_DIR}/${dir}")
         endif()
         target_include_directories(simulator PRIVATE "${dir}")
     endforeach()
-    get_filename_component(_component_name "${CMAKE_CURRENT_SOURCE_DIR}" NAME)
     set_property(GLOBAL PROPERTY DEVKIT_SIM_REQUIRES_${_component_name}
         ${C_REQUIRES} ${C_PRIV_REQUIRES})
     set(COMPONENT_LIB simulator PARENT_SCOPE)
