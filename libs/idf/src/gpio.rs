@@ -24,3 +24,10 @@ pub fn set_direction(pin: i32, mode: Mode) -> Result<()> {
 pub fn set_level(pin: i32, high: bool) -> Result<()> {
     Error::check(unsafe { sys::gpio_set_level(pin as _, high as u32) })
 }
+
+pub fn install_isr_service() -> Result<()> {
+    match Error::check(unsafe { sys::gpio_install_isr_service(0) }) {
+        Err(Error::INVALID_STATE) => Ok(()),
+        r => r,
+    }
+}

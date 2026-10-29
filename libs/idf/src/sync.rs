@@ -15,7 +15,8 @@ use core::ptr;
 use core::sync::atomic::{AtomicU8, Ordering};
 use core::time::Duration;
 
-use crate::thread::{MAX_DELAY, ticks};
+use crate::thread::{MAX_DELAY, ticks, ticks_ceil};
+use crate::time::Instant;
 use crate::{Error, Result, sys};
 
 const PD_TRUE: sys::BaseType_t = 1;
@@ -209,6 +210,19 @@ impl Semaphore {
 
     pub fn take_timeout(&self, timeout: Duration) -> bool {
         self.queue.take(ticks(timeout))
+    }
+
+    /// Returns within a tick after `deadline` when nothing gives.
+    pub fn take_deadline(&self, deadline: Instant) -> bool {
+        loop {
+            let now = Instant::now();
+            if now >= deadline {
+                return self.try_take();
+            }
+            if self.queue.take(ticks_ceil(deadline - now)) {
+                return true;
+            }
+        }
     }
 
     pub fn give(&self) -> bool {
@@ -539,6 +553,20 @@ mod tests {
         assert!(s.give_from_isr());
         assert!(s.try_take_from_isr());
         assert!(!s.try_take_from_isr());
+    }
+
+    #[test]
+    fn semaphore_take_deadline_waits_until_deadline() {
+        let tick = Duration::from_secs(1) / sdkconfig::CONFIG_FREERTOS_HZ as u32;
+        let s = Semaphore::new(0, 1);
+        let start = Instant::now();
+        assert!(!s.take_deadline(start + Duration::from_millis(30)));
+        let waited = start.elapsed();
+        assert!(waited >= Duration::from_millis(30), "{waited:?}");
+        assert!(waited < Duration::from_millis(30) + tick * 2, "{waited:?}");
+        assert!(!s.take_deadline(start));
+        s.give();
+        assert!(s.take_deadline(Instant::now() + Duration::from_secs(1)));
     }
 
     #[test]

@@ -34,6 +34,14 @@ pub(crate) fn ticks(d: Duration) -> sys::TickType_t {
     t.min(u64::from(MAX_DELAY)) as sys::TickType_t
 }
 
+// Rounds up only: a wait of this many ticks may end up to a tick before `d`.
+pub(crate) fn ticks_ceil(d: Duration) -> sys::TickType_t {
+    let hz = sdkconfig::CONFIG_FREERTOS_HZ as u64;
+    let whole = d.as_secs().saturating_mul(hz);
+    let frac = (u64::from(d.subsec_nanos()) * hz).div_ceil(1_000_000_000);
+    whole.saturating_add(frac).min(u64::from(MAX_DELAY - 1)) as sys::TickType_t
+}
+
 pub fn sleep(d: Duration) {
     unsafe { sys::vTaskDelay(ticks(d)) }
 }
@@ -227,7 +235,7 @@ impl<T> JoinHandle<T> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Builder, NAME_LEN, current, sleep, spawn, ticks};
+    use super::{Builder, NAME_LEN, current, sleep, spawn, ticks, ticks_ceil};
     use crate::system::{CORE_COUNT, core_id};
     use crate::heap::Caps;
     use crate::time::Instant;
@@ -243,6 +251,17 @@ mod tests {
         assert_eq!(ticks(tick + Duration::from_nanos(1)), 3);
         assert_eq!(ticks(Duration::from_secs(1)), hz + 1);
         assert_eq!(ticks(Duration::MAX), u32::MAX);
+    }
+
+    #[test]
+    fn ticks_ceil_rounds_up_only() {
+        let hz = sdkconfig::CONFIG_FREERTOS_HZ as u32;
+        let tick = Duration::from_secs(1) / hz;
+        assert_eq!(ticks_ceil(Duration::ZERO), 0);
+        assert_eq!(ticks_ceil(Duration::from_nanos(1)), 1);
+        assert_eq!(ticks_ceil(tick), 1);
+        assert_eq!(ticks_ceil(tick + Duration::from_nanos(1)), 2);
+        assert_eq!(ticks_ceil(Duration::from_secs(1)), hz);
     }
 
     #[test]
