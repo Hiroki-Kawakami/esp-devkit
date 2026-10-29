@@ -10,14 +10,19 @@ choice BSP_RS_BOARD
     config BSP_RS_BOARD_TAB5
         bool "M5Stack Tab5 (ESP32-P4)"
         depends on DEVKIT_SIMULATOR || IDF_TARGET_ESP32P4
+        select BSP_RS_DEVICE_GT911 if !DEVKIT_SIMULATOR
         select BSP_RS_DEVICE_ILI9881C if !DEVKIT_SIMULATOR
         select BSP_RS_DEVICE_PI4IO if !DEVKIT_SIMULATOR
         select BSP_RS_DEVICE_ST7121 if !DEVKIT_SIMULATOR
         select BSP_RS_DEVICE_ST7123 if !DEVKIT_SIMULATOR
+        select BSP_RS_DEVICE_ST712X_TOUCH if !DEVKIT_SIMULATOR
 endchoice
 
 # Chip drivers and transports compiled into the crate; each board selects the
 # ones its bring-up uses.
+config BSP_RS_DEVICE_GT911
+    bool
+
 config BSP_RS_DEVICE_ILI9881C
     bool
     select BSP_RS_DRIVER_MIPI_DSI
@@ -32,6 +37,9 @@ config BSP_RS_DEVICE_ST7121
 config BSP_RS_DEVICE_ST7123
     bool
     select BSP_RS_DRIVER_MIPI_DSI
+
+config BSP_RS_DEVICE_ST712X_TOUCH
+    bool
 
 config BSP_RS_DRIVER_MIPI_DSI
     bool

@@ -5,10 +5,15 @@
 
 #![no_std]
 
+extern crate alloc;
+
 use core::ffi::CStr;
 use core::time::Duration;
 
+use alloc::boxed::Box;
+
 use bsp_rs::display::{Display, FrameBuffer, PixelFormat};
+use bsp_rs::touch::{Point, Touch};
 use idf::log::{error, info};
 use idf::thread;
 
@@ -57,7 +62,10 @@ pub fn run() {
     if let Err(err) = display.set_brightness(100) {
         error!(TAG, "set_brightness: {err}");
     }
-    cycle(display);
+    match board.touch {
+        Some(touch) => trace_touches(display, touch),
+        None => cycle(display),
+    }
 }
 
 fn cycle(display: &Display) -> ! {
@@ -68,6 +76,47 @@ fn cycle(display: &Display) -> ! {
         }
         thread::sleep(Duration::from_secs(2));
         index = (index + 1) % display.frame_buffer_count();
+    }
+}
+
+fn trace_touches(display: &'static Display, touch: &Touch) -> ! {
+    if let Err(err) = display.present(0) {
+        error!(TAG, "present(0): {err}");
+    }
+    touch.set_event_cb(Some(Box::new(move |points: &[Point]| {
+        let Some(fb) = display.frame_buffer(0) else { return };
+        for p in points {
+            fill_square(&fb, *p, 16, BARS[0]);
+        }
+        if !points.is_empty() && let Err(err) = display.present(0) {
+            error!(TAG, "present(0): {err}");
+        }
+    })));
+
+    let mut last = 0;
+    let mut points = [Point::default(); bsp_rs::touch::MAX_POINTS];
+    loop {
+        touch.wait_interrupt();
+        let n = touch.read(&mut points);
+        if n != last {
+            match n {
+                0 => info!(TAG, "released"),
+                _ => info!(TAG, "{n} touch(es), first at {},{} id {}", points[0].x, points[0].y, points[0].id),
+            }
+            last = n;
+        }
+    }
+}
+
+fn fill_square(fb: &FrameBuffer, center: Point, half: u16, color: (u8, u8, u8)) {
+    let size = fb.size();
+    let x0 = center.x.saturating_sub(half);
+    let x1 = (center.x + half).min(size.width);
+    for y in center.y.saturating_sub(half)..(center.y + half).min(size.height) {
+        let row = unsafe { fb.row_mut(usize::from(y)) };
+        for x in x0..x1 {
+            put_pixel(row, usize::from(x), fb.format(), color);
+        }
     }
 }
 

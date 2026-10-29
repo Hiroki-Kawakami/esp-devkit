@@ -48,7 +48,6 @@ struct Slot {
 #[derive(Clone)]
 pub(crate) struct Notifier(Arc<Slot>);
 
-#[allow(dead_code)]
 impl Notifier {
     pub(crate) fn notify(&self) {
         self.0.pending.store(true, Ordering::Release);
@@ -57,6 +56,7 @@ impl Notifier {
         }
     }
 
+    #[cfg_attr(not(target_os = "none"), allow(dead_code))]
     pub(crate) fn notify_from_isr(&self) {
         self.0.pending.store(true, Ordering::Release);
         if let Some(d) = DISPATCHER.get() {
@@ -87,7 +87,6 @@ pub(crate) fn configure(config: &Config) {
     CORE.store(config.task_core.unwrap_or(NO_CORE), Ordering::Relaxed);
 }
 
-#[allow(dead_code)]
 pub(crate) fn add(source: Box<dyn Source>) -> Result<Notifier> {
     let d = DISPATCHER.get_or_try_init(start)?;
     let slot = Arc::new(Slot { pending: AtomicBool::new(true) });

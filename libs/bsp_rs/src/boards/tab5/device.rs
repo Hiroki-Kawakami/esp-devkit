@@ -11,10 +11,13 @@ use idf::sync::OnceLock;
 use idf::{Error, Result, gpio, thread};
 
 use super::TAG;
+use crate::devices::gt911::{self, Gt911};
+use crate::devices::st712x_touch::{self, St712xTouch};
 use crate::devices::{ili9881c, st7121, st7123};
 use crate::devices::pi4io::{Pi4io, PinConfig};
 use crate::display::{self, PixelFormat, Size};
 use crate::driver::mipi_dsi::MipiDsi;
+use crate::touch::{self, Touch};
 use crate::{Board, Config};
 
 const I2C_PORT: i32 = 0;
@@ -27,9 +30,6 @@ const PI4IOE1_LCD_RST: u8 = 4;
 const PI4IOE1_TP_RST: u8 = 5;
 
 const TOUCH_PIN_INT: i32 = 23;
-const ST712X_TP_ADDR: u16 = 0x55;
-const ST712X_TP_HZ: u32 = 100_000;
-const GT911_TP_ADDR: u16 = 0x14;
 
 const LCD_PIN_BL: i32 = 22;
 // The backlight boost driver holds a fixed current floor while enabled;
@@ -66,7 +66,8 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
     reset_panel_and_touch(&mut pi4ioe1)?;
 
     let display = panel_init(config, bus)?;
-    Ok(Board { display: Some(DISPLAY.get_or_init(|| display::Display(display))) })
+    let touch = touch_init(bus, &display);
+    Ok(Board { display: Some(DISPLAY.get_or_init(|| display::Display(display))), touch })
 }
 
 // PI4IOE1 owns LCD_RST + TP_RST + SPK_EN + the headphone-detect input; PI4IOE2
@@ -120,7 +121,7 @@ fn panel_init(config: &Config, bus: &MasterBus) -> Result<Display> {
     let probe = Duration::from_millis(10);
     let pixel_format = resolve_pixel_format(config);
     let fb_num = if config.display.fb_num != 0 { config.display.fb_num } else { 2 };
-    if bus.probe(ST712X_TP_ADDR, probe).is_ok() {
+    if bus.probe(st712x_touch::ADDR, probe).is_ok() {
         let version = st712x_version(bus);
         info!(TAG, "panel: ST712x (version: {version:?})");
         if version == Some(1) {
@@ -144,7 +145,7 @@ fn panel_init(config: &Config, bus: &MasterBus) -> Result<Display> {
         .inspect_err(|err| error!(TAG, "st7123: {err}"))?;
         return Ok(Display::St7123(lcd));
     }
-    if bus.probe(GT911_TP_ADDR, probe).is_ok() {
+    if bus.probe(gt911::ADDR_PRIMARY, probe).is_ok() {
         info!(TAG, "panel: ILI9881C");
         let lcd = ili9881c::create(&ili9881c::Config {
             size: PANEL_SIZE,
@@ -160,9 +161,35 @@ fn panel_init(config: &Config, bus: &MasterBus) -> Result<Display> {
     Err(Error::NOT_FOUND)
 }
 
+// Non-fatal: the board still comes up with the display alone.
+fn touch_init(bus: &'static MasterBus, display: &Display) -> Option<&'static Touch> {
+    let config = touch::Config {
+        width: PANEL_SIZE.width,
+        height: PANEL_SIZE.height,
+        swap_xy: false,
+        mirror_x: false,
+        mirror_y: false,
+        int_pin: Some(TOUCH_PIN_INT),
+    };
+    let result = match display {
+        Display::Ili9881c(_) => Gt911::new(bus, &gt911::Config {
+            address: gt911::ADDR_PRIMARY,
+            clock_hz: gt911::DEFAULT_HZ,
+            int_pin: Some(TOUCH_PIN_INT),
+        })
+        .and_then(|gt911| touch::start(gt911, config)),
+        Display::St7121(_) | Display::St7123(_) => St712xTouch::new(bus, &st712x_touch::Config {
+            clock_hz: st712x_touch::DEFAULT_HZ,
+            int_pin: Some(TOUCH_PIN_INT),
+        })
+        .and_then(|st712x| touch::start(st712x, config)),
+    };
+    result.inspect_err(|err| warn!(TAG, "touch unavailable: {err}")).ok()
+}
+
 fn st712x_version(bus: &MasterBus) -> Option<u8> {
     let dev = bus
-        .add_device(ST712X_TP_ADDR, ST712X_TP_HZ)
+        .add_device(st712x_touch::ADDR, st712x_touch::DEFAULT_HZ)
         .inspect_err(|err| warn!(TAG, "attach ST712x for version read: {err}"))
         .ok()?;
     let mut version = [0u8];

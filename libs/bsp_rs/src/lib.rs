@@ -17,6 +17,8 @@ mod devices;
 pub mod dispatch;
 pub mod display;
 mod driver;
+#[cfg_attr(not(target_os = "none"), allow(dead_code))]
+pub mod touch;
 
 #[cfg(CONFIG_BSP_RS_BOARD_TAB5)]
 use boards::tab5 as board;
@@ -26,6 +28,7 @@ pub use absent::Absent;
 #[non_exhaustive]
 pub struct Board {
     pub display: Option<&'static display::Display>,
+    pub touch: Option<&'static touch::Touch>,
 }
 
 #[derive(Default)]

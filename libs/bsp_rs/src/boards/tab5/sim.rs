@@ -13,5 +13,5 @@ pub(crate) type Display = Absent;
 
 pub(crate) fn init(_config: &Config) -> Result<Board> {
     info!(TAG, "board: Tab5 (simulator)");
-    Ok(Board { display: None })
+    Ok(Board { display: None, touch: None })
 }
