@@ -7,9 +7,11 @@ use idf::Result;
 use idf::log::info;
 
 use super::TAG;
-use crate::{Board, Config};
+use crate::{Absent, Board, Config};
+
+pub(crate) type Display = Absent;
 
 pub(crate) fn init(_config: &Config) -> Result<Board> {
     info!(TAG, "board: Tab5 (simulator)");
-    Ok(Board {})
+    Ok(Board { display: None })
 }

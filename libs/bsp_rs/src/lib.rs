@@ -11,6 +11,9 @@ use idf::{Error, Result};
 
 mod absent;
 mod boards;
+mod devices;
+pub mod display;
+mod driver;
 
 #[cfg(CONFIG_BSP_RS_BOARD_TAB5)]
 use boards::tab5 as board;
@@ -18,11 +21,15 @@ use boards::tab5 as board;
 pub use absent::Absent;
 
 #[non_exhaustive]
-pub struct Board {}
+pub struct Board {
+    pub display: Option<&'static display::Display>,
+}
 
 #[derive(Default)]
 #[non_exhaustive]
-pub struct Config {}
+pub struct Config {
+    pub display: display::Config,
+}
 
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
 

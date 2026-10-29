@@ -8,7 +8,16 @@
 extern crate alloc;
 
 mod error;
+#[cfg(target_os = "none")]
+pub mod gpio;
 pub mod heap;
+pub mod i2c;
+#[cfg(target_os = "none")]
+pub mod lcd;
+#[cfg(target_os = "none")]
+pub mod ldo;
+#[cfg(target_os = "none")]
+pub mod ledc;
 pub mod log;
 pub mod sync;
 pub mod system;
