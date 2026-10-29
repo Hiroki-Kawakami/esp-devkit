@@ -26,6 +26,7 @@ multi_heap_handle_t multi_heap_register(void *start, size_t size);
 void *multi_heap_malloc(multi_heap_handle_t heap, size_t size);
 void *multi_heap_aligned_alloc(multi_heap_handle_t heap, size_t size, size_t alignment);
 void multi_heap_free(multi_heap_handle_t heap, void *p);
+size_t multi_heap_get_allocated_size(multi_heap_handle_t heap, void *p);
 size_t multi_heap_free_size(multi_heap_handle_t heap);
 void multi_heap_get_info(multi_heap_handle_t heap, multi_heap_info_t *info);
 

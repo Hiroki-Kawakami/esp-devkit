@@ -116,6 +116,8 @@
             pkgs.libjpeg
             pkgs.zlib
             pkgs.pkg-config
+            # Simulator host (tools/sim_host)
+            pkgs.cargo
             # Editor language server for the Rust crates (docs/rust.md)
             pkgs.rust-analyzer
           ];

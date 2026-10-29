@@ -1,0 +1,337 @@
+/*
+ * SPDX-License-Identifier: MIT
+ * Copyright (c) 2026 Hiroki Kawakami
+ */
+
+use std::collections::{BTreeMap, VecDeque};
+use std::ffi::OsString;
+use std::fs::{File, OpenOptions};
+use std::io::{self, BufRead, BufReader, Write};
+use std::os::fd::{AsRawFd, RawFd};
+use std::path::PathBuf;
+use std::process::{ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::Sender;
+use std::sync::{Arc, Mutex};
+use std::thread;
+
+use crate::protocol::{
+    ENV_PSRAM_PATH, ENV_PSRAM_SIZE, ENV_SOCKET_FD, EXIT_RESTART, Event, MAX_TOUCH_POINTS, PixelFormat,
+    RECORD_SIZE, TouchPoint, VERSION,
+};
+
+const LOG_LINES: usize = 500;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Status {
+    Running,
+    Exited(Option<i32>),
+    Off,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Present {
+    pub offset: u64,
+    pub width: u16,
+    pub height: u16,
+    pub stride: u32,
+    pub format: PixelFormat,
+}
+
+pub struct Frame {
+    pub width: usize,
+    pub height: usize,
+    /// RGB, 3 bytes per pixel.
+    pub rgb: Vec<u8>,
+}
+
+struct State {
+    status: Status,
+    ready: bool,
+    present: Option<Present>,
+    brightness: u8,
+    log: VecDeque<String>,
+}
+
+struct Run {
+    pid: libc::pid_t,
+    stdin: ChildStdin,
+    sock: RawFd,
+}
+
+struct Psram {
+    ptr: *mut u8,
+    len: usize,
+    path: PathBuf,
+    _file: File,
+}
+
+unsafe impl Send for Psram {}
+unsafe impl Sync for Psram {}
+
+impl Drop for Psram {
+    fn drop(&mut self) {
+        unsafe { libc::munmap(self.ptr.cast(), self.len) };
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+pub struct Device {
+    fw: PathBuf,
+    args: Vec<OsString>,
+    psram: Psram,
+    state: Mutex<State>,
+    run: Mutex<Option<Run>>,
+    generation: AtomicU64,
+    contacts: Mutex<BTreeMap<u8, (u16, u16)>>,
+    lines: Mutex<Option<Sender<String>>>,
+}
+
+impl Device {
+    pub fn new(fw: PathBuf, args: Vec<OsString>, psram_size: usize) -> io::Result<Arc<Self>> {
+        Ok(Arc::new(Self {
+            fw,
+            args,
+            psram: map_psram(psram_size)?,
+            state: Mutex::new(State { status: Status::Off, ready: false, present: None, brightness: 0, log: VecDeque::new() }),
+            run: Mutex::new(None),
+            generation: AtomicU64::new(0),
+            contacts: Mutex::new(BTreeMap::new()),
+            lines: Mutex::new(None),
+        }))
+    }
+
+    /// Firmware stdout lines go here as well as into the log.
+    pub fn forward_lines(&self, tx: Sender<String>) {
+        *self.lines.lock().unwrap() = Some(tx);
+    }
+
+    pub fn start(self: &Arc<Self>) -> io::Result<()> {
+        self.stop();
+        let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let mut fds = [0; 2];
+        if unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr()) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let (host_fd, fw_fd) = (fds[0], fds[1]);
+        unsafe { libc::fcntl(host_fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+
+        let spawned = Command::new(&self.fw)
+            .args(&self.args)
+            .env(ENV_SOCKET_FD.to_str().unwrap(), fw_fd.to_string())
+            .env(ENV_PSRAM_PATH.to_str().unwrap(), &self.psram.path)
+            .env(ENV_PSRAM_SIZE.to_str().unwrap(), self.psram.len.to_string())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn();
+        unsafe { libc::close(fw_fd) };
+        let mut child = match spawned {
+            Ok(child) => child,
+            Err(err) => {
+                unsafe { libc::close(host_fd) };
+                return Err(err);
+            }
+        };
+
+        {
+            let mut state = self.state.lock().unwrap();
+            state.status = Status::Running;
+            state.ready = false;
+            state.present = None;
+            state.brightness = 0;
+        }
+        let stdout = child.stdout.take().unwrap();
+        let stdin = child.stdin.take().unwrap();
+        *self.run.lock().unwrap() = Some(Run { pid: child.id() as libc::pid_t, stdin, sock: host_fd });
+
+        let me = self.clone();
+        thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                me.log_line(line);
+            }
+        });
+        let me = self.clone();
+        thread::spawn(move || me.receive(host_fd));
+        let me = self.clone();
+        thread::spawn(move || {
+            let code = child.wait().ok().and_then(|s| s.code());
+            if me.generation.load(Ordering::SeqCst) != generation {
+                return;
+            }
+            me.close_run();
+            if code == Some(EXIT_RESTART) {
+                if let Err(err) = me.start() {
+                    eprintln!("[sim_host] restart: {err}");
+                }
+                return;
+            }
+            me.state.lock().unwrap().status = Status::Exited(code);
+        });
+        Ok(())
+    }
+
+    pub fn stop(&self) {
+        self.generation.fetch_add(1, Ordering::SeqCst);
+        if let Some(run) = self.close_run() {
+            unsafe { libc::kill(run.pid, libc::SIGKILL) };
+        }
+        let mut state = self.state.lock().unwrap();
+        state.status = Status::Off;
+        state.ready = false;
+        state.present = None;
+    }
+
+    fn close_run(&self) -> Option<Run> {
+        let run = self.run.lock().unwrap().take()?;
+        unsafe { libc::shutdown(run.sock, libc::SHUT_RDWR) };
+        Some(run)
+    }
+
+    fn receive(&self, fd: RawFd) {
+        let mut record = [0u8; RECORD_SIZE];
+        while read_record(fd, &mut record) {
+            let mut state = self.state.lock().unwrap();
+            match Event::decode(&record) {
+                Some(Event::Hello { version }) => {
+                    if version != VERSION {
+                        eprintln!("[sim_host] firmware speaks protocol {version}, host {VERSION}");
+                    }
+                    state.ready = true;
+                }
+                Some(Event::Present { offset, width, height, stride, format }) => {
+                    state.present = Some(Present { offset, width, height, stride, format })
+                }
+                Some(Event::Brightness { level }) => state.brightness = level,
+                Some(Event::Touch { .. }) | None => {}
+            }
+        }
+        unsafe { libc::close(fd) };
+    }
+
+    fn log_line(&self, line: String) {
+        if let Some(tx) = self.lines.lock().unwrap().as_ref() {
+            let _ = tx.send(line.clone());
+        }
+        let mut state = self.state.lock().unwrap();
+        if state.log.len() == LOG_LINES {
+            state.log.pop_front();
+        }
+        state.log.push_back(line);
+    }
+
+    pub fn send(&self, event: &Event) {
+        if let Some(run) = self.run.lock().unwrap().as_ref() {
+            write_record(run.sock, &event.encode());
+        }
+    }
+
+    pub fn write_stdin(&self, line: &str) {
+        if let Some(run) = self.run.lock().unwrap().as_mut() {
+            let _ = writeln!(run.stdin, "{line}").and_then(|_| run.stdin.flush());
+        }
+    }
+
+    /// `None` releases the contact.
+    pub fn touch(&self, id: u8, at: Option<(u16, u16)>) {
+        let mut contacts = self.contacts.lock().unwrap();
+        match at {
+            Some(p) => contacts.insert(id, p),
+            None => contacts.remove(&id),
+        };
+        let mut points = [TouchPoint::default(); MAX_TOUCH_POINTS];
+        for (p, (&id, &(x, y))) in points.iter_mut().zip(contacts.iter()) {
+            *p = TouchPoint { x, y, id };
+        }
+        let count = contacts.len().min(MAX_TOUCH_POINTS) as u8;
+        drop(contacts);
+        self.send(&Event::Touch { count, points });
+    }
+
+    pub fn status(&self) -> Status {
+        self.state.lock().unwrap().status
+    }
+
+    pub fn ready(&self) -> bool {
+        let state = self.state.lock().unwrap();
+        state.status == Status::Running && state.ready
+    }
+
+    pub fn brightness(&self) -> u8 {
+        self.state.lock().unwrap().brightness
+    }
+
+    pub fn present(&self) -> Option<Present> {
+        self.state.lock().unwrap().present
+    }
+
+    pub fn log(&self) -> Vec<String> {
+        self.state.lock().unwrap().log.iter().cloned().collect()
+    }
+
+    /// The presented frame as RGB; the firmware may be drawing into it meanwhile.
+    pub fn frame(&self) -> Option<Frame> {
+        let p = self.present()?;
+        let (w, h, stride) = (usize::from(p.width), usize::from(p.height), p.stride as usize);
+        let bpp = p.format.bytes();
+        let start = usize::try_from(p.offset).ok()?;
+        if stride < w * bpp || start.checked_add(stride * h)? > self.psram.len {
+            return None;
+        }
+        let src = unsafe { std::slice::from_raw_parts(self.psram.ptr.add(start), stride * h) };
+        let mut rgb = Vec::with_capacity(w * h * 3);
+        for row in src.chunks_exact(stride) {
+            for px in row[..w * bpp].chunks_exact(bpp) {
+                match p.format {
+                    PixelFormat::L8 => rgb.extend_from_slice(&[px[0], px[0], px[0]]),
+                    PixelFormat::Rgb565 => {
+                        let v = u16::from_le_bytes([px[0], px[1]]);
+                        let (r, g, b) = ((v >> 11) & 0x1F, (v >> 5) & 0x3F, v & 0x1F);
+                        rgb.extend_from_slice(&[(r << 3 | r >> 2) as u8, (g << 2 | g >> 4) as u8, (b << 3 | b >> 2) as u8]);
+                    }
+                    PixelFormat::Bgr888 => rgb.extend_from_slice(&[px[2], px[1], px[0]]),
+                }
+            }
+        }
+        Some(Frame { width: w, height: h, rgb })
+    }
+}
+
+fn read_record(fd: RawFd, record: &mut [u8; RECORD_SIZE]) -> bool {
+    let mut at = 0;
+    while at < RECORD_SIZE {
+        let n = unsafe { libc::recv(fd, record[at..].as_mut_ptr().cast(), RECORD_SIZE - at, 0) };
+        if n <= 0 {
+            return false;
+        }
+        at += n as usize;
+    }
+    true
+}
+
+fn write_record(fd: RawFd, record: &[u8; RECORD_SIZE]) {
+    let mut at = 0;
+    while at < RECORD_SIZE {
+        let n = unsafe { libc::send(fd, record[at..].as_ptr().cast(), RECORD_SIZE - at, 0) };
+        if n <= 0 {
+            return;
+        }
+        at += n as usize;
+    }
+}
+
+fn map_psram(len: usize) -> io::Result<Psram> {
+    let path = std::env::temp_dir().join(format!("sim_host-psram-{}", std::process::id()));
+    let file = OpenOptions::new().read(true).write(true).create(true).truncate(true).open(&path)?;
+    file.set_len(len as u64)?;
+    let ptr = unsafe {
+        libc::mmap(std::ptr::null_mut(), len, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_SHARED, file.as_raw_fd(), 0)
+    };
+    if ptr == libc::MAP_FAILED {
+        let err = io::Error::last_os_error();
+        let _ = std::fs::remove_file(&path);
+        return Err(err);
+    }
+    Ok(Psram { ptr: ptr.cast(), len, path, _file: file })
+}
+

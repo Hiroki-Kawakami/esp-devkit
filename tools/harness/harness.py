@@ -7,6 +7,7 @@ both. The firmware only exposes primitives (touch/button/IMU injection, an
 idle probe, a JPEG capture); timing and scripting live here.
 
     harness.py --sim path/to/simulator script.txt
+    harness.py --host tools/sim_host/target/release/sim_host --sim path/to/simulator script.txt
     harness.py --port /dev/cu.usbserial-XXXX [--baud 921600] script.txt
 
 Script: one command per line, '#' comments.
@@ -23,7 +24,8 @@ Script: one command per line, '#' comments.
     imu rot0|rot90|rot180|rot270|face-up|face-down
                                inject a resting pose
     imu release                back to the real sensor
-    reset                      reboot the board and wait for it (no-op on the simulator)
+    reset                      reboot the board and wait for it (no-op on a simulator run
+                               without --host)
     quit                       stop (implicit at end of script)
     <anything else>            passed through verbatim (app commands)
 """
@@ -43,12 +45,16 @@ class HarnessError(Exception):
 
 
 class SimLink:
-    def __init__(self, exe, headless=True, log=None):
+    def __init__(self, exe, headless=True, log=None, host=None):
         env = dict(os.environ)
         if headless:
             env["SIMULATOR_HEADLESS"] = "1"
+        self.host = host
+        argv = [exe]
+        if host:
+            argv = [host, *(["--headless"] if headless else []), exe]
         self.proc = subprocess.Popen(
-            [exe], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=None if log else subprocess.DEVNULL, env=env, bufsize=0)
         self.lines = queue.Queue()
         threading.Thread(target=self._reader, daemon=True).start()
@@ -69,7 +75,8 @@ class SimLink:
             return ""
 
     def reset(self):
-        pass
+        if self.host:
+            self.send("reset")
 
     def close(self):
         try:
@@ -311,7 +318,8 @@ def main():
     target.add_argument("--sim", metavar="EXE", help="simulator binary to launch")
     target.add_argument("--port", metavar="DEV", help="serial port of the board's console")
     ap.add_argument("--baud", type=int, default=115200)
-    ap.add_argument("--window", action="store_true", help="simulator: show the SDL window")
+    ap.add_argument("--host", metavar="SIM_HOST", help="simulator: run it under this simulator host")
+    ap.add_argument("--window", action="store_true", help="simulator: show the window")
     ap.add_argument("--out", default=".", help="directory captures are written under")
     ap.add_argument("--log", action="store_true", help="echo the target's log lines to stderr")
     ap.add_argument("script", nargs="?", default="-", help="script file ('-' = stdin)")
@@ -319,7 +327,7 @@ def main():
 
     log_stream = sys.stderr if args.log else None
     if args.sim:
-        link = SimLink(args.sim, headless=not args.window, log=args.log)
+        link = SimLink(args.sim, headless=not args.window, log=args.log, host=args.host)
     else:
         link = SerialLink(args.port, args.baud)
 

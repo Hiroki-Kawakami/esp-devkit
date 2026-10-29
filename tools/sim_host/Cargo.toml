@@ -1,0 +1,10 @@
+[package]
+name = "sim_host"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+eframe = "0.31"
+jpeg-encoder = "0.6"
+libc = "0.2"

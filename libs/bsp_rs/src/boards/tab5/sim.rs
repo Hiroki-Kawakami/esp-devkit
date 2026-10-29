@@ -4,14 +4,37 @@
  */
 
 use idf::Result;
-use idf::log::info;
+use idf::log::{info, warn};
+use idf::sync::OnceLock;
 
-use super::TAG;
-use crate::{Absent, Board, Config};
+use super::{PANEL_SIZE, TAG, resolve_fb_num, resolve_pixel_format};
+use crate::display;
+use crate::driver::sim_panel::SimPanel;
+use crate::driver::sim_touch;
+use crate::touch;
+use crate::{Board, Config};
 
-pub(crate) type Display = Absent;
+pub(crate) type Display = SimPanel;
 
-pub(crate) fn init(_config: &Config) -> Result<Board> {
+static DISPLAY: OnceLock<display::Display> = OnceLock::new();
+
+// Without the simulator host there is nothing to show or touch.
+pub(crate) fn init(config: &Config) -> Result<Board> {
+    let Some(host) = sim_device::host() else {
+        info!(TAG, "board: Tab5 (simulator, no host)");
+        return Ok(Board { display: None, touch: None });
+    };
     info!(TAG, "board: Tab5 (simulator)");
-    Ok(Board { display: None, touch: None })
+    let panel = SimPanel::new(host, PANEL_SIZE, resolve_pixel_format(config), resolve_fb_num(config))?;
+    let touch = sim_touch::start(host, touch::Config {
+        width: PANEL_SIZE.width,
+        height: PANEL_SIZE.height,
+        swap_xy: false,
+        mirror_x: false,
+        mirror_y: false,
+        int: touch::Int::External,
+    })
+    .inspect_err(|err| warn!(TAG, "touch unavailable: {err}"))
+    .ok();
+    Ok(Board { display: Some(DISPLAY.get_or_init(|| display::Display(panel))), touch })
 }

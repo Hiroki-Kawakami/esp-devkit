@@ -87,6 +87,12 @@ void multi_heap_free(multi_heap_handle_t heap, void *p) {
     }
 }
 
+size_t multi_heap_get_allocated_size(multi_heap_handle_t heap, void *p) {
+    if (!heap || !p) return 0;
+    block_t *block = ((block_t **)p)[-1];
+    return (size_t)(payload(block) + block->size - (uint8_t *)p);
+}
+
 size_t multi_heap_free_size(multi_heap_handle_t heap) {
     return heap ? heap->free_bytes : 0;
 }

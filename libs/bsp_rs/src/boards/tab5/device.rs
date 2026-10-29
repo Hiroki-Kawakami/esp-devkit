@@ -10,12 +10,12 @@ use idf::log::{error, info, warn};
 use idf::sync::OnceLock;
 use idf::{Error, Result, gpio, thread};
 
-use super::TAG;
+use super::{PANEL_SIZE, TAG, resolve_fb_num, resolve_pixel_format};
 use crate::devices::gt911::{self, Gt911};
 use crate::devices::st712x_touch::{self, St712xTouch};
 use crate::devices::{ili9881c, st7121, st7123};
 use crate::devices::pi4io::{Pi4io, PinConfig};
-use crate::display::{self, PixelFormat, Size};
+use crate::display;
 use crate::driver::mipi_dsi::MipiDsi;
 use crate::touch::{self, Touch};
 use crate::{Board, Config};
@@ -35,7 +35,6 @@ const LCD_PIN_BL: i32 = 22;
 // The backlight boost driver holds a fixed current floor while enabled;
 // brightness does not change below this duty at 5kHz.
 const LCD_BL_MIN_DUTY: u16 = 1300;
-const PANEL_SIZE: Size = Size { width: 720, height: 1280 };
 
 crate::display::driver_enum! {
     pub(crate) enum Display {
@@ -120,7 +119,7 @@ fn reset_panel_and_touch(pi4ioe1: &mut Pi4io) -> Result<()> {
 fn panel_init(config: &Config, bus: &MasterBus) -> Result<Display> {
     let probe = Duration::from_millis(10);
     let pixel_format = resolve_pixel_format(config);
-    let fb_num = if config.display.fb_num != 0 { config.display.fb_num } else { 2 };
+    let fb_num = resolve_fb_num(config);
     if bus.probe(st712x_touch::ADDR, probe).is_ok() {
         let version = st712x_version(bus);
         info!(TAG, "panel: ST712x (version: {version:?})");
@@ -169,7 +168,7 @@ fn touch_init(bus: &'static MasterBus, display: &Display) -> Option<&'static Tou
         swap_xy: false,
         mirror_x: false,
         mirror_y: false,
-        int_pin: Some(TOUCH_PIN_INT),
+        int: touch::Int::Gpio(TOUCH_PIN_INT),
     };
     let result = match display {
         Display::Ili9881c(_) => Gt911::new(bus, &gt911::Config {
@@ -197,11 +196,4 @@ fn st712x_version(bus: &MasterBus) -> Option<u8> {
         .inspect_err(|err| warn!(TAG, "read ST712x version: {err}"))
         .ok()?;
     Some(version[0])
-}
-
-fn resolve_pixel_format(config: &Config) -> PixelFormat {
-    match config.display.pixel_format {
-        Some(PixelFormat::Rgb888) => PixelFormat::Rgb888,
-        _ => PixelFormat::Rgb565,
-    }
 }

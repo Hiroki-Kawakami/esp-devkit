@@ -43,8 +43,17 @@ pub(crate) struct Config {
     pub swap_xy: bool,
     pub mirror_x: bool,
     pub mirror_y: bool,
-    /// Falling edge on it marks a new sample; `None` polls continuously.
-    pub int_pin: Option<i32>,
+    pub int: Int,
+}
+
+#[allow(dead_code)]
+pub(crate) enum Int {
+    /// Polled continuously.
+    None,
+    /// A falling edge marks a new sample.
+    Gpio(i32),
+    /// The driver calls `Touch::interrupt` on a new sample.
+    External,
 }
 
 struct Snapshot {
@@ -146,7 +155,7 @@ static TOUCH: OnceLock<Touch> = OnceLock::new();
 pub(crate) fn start<D: Driver>(driver: D, config: Config) -> Result<&'static Touch> {
     let touch = TOUCH.get_or_try_init(Touch::new)?;
     touch.wait.get_or_try_init(|| Semaphore::try_new(0, 1))?;
-    if let Some(pin) = config.int_pin {
+    if let Int::Gpio(pin) = config.int {
         attach_int(pin, touch).inspect_err(|err| error!(TAG, "INT on GPIO{pin}: {err}"))?;
     }
     let notifier = dispatch::add(Box::new(TouchSource {
@@ -184,6 +193,19 @@ unsafe extern "C" fn on_int(arg: *mut core::ffi::c_void) {
     }
     if let Some(wait) = touch.wait.get() {
         wait.give_from_isr();
+    }
+}
+
+impl Touch {
+    #[cfg_attr(target_os = "none", allow(dead_code))]
+    pub(crate) fn interrupt(&self) {
+        self.int_pending.store(true, Ordering::Release);
+        if let Some(n) = self.notifier.get() {
+            n.notify();
+        }
+        if let Some(wait) = self.wait.get() {
+            wait.give();
+        }
     }
 }
 
@@ -227,7 +249,7 @@ impl<D: Driver> Source for TouchSource<D> {
             }
         }
 
-        let has_int = self.config.int_pin.is_some();
+        let has_int = !matches!(self.config.int, Int::None);
         let int_pending = self.touch.int_pending.swap(false, Ordering::AcqRel);
         if has_int && !int_pending && self.settled >= DEFAULT_SETTLE_COUNT && !self.down {
             return Next::Idle;
@@ -275,7 +297,7 @@ impl<D: Driver> Source for TouchSource<D> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Config, DEFAULT_SETTLE_COUNT, Driver, Point, Touch, TouchSource};
+    use super::{Config, DEFAULT_SETTLE_COUNT, Driver, Int, Point, Touch, TouchSource};
     use crate::dispatch::{Next, Source};
     use alloc::boxed::Box;
     use alloc::sync::Arc;
@@ -311,13 +333,13 @@ mod tests {
         (src, touched, touch)
     }
 
-    fn config(int_pin: Option<i32>) -> Config {
-        Config { width: 100, height: 200, swap_xy: false, mirror_x: false, mirror_y: false, int_pin }
+    fn config(int: Int) -> Config {
+        Config { width: 100, height: 200, swap_xy: false, mirror_x: false, mirror_y: false, int }
     }
 
     #[test]
     fn read_returns_the_latest_sample() {
-        let (_, _, touch) = source(config(None));
+        let (_, _, touch) = source(config(Int::None));
         let mut out = [Point::default(); 4];
         assert_eq!(touch.read(&mut out), 0);
         touch.publish(&[p(1, 2), p(3, 4)]);
@@ -333,7 +355,7 @@ mod tests {
 
     #[test]
     fn int_driven_source_settles_to_idle() {
-        let (mut src, touched, touch) = source(config(Some(0)));
+        let (mut src, touched, touch) = source(config(Int::External));
         let events: Arc<Mutex<Vec<Vec<Point>>>> = Arc::new(Mutex::new(Vec::new()));
         let sink = events.clone();
         src.callback = Some(Box::new(move |pts| sink.lock().push(pts.to_vec())));
@@ -366,7 +388,7 @@ mod tests {
 
     #[test]
     fn polling_source_never_idles() {
-        let (mut src, _, _) = source(config(None));
+        let (mut src, _, _) = source(config(Int::None));
         for _ in 0..DEFAULT_SETTLE_COUNT * 2 {
             assert!(matches!(src.tick(), Next::After(_)));
         }
@@ -374,7 +396,7 @@ mod tests {
 
     #[test]
     fn orientation_maps_into_display_space() {
-        let (mut src, touched, touch) = source(Config { swap_xy: true, mirror_x: true, mirror_y: true, ..config(None) });
+        let (mut src, touched, touch) = source(Config { swap_xy: true, mirror_x: true, mirror_y: true, ..config(Int::None) });
         *touched.lock() = alloc::vec![p(10, 20)];
         src.tick();
         let mut out = [Point::default(); 1];
@@ -384,7 +406,7 @@ mod tests {
 
     #[test]
     fn callback_is_replaced_on_the_next_tick() {
-        let (mut src, touched, touch) = source(config(None));
+        let (mut src, touched, touch) = source(config(Int::None));
         let count = Arc::new(Mutex::new(0));
         let c = count.clone();
         touch.set_event_cb(Some(Box::new(move |_| *c.lock() += 1)));
