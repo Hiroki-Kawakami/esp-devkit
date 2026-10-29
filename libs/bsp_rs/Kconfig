@@ -1,0 +1,15 @@
+# Board selection for the Rust bsp_rs component. ESP-IDF limits the choice to
+# boards supported by CONFIG_IDF_TARGET; the simulator can select any board.
+
+menu "Board Support Package (Rust)"
+
+choice BSP_RS_BOARD
+    prompt "Target board"
+    default BSP_RS_BOARD_TAB5
+
+    config BSP_RS_BOARD_TAB5
+        bool "M5Stack Tab5 (ESP32-P4)"
+        depends on DEVKIT_SIMULATOR || IDF_TARGET_ESP32P4
+endchoice
+
+endmenu

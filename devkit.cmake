@@ -26,6 +26,7 @@ include("${DEVKIT_ROOT}/tools/rust/rust.cmake")
 set(DEVKIT_DEVICE_COMPONENTS
     bsp
     libs/audio_framework
+    libs/bsp_rs
     libs/compression_framework
     libs/devkit
     libs/esp_hosted_enhanced
@@ -48,6 +49,7 @@ set(DEVKIT_SIMULATOR_COMPONENTS
     idf_compat
     bsp
     libs/audio_framework
+    libs/bsp_rs
     libs/compression_framework
     libs/devkit
     libs/harness
