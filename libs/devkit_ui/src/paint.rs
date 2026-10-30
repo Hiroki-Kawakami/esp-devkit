@@ -51,15 +51,16 @@ impl Tree {
     /// `(dx, dy)` is the origin of `id`'s parent content on the screen.
     fn paint_node<'a>(&'a self, id: NodeId, dx: i32, dy: i32, clip: Rect, opacity: u8, effects: &mut Effects, list: &mut DisplayList<'a, Caps>) {
         let node = &self.nodes[id as usize];
-        let x = dx + i32::from(node.rect.x);
-        let y = dy + i32::from(node.rect.y);
+        let x = dx + i32::from(node.rect.x) + i32::from(node.translate.0);
+        let y = dy + i32::from(node.rect.y) + i32::from(node.translate.1);
         if y >= i32::from(clip.bottom()) || y + i32::from(node.rect.h) + 64 <= i32::from(clip.y) {
             return;
         }
         let (sx, sy) = (x as i16, y as i16);
         let rect = Rect::new(sx, sy, node.rect.w, node.rect.h);
         let style = &node.style;
-        let opacity = style.opacity.map_or(opacity, |o| devkit_gfx::Color::rgba(0, 0, 0, opacity).with_opacity(o).a);
+        let own = node.opacity.or(style.opacity);
+        let opacity = own.map_or(opacity, |o| Color::rgba(0, 0, 0, opacity).with_opacity(o).a);
 
         if let Some(Shadow { y: down, blur, color }) = style.shadow {
             let mask = effects.shadow(blur, style.radius);
@@ -107,7 +108,7 @@ impl Tree {
             _ if style.clip => {
                 let viewport = rect.intersect(&clip);
                 list.push_clip(viewport);
-                self.paint_children(id, dx + i32::from(node.rect.x), dy + i32::from(node.rect.y), viewport, opacity, effects, list);
+                self.paint_children(id, x, y, viewport, opacity, effects, list);
                 list.pop_clip();
             }
             _ => self.paint_children(id, x, y, clip, opacity, effects, list),

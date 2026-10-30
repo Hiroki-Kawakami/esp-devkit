@@ -13,9 +13,10 @@ use core::ptr::{self, NonNull};
 use devkit_gfx::{Align as TextAlign, Color, FontChain, Image, Overflow, TextOptions};
 
 use crate::bump::Bump;
-use crate::component::{AnyHost, Child, EventMap, Host, ListId, call_event_map};
+use crate::component::{AnyHost, Child, EventMap, Host, ListId, Screen, call_event_map, screen_host};
 use crate::erased::Erased;
-use crate::style::{Align, Dimension, Direction, Inset, Justify, Role, Shadow, Style};
+use crate::style::{Align, Dimension, Direction, Inset, Insets, Justify, Role, ScreenStyle, Shadow, Style};
+use crate::theme::Theme;
 
 /// Creates or updates a child component during reconciliation.
 pub(crate) trait ChildSpec {
@@ -65,6 +66,49 @@ pub(crate) enum Content<'a> {
     Scroll,
     List { id: ListId, count: usize, row_height: i16, revision: Option<u32> },
     Child(&'a dyn ChildSpec),
+    Navigator { key: TypeId, initial: Option<&'a dyn ChildSpec> },
+}
+
+/// A drag on a node, in the node's coordinates.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Drag {
+    pub x: i16,
+    pub y: i16,
+    pub width: i16,
+    pub ended: bool,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct DragMap {
+    pub(crate) function: *const (),
+    pub(crate) call: unsafe fn(*const (), Drag) -> Erased,
+}
+
+unsafe fn call_drag_map<M: Copy>(function: *const (), drag: Drag) -> Erased {
+    let function: fn(Drag) -> M = unsafe { core::mem::transmute(function) };
+    Erased::new(function(drag))
+}
+
+struct ScreenElement<S: Child + Screen> {
+    props: S::Props,
+}
+
+impl<S: Child + Screen> ChildSpec for ScreenElement<S> {
+    fn host_type(&self) -> TypeId {
+        TypeId::of::<S>()
+    }
+
+    fn create(&self) -> Box<dyn AnyHost> {
+        screen_host(S::create(&self.props))
+    }
+
+    fn update(&self, _host: &mut dyn AnyHost) -> bool {
+        false
+    }
+
+    fn event_map(&self, _parent: u16) -> Option<EventMap> {
+        None
+    }
 }
 
 /// A description of a node, valid during one rebuild.
@@ -77,12 +121,13 @@ pub struct Element<'a, M: Copy> {
     pub(crate) id: Option<&'static str>,
     pub(crate) role: Role,
     pub(crate) tap: Option<Erased>,
+    pub(crate) drag: Option<DragMap>,
     _msg: PhantomData<fn() -> M>,
 }
 
 impl<'a, M: Copy> Element<'a, M> {
     fn new(content: Content<'a>, children: &'a [Element<'a, M>]) -> Self {
-        Self { content, children, style: Style::default(), key: None, id: None, role: Role::None, tap: None, _msg: PhantomData }
+        Self { content, children, style: Style::default(), key: None, id: None, role: Role::None, tap: None, drag: None, _msg: PhantomData }
     }
 
     pub const fn is_empty(&self) -> bool {
@@ -108,6 +153,12 @@ impl<'a, M: Copy> Element<'a, M> {
 
     pub fn on_tap(mut self, msg: M) -> Self {
         self.tap = Some(Erased::new(msg));
+        self
+    }
+
+    /// Follows a contact from the press on, ahead of any scrolling around it.
+    pub fn on_drag(mut self, on_drag: fn(Drag) -> M) -> Self {
+        self.drag = Some(DragMap { function: on_drag as *const (), call: call_drag_map::<M> });
         self
     }
 
@@ -305,15 +356,44 @@ impl<'a, M: Copy> Children<'a, M> for Vec<Element<'a, M>> {
     }
 }
 
+/// What a view can read about where it is shown.
+#[derive(Clone, Copy)]
+pub(crate) struct BuildContext {
+    pub(crate) theme: &'static Theme,
+    pub(crate) insets: Insets,
+    pub(crate) area: devkit_gfx::Rect,
+    pub(crate) screen_style: ScreenStyle,
+}
+
 /// Builds elements; everything it hands out lives for the rebuild.
 pub struct Ui<M> {
     bump: NonNull<Bump>,
+    context: BuildContext,
     _msg: PhantomData<fn(M)>,
 }
 
 impl<M: Copy> Ui<M> {
-    pub(crate) fn new(bump: NonNull<Bump>) -> Self {
-        Self { bump, _msg: PhantomData }
+    pub(crate) fn new(bump: NonNull<Bump>, context: BuildContext) -> Self {
+        Self { bump, context, _msg: PhantomData }
+    }
+
+    pub fn theme(&self) -> &'static Theme {
+        self.context.theme
+    }
+
+    /// The space the chrome covers.
+    pub fn insets(&self) -> Insets {
+        self.context.insets
+    }
+
+    /// The logical size of the whole UI.
+    pub fn screen_size(&self) -> (i16, i16) {
+        (self.context.area.w, self.context.area.h)
+    }
+
+    /// The style of the screen on top of the root navigator, for the chrome.
+    pub fn screen_style(&self) -> ScreenStyle {
+        self.context.screen_style
     }
 
     fn bump(&self) -> &Bump {
@@ -388,6 +468,14 @@ impl<M: Copy> Ui<M> {
         let mut element = Element::new(Content::List { id, count, row_height, revision: None }, &[]);
         element.role = Role::List;
         element
+    }
+
+    /// A navigator marked by `K`, starting with screen `S`. It takes the space
+    /// the parent gives it and keeps its stack while it stays in the tree.
+    pub fn navigator<'a, K: 'static, S: Child + Screen>(&'a self, props: S::Props) -> Element<'a, M> {
+        let spec = self.bump().alloc(ScreenElement::<S> { props });
+        let spec: &'a ScreenElement<S> = unsafe { &*spec };
+        Element::new(Content::Navigator { key: TypeId::of::<K>(), initial: Some(spec) }, &[]).clip()
     }
 
     /// A child component, kept across rebuilds by position or key.

@@ -9,7 +9,9 @@ use devkit_gfx::{Color, FontChain, Image, Rect, TextOptions, TextRun};
 use idf::heap::Caps;
 
 use crate::component::ListId;
+use crate::element::DragMap;
 use crate::erased::Erased;
+use crate::nav::NavigatorNode;
 use crate::style::{Role, Style};
 
 pub(crate) type NodeId = u32;
@@ -55,6 +57,7 @@ pub(crate) enum NodeContent {
     Scroll(ScrollNode),
     List(ListNode),
     Child(u16),
+    Navigator(NavigatorNode),
 }
 
 impl NodeContent {
@@ -67,7 +70,7 @@ impl NodeContent {
                 | (Self::Image { .. }, C::Image { .. })
                 | (Self::Scroll(_), C::Scroll)
                 | (Self::List(_), C::List { .. })
-        )
+        ) || matches!((self, other), (Self::Navigator(nav), C::Navigator { key, .. }) if nav.key == *key)
     }
 }
 
@@ -82,6 +85,11 @@ pub(crate) struct Node {
     pub(crate) role: Role,
     pub(crate) owner: u16,
     pub(crate) tap: Option<Erased>,
+    pub(crate) drag: Option<DragMap>,
+    /// Moves the node and what is in it, without layout.
+    pub(crate) translate: (i16, i16),
+    /// An animated opacity, over the style's.
+    pub(crate) opacity: Option<u8>,
     /// Relative to the parent's origin.
     pub(crate) rect: Rect,
     /// Where it was last painted.
@@ -106,6 +114,9 @@ impl Node {
             role: Role::None,
             owner,
             tap: None,
+            drag: None,
+            translate: (0, 0),
+            opacity: None,
             rect: Rect::default(),
             screen: Rect::default(),
             paint_dirty: true,

@@ -123,3 +123,28 @@ impl Style {
             && self.absolute == other.absolute
     }
 }
+
+/// What a screen wants from the chrome around it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct ScreenStyle {
+    pub bars: Bars,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Bars {
+    /// Dark content on a light screen.
+    #[default]
+    Dark,
+    /// Light content on a dark screen.
+    Light,
+    Hidden,
+}
+
+/// Space the chrome takes from each edge of the screen.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Insets {
+    pub top: i16,
+    pub bottom: i16,
+    pub left: i16,
+    pub right: i16,
+}

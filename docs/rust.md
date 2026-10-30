@@ -641,27 +641,44 @@ app.run();
 - Sizes are `i16` pixels. A row, column or grid places children by `grow`,
   `gap`, `align` and `justify`; `absolute` takes a child out of the flow.
 - `Handle::post` sends a message to the root component from any task.
+- `Screen` is a component a `Navigator` shows. `ui.navigator::<K, S>(props)`
+  places one, marked by a type `K`, anywhere in a view; `App` adds `Root`, and
+  `Overlay` above the chrome for modals. `cx.nav()` acts on the nearest one,
+  `cx.nav_of::<K>()` on the nearest above, then inside, then anywhere. Moves
+  slide inside the navigator's own area; full screens and panes work alike.
+- A covered screen keeps its state and loses its nodes. List positions and
+  nested navigators come back with it; state of its child components does not.
+- `App::chrome` adds a component above the screens that stays across navigation,
+  with the `Insets` it covers. Screens read them with `ui.insets()` and can avoid
+  them or draw beneath. `ScreenStyle` tells the chrome what the top root screen
+  wants. `Handle`s from `App::chrome` post to that component.
+- `Theme` holds colors, metrics, fonts and motion, read with `ui.theme()`.
+  `Screen::theme` replaces it for a screen, `cx.set_theme` for everything.
+- `devkit_ui::widgets` are functions over the theme. State stays with the caller.
+- `cx.animate(id, animation)` moves a node's offset or opacity, without running a
+  view or layout.
 - `Probe` serves test harnesses: `tree`, `tap` (through the touch path, refused
   when the node is covered), `invoke` (the handler directly), `idle` and `stats`.
 
 Memory goes where `Config` says: `data_caps` for nodes, text, display lists and
 masks, `strip_caps` for the strips and `lane_stack_caps` for the lane stacks;
-`AppConfig` has the glyph cache. Strip memory can change while running, for a UI
-that gives way to something faster:
+`AppConfig` has the glyph cache. The render mode can change while running, apart from
+what the UI shows, for a UI that gives way to something faster:
 
 ```rust
 static SRAM: StaticLease<SharedSram> = StaticLease::new(SharedSram([0; BYTES]));
 
-// Video starts: strips move to PSRAM and the decoder gets the internal RAM.
-let sram = handle.set_strips(Strips::allocate(128 * 1024, Caps::SPIRAM)?, 1)?;
-decoder.start(sram.into_inner::<Lease<SharedSram>>());
-// And back.
-handle.set_strips(Strips::new(decoder.stop()), 2)?;
+// In update: strips move to PSRAM, and the internal RAM comes back.
+let strips = Strips::allocate(128 * 1024, Caps::SPIRAM)?;
+cx.set_render_mode(RenderMode { strips, lanes: 1 }, Msg::VideoReady);
+// Msg::VideoReady:
+decoder.start(cx.take_strips().and_then(Strips::into_inner::<Lease<SharedSram>>));
 ```
 
-- `set_strips` takes effect between frames and returns the memory in use, with
-  nothing drawing in it any more. Before `run`, `App::set_strips` does the same;
-  from the UI task itself `Handle::set_strips` would wait forever.
+- `cx.set_render_mode` takes effect before the next frame; the message then
+  brings the memory given up, with nothing drawing in it any more. From another
+  task `Handle::set_strips` does the same and blocks; it cannot be called from
+  the UI task. Before `run`, use `App::set_strips`.
 - Memory is split into two buffers per lane, and each must hold 16 rows of the
   logical width.
 

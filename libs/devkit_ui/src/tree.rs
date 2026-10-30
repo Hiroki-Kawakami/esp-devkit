@@ -8,6 +8,7 @@ use alloc::collections::VecDeque;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::any::TypeId;
 use core::fmt::Write;
 use core::ptr::NonNull;
 use core::slice;
@@ -16,11 +17,14 @@ use devkit_gfx::Rect;
 use idf::heap::Caps;
 
 use crate::bump::Bump;
-use crate::component::{AnyHost, Component, EventMap, Host};
-use crate::element::{Content, Element};
+use crate::component::{Animation, AnyHost, EventMap, Hook, Host, Property, RenderRequest, Requests, Screen, screen_host};
+use crate::element::{BuildContext, Content, Drag, Element};
 use crate::erased::Erased;
+use crate::nav::{NavigatorNode, Overlay, Root, Saved};
 use crate::node::{ListNode, NONE, Node, NodeContent, NodeId, ScrollNode, TextNode};
-use crate::style::{Dimension, Role};
+use crate::presenter::Strips;
+use crate::style::{Dimension, Insets, Role, ScreenStyle};
+use crate::theme::Theme;
 
 const OVERSCAN_ROWS: i32 = 1;
 const TAP_SLOP: i32 = 12;
@@ -33,10 +37,11 @@ const FLING_STALE_MS: u32 = 80;
 const FLING_DECAY: f32 = 0.0025;
 const MAX_FLING_STEP_MS: f32 = 32.0;
 
-struct Slot {
-    host: Option<Box<dyn AnyHost>>,
-    node: NodeId,
-    events: Option<EventMap>,
+pub(crate) struct Slot {
+    pub(crate) host: Option<Box<dyn AnyHost>>,
+    pub(crate) node: NodeId,
+    pub(crate) events: Option<EventMap>,
+    pub(crate) theme: &'static Theme,
 }
 
 #[derive(Clone, Copy)]
@@ -47,6 +52,7 @@ struct Contact {
     last_ms: u32,
     tap: NodeId,
     scroller: NodeId,
+    drag: NodeId,
     dragging: bool,
     velocity: f32,
 }
@@ -55,6 +61,7 @@ struct Contact {
 struct Hit {
     tap: NodeId,
     scroller: NodeId,
+    drag: NodeId,
 }
 
 /// Everything below the display: components, nodes, layout and gestures.
@@ -63,21 +70,32 @@ pub(crate) struct Tree {
     free: Vec<NodeId>,
     pub(crate) root: NodeId,
     pub(crate) area: Rect,
-    slots: Vec<Slot>,
+    pub(crate) slots: Vec<Slot>,
     lists: Vec<NodeId>,
+    pub(crate) navigators: Vec<NodeId>,
+    pub(crate) root_navigator: NodeId,
+    pub(crate) chrome: Vec<u16>,
+    pub(crate) restoring: Vec<Saved>,
+    pub(crate) theme: &'static Theme,
+    pub(crate) screen_style: ScreenStyle,
+    insets: Insets,
+    pub(crate) render_request: Option<(u16, RenderRequest)>,
+    pending_animations: Vec<(&'static str, Animation)>,
+    animations: Vec<(NodeId, Animation, u32)>,
+    parked_strips: Option<Strips>,
     bump: Box<Bump>,
     caps: Caps,
     depth: u32,
     queue: VecDeque<(u16, Erased)>,
     dirty: Vec<u16>,
-    layout_dirty: bool,
-    damage: Vec<Rect>,
+    pub(crate) layout_dirty: bool,
+    pub(crate) damage: Vec<Rect>,
     contact: Option<Contact>,
     fling: Option<(NodeId, f32)>,
 }
 
 impl Tree {
-    pub(crate) fn new<C: Component>(root: C, area: Rect, caps: Caps) -> Self {
+    pub(crate) fn new<S: Screen>(root: S, area: Rect, caps: Caps, theme: &'static Theme) -> Self {
         let mut tree = Self {
             nodes: Vec::new_in(caps),
             free: Vec::new(),
@@ -85,6 +103,17 @@ impl Tree {
             area,
             slots: Vec::new(),
             lists: Vec::new(),
+            navigators: Vec::new(),
+            root_navigator: NONE,
+            chrome: Vec::new(),
+            restoring: Vec::new(),
+            theme,
+            screen_style: ScreenStyle::default(),
+            insets: Insets::default(),
+            render_request: None,
+            pending_animations: Vec::new(),
+            animations: Vec::new(),
+            parked_strips: None,
             bump: Box::new(Bump::new(caps)),
             caps,
             depth: 0,
@@ -95,17 +124,112 @@ impl Tree {
             contact: None,
             fling: None,
         };
-        tree.root = tree.alloc_node(Node::new(NodeContent::Child(0), 0));
-        tree.slots.push(Slot { host: Some(Box::new(Host::<C> { component: root, props: None })), node: tree.root, events: None });
-        tree.dirty.push(0);
+        tree.root = tree.alloc_node(Node::new(NodeContent::Box, 0));
+        let nav = tree.new_navigator(TypeId::of::<Root>(), 0);
+        tree.root_navigator = nav;
+        tree.add_plane(nav);
+        tree.seed_navigator(nav, screen_host(root));
+        let overlay = tree.new_navigator(TypeId::of::<Overlay>(), 0);
+        tree.add_plane(overlay);
         tree
+    }
+
+    /// Stacks a child over the whole area, above the planes so far.
+    fn add_plane(&mut self, node: NodeId) {
+        self.nodes[node as usize].style.absolute = Some(crate::style::Inset {
+            left: Some(0),
+            top: Some(0),
+            right: Some(0),
+            bottom: Some(0),
+        });
+        self.nodes[node as usize].parent = self.root;
+        let mut child = self.nodes[self.root as usize].first_child;
+        if child == NONE {
+            self.nodes[self.root as usize].first_child = node;
+            return;
+        }
+        while self.nodes[child as usize].next != NONE {
+            child = self.nodes[child as usize].next;
+        }
+        self.nodes[child as usize].next = node;
+    }
+
+    /// Adds a component above the screens that stays across navigation, and
+    /// the space it covers. Must come before the first update.
+    pub(crate) fn add_chrome<C: crate::component::Component>(&mut self, component: C, insets: Insets) -> u16 {
+        let slot = self.alloc_slot();
+        let node = self.alloc_node(Node::new(NodeContent::Child(slot), slot));
+        let index = usize::from(slot);
+        self.slots[index].host = Some(Box::new(Host::<C> { component, props: None }));
+        self.slots[index].node = node;
+        self.slots[index].theme = self.theme;
+        self.chrome.push(slot);
+        self.insets = insets;
+        let overlay = self.navigators[self.navigators.len() - 1];
+        self.nodes[node as usize].style.absolute = Some(crate::style::Inset {
+            left: Some(0),
+            top: Some(0),
+            right: Some(0),
+            bottom: None,
+        });
+        self.nodes[node as usize].parent = self.root;
+        let mut child = self.nodes[self.root as usize].first_child;
+        while self.nodes[child as usize].next != overlay {
+            child = self.nodes[child as usize].next;
+        }
+        self.nodes[child as usize].next = node;
+        self.nodes[node as usize].next = overlay;
+        self.mark_all_dirty();
+        slot
+    }
+
+    fn mark_all_dirty(&mut self) {
+        for slot in 0..self.slots.len() {
+            if self.slots[slot].host.is_some() {
+                self.mark_slot_dirty(slot as u16);
+            }
+        }
+    }
+
+    pub(crate) fn mark_slot_dirty(&mut self, slot: u16) {
+        if !self.dirty.contains(&slot) {
+            self.dirty.push(slot);
+        }
+    }
+
+    pub(crate) fn context(&self, slot: u16) -> BuildContext {
+        BuildContext {
+            theme: self.slots[usize::from(slot)].theme,
+            insets: self.insets,
+            area: self.area,
+            screen_style: self.screen_style,
+        }
+    }
+
+    pub(crate) fn alloc_slot(&mut self) -> u16 {
+        let free = self.slots.iter().position(|s| s.node == NONE);
+        match free {
+            Some(slot) => slot as u16,
+            None => {
+                self.slots.push(Slot { host: None, node: NONE, events: None, theme: self.theme });
+                (self.slots.len() - 1) as u16
+            }
+        }
+    }
+
+    pub(crate) fn run_hook(&mut self, slot: u16, hook: Hook) {
+        let index = usize::from(slot);
+        let Some(mut host) = self.slots[index].host.take() else { return };
+        let requests = host.hook(hook);
+        self.slots[index].host = Some(host);
+        self.apply_requests(slot, requests);
     }
 
     pub(crate) fn bump(&self) -> NonNull<Bump> {
         NonNull::from(&*self.bump)
     }
 
-    fn alloc_node(&mut self, node: Node) -> NodeId {
+    pub(crate) fn alloc_node(&mut self, node: Node) -> NodeId {
         match self.free.pop() {
             Some(id) => {
                 self.nodes[id as usize] = node;
@@ -118,7 +242,7 @@ impl Tree {
         }
     }
 
-    fn free_subtree(&mut self, id: NodeId) {
+    pub(crate) fn free_subtree(&mut self, id: NodeId) {
         let mut child = self.nodes[id as usize].first_child;
         while child != NONE {
             let next = self.nodes[child as usize].next;
@@ -133,6 +257,7 @@ impl Tree {
                 }
                 self.lists.retain(|l| *l != id);
             }
+            NodeContent::Navigator(_) => self.navigators.retain(|n| *n != id),
             NodeContent::Child(slot) => {
                 let slot = usize::from(*slot);
                 self.slots[slot].host = None;
@@ -156,9 +281,10 @@ impl Tree {
         if self.fling.is_some_and(|(node, _)| node == id) {
             self.fling = None;
         }
+        self.animations.retain(|a| a.0 != id);
     }
 
-    fn build_component(&mut self, slot: u16) {
+    pub(crate) fn build_component(&mut self, slot: u16) {
         let index = usize::from(slot);
         let node = self.slots[index].node;
         let Some(host) = self.slots[index].host.take() else { return };
@@ -275,6 +401,7 @@ impl Tree {
         node.id = element.id;
         node.role = element.role;
         node.tap = element.tap;
+        node.drag = element.drag;
     }
 
     fn update_node<M: Copy>(&mut self, owner: u16, id: NodeId, element: &Element<'_, M>) {
@@ -335,6 +462,7 @@ impl Tree {
                 }
                 list.id = *list_id;
             }
+            (NodeContent::Navigator(_), _) => return,
             (NodeContent::Child(slot), Content::Child(spec)) => {
                 let slot = *slot;
                 let index = usize::from(slot);
@@ -370,24 +498,35 @@ impl Tree {
                 NodeContent::List(ListNode { id, count, row_height, revision, offset: 0, rows: Vec::new_in(self.caps), stale: false })
             }
             Content::Child(_) => NodeContent::Box,
+            Content::Navigator { key, .. } => NodeContent::Navigator(NavigatorNode { key, stack: Vec::new(), slide: None }),
         };
         let id = self.alloc_node(Node::new(content, owner));
         self.layout_dirty = true;
         self.apply_common(id, element);
         match element.content {
-            Content::List { .. } => self.lists.push(id),
+            Content::List { id: list_id, .. } => {
+                self.lists.push(id);
+                let saved = self.restoring.last().and_then(|s| s.lists.iter().find(|l| l.0 == list_id));
+                if let (Some(&(_, offset)), NodeContent::List(list)) = (saved, &mut self.nodes[id as usize].content) {
+                    list.offset = offset;
+                }
+            }
+            Content::Navigator { key, initial } => {
+                self.navigators.push(id);
+                if !self.restore_navigator(id, key)
+                    && let Some(spec) = initial
+                {
+                    self.seed_navigator(id, spec.create());
+                }
+                return id;
+            }
             Content::Child(spec) => {
                 let host = spec.create();
-                let slot = match self.slots.iter().position(|s| s.node == NONE) {
-                    Some(free) => free,
-                    None => {
-                        self.slots.push(Slot { host: None, node: NONE, events: None });
-                        self.slots.len() - 1
-                    }
-                };
-                self.slots[slot] = Slot { host: Some(host), node: id, events: spec.event_map(owner) };
-                self.nodes[id as usize].content = NodeContent::Child(slot as u16);
-                self.build_component(slot as u16);
+                let slot = self.alloc_slot();
+                let theme = self.slots[usize::from(owner)].theme;
+                self.slots[usize::from(slot)] = Slot { host: Some(host), node: id, events: spec.event_map(owner), theme };
+                self.nodes[id as usize].content = NodeContent::Child(slot);
+                self.build_component(slot);
                 return id;
             }
             _ => {}
@@ -461,20 +600,46 @@ impl Tree {
         }
     }
 
-    fn dispatch(&mut self, slot: u16, msg: Erased) {
-        let index = usize::from(slot);
-        let Some(mut host) = self.slots[index].host.take() else { return };
-        let update = host.dispatch(msg);
-        self.slots[index].host = Some(host);
-        if update.rebuild && !self.dirty.contains(&slot) {
-            self.dirty.push(slot);
+    fn apply_requests(&mut self, slot: u16, requests: Requests) {
+        if requests.rebuild {
+            self.mark_slot_dirty(slot);
         }
-        self.queue.extend(update.sends.into_iter().map(|m| (slot, m)));
-        if let Some(map) = &self.slots[index].events {
-            for event in update.events {
+        self.queue.extend(requests.sends.into_iter().map(|m| (slot, m)));
+        if let Some(map) = &self.slots[usize::from(slot)].events {
+            for event in requests.events {
                 let parent = unsafe { (map.call)(map.function, event) };
                 self.queue.push_back((map.parent, parent));
             }
+        }
+        if let Some(theme) = requests.theme {
+            self.theme = theme;
+            for s in &mut self.slots {
+                s.theme = theme;
+            }
+            self.mark_all_dirty();
+        }
+        if let Some(render) = requests.render {
+            self.render_request = Some((slot, render));
+        }
+        self.pending_animations.extend(requests.animations);
+        for op in requests.nav {
+            self.apply_nav(slot, op);
+        }
+    }
+
+    fn dispatch(&mut self, slot: u16, msg: Erased) {
+        let index = usize::from(slot);
+        let Some(mut host) = self.slots[index].host.take() else { return };
+        let requests = host.dispatch(msg, self.parked_strips.take());
+        self.slots[index].host = Some(host);
+        self.apply_requests(slot, requests);
+    }
+
+    /// A render mode was applied: `done` arrives with the memory `strips`.
+    pub(crate) fn render_done(&mut self, slot: u16, done: Option<Erased>, strips: Strips) {
+        self.parked_strips = Some(strips);
+        if let Some(done) = done {
+            self.queue.push_back((slot, done));
         }
     }
 
@@ -499,6 +664,59 @@ impl Tree {
             self.sync_list(self.lists[i]);
         }
         self.sync_screen(self.root, 0, 0, self.area, false);
+        if !self.pending_animations.is_empty() {
+            self.start_animations();
+            self.sync_screen(self.root, 0, 0, self.area, false);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn dispatch_animation(&mut self, name: &'static str, animation: Animation) {
+        self.pending_animations.push((name, animation));
+    }
+
+    fn start_animations(&mut self) {
+        for (name, animation) in core::mem::take(&mut self.pending_animations) {
+            match self.find(name) {
+                Some(id) => {
+                    self.animations.retain(|a| a.0 != id || a.1.property != animation.property);
+                    self.animations.push((id, animation, 0));
+                    self.apply_animation(id, &animation, 0);
+                }
+                None => idf::log::error!(c"ui", "animate: no node {name}"),
+            }
+        }
+    }
+
+    fn apply_animation(&mut self, id: NodeId, animation: &Animation, elapsed: u32) {
+        let t = elapsed as f32 / f32::from(animation.duration_ms.max(1));
+        let eased = 1.0 - (1.0 - t) * (1.0 - t) * (1.0 - t);
+        let range = f32::from(animation.to) - f32::from(animation.from);
+        let value = animation.from + (range * eased) as i16;
+        let node = &mut self.nodes[id as usize];
+        match animation.property {
+            Property::TranslateX => node.translate.0 = value,
+            Property::TranslateY => node.translate.1 = value,
+            Property::Opacity => node.opacity = Some(value.clamp(0, 255) as u8),
+        }
+        node.paint_dirty = true;
+    }
+
+    fn tick_animations(&mut self, dt_ms: u32) {
+        let mut i = 0;
+        while let Some(&(id, animation, elapsed)) = self.animations.get(i) {
+            let elapsed = (elapsed + dt_ms).min(u32::from(animation.duration_ms));
+            self.apply_animation(id, &animation, elapsed);
+            if elapsed >= u32::from(animation.duration_ms) {
+                if animation.property == Property::Opacity {
+                    self.nodes[id as usize].opacity = (animation.to < 255).then_some(animation.to.clamp(0, 255) as u8);
+                }
+                self.animations.swap_remove(i);
+            } else {
+                self.animations[i].2 = elapsed;
+                i += 1;
+            }
+        }
     }
 
     fn clear_measured_all(&mut self) {
@@ -509,7 +727,8 @@ impl Tree {
 
     fn sync_screen(&mut self, id: NodeId, dx: i32, dy: i32, clip: Rect, quiet: bool) {
         let node = &mut self.nodes[id as usize];
-        let (x, y) = (dx + i32::from(node.rect.x), dy + i32::from(node.rect.y));
+        let x = dx + i32::from(node.rect.x) + i32::from(node.translate.0);
+        let y = dy + i32::from(node.rect.y) + i32::from(node.translate.1);
         let visible = y < i32::from(clip.bottom()) && y + i32::from(node.rect.h) > i32::from(clip.y);
         let screen = if visible { Rect::new(x as i16, y as i16, node.rect.w, node.rect.h) } else { Rect::default() };
         let quiet = quiet || core::mem::take(&mut node.scrolled);
@@ -561,13 +780,15 @@ impl Tree {
         self.queue.is_empty()
             && self.dirty.is_empty()
             && self.fling.is_none()
+            && !self.sliding()
+            && self.animations.is_empty()
             && self.contact.is_none()
             && self.damage.is_empty()
             && !self.layout_dirty
     }
 
     pub(crate) fn animating(&self) -> bool {
-        self.fling.is_some()
+        self.fling.is_some() || self.sliding() || !self.animations.is_empty()
     }
 
     fn scroll_by(&mut self, id: NodeId, delta: i32) -> bool {
@@ -591,12 +812,16 @@ impl Tree {
 
     fn hit(&self, id: NodeId, dx: i32, dy: i32, x: i32, y: i32) -> Option<Hit> {
         let node = &self.nodes[id as usize];
-        let (left, top) = (dx + i32::from(node.rect.x), dy + i32::from(node.rect.y));
+        let left = dx + i32::from(node.rect.x) + i32::from(node.translate.0);
+        let top = dy + i32::from(node.rect.y) + i32::from(node.translate.1);
         let right = left + i32::from(node.rect.w);
         let bottom = top + i32::from(node.rect.h);
         let inside = x >= left && x < right && y >= top && y < bottom;
         let clips = node.style.clip || matches!(node.content, NodeContent::Scroll(_) | NodeContent::List(_));
         if !inside && clips {
+            return None;
+        }
+        if matches!(&node.content, NodeContent::Navigator(nav) if nav.slide.is_some()) {
             return None;
         }
         let [pad_left, pad_top, _, _] = node.style.padding;
@@ -616,10 +841,12 @@ impl Tree {
                 if hit.scroller == NONE && scrollable {
                     hit.scroller = id;
                 }
+            } else if node.drag.is_some() {
+                found = Some(Hit { tap: NONE, scroller: NONE, drag: id });
             } else if node.tap.is_some() {
-                found = Some(Hit { tap: id, scroller: if scrollable { id } else { NONE } });
+                found = Some(Hit { tap: id, scroller: if scrollable { id } else { NONE }, drag: NONE });
             } else if scrollable {
-                found = Some(Hit { tap: NONE, scroller: id });
+                found = Some(Hit { tap: NONE, scroller: id, drag: NONE });
             }
         }
         found
@@ -652,19 +879,22 @@ impl Tree {
             (None, Some(p)) => {
                 self.fling = None;
                 let hit = self.hit(self.root, 0, 0, i32::from(p.0), i32::from(p.1));
-                let hit = hit.unwrap_or(Hit { tap: NONE, scroller: NONE });
+                let hit = hit.unwrap_or(Hit { tap: NONE, scroller: NONE, drag: NONE });
                 self.set_pressed(hit.tap, true);
+                self.send_drag(hit.drag, p, false);
                 self.contact = Some(Contact {
                     start: p,
                     last: p,
                     last_ms: now_ms,
                     tap: hit.tap,
                     scroller: hit.scroller,
+                    drag: hit.drag,
                     dragging: false,
                     velocity: 0.0,
                 });
             }
             (Some(mut contact), Some(p)) => {
+                self.send_drag(contact.drag, p, false);
                 let moved = i32::from(p.1) - i32::from(contact.start.1);
                 let starting = !contact.dragging && moved.abs() > TAP_SLOP && contact.scroller != NONE;
                 if starting {
@@ -689,6 +919,7 @@ impl Tree {
             (Some(contact), None) => {
                 self.contact = None;
                 self.set_pressed(contact.tap, false);
+                self.send_drag(contact.drag, contact.last, true);
                 if contact.dragging {
                     let rest = now_ms.wrapping_sub(contact.last_ms);
                     if rest < FLING_STALE_MS && contact.velocity.abs() > FLING_MIN {
@@ -705,8 +936,22 @@ impl Tree {
         }
     }
 
-    /// Advances inertial scrolling.
+    fn send_drag(&mut self, id: NodeId, point: (i16, i16), ended: bool) {
+        if id == NONE {
+            return;
+        }
+        let node = &self.nodes[id as usize];
+        let Some(map) = node.drag else { return };
+        let screen = node.screen;
+        let drag = Drag { x: point.0 - screen.x, y: point.1 - screen.y, width: screen.w, ended };
+        let msg = unsafe { (map.call)(map.function, drag) };
+        self.queue.push_back((node.owner, msg));
+    }
+
+    /// Advances what moves by itself.
     pub(crate) fn tick(&mut self, dt_ms: u32) {
+        self.tick_slides(dt_ms);
+        self.tick_animations(dt_ms);
         let Some((id, velocity)) = self.fling else { return };
         let dt = (dt_ms as f32).min(MAX_FLING_STEP_MS);
         let step = (velocity * dt_ms as f32) as i32;

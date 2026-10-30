@@ -13,6 +13,7 @@ use idf::heap::Caps;
 use crate::*;
 use crate::node::NodeContent;
 use crate::tree::Tree;
+use crate::widgets;
 
 const SCREEN: Rect = Rect::new(0, 0, 400, 600);
 const WHITE: Color = Color::rgb(255, 255, 255);
@@ -56,13 +57,19 @@ fn chain() -> &'static FontChain {
     Box::leak(Box::new(FontChain::new(Vec::leak(alloc::vec![font]))))
 }
 
+fn theme() -> &'static Theme {
+    let chain = chain();
+    Box::leak(Box::new(Theme::light(Fonts { title: chain, body: chain, caption: chain, icons: chain })))
+}
+
 fn run(tree: &mut Tree) -> Vec<Rect> {
     tree.update();
     tree.take_damage()
 }
 
 fn rect_of(tree: &Tree, id: &str) -> Rect {
-    tree.nodes[tree.find(id).unwrap() as usize].screen
+    let found = tree.find(id).unwrap_or_else(|| panic!("no {id} in {}", tree.describe()));
+    tree.nodes[found as usize].screen
 }
 
 fn tap(tree: &mut Tree, id: &str) {
@@ -174,6 +181,8 @@ impl Component for Counter {
     }
 }
 
+impl Screen for Sample {}
+
 impl Child for Counter {
     fn create(props: &bool) -> Self {
         Self { value: 0, big: *props, views: 0 }
@@ -187,7 +196,7 @@ impl Child for Counter {
 
 #[test]
 fn flex_lays_out_fixed_grow_and_cross_alignment() {
-    let mut tree = Tree::new(Sample::new(), SCREEN, Caps::INTERNAL);
+    let mut tree = Tree::new(Sample::new(), SCREEN, Caps::INTERNAL, theme());
     run(&mut tree);
     assert_eq!(rect_of(&tree, "button"), Rect::new(350, 5, 40, 30));
     let count = rect_of(&tree, "count");
@@ -202,7 +211,7 @@ fn flex_lays_out_fixed_grow_and_cross_alignment() {
 
 #[test]
 fn tap_runs_the_handler_and_changes_only_what_changed() {
-    let mut tree = Tree::new(Sample::new(), SCREEN, Caps::INTERNAL);
+    let mut tree = Tree::new(Sample::new(), SCREEN, Caps::INTERNAL, theme());
     run(&mut tree);
     let id = tree.find("count").unwrap();
     tap(&mut tree, "button");
@@ -217,7 +226,7 @@ fn tap_runs_the_handler_and_changes_only_what_changed() {
 fn press_needs_no_rebuild() {
     let sample = Sample::new();
     let views = sample.views;
-    let mut tree = Tree::new(sample, SCREEN, Caps::INTERNAL);
+    let mut tree = Tree::new(sample, SCREEN, Caps::INTERNAL, theme());
     run(&mut tree);
     let before = views.get();
     let point = tree.tap_point("button").unwrap();
@@ -229,7 +238,7 @@ fn press_needs_no_rebuild() {
 
 #[test]
 fn keys_keep_nodes_when_siblings_move() {
-    let mut tree = Tree::new(Sample::new(), SCREEN, Caps::INTERNAL);
+    let mut tree = Tree::new(Sample::new(), SCREEN, Caps::INTERNAL, theme());
     run(&mut tree);
     let (a, b) = (tree.find("a").unwrap(), tree.find("b").unwrap());
     tree.post(0, crate::erased::Erased::new(Msg::Reorder));
@@ -241,7 +250,7 @@ fn keys_keep_nodes_when_siblings_move() {
 
 #[test]
 fn removed_nodes_damage_their_area_and_are_reused() {
-    let mut tree = Tree::new(Sample::new(), SCREEN, Caps::INTERNAL);
+    let mut tree = Tree::new(Sample::new(), SCREEN, Caps::INTERNAL, theme());
     run(&mut tree);
     tree.post(0, crate::erased::Erased::new(Msg::Toggle));
     run(&mut tree);
@@ -261,7 +270,7 @@ fn removed_nodes_damage_their_area_and_are_reused() {
 fn child_state_survives_and_events_reach_the_parent() {
     let sample = Sample::new();
     let views = sample.views;
-    let mut tree = Tree::new(sample, SCREEN, Caps::INTERNAL);
+    let mut tree = Tree::new(sample, SCREEN, Caps::INTERNAL, theme());
     run(&mut tree);
     let before = views.get();
     tap(&mut tree, "counter");
@@ -275,7 +284,7 @@ fn child_state_survives_and_events_reach_the_parent() {
 
 #[test]
 fn list_builds_only_visible_rows_and_keeps_them_while_scrolling() {
-    let mut tree = Tree::new(Sample::new(), SCREEN, Caps::INTERNAL);
+    let mut tree = Tree::new(Sample::new(), SCREEN, Caps::INTERNAL, theme());
     run(&mut tree);
     let list_id = tree.find("list").unwrap();
     let rows = |tree: &Tree| match &tree.nodes[list_id as usize].content {
@@ -316,6 +325,7 @@ fn a_new_string_of_the_same_box_skips_layout_and_a_revision_keeps_rows() {
         revision: u32,
         rows: &'static core::cell::Cell<u32>,
     }
+    impl Screen for Label {}
     impl Component for Label {
         type Msg = Set;
         fn update(&mut self, msg: Set, cx: &mut Cx<Self>) {
@@ -334,7 +344,7 @@ fn a_new_string_of_the_same_box_skips_layout_and_a_revision_keeps_rows() {
         }
     }
     let rows = Box::leak(Box::new(core::cell::Cell::new(0)));
-    let mut tree = Tree::new(Label { font: chain(), value: 2, revision: 0, rows }, SCREEN, Caps::INTERNAL);
+    let mut tree = Tree::new(Label { font: chain(), value: 2, revision: 0, rows }, SCREEN, Caps::INTERNAL, theme());
     run(&mut tree);
     let built = rows.get();
     assert!(built > 0);
@@ -348,7 +358,7 @@ fn a_new_string_of_the_same_box_skips_layout_and_a_revision_keeps_rows() {
 
 #[test]
 fn a_fling_survives_a_slow_last_sample_but_not_a_pause() {
-    let mut tree = Tree::new(Sample::new(), SCREEN, Caps::INTERNAL);
+    let mut tree = Tree::new(Sample::new(), SCREEN, Caps::INTERNAL, theme());
     run(&mut tree);
     let viewport = rect_of(&tree, "list");
     let x = viewport.x + 10;
@@ -373,7 +383,7 @@ fn a_fling_survives_a_slow_last_sample_but_not_a_pause() {
 
 #[test]
 fn repeated_samples_leave_the_speed_alone_and_a_short_tick_keeps_the_fling() {
-    let mut tree = Tree::new(Sample::new(), SCREEN, Caps::INTERNAL);
+    let mut tree = Tree::new(Sample::new(), SCREEN, Caps::INTERNAL, theme());
     run(&mut tree);
     let viewport = rect_of(&tree, "list");
     let x = viewport.x + 10;
@@ -397,7 +407,7 @@ fn repeated_samples_leave_the_speed_alone_and_a_short_tick_keeps_the_fling() {
 
 #[test]
 fn drag_cancels_the_tap_of_a_row() {
-    let mut tree = Tree::new(Sample::new(), SCREEN, Caps::INTERNAL);
+    let mut tree = Tree::new(Sample::new(), SCREEN, Caps::INTERNAL, theme());
     run(&mut tree);
     let point = tree.tap_point("row2").unwrap();
     tree.touch(Some(point), 0);
@@ -409,7 +419,7 @@ fn drag_cancels_the_tap_of_a_row() {
 
 #[test]
 fn covered_nodes_refuse_harness_taps_and_invoke_goes_direct() {
-    let mut tree = Tree::new(Sample::new(), SCREEN, Caps::INTERNAL);
+    let mut tree = Tree::new(Sample::new(), SCREEN, Caps::INTERNAL, theme());
     run(&mut tree);
     tree.invoke("row2").unwrap();
     run(&mut tree);
@@ -424,6 +434,7 @@ fn grid_and_absolute_inset() {
     #[derive(Clone, Copy)]
     enum Nothing {}
     struct Grid(&'static FontChain);
+    impl Screen for Grid {}
     impl Component for Grid {
         type Msg = Nothing;
         fn update(&mut self, _: Nothing, _: &mut Cx<Self>) {}
@@ -442,12 +453,263 @@ fn grid_and_absolute_inset() {
             ])
         }
     }
-    let mut tree = Tree::new(Grid(chain()), Rect::new(0, 0, 320, 200), Caps::INTERNAL);
+    let mut tree = Tree::new(Grid(chain()), Rect::new(0, 0, 320, 200), Caps::INTERNAL, theme());
     run(&mut tree);
     assert_eq!(rect_of(&tree, "c1"), Rect::new(5 + 106, 0, 96, 20));
     assert_eq!(rect_of(&tree, "c3"), Rect::new(5, 30, 96, 96));
     assert_eq!(rect_of(&tree, "clipped").w, 50);
     assert_eq!(rect_of(&tree, "cover"), Rect::new(0, 0, 320, 200));
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum PageMsg {
+    Open,
+    OpenRoot,
+    Back,
+    Nothing,
+    Slide(u8),
+}
+
+struct Page {
+    name: &'static str,
+    font: &'static FontChain,
+    log: &'static core::cell::RefCell<Vec<(&'static str, &'static str)>>,
+    opens: u32,
+    value: u8,
+}
+
+impl Page {
+    fn new(name: &'static str, log: &'static core::cell::RefCell<Vec<(&'static str, &'static str)>>) -> Self {
+        Self { name, font: chain(), log, opens: 0, value: 0 }
+    }
+
+    fn note(&self, event: &'static str) {
+        self.log.borrow_mut().push((self.name, event));
+    }
+}
+
+impl Component for Page {
+    type Msg = PageMsg;
+
+    fn update(&mut self, msg: PageMsg, cx: &mut Cx<Self>) {
+        match msg {
+            PageMsg::Open => {
+                self.opens += 1;
+                cx.nav_of::<Pane>().push(Page::new("detail", self.log));
+            }
+            PageMsg::OpenRoot => cx.nav_of::<Root>().push(Page::new("full", self.log)),
+            PageMsg::Back => cx.nav().pop(),
+            PageMsg::Slide(value) => self.value = value,
+            PageMsg::Nothing => {}
+        }
+        cx.rebuild();
+    }
+
+    fn view<'a>(&'a self, ui: &'a Ui<PageMsg>) -> Element<'a, PageMsg> {
+        ui.column([
+            ui.text(self.font, ui.format(format_args!("{} {}", self.name, self.opens))).id(self.name),
+            ui.row([]).size(40, 40).id("open").on_tap(PageMsg::Open),
+            ui.row([]).size(40, 40).id("open-root").on_tap(PageMsg::OpenRoot),
+            ui.row([]).size(40, 40).id("back").on_tap(PageMsg::Back),
+            widgets::slider(ui, self.value, 200, |d| PageMsg::Slide(widgets::slider_value(d))).id("slider"),
+            ui.list(0, 100, 50).id("rows").grow(1),
+        ])
+    }
+
+    fn list_row<'a>(&'a self, _: ListId, _: usize, ui: &'a Ui<PageMsg>) -> Element<'a, PageMsg> {
+        ui.column([]).height(50).on_tap(PageMsg::Nothing)
+    }
+}
+
+impl Screen for Page {
+    fn on_enter(&mut self, _: &mut Cx<Self>) {
+        self.note("enter");
+    }
+    fn on_exit(&mut self, _: &mut Cx<Self>) {
+        self.note("exit");
+    }
+    fn on_appear(&mut self, _: &mut Cx<Self>) {
+        self.note("appear");
+    }
+    fn on_disappear(&mut self, _: &mut Cx<Self>) {
+        self.note("disappear");
+    }
+}
+
+impl Child for Page {
+    fn create(_: &()) -> Self {
+        Page::new("pane", SPLIT_LOG.with(|l| *l))
+    }
+    fn set_props(&mut self, _: &()) {}
+}
+
+struct Pane;
+
+std::thread_local! {
+    static SPLIT_LOG: &'static core::cell::RefCell<Vec<(&'static str, &'static str)>> = Box::leak(Box::new(core::cell::RefCell::new(Vec::new())));
+}
+
+struct Split {
+    page: Page,
+}
+
+impl Component for Split {
+    type Msg = PageMsg;
+
+    fn update(&mut self, msg: PageMsg, cx: &mut Cx<Self>) {
+        self.page.update(msg, unsafe { &mut *(cx as *mut Cx<Self>).cast::<Cx<Page>>() });
+    }
+
+    fn view<'a>(&'a self, ui: &'a Ui<PageMsg>) -> Element<'a, PageMsg> {
+        ui.row([
+            ui.column([ui.row([]).size(40, 40).id("side-open").on_tap(PageMsg::Open)]).width(100),
+            ui.navigator::<Pane, Page>(()).grow(1).id("pane-nav"),
+        ])
+    }
+}
+
+impl Screen for Split {}
+
+fn settle(tree: &mut Tree) {
+    for _ in 0..40 {
+        tree.update();
+        tree.tick(16);
+    }
+    tree.update();
+    tree.take_damage();
+}
+
+#[test]
+fn a_pane_navigates_inside_its_area_and_the_root_over_everything() {
+    let log = SPLIT_LOG.with(|l| *l);
+    let mut tree = Tree::new(Split { page: Page::new("split", log) }, SCREEN, Caps::INTERNAL, theme());
+    settle(&mut tree);
+    assert_eq!(rect_of(&tree, "pane").x, 100);
+
+    tap(&mut tree, "side-open");
+    assert!(tree.animating());
+    tree.tick(16);
+    let damage = run(&mut tree);
+    assert!(damage.iter().all(|r| r.is_empty() || r.x >= 100), "a pane transition stays in the pane: {damage:?}");
+    settle(&mut tree);
+    assert_eq!(rect_of(&tree, "detail").x, 100);
+    assert!(tree.find("pane").is_none(), "the covered screen has no nodes");
+
+    tap(&mut tree, "back");
+    settle(&mut tree);
+    assert!(tree.find("pane").is_some());
+    assert!(tree.find("detail").is_none());
+    assert!(log.borrow().contains(&("detail", "exit")));
+
+    tap(&mut tree, "open-root");
+    settle(&mut tree);
+    assert_eq!(rect_of(&tree, "full").x, 0);
+    assert!(tree.find("side-open").is_none());
+    tap(&mut tree, "back");
+    settle(&mut tree);
+    assert!(tree.find("side-open").is_some());
+    assert!(tree.find("pane").is_some(), "the pane comes back with the screen around it");
+}
+
+#[test]
+fn state_and_scroll_position_come_back_and_taps_wait_for_the_slide() {
+    let log = Box::leak(Box::new(core::cell::RefCell::new(Vec::new())));
+    let mut tree = Tree::new(PageRoot(Page::new("first", log)), SCREEN, Caps::INTERNAL, theme());
+    settle(&mut tree);
+    let list = rect_of(&tree, "rows");
+    let x = list.x + 10;
+    tree.touch(Some((x, list.y + 200)), 0);
+    tree.touch(Some((x, list.y + 100)), 500);
+    tree.touch(Some((x, list.y + 50)), 1000);
+    tree.touch(None, 2000);
+    settle(&mut tree);
+    let offset = |tree: &Tree, name: &str| match &tree.nodes[tree.find(name).unwrap() as usize].content {
+        NodeContent::List(list) => list.offset,
+        _ => panic!(),
+    };
+    let before = offset(&tree, "rows");
+    assert!(before > 0);
+
+    tree.invoke("open-root").unwrap();
+    tree.update();
+    assert!(tree.tap_point("open").is_err(), "taps wait for the slide");
+    settle(&mut tree);
+    tap(&mut tree, "back");
+    settle(&mut tree);
+    assert_eq!(offset(&tree, "rows"), before);
+    let NodeContent::Text(text) = &tree.nodes[tree.find("first").unwrap() as usize].content else { panic!() };
+    assert_eq!(text.text(), "first 0");
+    let events: Vec<_> = log.borrow().iter().filter(|e| e.0 == "first").map(|e| e.1).collect();
+    assert_eq!(events, ["enter", "appear", "disappear", "appear"]);
+}
+
+struct PageRoot(Page);
+
+impl Component for PageRoot {
+    type Msg = PageMsg;
+    fn update(&mut self, msg: PageMsg, cx: &mut Cx<Self>) {
+        self.0.update(msg, unsafe { &mut *(cx as *mut Cx<Self>).cast::<Cx<Page>>() });
+    }
+    fn view<'a>(&'a self, ui: &'a Ui<PageMsg>) -> Element<'a, PageMsg> {
+        self.0.view(ui)
+    }
+    fn list_row<'a>(&'a self, list: ListId, index: usize, ui: &'a Ui<PageMsg>) -> Element<'a, PageMsg> {
+        self.0.list_row(list, index, ui)
+    }
+}
+
+impl Screen for PageRoot {
+    fn on_enter(&mut self, _: &mut Cx<Self>) {
+        self.0.note("enter");
+    }
+    fn on_appear(&mut self, _: &mut Cx<Self>) {
+        self.0.note("appear");
+    }
+    fn on_disappear(&mut self, _: &mut Cx<Self>) {
+        self.0.note("disappear");
+    }
+}
+
+#[test]
+fn a_drag_follows_the_contact_without_a_tap_slop() {
+    let log = Box::leak(Box::new(core::cell::RefCell::new(Vec::new())));
+    let mut tree = Tree::new(PageRoot(Page::new("first", log)), SCREEN, Caps::INTERNAL, theme());
+    settle(&mut tree);
+    let slider = rect_of(&tree, "slider");
+    tree.touch(Some((slider.x + 100, slider.y + 10)), 0);
+    tree.update();
+    let filled = |tree: &Tree| tree.nodes[tree.find("slider").unwrap() as usize].first_child;
+    let track = filled(&tree);
+    let fill = tree.nodes[track as usize].next;
+    assert_eq!(tree.nodes[fill as usize].rect.w, 99);
+    tree.touch(Some((slider.x + 150, slider.y + 10)), 16);
+    tree.update();
+    assert_eq!(tree.nodes[fill as usize].rect.w, 149);
+    tree.touch(None, 32);
+    tree.update();
+}
+
+#[test]
+fn an_animation_moves_a_node_without_a_rebuild() {
+    let sample = Sample::new();
+    let views = sample.views;
+    let mut tree = Tree::new(sample, SCREEN, Caps::INTERNAL, theme());
+    run(&mut tree);
+    let before = views.get();
+    let id = tree.find("button").unwrap();
+    tree.dispatch_animation("button", Animation { property: Property::TranslateX, from: -40, to: 0, duration_ms: 100 });
+    let damage = run(&mut tree);
+    assert_eq!(tree.nodes[id as usize].translate.0, -40);
+    assert!(!damage.is_empty());
+    assert!(tree.animating());
+    tree.tick(50);
+    let middle = tree.nodes[id as usize].translate.0;
+    assert!((-10..0).contains(&middle), "{middle}");
+    tree.tick(50);
+    assert_eq!(tree.nodes[id as usize].translate.0, 0);
+    assert!(!tree.animating());
+    run(&mut tree);
+    assert_eq!(views.get(), before);
 }
 
 #[test]

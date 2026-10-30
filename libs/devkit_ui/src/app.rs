@@ -20,10 +20,12 @@ use idf::sync::{Mutex, Receiver, Semaphore, Sender, channel};
 use idf::thread;
 use idf::time::Instant;
 
-use crate::component::Component;
+use crate::component::{Component, Screen};
 use crate::erased::Erased;
 use crate::paint::Effects;
 use crate::presenter::{Config, Presenter, Strips};
+use crate::style::Insets;
+use crate::theme::Theme;
 use crate::tree::Tree;
 
 const TAG: &CStr = c"ui";
@@ -34,14 +36,15 @@ const TAP_HOLD: Duration = Duration::from_millis(40);
 const ROOT: u16 = 0;
 
 pub struct AppConfig {
+    pub theme: &'static Theme,
     pub presenter: Config,
     pub glyph_cache_bytes: usize,
     pub glyph_cache_caps: Caps,
 }
 
-impl Default for AppConfig {
-    fn default() -> Self {
-        Self { presenter: Config::default(), glyph_cache_bytes: 128 * 1024, glyph_cache_caps: Caps::SPIRAM }
+impl AppConfig {
+    pub fn new(theme: &'static Theme) -> Self {
+        Self { theme, presenter: Config::default(), glyph_cache_bytes: 128 * 1024, glyph_cache_caps: Caps::SPIRAM }
     }
 }
 
@@ -67,7 +70,7 @@ struct StripSwap {
 enum Event {
     SetStrips(Arc<StripSwap>),
     Touch(Option<(u16, u16)>, u32),
-    Post(Erased),
+    Post(u16, Erased),
     Ask(Arc<Exchange>),
 }
 
@@ -114,22 +117,23 @@ impl Shared {
     }
 }
 
-/// Posts messages to the root component from any task.
+/// Posts messages to a component from any task.
 pub struct Handle<M> {
     shared: Arc<Shared>,
+    slot: u16,
     _msg: PhantomData<fn(M)>,
 }
 
 impl<M> Clone for Handle<M> {
     fn clone(&self) -> Self {
-        Self { shared: self.shared.clone(), _msg: PhantomData }
+        Self { shared: self.shared.clone(), slot: self.slot, _msg: PhantomData }
     }
 }
 
 impl<M: Copy> Handle<M> {
     /// `false` when the queue is full.
     pub fn post(&self, msg: M) -> bool {
-        self.shared.send(Event::Post(Erased::new(msg)))
+        self.shared.send(Event::Post(self.slot, Erased::new(msg)))
     }
 
     /// `Presenter::set_strips` between frames. Blocks for the running frame, so
@@ -226,7 +230,7 @@ fn note(stage: &mut (u32, u32), from: Instant) -> Instant {
 }
 
 /// Runs a component tree on the display.
-pub struct App<C: Component> {
+pub struct App<C: Screen> {
     shared: Arc<Shared>,
     receiver: Receiver<Event>,
     tree: Tree,
@@ -238,7 +242,7 @@ pub struct App<C: Component> {
     _root: PhantomData<fn(C)>,
 }
 
-impl<C: Component> App<C> {
+impl<C: Screen> App<C> {
     pub fn new(display: &'static Display, touch: Option<&'static Touch>, root: C, config: &AppConfig) -> idf::Result<Self> {
         let presenter = Presenter::new(display, &config.presenter)?;
         let (events, receiver) = channel(QUEUE_DEPTH);
@@ -264,7 +268,7 @@ impl<C: Component> App<C> {
         Ok(Self {
             shared,
             receiver,
-            tree: Tree::new(root, area, config.presenter.data_caps),
+            tree: Tree::new(root, area, config.presenter.data_caps, config.theme),
             presenter,
             cache: GlyphCache::new_in(config.glyph_cache_bytes, config.glyph_cache_caps),
             effects: Effects::new(config.presenter.data_caps),
@@ -274,13 +278,20 @@ impl<C: Component> App<C> {
         })
     }
 
+    /// Adds a component above the screens that stays across navigation, and
+    /// the space it covers.
+    pub fn chrome<B: Component>(&mut self, component: B, insets: Insets) -> Handle<B::Msg> {
+        let slot = self.tree.add_chrome(component, insets);
+        Handle { shared: self.shared.clone(), slot, _msg: PhantomData }
+    }
+
     /// `Presenter::set_strips` before `run`.
     pub fn set_strips(&mut self, strips: Strips, lanes: usize) -> Result<Strips, Strips> {
         self.presenter.set_strips(strips, lanes)
     }
 
     pub fn handle(&self) -> Handle<C::Msg> {
-        Handle { shared: self.shared.clone(), _msg: PhantomData }
+        Handle { shared: self.shared.clone(), slot: ROOT, _msg: PhantomData }
     }
 
     pub fn probe(&self) -> Probe {
@@ -301,7 +312,7 @@ impl<C: Component> App<C> {
                 let logical = point.map(|(x, y)| self.shared.to_logical(x, y));
                 self.tree.touch(logical, sampled_ms);
             }
-            Event::Post(msg) => self.tree.post(ROOT, msg),
+            Event::Post(slot, msg) => self.tree.post(slot, msg),
             Event::Ask(exchange) => {
                 self.tree.update();
                 let answer = match &exchange.question {
@@ -323,9 +334,19 @@ impl<C: Component> App<C> {
         }
     }
 
+    fn apply_render_mode(&mut self) {
+        let Some((slot, request)) = self.tree.render_request.take() else { return };
+        let given_up = match self.presenter.set_strips(request.strips, request.lanes) {
+            Ok(old) => old,
+            Err(same) => same,
+        };
+        self.tree.render_done(slot, request.reply, given_up);
+    }
+
     fn frame(&mut self) {
         let start = Instant::now();
         self.tree.update();
+        self.apply_render_mode();
         let mut update = (0, 0);
         let updated = note(&mut update, start);
         let damage = self.tree.take_damage();

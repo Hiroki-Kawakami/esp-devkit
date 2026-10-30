@@ -26,19 +26,18 @@ use core::time::Duration;
 use bsp_rs::Board;
 use bsp_rs::display::{Display, PixelFormat};
 use devkit::StaticLease;
-use devkit_ui::{App, AppConfig, Handle, Rotation, Strips};
+use devkit_ui::{App, AppConfig, Insets, Rotation, Strips};
 use idf::heap::Caps;
 use idf::log::{error, info};
 use idf::sync::{Mutex, Semaphore};
 use idf::{system, thread};
 
 use bench::{Bench, Params, Present};
-use demo::{FileBrowser, Msg};
+use demo::{FileManager, INSET_TOP, LIGHT, SPARE_STRIPS, StatusBar, StatusMsg};
 use scene::Kind;
 
 const TAG: &CStr = c"ui_demo";
 const SETTINGS_VALID: u32 = 0x5549_4445;
-const SECOND: Duration = Duration::from_secs(1);
 const STRIP_BYTES: usize = 4 * 64 * 1024;
 const VIDEO_STRIP_BYTES: usize = 2 * 64 * 1024;
 
@@ -162,7 +161,7 @@ pub fn run() {
 }
 
 fn run_demo(board: &Board, display: &'static Display, settings: &Settings) {
-    let mut config = AppConfig::default();
+    let mut config = AppConfig::new(&LIGHT);
     if settings.rotated {
         config.presenter.rotation = Rotation::R90;
     }
@@ -174,7 +173,7 @@ fn run_demo(board: &Board, display: &'static Display, settings: &Settings) {
     }
     config.presenter.strip_bytes = VIDEO_STRIP_BYTES;
     config.presenter.strip_caps = Caps::SPIRAM;
-    let mut app = match App::new(display, board.touch, FileBrowser::new(), &config) {
+    let mut app = match App::new(display, board.touch, FileManager, &config) {
         Ok(app) => app,
         Err(err) => {
             error!(TAG, "app: {err}");
@@ -186,33 +185,29 @@ fn run_demo(board: &Board, display: &'static Display, settings: &Settings) {
         let probe = probe.clone();
         harness_rs::set_idle(move || probe.idle());
     }
-    let handle = app.handle();
+    let status = app.chrome(StatusBar::new(), Insets { top: INSET_TOP, ..Insets::default() });
     let Some(sram) = SRAM.take() else {
         error!(TAG, "strips: taken");
         return;
     };
-    let spare = match app.set_strips(Strips::new(sram), 2) {
-        Ok(video) => video,
+    match app.set_strips(Strips::new(sram), 2) {
+        Ok(video) => *SPARE_STRIPS.lock() = Some(video),
         Err(_) => {
             error!(TAG, "strips: refused");
             return;
         }
-    };
-    let spare = Mutex::new((Some(spare), true));
-    let strips = handle.clone();
+    }
     harness_rs::register("ui", move |args| match args {
         ["tree"] => probe.tree().map(Some),
         ["stats"] => probe.stats().map(Some),
         ["tap", id] => probe.tap(id).map(|()| None),
         ["invoke", id] => probe.invoke(id).map(|()| None),
-        ["strips", "sram"] => swap_strips(&strips, &spare, true),
-        ["strips", "psram"] => swap_strips(&strips, &spare, false),
-        _ => Err("ui <tree|stats|tap <id>|invoke <id>|strips <sram|psram>>".to_string()),
+        _ => Err("ui <tree|stats|tap <id>|invoke <id>>".to_string()),
     });
     let clock = thread::Builder::new().name("clock").stack_size(4096).spawn(move || {
         loop {
-            thread::sleep(SECOND);
-            handle.post(Msg::Tick);
+            thread::sleep(Duration::from_secs(1));
+            status.post(StatusMsg::Tick);
         }
     });
     if let Err(err) = clock {
@@ -222,27 +217,6 @@ fn run_demo(board: &Board, display: &'static Display, settings: &Settings) {
         error!(TAG, "harness: {err}");
     }
     app.run();
-}
-
-/// Puts the parked memory to use and parks what was in use. `sram` says which
-/// of the two should end up drawing.
-fn swap_strips(handle: &Handle<Msg>, spare: &Mutex<(Option<Strips>, bool)>, sram: bool) -> Result<Option<String>, String> {
-    let mut spare = spare.lock();
-    if spare.1 == sram {
-        return Ok(None);
-    }
-    let Some(strips) = spare.0.take() else { return Err("no strips".to_string()) };
-    let lanes = if sram { 2 } else { 1 };
-    match handle.set_strips(strips, lanes) {
-        Ok(old) => {
-            *spare = (Some(old), sram);
-            Ok(None)
-        }
-        Err(strips) => {
-            spare.0 = Some(strips);
-            Err("refused".to_string())
-        }
-    }
 }
 
 fn run_bench(board: &Board, display: &'static Display) {
