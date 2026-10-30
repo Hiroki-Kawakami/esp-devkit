@@ -1,0 +1,9 @@
+default = "simulator"
+
+[targets.simulator]
+kind = "sim"
+window = false
+
+[targets.esp32s31]
+kind = "idf"
+flash-baud = 3000000

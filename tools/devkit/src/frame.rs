@@ -35,7 +35,7 @@ impl DeviceFrame {
     pub fn for_device(name: &str) -> Option<Self> {
         let known = KNOWN.iter().find(|k| k.name == name)?;
         let tree = Tree::from_str(known.svg, &Options::default())
-            .inspect_err(|err| eprintln!("[sim_host] frame for {name}: {err}"))
+            .inspect_err(|err| eprintln!("[devkit] frame for {name}: {err}"))
             .ok()?;
         let [x, y, w, h] = known.screen;
         Some(Self {

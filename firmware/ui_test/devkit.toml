@@ -1,0 +1,9 @@
+default = "tab5"
+
+[targets.tab5]
+kind = "sim"
+window = false
+
+[targets.paper]
+kind = "sim"
+window = false

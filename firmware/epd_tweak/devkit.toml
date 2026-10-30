@@ -1,0 +1,10 @@
+default = "esp32s3"
+
+[targets.esp32s3]
+kind = "idf"
+
+[targets.lilygo_t5]
+kind = "idf"
+
+[targets.esp32]
+kind = "idf"

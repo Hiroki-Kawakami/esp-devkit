@@ -5,9 +5,8 @@ and PNG decode, resize, and the decode+resize pipeline. The same source builds
 for the host and for the ESP32-P4, so a change can be measured on both.
 
 ```sh
-nix develop -c ./run.sh              # host (gcc -O2)
-nix develop -c ./run.sh esp32p4 -p /dev/cu.usbmodemXXXX flash
-nix develop -c ./run.sh esp32p4 monitor
+devkit run              # host (gcc -O2)
+devkit run esp32p4      # flash and open the console (docs/devkit-cli.md)
 ```
 
 The host column uses `-O2` and the device column `-Os`, so the two are

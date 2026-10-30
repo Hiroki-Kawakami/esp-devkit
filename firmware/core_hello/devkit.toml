@@ -1,0 +1,8 @@
+default = "simulator"
+
+[targets.simulator]
+kind = "sim"
+window = false
+
+[targets.esp32]
+kind = "idf"

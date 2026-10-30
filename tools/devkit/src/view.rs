@@ -11,7 +11,8 @@ use eframe::egui::{
     pos2, vec2,
 };
 
-use crate::device::{Device, Status};
+use crate::host::Host;
+use crate::host::sim::{Device, Status};
 use crate::frame::DeviceFrame;
 
 const APP_NAME: &str = "ESP Simulator";
@@ -27,7 +28,7 @@ const DEFAULT_WINDOW: [f32; 2] = [
     1528.0 * DEFAULT_ZOOM + 2.0 * PREVIEW_MARGIN + 8.0,
 ];
 
-pub fn run(device: Arc<Device>) -> eframe::Result {
+pub fn run(host: Arc<Host>, device: Arc<Device>) -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(APP_NAME)
@@ -42,7 +43,7 @@ pub fn run(device: Arc<Device>) -> eframe::Result {
         options,
         Box::new(|cc| {
             style(&cc.egui_ctx);
-            Ok(Box::new(App::new(device)))
+            Ok(Box::new(App::new(host, device)))
         }),
     )
 }
@@ -77,6 +78,7 @@ struct FrameTexture {
 }
 
 struct App {
+    host: Arc<Host>,
     device: Arc<Device>,
     name: Option<String>,
     frame: Option<DeviceFrame>,
@@ -88,8 +90,9 @@ struct App {
 }
 
 impl App {
-    fn new(device: Arc<Device>) -> Self {
+    fn new(host: Arc<Host>, device: Arc<Device>) -> Self {
         Self {
+            host,
             device,
             name: None,
             frame: None,
@@ -113,7 +116,7 @@ impl App {
 
     fn start(&self) {
         if let Err(err) = self.device.start() {
-            eprintln!("[sim_host] start: {err}");
+            eprintln!("[devkit] start: {err}");
         }
     }
 
@@ -174,7 +177,7 @@ impl App {
                     .stick_to_bottom(true)
                     .show(ui, |ui| {
                         ui.spacing_mut().item_spacing.y = 2.0;
-                        for line in self.device.log() {
+                        for line in self.host.log_lines() {
                             ui.label(RichText::new(line).monospace());
                         }
                     });

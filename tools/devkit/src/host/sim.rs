@@ -3,15 +3,14 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
-use std::os::fd::{AsRawFd, RawFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::path::PathBuf;
 use std::process::{ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -19,8 +18,6 @@ use crate::protocol::{
     ENV_PSRAM_PATH, ENV_PSRAM_SIZE, ENV_SOCKET_FD, EXIT_RESTART, Event, MAX_TOUCH_POINTS, PixelFormat,
     RECORD_SIZE, TouchPoint, VERSION,
 };
-
-const LOG_LINES: usize = 500;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Status {
@@ -51,7 +48,6 @@ struct State {
     present: Option<Present>,
     brightness: u8,
     name: Option<String>,
-    log: VecDeque<String>,
 }
 
 struct Run {
@@ -80,19 +76,21 @@ impl Drop for Psram {
 pub struct Device {
     fw: PathBuf,
     args: Vec<OsString>,
+    env: Vec<(OsString, OsString)>,
     psram: Psram,
     state: Mutex<State>,
     run: Mutex<Option<Run>>,
     generation: AtomicU64,
     contacts: Mutex<BTreeMap<u8, (u16, u16)>>,
-    lines: Mutex<Option<Sender<String>>>,
+    sink: Mutex<Option<super::Sink>>,
 }
 
 impl Device {
-    pub fn new(fw: PathBuf, args: Vec<OsString>, psram_size: usize) -> io::Result<Arc<Self>> {
+    pub fn new(fw: PathBuf, args: Vec<OsString>, env: Vec<(OsString, OsString)>, psram_size: usize) -> io::Result<Arc<Self>> {
         Ok(Arc::new(Self {
             fw,
             args,
+            env,
             psram: map_psram(psram_size)?,
             state: Mutex::new(State {
                 status: Status::Off,
@@ -100,20 +98,19 @@ impl Device {
                 present: None,
                 brightness: 0,
                 name: None,
-                log: VecDeque::new(),
             }),
             run: Mutex::new(None),
             generation: AtomicU64::new(0),
             contacts: Mutex::new(BTreeMap::new()),
-            lines: Mutex::new(None),
+            sink: Mutex::new(None),
         }))
     }
 
-    /// Firmware stdout lines go here; stderr goes to the host's stderr. Both
-    /// also go into the log.
-    pub fn forward_lines(&self, tx: Sender<String>) {
-        *self.lines.lock().unwrap() = Some(tx);
+    /// Every line the firmware prints, stdout and stderr in order.
+    pub fn set_sink(&self, sink: super::Sink) {
+        *self.sink.lock().unwrap() = Some(sink);
     }
+
 
     pub fn start(self: &Arc<Self>) -> io::Result<()> {
         self.stop();
@@ -124,15 +121,27 @@ impl Device {
         }
         let (host_fd, fw_fd) = (fds[0], fds[1]);
         unsafe { libc::fcntl(host_fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+        // One pipe for both, so log and harness lines keep the order a device
+        // console would show.
+        let mut out = [0; 2];
+        if unsafe { libc::pipe(out.as_mut_ptr()) } != 0 {
+            unsafe { libc::close(host_fd) };
+            unsafe { libc::close(fw_fd) };
+            return Err(io::Error::last_os_error());
+        }
+        unsafe { libc::fcntl(out[0], libc::F_SETFD, libc::FD_CLOEXEC) };
+        let (out_read, out_write) = unsafe { (File::from_raw_fd(out[0]), OwnedFd::from_raw_fd(out[1])) };
+        let err_write = out_write.try_clone()?;
 
         let spawned = Command::new(&self.fw)
             .args(&self.args)
+            .envs(self.env.iter().map(|(k, v)| (k, v)))
             .env(ENV_SOCKET_FD.to_str().unwrap(), fw_fd.to_string())
             .env(ENV_PSRAM_PATH.to_str().unwrap(), &self.psram.path)
             .env(ENV_PSRAM_SIZE.to_str().unwrap(), self.psram.len.to_string())
             .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stdout(Stdio::from(out_write))
+            .stderr(Stdio::from(err_write))
             .spawn();
         unsafe { libc::close(fw_fd) };
         let mut child = match spawned {
@@ -150,25 +159,15 @@ impl Device {
             state.present = None;
             state.brightness = 0;
         }
-        let stdout = child.stdout.take().unwrap();
-        let stderr = child.stderr.take().unwrap();
         let stdin = child.stdin.take().unwrap();
         *self.run.lock().unwrap() = Some(Run { pid: child.id() as libc::pid_t, stdin, sock: host_fd });
 
         let me = self.clone();
         thread::spawn(move || {
-            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                if let Some(tx) = me.lines.lock().unwrap().as_ref() {
-                    let _ = tx.send(line.clone());
+            for line in BufReader::new(out_read).lines().map_while(Result::ok) {
+                if let Some(sink) = me.sink.lock().unwrap().clone() {
+                    sink(line);
                 }
-                me.log_line(line);
-            }
-        });
-        let me = self.clone();
-        thread::spawn(move || {
-            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                eprintln!("{line}");
-                me.log_line(line);
             }
         });
         let me = self.clone();
@@ -182,7 +181,7 @@ impl Device {
             me.close_run();
             if code == Some(EXIT_RESTART) {
                 if let Err(err) = me.start() {
-                    eprintln!("[sim_host] restart: {err}");
+                    eprintln!("[devkit] restart: {err}");
                 }
                 return;
             }
@@ -215,7 +214,7 @@ impl Device {
             match Event::decode(&record) {
                 Some(Event::Hello { version }) => {
                     if version != VERSION {
-                        eprintln!("[sim_host] firmware speaks protocol {version}, host {VERSION}");
+                        eprintln!("[devkit] firmware speaks protocol {version}, host {VERSION}");
                     }
                     state.ready = true;
                 }
@@ -233,21 +232,13 @@ impl Device {
         unsafe { libc::close(fd) };
     }
 
-    fn log_line(&self, line: String) {
-        let mut state = self.state.lock().unwrap();
-        if state.log.len() == LOG_LINES {
-            state.log.pop_front();
-        }
-        state.log.push_back(line);
-    }
-
     pub fn send(&self, event: &Event) {
         if let Some(run) = self.run.lock().unwrap().as_ref() {
             write_record(run.sock, &event.encode());
         }
     }
 
-    pub fn write_stdin(&self, line: &str) {
+    pub fn send_line(&self, line: &str) {
         if let Some(run) = self.run.lock().unwrap().as_mut() {
             let _ = writeln!(run.stdin, "{line}").and_then(|_| run.stdin.flush());
         }
@@ -289,10 +280,6 @@ impl Device {
 
     pub fn present(&self) -> Option<Present> {
         self.state.lock().unwrap().present
-    }
-
-    pub fn log(&self) -> Vec<String> {
-        self.state.lock().unwrap().log.iter().cloned().collect()
     }
 
     /// The presented frame as RGB; the firmware may be drawing into it meanwhile.
@@ -347,7 +334,7 @@ fn write_record(fd: RawFd, record: &[u8; RECORD_SIZE]) {
 }
 
 fn map_psram(len: usize) -> io::Result<Psram> {
-    let path = std::env::temp_dir().join(format!("sim_host-psram-{}", std::process::id()));
+    let path = std::env::temp_dir().join(format!("devkit-psram-{}", std::process::id()));
     let file = OpenOptions::new().read(true).write(true).create(true).truncate(true).open(&path)?;
     file.set_len(len as u64)?;
     let ptr = unsafe {

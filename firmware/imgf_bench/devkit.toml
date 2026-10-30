@@ -1,0 +1,19 @@
+default = "host"
+
+[targets.host]
+kind = "cmd"
+build = """
+set -e
+mkdir -p build/host
+python3 app/gen_assets.py build/host/imgf_bench_assets.h 960 540
+IMGF=../../libs/image_framework
+CMPF=../../libs/compression_framework
+gcc -std=c11 -Wall -Wextra -O2 \\
+    -I $IMGF/inc -I $IMGF/src -I $CMPF/inc -I app -I build/host \\
+    host/main.c app/imgf_bench.c $IMGF/src/*.c $CMPF/src/*.c \\
+    -lm -lpthread -o build/host/imgf_bench
+"""
+run = "build/host/imgf_bench"
+
+[targets.esp32p4]
+kind = "idf"

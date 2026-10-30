@@ -1,22 +1,19 @@
 # Simulator host
 
-`tools/sim_host` runs a simulator firmware binary as a child process, shows its
-panel in a window with controls beside it, and feeds it input. The firmware
+The debug host of a `sim` target (`devkit run simulator`, docs/devkit-cli.md)
+runs the simulator firmware as a child process, shows its panel in a window
+with controls beside it, and feeds it input. The firmware
 process only sees a PSRAM region and an event socket, so it could later be
 replaced by an emulator without changing the host.
 
-```
-nix develop -c sh -c 'cd tools/sim_host && cargo build --release'
-tools/sim_host/target/release/sim_host [--headless] [--psram-mb N] <firmware> [args...]
-```
-
-- The window shows the panel inside the device's outline (`tools/sim_host/assets`,
+- The window shows the panel inside the device's outline (`tools/devkit/assets`,
   SVG in panel-pixel units), fitted to the window or at a fixed 25–100 %, with
   the controls and the firmware log on the right.
 - `--headless` opens no window; the host still supervises the firmware and
-  serves the harness.
+  serves clients.
 - `--psram-mb` sizes the PSRAM region (default 32).
-- Firmware stdout goes to the host's stdout and the log pane.
+- Firmware stdout and stderr, merged in order like a device console, go to the
+  host's log: the terminal, the log pane and attached clients.
 
 Only firmware using `libs/bsp_rs` draws through the host. The C `bsp` keeps
 its in-process SDL window.
@@ -42,7 +39,7 @@ The host starts the firmware with:
 ## Events
 
 Fixed 64-byte records, defined once in `libs/sim_device/src/protocol.rs` and
-compiled into both sides. Byte 0 is the tag, fields follow little-endian.
+compiled into the firmware and `tools/devkit`. Byte 0 is the tag, fields follow little-endian.
 
 | event | direction | fields |
 |---|---|---|
@@ -57,8 +54,7 @@ frame drawn while shown tears as it would on the panel.
 
 ## Harness
 
-`harness.py --host <sim_host> --sim <firmware>` runs the simulator under the
-host. The host answers `ping`, `info`, `down`/`move`/`up`, `snap`, `idle`,
-`reset` and `quit` itself and passes anything else to the firmware's stdin.
-`capture` is taken from the presented frame; `reset` restarts the firmware;
-`idle` always answers idle.
+Script lines go to the host (docs/devkit-cli.md). For firmware that presents
+through the host, it takes touches and captures itself from the shared frame;
+`reset` restarts the firmware process. Everything else reaches the firmware's
+harness on its stdin.

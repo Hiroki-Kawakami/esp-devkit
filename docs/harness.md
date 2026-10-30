@@ -13,7 +13,7 @@ JPEG of what the screen shows.
 |---|---|
 | `bsp/inc/bsp_harness.h` | BSP hooks: synthetic touch/button/IMU injection, panel readback (`CONFIG_BSP_HARNESS`) |
 | `libs/harness` | the line protocol and its transport — IDF console on device, stdin/stdout on the host (`CONFIG_HARNESS`) |
-| `tools/harness/harness.py` | PC-side driver: runs a script, does the timing, writes captures |
+| `devkit` (docs/devkit-cli.md) | PC side: runs scripts, does the timing, writes captures |
 
 Injected input feeds the same paths real hardware does — a touch goes through
 the touch layer's event/snapshot delivery, a button level through the shared
@@ -23,45 +23,22 @@ firmware only exposes primitives.
 
 ## Quick start
 
-### Simulator
-
 ```sh
-cmake -S firmware/core_hello/simulator -B firmware/core_hello/simulator/build -G Ninja
-cmake --build firmware/core_hello/simulator/build
-tools/harness/harness.py --sim firmware/core_hello/simulator/build/simulator \
-    --out shots script.txt
+cd firmware/core_hello
+devkit run simulator --headless &      # or esp32 on a board
+devkit script --log script.txt
 ```
 
-The simulator always has the harness compiled in. It is launched headless
-(`SIMULATOR_HEADLESS=1`) unless `--window` is passed, and exits when the script
-ends.
+`devkit run` keeps a host on the target (the simulator process or the board's
+console) that scripts attach to; the terminal running it takes the same lines
+by hand. Attaching does not reset a board, so separate runs pick up where the
+last one left off — act, capture, look, act again. A script that needs a fresh
+boot starts with `reset`. `devkit script` and `devkit cmd` exit non-zero when a
+line fails. See docs/devkit-cli.md for the commands and the lines the host
+handles itself.
 
-### Board
-
-```sh
-tools/harness/harness.py --port /dev/cu.usbserial-XXXX --baud 921600 \
-    --out shots script.txt
-```
-
-`--port` is the console port and `--baud` must match
-`CONFIG_ESP_CONSOLE_UART_BAUDRATE` (default 115200; ignored for
-USB-Serial-JTAG). **Close `idf.py monitor` first** — the harness shares the
-console port with the log stream. `--log` echoes the target's log lines to
-stderr while the script runs.
-
-Connecting does not reset the board, so separate runs pick up where the last
-one left off — act, capture, look, act again. A script that needs a fresh boot
-starts with `reset`.
-
-The script argument defaults to `-` (stdin), so one-off commands can be piped:
-
-```sh
-echo "settle
-capture home.jpg" | tools/harness/harness.py --port /dev/cu.usbserial-XXXX --out shots
-```
-
-`harness.py` exits non-zero when a command fails or the target stops answering.
-The serial path needs `pyserial` (present in the ESP-IDF python env).
+On a UART console the host's baud (`monitor-baud` in `devkit.toml`) must match
+`CONFIG_ESP_CONSOLE_UART_BAUDRATE`; USB-Serial-JTAG ignores it.
 
 ## Script language
 
@@ -198,7 +175,7 @@ Wi-Fi results while driving the UI.
 
 ## Line protocol
 
-Only needed to write a driver other than `harness.py`. Commands are one line
+What the firmware speaks; `devkit` is one client of it. Commands are one line
 each; every reply is a single `#`-prefixed line, so a client can pick replies
 out of the log stream sharing the channel.
 
@@ -218,14 +195,10 @@ snap [quality]          -> #OK snap <w> <h>, then #D <base64> lines, #END <bytes
 quit                    -> #OK quit
 ```
 
-Every `OK` reply names the command it answers, and `harness.py` stops with an
-error when it does not match, so a handler that replies itself should start
-with `OK <name>` too. `harness.py` sends `ping <token>` until it gets its own
-token back: opening a USB-Serial-JTAG port resets the board, and the pings sent
-during boot are answered late and together. Matching only the first `OK ping`
-would leave the stale ones to be read as the answers to the next commands.
-Firmware that predates the token answers a bare `OK ping`, which is still
-accepted.
+Every `OK` reply names the command it answers; the host takes a `#` line that
+names another command for log, so a handler that replies itself should start
+with `OK <name>` too. After `reset` the host sends `ping <token>` until an
+`OK ping` comes back.
 
 `snap` streams a JPEG of the whole panel, encoded one panel row at a time (peak
 memory is one row plus the encoder's working set, so it fits boards without
@@ -235,8 +208,8 @@ and EOF on a piped stdin ends the run like `quit`.
 
 ## Simulator notes
 
-- `SIMULATOR_HEADLESS=1` skips window/renderer creation; `harness.py` sets it
-  unless `--window` is given.
+- `SIMULATOR_HEADLESS=1` skips window/renderer creation; `devkit run --headless`
+  (or `headless = true` in `devkit.toml`) sets it.
 - With a window, the mouse drives contact id 0 — the same slot `tap` uses by
   default. Use ids ≥ 1 for synthetic contacts you want to keep independent.
 - The `s` key saves a timestamped screenshot under `screenshots/`, through the

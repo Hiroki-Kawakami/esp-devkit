@@ -104,8 +104,28 @@
               WorkingDir = "/work";
             };
           };
+        # Host tool, built with nixpkgs' Rust rather than the esp toolchain.
+        devkit = pkgs.rustPlatform.buildRustPackage {
+          pname = "devkit";
+          version = "0.1.0";
+          src = lib.fileset.toSource {
+            root = ./.;
+            fileset = lib.fileset.unions [
+              ./tools/devkit/Cargo.toml
+              ./tools/devkit/Cargo.lock
+              ./tools/devkit/src
+              ./tools/devkit/assets
+              ./libs/sim_device/src/protocol.rs
+            ];
+          };
+          cargoRoot = "tools/devkit";
+          buildAndTestSubdir = "tools/devkit";
+          cargoLock.lockFile = ./tools/devkit/Cargo.lock;
+        };
       in {
         lib = { inherit mkFwImage; };
+
+        packages.devkit = devkit;
 
         devShells.default = pkgs.mkShell {
           packages = idfPackages ++ [
@@ -116,7 +136,8 @@
             pkgs.libjpeg
             pkgs.zlib
             pkgs.pkg-config
-            # Simulator host (tools/sim_host)
+            # esp-devkit CLI (docs/devkit-cli.md); cargo for working on it
+            devkit
             pkgs.cargo
             # Editor language server for the Rust crates (docs/rust.md)
             pkgs.rust-analyzer

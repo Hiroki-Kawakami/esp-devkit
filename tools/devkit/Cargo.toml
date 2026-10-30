@@ -1,5 +1,5 @@
 [package]
-name = "sim_host"
+name = "devkit"
 version = "0.1.0"
 edition = "2024"
 publish = false
@@ -9,3 +9,5 @@ eframe = "0.31"
 jpeg-encoder = "0.6"
 libc = "0.2"
 resvg = "0.45"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"

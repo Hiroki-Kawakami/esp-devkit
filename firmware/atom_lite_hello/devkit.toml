@@ -1,0 +1,7 @@
+default = "esp32"
+
+[targets.esp32]
+kind = "idf"
+
+[targets.esp32s3]
+kind = "idf"
