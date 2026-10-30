@@ -79,6 +79,7 @@
               pkgs.gnugrep
               pkgs.gnused
               pkgs.gawk
+              devkit
             ] ++ extraPackages;
             env = idfEnv // {
               PATH = "${idfPath}:${lib.makeBinPath packages}";
@@ -116,11 +117,14 @@
               ./tools/devkit/src
               ./tools/devkit/assets
               ./libs/bsp_rs/src/sim/protocol.rs
+              ./libs/devkit_gfx/src/format.rs
             ];
           };
           cargoRoot = "tools/devkit";
           buildAndTestSubdir = "tools/devkit";
           cargoLock.lockFile = ./tools/devkit/Cargo.lock;
+          nativeBuildInputs = [ pkgs.pkg-config ];
+          buildInputs = [ pkgs.freetype ];
         };
       in {
         lib = { inherit mkFwImage; };

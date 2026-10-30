@@ -1,0 +1,38 @@
+{
+  "font": {
+    "caption_20": {
+      "size": 20, "font": "@montserrat", "variation": { "wght": 400 },
+      "glyph": [" !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~…›"]
+    },
+    "body_24": {
+      "size": 24, "font": "@montserrat", "variation": { "wght": 400 },
+      "glyph": [" !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~…›"]
+    },
+    "title_28": {
+      "size": 28, "font": "@montserrat", "variation": { "wght": 400 },
+      "glyph": [" !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~…›"]
+    },
+    "jp_20": { "size": 20, "font": "@noto-sans-jp", "variation": { "wght": 400 }, "bpp": 2, "glyph_file": "@jp_glyphs" },
+    "jp_24": { "size": 24, "font": "@noto-sans-jp", "variation": { "wght": 400 }, "bpp": 2, "glyph_file": "@jp_glyphs" },
+    "icon_28": {
+      "size": 28,
+      "icon": {
+        "CHEVRON_RIGHT": "icons/chevron-right.svg",
+        "WIFI": "icons/wifi.svg",
+        "BATTERY": "icons/battery-3.svg"
+      }
+    },
+    "icon_40": {
+      "size": 40,
+      "icon": {
+        "BACK": "icons/chevron-left.svg",
+        "MORE": "icons/dots.svg",
+        "FOLDER": "icons/folder-filled.svg",
+        "FILE": "icons/file.svg",
+        "PHOTO": "icons/photo.svg",
+        "MOVIE": "icons/movie.svg",
+        "MUSIC": "icons/music.svg"
+      }
+    }
+  }
+}

@@ -31,6 +31,7 @@ set(DEVKIT_DEVICE_COMPONENTS
     libs/devkit
     libs/devkit_audio
     libs/devkit_compression
+    libs/devkit_gfx
     libs/devkit_image
     libs/devkit_media
     libs/esp_hosted_enhanced
@@ -59,6 +60,7 @@ set(DEVKIT_SIMULATOR_COMPONENTS
     libs/devkit
     libs/devkit_audio
     libs/devkit_compression
+    libs/devkit_gfx
     libs/devkit_image
     libs/devkit_media
     libs/harness

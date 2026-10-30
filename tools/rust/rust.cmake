@@ -459,7 +459,7 @@ endfunction()
 # project's optimization for this crate, in one codegen unit, unless the project
 # asked for none.
 function(devkit_rust_crate)
-    cmake_parse_arguments(R "TESTS" "ROOT;EDITION;OPT_LEVEL" "BINDGEN_HEADERS;EXPORT_HEADERS;DEPENDS" ${ARGN})
+    cmake_parse_arguments(R "TESTS" "ROOT;EDITION;OPT_LEVEL;RESOURCES" "BINDGEN_HEADERS;EXPORT_HEADERS;DEPENDS" ${ARGN})
     if(NOT R_ROOT)
         message(FATAL_ERROR "devkit_rust_crate: ROOT is required")
     endif()
@@ -533,6 +533,10 @@ function(devkit_rust_crate)
             HEADERS ${R_BINDGEN_HEADERS} EXPORTS ${R_EXPORT_HEADERS})
         set(bindings "${gen}/bindings.rs")
     endif()
+    set(resources "")
+    if(R_RESOURCES)
+        resgen_rust_resources(DEFINITION "${R_RESOURCES}" OUT "${gen}" OUTPUTS resources)
+    endif()
 
     add_custom_command(
         OUTPUT ${outputs}
@@ -548,14 +552,14 @@ function(devkit_rust_crate)
                 -P "${DEVKIT_RUST_DIR}/rust_crate.cmake"
         DEPENDS "${root}" "${out}/${name}.args" "${out}/common.args" "${out}/sdkconfig.args"
                 "${out}/libsdkconfig.rmeta" "${DEVKIT_RUST_DIR}/rust_crate.cmake" ${dep_rmetas}
-                ${bindings} ${R_DEPENDS}
+                ${bindings} ${R_DEPENDS} ${resources}
         DEPFILE "${out}/${name}.d"
         COMMENT "rustc ${name}"
         VERBATIM)
     # The simulator shim adds sources to a target defined in another directory,
     # where custom command outputs are neither GENERATED nor attached to a rule.
     if(NOT ESP_PLATFORM)
-        add_custom_target(devkit_rust_${name} DEPENDS "${obj}" ${bindings} ${R_DEPENDS})
+        add_custom_target(devkit_rust_${name} DEPENDS "${obj}" ${bindings} ${R_DEPENDS} ${resources})
         add_dependencies(${COMPONENT_LIB} devkit_rust_${name})
     endif()
     set_source_files_properties("${obj}" TARGET_DIRECTORY ${COMPONENT_LIB}
@@ -564,6 +568,6 @@ function(devkit_rust_crate)
 
     if(R_TESTS AND NOT ESP_PLATFORM)
         _devkit_rust_test(${name} "${out}" "${gen}" "${root}" ${R_EDITION} "${deps}"
-            "${opt_args}" ${bindings})
+            "${opt_args}" ${bindings} ${resources})
     endif()
 endfunction()

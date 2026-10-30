@@ -5,190 +5,187 @@
 
 use alloc::vec::Vec;
 
+use devkit_gfx::{Align, Color, CornerMask, DisplayList, FontChain, Image, ImageFormat, Overflow, Rect, ShadowMask, TextOptions, TextRun};
 use idf::heap::Caps;
 
-use crate::raster::{Color, Pixel, Rect, Surface};
+mod resources {
+    #![allow(dead_code)]
+    include!(concat!(env!("OUT_DIR"), "/resources.rs"));
+}
 
-const FIRST_CHAR: u8 = 32;
-const CHARS: usize = 95;
-const ICON: usize = CHARS;
-const CHEVRON: usize = CHARS + 1;
-const GLYPHS: usize = CHARS + 2;
+use resources::*;
 
-const STATUS_H: i32 = 52;
-const HEADER_H: i32 = 80;
-const CRUMB_H: i32 = 48;
-const LIST_Y: i32 = STATUS_H + HEADER_H + 1 + CRUMB_H;
-const ROW_H: i32 = 80;
-const DENSE_LINE_H: i32 = 28;
+const STATUS_H: i16 = 52;
+const HEADER_H: i16 = 80;
+const CRUMB_H: i16 = 48;
+const LIST_Y: i16 = STATUS_H + HEADER_H + 1 + CRUMB_H;
+const ROW_H: i16 = 80;
+const THUMB_ROW_H: i16 = 128;
+const DENSE_LINE_H: i16 = 28;
+const THUMB_W: u16 = 176;
+const THUMB_H: u16 = 104;
+const MENU_W: i16 = 380;
+const MENU_H: i16 = 420;
 
-const SURFACE: Color = Color(0xe9, 0xea, 0xec);
-const WHITE: Color = Color(0xff, 0xff, 0xff);
-const INK: Color = Color(0x1d, 0x21, 0x26);
-const MUTED: Color = Color(0x78, 0x90, 0x9c);
-const BORDER: Color = Color(0xd9, 0xdd, 0xe0);
-const DIVIDER: Color = Color(0xec, 0xef, 0xf1);
-const SLATE: Color = Color(0x45, 0x5a, 0x64);
+const SURFACE: Color = Color::hex(0xe9eaec);
+const WHITE: Color = Color::hex(0xffffff);
+const INK: Color = Color::hex(0x1d2126);
+const MUTED: Color = Color::hex(0x78909c);
+const BORDER: Color = Color::hex(0xd9dde0);
+const DIVIDER: Color = Color::hex(0xeceff1);
+const SLATE: Color = Color::hex(0x455a64);
+const CHEVRON: Color = Color::hex(0xb0bec5);
+const SHADOW: Color = Color::rgba(17, 20, 24, 56);
 
-const NAMES: [&[u8]; 8] = [
-    b"Archives",
-    b"app-release.apk",
-    b"IMG_20261020_153012.jpg",
-    b"screenshot_0925.png",
-    b"clip_2026-10-18.mp4",
-    b"podcast_ep42.mp3",
-    b"Documents and settings backup.tar.gz",
-    b"notes.txt",
+static CAPTION: FontChain = FontChain::new(&[&CAPTION_20, &JP_20]);
+static BODY: FontChain = FontChain::new(&[&BODY_24, &JP_24]);
+static TITLE: FontChain = FontChain::new(&[&TITLE_28]);
+static SMALL_ICONS: FontChain = FontChain::new(&[&ICON_28]);
+static ICONS: FontChain = FontChain::new(&[&ICON_40]);
+
+const NAMES: [&str; 10] = [
+    "Archives",
+    "app-release.apk",
+    "IMG_20261020_153012.jpg",
+    "写真_2026年10月の旅行.jpg",
+    "clip_2026-10-18.mp4",
+    "議事録まとめ.txt",
+    "A very long document name that does not fit on one row of the list.pdf",
+    "音楽フォルダ",
+    "screenshot_0925.png",
+    "podcast_ep42.mp3",
 ];
-
-#[derive(Clone, Copy, Default)]
-struct Glyph {
-    offset: u32,
-    w: u8,
-    h: u8,
-    y: i8,
-    advance: u8,
-}
-
-pub struct Atlas {
-    masks: Vec<u8, Caps>,
-    glyphs: [Glyph; GLYPHS],
-}
-
-impl Atlas {
-    pub fn new() -> Self {
-        let mut masks = Vec::with_capacity_in(16 * 1024, Caps::DMA | Caps::INTERNAL);
-        let mut glyphs = [Glyph::default(); GLYPHS];
-        for (i, glyph) in glyphs.iter_mut().enumerate().take(CHARS) {
-            let w = 9 + (i * 5 % 6) as u8;
-            let tall = i % 2 == 0;
-            let h = if tall { 18 } else { 13 };
-            *glyph = Glyph { offset: masks.len() as u32, w, h, y: 24 - h as i8, advance: w + 2 };
-            draw_char(&mut masks, i, usize::from(w), usize::from(h));
-        }
-        glyphs[ICON] = Glyph { offset: masks.len() as u32, w: 40, h: 40, y: 0, advance: 40 };
-        draw_ring(&mut masks, 40, 40, 4);
-        glyphs[CHEVRON] = Glyph { offset: masks.len() as u32, w: 28, h: 28, y: 0, advance: 28 };
-        draw_ring(&mut masks, 28, 28, 3);
-        Self { masks, glyphs }
-    }
-
-    fn glyph(&self, id: usize) -> (&Glyph, *const u8) {
-        let g = &self.glyphs[id];
-        (g, unsafe { self.masks.as_ptr().add(g.offset as usize) })
-    }
-}
-
-fn draw_ring(out: &mut Vec<u8, Caps>, w: usize, h: usize, stroke: i32) {
-    let r = w as i32 * 8 - 8;
-    let inner = r - stroke * 16;
-    for y in 0..h as i32 {
-        for x in 0..w as i32 {
-            let dx = x * 16 + 8 - w as i32 * 8;
-            let dy = y * 16 + 8 - h as i32 * 8;
-            out.push(coverage(dx * dx + dy * dy, r, inner));
-        }
-    }
-}
-
-fn coverage(d2: i32, outer: i32, inner: i32) -> u8 {
-    let o2 = outer * outer;
-    let i2 = inner * inner;
-    let edge = outer * 16;
-    if d2 >= o2 + edge || d2 <= i2 - edge {
-        0
-    } else if d2 > o2 - edge || d2 < i2 + edge {
-        110
-    } else {
-        255
-    }
-}
-
-fn draw_char(out: &mut Vec<u8, Caps>, id: usize, w: usize, h: usize) {
-    for y in 0..h {
-        for x in 0..w {
-            let left = x < 3;
-            let right = x + 3 >= w;
-            let top = y < 3;
-            let mid = y >= h / 2 - 1 && y < h / 2 + 2;
-            let bottom = y + 3 >= h;
-            let on = match id % 5 {
-                0 => left || right || top || bottom,
-                1 => left || right || mid,
-                2 => left || top || mid,
-                3 => top || bottom || mid,
-                _ => left || bottom,
-            };
-            let edge = x == 0 || x + 1 == w || y == 0 || y + 1 == h;
-            out.push(match (on, edge) {
-                (false, _) => 0,
-                (true, true) => 96,
-                (true, false) => 255,
-            });
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-pub enum Op {
-    Fill(Rect, Color),
-    Text { x: i32, y: i32, text: &'static [u8], color: Color },
-    Mask { x: i32, y: i32, id: usize, color: Color },
-}
-
-impl Op {
-    fn top_bottom(&self) -> (i32, i32) {
-        match self {
-            Self::Fill(r, _) => (r.y, r.y + r.h),
-            Self::Text { y, .. } => (*y, *y + 24),
-            Self::Mask { y, .. } => (*y, *y + 40),
-        }
-    }
-
-    fn draw<P: Pixel>(&self, atlas: &Atlas, s: &Surface) {
-        match *self {
-            Self::Fill(r, c) => s.fill::<P>(&r, c),
-            Self::Mask { x, y, id, color } => {
-                let (g, mask) = atlas.glyph(id);
-                s.mask::<P>(&Rect::new(x, y, i32::from(g.w), i32::from(g.h)), mask, color);
-            }
-            Self::Text { mut x, y, text, color } => {
-                let right = s.area.x + s.area.w;
-                for &ch in text {
-                    if x >= right {
-                        break;
-                    }
-                    let (g, mask) = atlas.glyph(usize::from(ch.wrapping_sub(FIRST_CHAR)) % CHARS);
-                    let rect = Rect::new(x, y + i32::from(g.y), i32::from(g.w), i32::from(g.h));
-                    s.mask::<P>(&rect, mask, color);
-                    x += i32::from(g.advance);
-                }
-            }
-        }
-    }
-}
-
-pub fn draw<P: Pixel>(ops: &[Op], atlas: &Atlas, s: &Surface) {
-    let (top, bottom) = (s.area.y, s.area.y + s.area.h);
-    for op in ops {
-        let (t, b) = op.top_bottom();
-        if t < bottom && b > top {
-            op.draw::<P>(atlas, s);
-        }
-    }
-}
+const META: [&str; 4] = ["12 items", "48.2 MB", "2026-10-20 15:30", "3.4 GB"];
+const FILE_ICONS: [char; 5] = [icons::FOLDER, icons::FILE, icons::PHOTO, icons::MOVIE, icons::MUSIC];
+const MENU_ITEMS: [&str; 6] = ["Compact", "List", "Grid", "Select", "Sort", "Refresh"];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
     List,
+    Thumbs,
     Dense,
+    Menu,
     Tick,
+}
+
+fn text(chain: &FontChain, value: &str, options: &TextOptions) -> TextRun<Caps> {
+    let mut run = TextRun::new_in(Caps::INTERNAL);
+    run.layout(chain, value, options);
+    run
+}
+
+fn single(chain: &FontChain, value: &str) -> TextRun<Caps> {
+    text(chain, value, &TextOptions::default())
+}
+
+fn char_run(chain: &FontChain, value: char) -> TextRun<Caps> {
+    let mut buffer = [0; 4];
+    single(chain, value.encode_utf8(&mut buffer))
+}
+
+fn thumbnail(index: usize, format: ImageFormat) -> Vec<u8, Caps> {
+    let (w, h) = (usize::from(THUMB_W), usize::from(THUMB_H));
+    let mut pixels = Vec::with_capacity_in(w * h * format.bytes(), Caps::SPIRAM);
+    for y in 0..h {
+        for x in 0..w {
+            let r = ((x * 255 / w) ^ (index * 60)) as u8;
+            let g = (y * 255 / h) as u8;
+            let b = ((x + y) * 4 + index * 90) as u8;
+            if format == ImageFormat::Rgb888 {
+                pixels.extend_from_slice(&[b, g, r]);
+            } else {
+                let v = u16::from(r >> 3) << 11 | u16::from(g >> 2) << 5 | u16::from(b >> 3);
+                pixels.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+    }
+    pixels
+}
+
+/// What a scene draws, laid out once.
+pub struct Assets {
+    time: TextRun<Caps>,
+    percent: TextRun<Caps>,
+    title: TextRun<Caps>,
+    crumb: TextRun<Caps>,
+    back: TextRun<Caps>,
+    more: TextRun<Caps>,
+    wifi: TextRun<Caps>,
+    battery: TextRun<Caps>,
+    chevron: TextRun<Caps>,
+    names: Vec<TextRun<Caps>, Caps>,
+    meta: Vec<TextRun<Caps>, Caps>,
+    file_icons: Vec<TextRun<Caps>, Caps>,
+    dense: Vec<TextRun<Caps>, Caps>,
+    menu: Vec<TextRun<Caps>, Caps>,
+    menu_title: TextRun<Caps>,
+    thumbs: Vec<Vec<u8, Caps>, Caps>,
+    format: ImageFormat,
+    corner_12: CornerMask,
+    corner_20: CornerMask,
+    shadow: ShadowMask,
+}
+
+impl Assets {
+    pub fn new(format: ImageFormat, width: i16) -> Self {
+        let row_text = width - 88 - 64;
+        let name = TextOptions { max_width: Some(row_text), overflow: Overflow::Ellipsis, ..TextOptions::default() };
+        let thumb_name = TextOptions { max_width: Some(width - 228 - 64), ..name };
+        let columns = (width - 24) / 3;
+        let dense = TextOptions { max_width: Some(columns - 8), ..name };
+        let center = TextOptions { max_width: Some(MENU_W - 48), align: Align::Center, ..TextOptions::default() };
+        let mut names = Vec::new_in(Caps::INTERNAL);
+        let mut dense_runs = Vec::new_in(Caps::INTERNAL);
+        for value in NAMES {
+            names.push(text(&BODY, value, &name));
+            names.push(text(&BODY, value, &thumb_name));
+            dense_runs.push(text(&CAPTION, value, &dense));
+        }
+        let mut meta = Vec::new_in(Caps::INTERNAL);
+        for value in META {
+            meta.push(single(&CAPTION, value));
+        }
+        let mut file_icons = Vec::new_in(Caps::INTERNAL);
+        for icon in FILE_ICONS {
+            file_icons.push(char_run(&ICONS, icon));
+        }
+        let mut menu = Vec::new_in(Caps::INTERNAL);
+        for value in MENU_ITEMS {
+            menu.push(single(&BODY, value));
+        }
+        let mut thumbs = Vec::new_in(Caps::INTERNAL);
+        for index in 0..4 {
+            thumbs.push(thumbnail(index, format));
+        }
+        Self {
+            time: single(&CAPTION, "05:29"),
+            percent: single(&CAPTION, "78%"),
+            title: single(&TITLE, "Download"),
+            crumb: single(&CAPTION, "Internal Storage › Download"),
+            back: char_run(&ICONS, icons::BACK),
+            more: char_run(&ICONS, icons::MORE),
+            wifi: char_run(&SMALL_ICONS, icons::WIFI),
+            battery: char_run(&SMALL_ICONS, icons::BATTERY),
+            chevron: char_run(&SMALL_ICONS, icons::CHEVRON_RIGHT),
+            names,
+            meta,
+            file_icons,
+            dense: dense_runs,
+            menu,
+            menu_title: text(&CAPTION, "LAYOUT", &center),
+            thumbs,
+            format,
+            corner_12: CornerMask::new_in(12, Caps::INTERNAL),
+            corner_20: CornerMask::new_in(20, Caps::INTERNAL),
+            shadow: ShadowMask::new_in(32, 20, Caps::SPIRAM),
+        }
+    }
 }
 
 pub struct Scene {
     pub kind: Kind,
-    pub width: i32,
-    pub height: i32,
+    pub width: i16,
+    pub height: i16,
     pub offset: i32,
     pub speed: i32,
 }
@@ -200,8 +197,8 @@ impl Scene {
 
     pub fn damage(&self) -> Rect {
         match self.kind {
-            Kind::List | Kind::Dense => Rect::new(0, LIST_Y, self.width, self.height - LIST_Y),
             Kind::Tick => Rect::new(28, 14, 200, 24),
+            _ => Rect::new(0, LIST_Y, self.width, self.height - LIST_Y),
         }
     }
 
@@ -209,55 +206,100 @@ impl Scene {
         self.offset += self.speed;
     }
 
-    pub fn build(&self, ops: &mut Vec<Op, Caps>) {
-        ops.clear();
+    pub fn build(&self, a: &'static Assets, list: &mut DisplayList<'static, Caps>) {
+        list.clear();
         let w = self.width;
+        list.fill(self.full(), SURFACE);
+        list.fill(Rect::new(0, STATUS_H + HEADER_H, w, 1), BORDER);
+        list.fill(Rect::new(0, LIST_Y - CRUMB_H, w, self.height - LIST_Y + CRUMB_H), WHITE);
+        list.text(24, STATUS_H + HEADER_H + 13, &a.crumb, MUTED);
+
+        list.push_clip(Rect::new(0, LIST_Y, w, self.height - LIST_Y));
         match self.kind {
-            Kind::List | Kind::Tick => self.build_list(ops),
-            Kind::Dense => self.build_dense(ops),
+            Kind::List | Kind::Menu | Kind::Tick => self.rows(a, list),
+            Kind::Thumbs => self.thumb_rows(a, list),
+            Kind::Dense => self.dense_rows(a, list),
         }
-        ops.push(Op::Fill(Rect::new(0, 0, w, STATUS_H + HEADER_H), SURFACE));
-        let clock = if self.kind == Kind::Tick { NAMES[(self.offset as usize) % NAMES.len()] } else { b"05:29" };
-        ops.push(Op::Text { x: 28, y: 14, text: clock, color: SLATE });
-        ops.push(Op::Mask { x: w - 120, y: 12, id: CHEVRON, color: SLATE });
-        ops.push(Op::Mask { x: 24, y: STATUS_H + 20, id: ICON, color: INK });
-        ops.push(Op::Text { x: 88, y: STATUS_H + 28, text: b"Download", color: INK });
-        ops.push(Op::Fill(Rect::new(0, STATUS_H + HEADER_H, w, 1), BORDER));
-        ops.push(Op::Fill(Rect::new(0, STATUS_H + HEADER_H + 1, w, CRUMB_H), WHITE));
-        ops.push(Op::Text { x: 24, y: STATUS_H + HEADER_H + 13, text: b"Internal Storage / Download", color: MUTED });
+        list.pop_clip();
+
+        if self.kind == Kind::Tick {
+            let i = self.offset as usize % a.names.len();
+            list.text(28, 14, &a.names[i & !1], SLATE);
+        } else {
+            list.text(28, 14, &a.time, SLATE);
+        }
+        list.text(w - 170, 12, &a.wifi, SLATE);
+        list.text(w - 130, 12, &a.battery, SLATE);
+        list.text(w - 96, 14, &a.percent, SLATE);
+        list.text(24, STATUS_H + 20, &a.back, INK);
+        list.text(84, STATUS_H + 22, &a.title, INK);
+        list.text(w - 64, STATUS_H + 20, &a.more, SLATE);
+
+        if self.kind == Kind::Menu {
+            self.menu(a, list);
+        }
     }
 
-    fn build_list(&self, ops: &mut Vec<Op, Caps>) {
+    fn rows(&self, a: &'static Assets, list: &mut DisplayList<'static, Caps>) {
         let w = self.width;
-        ops.push(Op::Fill(Rect::new(0, LIST_Y, w, self.height - LIST_Y), WHITE));
-        let first = self.offset / ROW_H;
-        let mut y = LIST_Y - self.offset % ROW_H;
-        let mut row = first;
+        let mut row = self.offset / i32::from(ROW_H);
+        let mut y = LIST_Y - (self.offset % i32::from(ROW_H)) as i16;
         while y < self.height {
-            let name = NAMES[row as usize % NAMES.len()];
-            ops.push(Op::Mask { x: 24, y: y + 20, id: ICON, color: SLATE });
-            ops.push(Op::Text { x: 88, y: y + 28, text: name, color: INK });
-            ops.push(Op::Mask { x: w - 52, y: y + 26, id: CHEVRON, color: MUTED });
-            ops.push(Op::Fill(Rect::new(24, y + ROW_H - 1, w - 48, 1), DIVIDER));
+            let i = row as usize;
+            list.text(24, y + 20, &a.file_icons[i % a.file_icons.len()], SLATE);
+            list.text(88, y + 24, &a.names[i % NAMES.len() * 2], INK);
+            list.text(w - 52, y + 26, &a.chevron, CHEVRON);
+            list.fill(Rect::new(24, y + ROW_H - 1, w - 48, 1), DIVIDER);
             y += ROW_H;
             row += 1;
         }
     }
 
-    fn build_dense(&self, ops: &mut Vec<Op, Caps>) {
+    fn thumb_rows(&self, a: &'static Assets, list: &mut DisplayList<'static, Caps>) {
         let w = self.width;
-        ops.push(Op::Fill(Rect::new(0, LIST_Y, w, self.height - LIST_Y), WHITE));
-        let mut y = LIST_Y - self.offset % DENSE_LINE_H;
-        let mut line = self.offset / DENSE_LINE_H;
+        let mut row = self.offset / i32::from(THUMB_ROW_H);
+        let mut y = LIST_Y - (self.offset % i32::from(THUMB_ROW_H)) as i16;
         while y < self.height {
-            let a = NAMES[line as usize % NAMES.len()];
-            let b = NAMES[(line as usize * 3 + 1) % NAMES.len()];
-            let c = NAMES[(line as usize * 5 + 2) % NAMES.len()];
-            ops.push(Op::Text { x: 8, y, text: a, color: INK });
-            ops.push(Op::Text { x: 8 + w / 3, y, text: b, color: INK });
-            ops.push(Op::Text { x: 8 + w * 2 / 3, y, text: c, color: INK });
+            let i = row as usize;
+            let frame = Rect::new(24, y + 12, THUMB_W as i16, THUMB_H as i16);
+            list.round_rect(frame, a.corner_12, DIVIDER);
+            let pixels = &a.thumbs[i % a.thumbs.len()];
+            let bytes = usize::from(THUMB_W) * a.format.bytes();
+            list.image(24, y + 12, Image::from_pixels(a.format, THUMB_W, THUMB_H, bytes, pixels), Color::rgb(0, 0, 0));
+            list.text(224, y + 34, &a.names[i % NAMES.len() * 2 + 1], INK);
+            list.text(224, y + 70, &a.meta[i % a.meta.len()], MUTED);
+            list.text(w - 52, y + 50, &a.chevron, CHEVRON);
+            list.fill(Rect::new(24, y + THUMB_ROW_H - 1, w - 48, 1), DIVIDER);
+            y += THUMB_ROW_H;
+            row += 1;
+        }
+    }
+
+    fn dense_rows(&self, a: &'static Assets, list: &mut DisplayList<'static, Caps>) {
+        let w = self.width;
+        let mut line = self.offset / i32::from(DENSE_LINE_H);
+        let mut y = LIST_Y - (self.offset % i32::from(DENSE_LINE_H)) as i16;
+        let column = (w - 24) / 3;
+        while y < self.height {
+            let i = line as usize;
+            for c in 0..3 {
+                let name = (i + c * 3) * (c + 1) % a.dense.len();
+                list.text(8 + c as i16 * column, y, &a.dense[name], INK);
+            }
             y += DENSE_LINE_H;
             line += 1;
+        }
+    }
+
+    fn menu(&self, a: &'static Assets, list: &mut DisplayList<'static, Caps>) {
+        let x = self.width - MENU_W - 16;
+        let y = STATUS_H + 72;
+        let panel = Rect::new(x, y, MENU_W, MENU_H);
+        list.shadow(panel, a.shadow, SHADOW);
+        list.round_rect(panel, a.corner_20, WHITE);
+        list.text(x + 24, y + 20, &a.menu_title, MUTED);
+        for (i, item) in a.menu.iter().enumerate() {
+            list.text(x + 72, y + 64 + i as i16 * 56, item, INK);
         }
     }
 }

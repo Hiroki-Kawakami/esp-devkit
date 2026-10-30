@@ -8,7 +8,6 @@
 extern crate alloc;
 
 mod bench;
-mod raster;
 mod scene;
 
 use alloc::string::{String, ToString};
@@ -28,7 +27,7 @@ use scene::Kind;
 const TAG: &CStr = c"ui_bench";
 const FORMAT_888: u32 = 0x0888_0888;
 
-#[unsafe(link_section = ".rtc_noinit.ui_bench")]
+#[cfg_attr(target_os = "none", unsafe(link_section = ".rtc_noinit.ui_bench"))]
 static mut FORMAT: MaybeUninit<u32> = MaybeUninit::uninit();
 
 fn format() -> PixelFormat {
@@ -43,9 +42,11 @@ fn set_format(value: u32) {
 fn parse(args: &[&str]) -> Result<Params, String> {
     let kind = match args.first().copied() {
         Some("list") => Kind::List,
+        Some("thumbs") => Kind::Thumbs,
         Some("dense") => Kind::Dense,
+        Some("menu") => Kind::Menu,
         Some("tick") => Kind::Tick,
-        _ => return Err("bench <list|dense|tick> <inplace|swap2|swap3> <rot0|rot90> <lanes> [frames] [speed]".to_string()),
+        _ => return Err("bench <list|thumbs|dense|menu|tick> <inplace|swap2|swap3> <rot0|rot90> <lanes> [frames] [speed] [psram|sram]".to_string()),
     };
     let present = match args.get(1).copied() {
         Some("inplace") => Present::InPlace,
@@ -62,7 +63,8 @@ fn parse(args: &[&str]) -> Result<Params, String> {
     let lanes = lanes.ok_or("bad lane count")?;
     let frames = args.get(4).and_then(|v| v.parse().ok()).unwrap_or(240);
     let speed = args.get(5).and_then(|v| v.parse().ok()).unwrap_or(7);
-    Ok(Params { kind, present, rotated, lanes, frames, speed })
+    let cache_in_psram = args.get(6).copied() != Some("sram");
+    Ok(Params { kind, present, rotated, lanes, frames, speed, cache_in_psram })
 }
 
 pub fn run() {
@@ -86,7 +88,7 @@ pub fn run() {
     if let Err(err) = display.set_brightness(100) {
         error!(TAG, "set_brightness: {err}");
     }
-    let bench = match Bench::new(display) {
+    let mut bench = match Bench::new(display) {
         Ok(bench) => bench,
         Err(err) => {
             error!(TAG, "bench: {err}");

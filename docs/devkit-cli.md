@@ -62,6 +62,7 @@ run = "pc/target/release/pcapp"
 | `hosts` | list running hosts |
 | `cmd [-t H] [--log] <line>...` | run harness lines, print each reply, stop at the first error |
 | `script [-t H] [--log] <file\|->` | the same for a script file or stdin |
+| `resgen <inputs\|index\|entry> <definition> <fonts dir> <out> [entry]` | build step behind `devkit_rust_crate(RESOURCES ...)`, see docs/resgen.md |
 
 `run` takes `--headless` (no window) and `--psram-mb N` (simulator PSRAM,
 default 32); arguments after `--` go to the simulator firmware.

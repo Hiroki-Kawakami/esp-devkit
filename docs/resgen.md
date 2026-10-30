@@ -2,7 +2,8 @@
 
 `tools/resgen/resgen.py` turns a JSON definition plus source assets (SVG, TTF,
 PNG/JPEG) into LVGL v9 C sources at build time. Only the sources are checked in;
-the generated `.c`/`.h` live under the build directory.
+the generated `.c`/`.h` live under the build directory. Rust crates use
+[`devkit resgen`](#rust-devkit-resgen) instead.
 
 ## Usage
 
@@ -251,3 +252,56 @@ instead of compositing it.
   outputs are not attached to a target in a different directory, hence the
   `resgen_<target>` custom target plus `GENERATED` on the target's directory in
   `resgen.cmake`.
+
+## Rust (`devkit resgen`)
+
+`devkit resgen` turns the same kind of definition into resource binaries and
+the Rust code that refers to them, for `libs/devkit_gfx`:
+
+```cmake
+devkit_rust_crate(ROOT "lib.rs" RESOURCES resources/resources.json)
+```
+
+```rust
+mod resources {
+    include!(concat!(env!("OUT_DIR"), "/resources.rs"));
+}
+
+static BODY: FontChain = FontChain::new(&[&resources::BODY_24, &resources::JP_24]);
+let icon: char = resources::icons::FOLDER;
+```
+
+- Every entry becomes a `static` named in upper case, a `devkit_gfx::Font` or
+  `devkit_gfx::Image`, embedded with `include_bytes!` at 64 byte alignment. A
+  binary that does not parse fails the build. The crate needs `devkit_gfx`.
+- `icons` has one `char` per icon name, shared by every icon font.
+- The commands run through the `devkit` on `PATH`, so a change to the tool
+  reruns every entry.
+
+The definition is the same JSON with these differences:
+
+| key | |
+|---|---|
+| `font` | also `@name`, a font bundled in `tools/resgen/fonts`: `@montserrat`, `@noto-sans-jp` |
+| `glyph_file` | also `@name`, a list bundled in `tools/resgen/fonts`: `@jp_glyphs` |
+| `bpp` | 1, 2 or 4; default 4 |
+| `compress` | `false` stores every glyph raw |
+| `fallback`, `pack` | not accepted: every font is a pack, and chains are built at runtime with `FontChain` |
+
+Images take PNG files only, in `RGB565`, `RGB888`, `ARGB8888`, `A8` or `L8`.
+Icons get code points in name order from U+E000.
+
+### Binary format
+
+All values are little endian; `libs/devkit_gfx/src/format.rs` is the definition,
+shared with the tool.
+
+A font is a 40 byte header (`DKFN`, version, `bpp`, flags, pixel size, line
+metrics, then the glyph count and the offsets of the tables), a sorted `u32`
+code point table, a 12 byte record per glyph and the glyph data. A record's
+`bitmap` is the offset into the data, with bit 31 set when the glyph is RLE
+compressed; the RLE is the one in [Font packs](#font-packs), with the same two
+zero bytes of slack at the end. Glyphs that do not get smaller are stored raw.
+
+An image is a 20 byte header (`DKIM`, version, format, size, stride, data
+length), with the pixels at offset 64.
