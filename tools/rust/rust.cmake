@@ -189,6 +189,11 @@ function(_devkit_rust_init)
     if(opt STREQUAL "0" OR opt STREQUAL "1")
         list(APPEND common "-Cincremental=${out}/incremental")
     endif()
+    # LLVM has no scheduling model for these cores; the generic one schedules
+    # hot loops worse than GCC does.
+    if(triple MATCHES "^riscv")
+        list(APPEND common "-Ztune-cpu=rocket-rv32")
+    endif()
     # Shared code names IDF options the simulator's Kconfig does not have; they
     # are unset here as in C's #if, and the device build still checks them.
     if(NOT ESP_PLATFORM)
@@ -313,10 +318,11 @@ endfunction()
 
 # Host test executable for the crate's #[test]s: rust_test_<crate> builds and
 # runs it, rust_test runs them all.
-function(_devkit_rust_test name out gen root edition deps)
+function(_devkit_rust_test name out gen root edition deps opt_args)
     get_property(rustc GLOBAL PROPERTY DEVKIT_RUST_RUSTC)
     set(exe "${out}/${name}-test")
     string(CONCAT args_content
+        "${opt_args}"
         "--crate-name=${name}\n"
         "--edition=${edition}\n"
         "--test\n"
@@ -428,8 +434,20 @@ function(_devkit_rust_bindgen name out gen)
     target_sources(${COMPONENT_LIB} PRIVATE "${gen}/static.c")
 endfunction()
 
-# devkit_rust_crate(ROOT file [EDITION year] [TESTS]
-#                   [BINDGEN_HEADERS header...] [EXPORT_HEADERS header...])
+# devkit_rust_out_dir(<var>)
+#
+# Sets <var> to the component's $OUT_DIR, for files a custom command generates
+# for the crate to include; list them in devkit_rust_crate(DEPENDS).
+function(devkit_rust_out_dir var)
+    _devkit_rust_out_dir(out)
+    set(gen "${out}/${COMPONENT_NAME}.out")
+    file(MAKE_DIRECTORY "${gen}")
+    set(${var} "${gen}" PARENT_SCOPE)
+endfunction()
+
+# devkit_rust_crate(ROOT file [EDITION year] [TESTS] [OPT_LEVEL level]
+#                   [BINDGEN_HEADERS header...] [EXPORT_HEADERS header...]
+#                   [DEPENDS file...])
 #
 # Call after idf_component_register(); the component must (PRIV_)REQUIRES
 # rust_rt. Builds a crate named after the component; crates of its requirements,
@@ -437,9 +455,11 @@ endfunction()
 # (as #included) are bound into $OUT_DIR/bindings.rs; each function declared
 # in an EXPORT_HEADERS header must be defined at the crate root with the same
 # signature. TESTS adds the simulator's rust_test_<crate> target; the crate
-# root must then be #![cfg_attr(not(test), no_std)].
+# root must then be #![cfg_attr(not(test), no_std)]. OPT_LEVEL overrides the
+# project's optimization for this crate, in one codegen unit, unless the project
+# asked for none.
 function(devkit_rust_crate)
-    cmake_parse_arguments(R "TESTS" "ROOT;EDITION" "BINDGEN_HEADERS;EXPORT_HEADERS" ${ARGN})
+    cmake_parse_arguments(R "TESTS" "ROOT;EDITION;OPT_LEVEL" "BINDGEN_HEADERS;EXPORT_HEADERS;DEPENDS" ${ARGN})
     if(NOT R_ROOT)
         message(FATAL_ERROR "devkit_rust_crate: ROOT is required")
     endif()
@@ -479,7 +499,17 @@ function(devkit_rust_crate)
         message(FATAL_ERROR "devkit_rust_crate: ${name} is not a valid crate name")
     endif()
 
+    set(opt_args "")
+    if(DEFINED R_OPT_LEVEL AND NOT CONFIG_COMPILER_OPTIMIZATION_NONE)
+        set(opt_args "-Copt-level=${R_OPT_LEVEL}\n-Ccodegen-units=1\n")
+        # Overflow checks stay on in the host tests, where they find bugs.
+        if(ESP_PLATFORM)
+            string(APPEND opt_args "-Cdebug-assertions=off\n")
+        endif()
+    endif()
+
     string(CONCAT args_content
+        "${opt_args}"
         "--crate-name=${name}\n"
         "--crate-type=rlib\n"
         "--edition=${R_EDITION}\n"
@@ -518,14 +548,14 @@ function(devkit_rust_crate)
                 -P "${DEVKIT_RUST_DIR}/rust_crate.cmake"
         DEPENDS "${root}" "${out}/${name}.args" "${out}/common.args" "${out}/sdkconfig.args"
                 "${out}/libsdkconfig.rmeta" "${DEVKIT_RUST_DIR}/rust_crate.cmake" ${dep_rmetas}
-                ${bindings}
+                ${bindings} ${R_DEPENDS}
         DEPFILE "${out}/${name}.d"
         COMMENT "rustc ${name}"
         VERBATIM)
     # The simulator shim adds sources to a target defined in another directory,
     # where custom command outputs are neither GENERATED nor attached to a rule.
     if(NOT ESP_PLATFORM)
-        add_custom_target(devkit_rust_${name} DEPENDS "${obj}" ${bindings})
+        add_custom_target(devkit_rust_${name} DEPENDS "${obj}" ${bindings} ${R_DEPENDS})
         add_dependencies(${COMPONENT_LIB} devkit_rust_${name})
     endif()
     set_source_files_properties("${obj}" TARGET_DIRECTORY ${COMPONENT_LIB}
@@ -533,6 +563,7 @@ function(devkit_rust_crate)
     target_sources(${COMPONENT_LIB} PRIVATE "${obj}")
 
     if(R_TESTS AND NOT ESP_PLATFORM)
-        _devkit_rust_test(${name} "${out}" "${gen}" "${root}" ${R_EDITION} "${deps}" ${bindings})
+        _devkit_rust_test(${name} "${out}" "${gen}" "${root}" ${R_EDITION} "${deps}"
+            "${opt_args}" ${bindings})
     endif()
 endfunction()

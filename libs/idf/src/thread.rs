@@ -9,6 +9,7 @@ use core::cell::UnsafeCell;
 use core::ffi::{CStr, c_void};
 use core::marker::PhantomData;
 use core::ptr;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
 
 use crate::heap::Caps;
@@ -152,9 +153,37 @@ impl Builder {
         F: FnOnce() -> T + Send + 'static,
         T: Send + 'static,
     {
+        unsafe { self.spawn_unchecked(f, None) }
+    }
+
+    pub fn spawn_scoped<'scope, 'env, F, T>(
+        self,
+        scope: &'scope Scope<'scope, 'env>,
+        f: F,
+    ) -> Result<ScopedJoinHandle<'scope, T>>
+    where
+        F: FnOnce() -> T + Send + 'scope,
+        T: Send + 'scope,
+    {
+        scope.data.running.fetch_add(1, Ordering::Relaxed);
+        match unsafe { self.spawn_unchecked(f, Some(scope.data.clone())) } {
+            Ok(inner) => Ok(ScopedJoinHandle { inner, _scope: PhantomData }),
+            Err(e) => {
+                scope.data.finish();
+                Err(e)
+            }
+        }
+    }
+
+    // The caller keeps whatever `f` and `T` borrow alive until the task ends.
+    unsafe fn spawn_unchecked<F, T>(self, f: F, scope: Option<Arc<ScopeData>>) -> Result<JoinHandle<T>>
+    where
+        F: FnOnce() -> T + Send,
+        T: Send,
+    {
         let packet = Arc::new(Packet { result: UnsafeCell::new(None), done: Semaphore::try_new(0, 1)? });
         let with_caps = self.stack_caps.is_some();
-        let start = Box::into_raw(Box::new(Start { f, packet: packet.clone(), with_caps })).cast::<c_void>();
+        let start = Box::into_raw(Box::new(Start { f, packet: packet.clone(), scope, with_caps })).cast::<c_void>();
         let name = self.name.as_ptr().cast();
         let stack = self.stack_size as _;
         let priority = self.priority as _;
@@ -186,6 +215,7 @@ unsafe impl<T: Send> Sync for Packet<T> {}
 struct Start<F, T> {
     f: F,
     packet: Arc<Packet<T>>,
+    scope: Option<Arc<ScopeData>>,
     with_caps: bool,
 }
 
@@ -208,10 +238,14 @@ fn run<F, T>(arg: *mut c_void) -> bool
 where
     F: FnOnce() -> T,
 {
-    let Start { f, packet, with_caps } = *unsafe { Box::from_raw(arg.cast::<Start<F, T>>()) };
+    let Start { f, packet, scope, with_caps } = *unsafe { Box::from_raw(arg.cast::<Start<F, T>>()) };
     let value = f();
     unsafe { *packet.result.get() = Some(value) };
     packet.done.give();
+    drop(packet);
+    if let Some(scope) = scope {
+        scope.finish();
+    }
     with_caps
 }
 
@@ -233,9 +267,71 @@ impl<T> JoinHandle<T> {
     }
 }
 
+struct ScopeData {
+    running: AtomicUsize,
+    all_done: Semaphore,
+}
+
+impl ScopeData {
+    fn finish(&self) {
+        if self.running.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.all_done.give();
+        }
+    }
+}
+
+pub struct Scope<'scope, 'env: 'scope> {
+    data: Arc<ScopeData>,
+    _scope: PhantomData<&'scope mut &'scope ()>,
+    _env: PhantomData<&'env mut &'env ()>,
+}
+
+pub struct ScopedJoinHandle<'scope, T> {
+    inner: JoinHandle<T>,
+    _scope: PhantomData<&'scope ()>,
+}
+
+impl<T> ScopedJoinHandle<'_, T> {
+    pub fn join(self) -> T {
+        self.inner.join()
+    }
+
+    pub fn is_finished(&self) -> bool {
+        self.inner.is_finished()
+    }
+}
+
+impl<'scope> Scope<'scope, '_> {
+    pub fn spawn<F, T>(&'scope self, f: F) -> ScopedJoinHandle<'scope, T>
+    where
+        F: FnOnce() -> T + Send + 'scope,
+        T: Send + 'scope,
+    {
+        match Builder::new().spawn_scoped(self, f) {
+            Ok(handle) => handle,
+            Err(e) => panic!("failed to spawn thread: {e}"),
+        }
+    }
+}
+
+/// Tasks spawned on the scope may borrow from the caller; all of them have
+/// ended when this returns.
+pub fn scope<'env, F, T>(f: F) -> T
+where
+    F: for<'scope> FnOnce(&'scope Scope<'scope, 'env>) -> T,
+{
+    let data = Arc::new(ScopeData { running: AtomicUsize::new(0), all_done: Semaphore::new(0, 1) });
+    let scope = Scope { data, _scope: PhantomData, _env: PhantomData };
+    let value = f(&scope);
+    while scope.data.running.load(Ordering::Acquire) != 0 {
+        scope.data.all_done.take();
+    }
+    value
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Builder, NAME_LEN, current, sleep, spawn, ticks, ticks_ceil};
+    use super::{Builder, NAME_LEN, current, scope, sleep, spawn, ticks, ticks_ceil};
     use crate::system::{CORE_COUNT, core_id};
     use crate::heap::Caps;
     use crate::time::Instant;
@@ -277,6 +373,60 @@ mod tests {
             .spawn(|| String::from("done"))
             .unwrap();
         assert_eq!(h.join(), "done");
+    }
+
+    #[test]
+    fn scoped_tasks_borrow_from_the_caller() {
+        let mut left = [1u32, 2, 3];
+        let mut right = [4u32, 5, 6];
+        let (a, b) = scope(|s| {
+            let a = s.spawn(|| {
+                left.iter_mut().for_each(|v| *v *= 2);
+                left.iter().sum::<u32>()
+            });
+            let b = Builder::new()
+                .name("right")
+                .stack_size(16 * 1024)
+                .core(Some(1))
+                .stack_caps(Caps::INTERNAL)
+                .spawn_scoped(s, || {
+                    sleep(Duration::from_millis(20));
+                    right.iter_mut().for_each(|v| *v += 1);
+                    right.iter().sum::<u32>()
+                })
+                .unwrap();
+            (a.join(), b.join())
+        });
+        assert_eq!((a, b), (12, 18));
+        assert_eq!(left, [2, 4, 6]);
+        assert_eq!(right, [5, 6, 7]);
+    }
+
+    #[test]
+    fn scope_waits_for_tasks_nobody_joined() {
+        let mut flags = [false; 4];
+        scope(|s| {
+            for flag in &mut flags {
+                s.spawn(move || {
+                    sleep(Duration::from_millis(10));
+                    *flag = true;
+                });
+            }
+        });
+        assert_eq!(flags, [true; 4]);
+    }
+
+    #[test]
+    fn scoped_task_spawns_on_the_same_scope() {
+        let total = core::sync::atomic::AtomicUsize::new(0);
+        let total = &total;
+        scope(|s| {
+            s.spawn(move || {
+                s.spawn(move || total.fetch_add(1, core::sync::atomic::Ordering::Relaxed));
+                total.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            });
+        });
+        assert_eq!(total.load(core::sync::atomic::Ordering::Relaxed), 2);
     }
 
     #[test]

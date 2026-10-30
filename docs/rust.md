@@ -75,6 +75,78 @@ mod ffi {
 - Bindings are regenerated when a header changes and the crate rebuilds only
   if the bindings did.
 
+## Hot crates
+
+`OPT_LEVEL` is for crates whose loops are the point of the crate. It mirrors what
+the C codecs do with `-O2`:
+
+```cmake
+devkit_rust_crate(ROOT "src/lib.rs" TESTS OPT_LEVEL 2)
+```
+
+- The crate builds at that level in one codegen unit, whatever the project's
+  optimization, on the device, in the simulator and in `rust_test`. A project at
+  `CONFIG_COMPILER_OPTIMIZATION_NONE` keeps `-O0`.
+- On the device it also turns `debug-assertions`, and so overflow checks, off;
+  they cost 4-14 % on the decompressors at IDF's default of assertions on. Host
+  tests keep them, so they catch arithmetic that only wraps by accident:
+  write `wrapping_*` where wrapping is meant.
+- Only `#[inline]` and generic functions cross a crate boundary, and they compile
+  at the calling crate's level. A hot loop lives in the crate that owns it, not
+  in a helper of a dependency, and goes through `dyn` only at block rate.
+- Hold bit-reader and cursor state in locals for the length of a loop rather
+  than behind `&mut self`, and keep the refill path `#[cold]`.
+- `unsafe` indexing is for the loops a profile names. Masks (`i & (N - 1)`) on
+  arrays and `chunks_exact`/`zip` on slices remove most checks without it.
+
+### Assembly kernels
+
+Keep the `.S` in the component and select it with the target. A constant
+generated next to the selection keeps both branches compiled on every target;
+`--check-cfg` knows only the current target's Kconfig options, so `cfg` on
+another target's option warns.
+
+```cmake
+set(srcs "/dev/null")
+set(have_pie false)
+if(IDF_TARGET STREQUAL "esp32p4")
+    set(srcs "src/kernels_p4.S")
+    set(have_pie true)
+endif()
+idf_component_register(SRCS ${srcs} PRIV_REQUIRES devkit idf rust_rt)
+devkit_rust_out_dir(out_dir)
+file(CONFIGURE OUTPUT "${out_dir}/pie.rs" CONTENT "pub(crate) const HAVE_PIE: bool = ${have_pie};\n" @ONLY)
+devkit_rust_crate(ROOT "src/lib.rs" TESTS OPT_LEVEL 2)
+```
+
+```rust
+include!(concat!(env!("OUT_DIR"), "/pie.rs"));
+
+mod p4 {
+    unsafe extern "C" {
+        pub fn k_dot(out: *mut i32, x: *const i16, c: *const i16, rows: i32);
+    }
+}
+
+pub fn dot(out: &mut A16<[i32; 32]>, x: &A16<[i16; 32]>, c: &A16<[i16; 32]>, rows: usize) {
+    assert!(rows <= 32);
+    if HAVE_PIE {
+        unsafe { p4::k_dot(out.as_mut_ptr(), x.as_ptr(), c.as_ptr(), rows as i32) };
+    } else {
+        dot_scalar(out, x, c, rows);
+    }
+}
+```
+
+- A kernel and its scalar version have one safe signature and write the same
+  bytes; the lengths are checked once at this boundary, and `A16<T>` makes
+  16-byte alignment a type.
+- Tables a `.S` refers to by name are `#[unsafe(no_mangle)] pub static` of an
+  `A16` type.
+- A kernel's task stack and every buffer it stores to come from
+  `Caps::SIMD` alone, and each decode entry sets the kernel's `CFG` and `SAR`
+  state: these chips keep them global across tasks.
+
 ## Build
 
 - rustc emits the crate's object into the build's `rust/` directory, and the
@@ -87,6 +159,9 @@ mod ffi {
 - `-Copt-level` follows `CONFIG_COMPILER_OPTIMIZATION_*` (none 0, debug 1,
   size s, perf 2); incremental compilation is on for 0 and 1.
   `-Cdebug-assertions` follows `CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_*`.
+- RISC-V targets pass `-Ztune-cpu=rocket-rv32`: LLVM has no scheduling model for
+  these cores and this one is what GCC schedules for. Instruction selection is
+  unaffected.
 
 | IDF target | Rust target |
 |---|---|
@@ -126,6 +201,25 @@ is dropped by the linker. On the device `TESTS` does nothing.
 
 ```sh
 cmake --build firmware/rust_hello/simulator/build --target rust_test
+```
+
+Tests that need generated data read it at run time from
+`$DEVKIT_TEST_FIXTURES`. The crate's `test/run.sh` generates the files into a
+temporary directory (with whatever `nix-shell -p` brings in, so the generators'
+dependencies stay out of the flake), sets the variable and builds the
+`rust_test_<crate>` target of a simulator project that reaches the crate:
+
+```sh
+nix develop -c libs/devkit_compression/test/run.sh
+```
+
+A custom command can generate files for a crate to `include_bytes!`, into the
+directory `devkit_rust_out_dir()` names:
+
+```cmake
+devkit_rust_out_dir(out_dir)
+add_custom_command(OUTPUT "${out_dir}/data.bin" COMMAND ...)
+devkit_rust_crate(ROOT "lib.rs" DEPENDS "${out_dir}/data.bin")
 ```
 
 ## Editor
@@ -255,6 +349,22 @@ send(w.written());
 - `reserve(n)` writes `n` zeros and returns their position; `set_*` overwrite
   bytes already written. The u24 writers drop the high byte.
 
+`A16<T>` puts `T` on a 16-byte boundary and derefs to it. `Zeroable` marks a
+type whose all-zero bytes are valid, which `idf::heap` needs to build one
+directly on the heap; implement it (`unsafe`) on plain structs.
+
+`devkit::math` is the C math library, which `core` leaves out: `sinf`, `cosf`,
+`powf`, `log2f`, `ldexpf`, `sqrtf`, `floorf`, `ceilf`, `roundf`, `lrintf`,
+`lroundf`, and `sin`, `cos`, `pow`, `log2`, `atan2`, `sqrt`, `floor`, `round`,
+`lround`. `abs` and `copysign` are methods in `core`.
+
+- `sqrtf`, `floorf`, `ceilf` and `roundf` are compiler intrinsics, which inline
+  on a target with an FPU and otherwise call picolibc. `lrintf` is one
+  `fcvt.w.s` where the target has it.
+- The rest call picolibc. Each `f64` one is software on a target with a
+  single-precision FPU.
+- `lrintf`, `lroundf` and `lround` return `i32`, whatever `long` is on the host.
+
 `StaticLease<T>` lends a `static` value to one owner at a time, e.g. a large
 internal-RAM buffer that subsystems hand over to each other:
 
@@ -323,6 +433,19 @@ microsecond resolution, plus `since_boot()`. `idf::system::restart()` calls
 the core running the caller, which an unpinned task may leave right after the
 call.
 
+`idf::fs::File` is a file open for reading, over `open`/`read`/`lseek`/`fstat`:
+
+```rust
+let file = File::open(c"/sdcard/a.mp4")?;
+let size = file.size()?;
+file.seek(offset)?;
+let n = file.read(&mut buf)?;
+```
+
+- All methods take `&self`, and `read` and `seek` share one position, so tasks
+  sharing a `File` serialize a seek with its read. `read` may return less than
+  asked; 0 is the end of the file. Closed on drop.
+
 `idf::heap::Caps` is the `MALLOC_CAP_*` bitflags and is itself a
 `core::alloc::Allocator` over `heap_caps_*`:
 
@@ -339,6 +462,10 @@ let free = heap::free_size(Caps::DEFAULT);
 - Alignments above 4 bytes (the TLSF guarantee) use
   `heap_caps_aligned_alloc`/`_calloc`; `grow`/`shrink` use `heap_caps_realloc`
   otherwise. Any `Caps` value frees any block.
+- `heap::zeroed_box::<T>(caps)` and `heap::zeroed_slice::<T>(len, caps)` allocate
+  a `Zeroable` value zeroed, without passing it through the stack, and return
+  `NO_MEM` where `Box::new_in` would panic. `heap::try_vec(capacity, caps)` is an
+  empty `Vec` reserved exactly, also `NO_MEM` on failure.
 - `free_size`, `minimum_free_size`, `largest_free_block`, `total_size` and
   `info` take the same caps. `esp_get_free_heap_size()` is
   `free_size(Caps::DEFAULT)`, `esp_get_free_internal_heap_size()` is
@@ -363,6 +490,9 @@ let frames = h.join();
   detaches the task.
 - `stack_caps` creates the task with `xTaskCreatePinnedToCoreWithCaps`. When
   such a task ends, IDF starts a short-lived task to free its stack.
+- `thread::scope(|s| ...)` follows `std::thread::scope`: tasks from `s.spawn`
+  or `Builder::spawn_scoped(s, f)` may borrow from the caller, and all of them
+  have ended when it returns, joined or not.
 - `current()` returns the calling task as a `Thread`: `name`, `priority`,
   `set_priority`, `core_affinity` (`None` if not pinned) and
   `stack_high_water_mark` (bytes). It is not `Send`, so it cannot outlive the
@@ -403,6 +533,10 @@ let cfg = CONFIG.get_or_try_init(load_config)?;
   `try_recv_from_isr` are for interrupt handlers and request the context
   switch themselves when they wake a higher-priority task. The other methods
   must not be called from an ISR.
+
+### `devkit_compression` (`libs/devkit_compression`)
+
+Streaming inflate and LZW; see its README.
 
 ## Runtime (`libs/rust_rt`)
 
@@ -496,6 +630,14 @@ The toolchain is pinned by `releaseTag` and the tarball hashes in
    -Wno-discarded-qualifiers` for that (`_devkit_rust_bindgen` in
    `tools/rust/rust.cmake`); drop them once bindgen generates correct
    wrappers.
+
+## ESP32-P4 code generation
+
+GCC builds for `rv32imafc_zicsr_zifencei_zaamo_zalrsc_zca_zcf_xesploop_xespv2p1`
+and Rust for plain `riscv32imafc`. Neither compiler emits the hardware loops or
+the PIE instructions from C or Rust source, so the two see the same instruction
+set. rustc's `-Ctarget-cpu=esp32p4` adds Zba, Zbb, Zbs and Zcb, which IDF's GCC
+does not enable for this chip; it stays off.
 
 A new IDF target needs its Rust target in `_devkit_rust_triple`
 (`tools/rust/rust.cmake`) and, if new, in the `targets` list of `nix/rust.nix`.

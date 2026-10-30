@@ -1,0 +1,135 @@
+#!/usr/bin/env python3
+# Writes the test's fixtures into a directory: zlib streams and the LZW streams
+# GIF and TIFF writers produce (Pillow, with libtiff for TIFF), over patterns the
+# test regenerates. Pillow and ffmpeg always write GIF with 8-bit literals, so
+# the narrow case is encoded here and checked by having Pillow decode it.
+import io
+import os
+import struct
+import sys
+import zlib
+
+from PIL import Image
+
+
+def noise(n, mask):
+    out = bytearray()
+    x = 12345
+    for _ in range(n):
+        x = (x * 1103515245 + 12345) & 0x7FFFFFFF
+        out.append((x >> 16) & mask)
+    return bytes(out)
+
+
+def runs(n):
+    return bytes((i // 300) & 0xFF if (i // 300) % 2 else 0 for i in range(n))
+
+
+def gif_lzw(width, height, data):
+    image = Image.frombytes("P", (width, height), data)
+    image.putpalette(bytes(range(256)) * 3)
+    buf = io.BytesIO()
+    image.save(buf, "GIF", optimize=False, interlace=False)
+    gif = buf.getvalue()
+    assert Image.open(io.BytesIO(gif)).tobytes() == data
+    pos = 13
+    if gif[10] & 0x80:
+        pos += 3 << ((gif[10] & 7) + 1)
+    while gif[pos] != 0x2C:
+        assert gif[pos] == 0x21
+        pos += 2
+        while gif[pos]:
+            pos += gif[pos] + 1
+        pos += 1
+    flags = gif[pos + 9]
+    pos += 10
+    if flags & 0x80:
+        pos += 3 << ((flags & 7) + 1)
+    min_bits = gif[pos]
+    pos += 1
+    out = bytearray()
+    while gif[pos]:
+        out += gif[pos + 1:pos + 1 + gif[pos]]
+        pos += gif[pos] + 1
+    return min_bits, bytes(out)
+
+
+def narrow_gif_lzw(width, height, data, bits):
+    clear = 1 << bits
+    table = {bytes([i]): i for i in range(clear)}
+    next_code = clear + 2
+    width_bits = bits + 1
+    out = bytearray()
+    acc = 0
+    nacc = 0
+
+    def put(code):
+        nonlocal acc, nacc
+        acc |= code << nacc
+        nacc += width_bits
+        while nacc >= 8:
+            out.append(acc & 0xFF)
+            acc >>= 8
+            nacc -= 8
+
+    put(clear)
+    w = data[:1]
+    for c in data[1:]:
+        wc = w + bytes([c])
+        if wc in table:
+            w = wc
+            continue
+        put(table[w])
+        assert next_code < 4096
+        table[wc] = next_code
+        next_code += 1
+        if next_code > (1 << width_bits):
+            width_bits += 1
+        w = bytes([c])
+    put(table[w])
+    put(clear + 1)
+    if nacc:
+        out.append(acc & 0xFF)
+
+    gif = b"GIF89a" + struct.pack("<HHBBB", width, height, 0x80 | (bits - 1), 0, 0)
+    gif += bytes(i * 85 for i in range(clear) for _ in range(3))
+    gif += b"\x2c" + struct.pack("<HHHHB", 0, 0, width, height, 0) + bytes([bits])
+    for i in range(0, len(out), 255):
+        gif += bytes([len(out[i:i + 255])]) + out[i:i + 255]
+    gif += b"\x00\x3b"
+    assert Image.open(io.BytesIO(gif)).tobytes() == data
+    return bytes(out)
+
+
+def tiff_lzw(width, height, data):
+    image = Image.frombytes("L", (width, height), data)
+    buf = io.BytesIO()
+    image.save(buf, "TIFF", compression="tiff_lzw")
+    tiff = buf.getvalue()
+    parsed = Image.open(io.BytesIO(tiff))
+    assert parsed.tobytes() == data
+    offsets = parsed.tag_v2[273]
+    counts = parsed.tag_v2[279]
+    assert len(offsets) == 1
+    return tiff[offsets[0]:offsets[0] + counts[0]]
+
+
+def emit(name, data):
+    with open(os.path.join(sys.argv[1], name + ".bin"), "wb") as f:
+        f.write(data)
+
+
+emit("zlib_noise", zlib.compress(noise(4096, 0xFF), 9))
+emit("zlib_runs", zlib.compress(runs(5000), 9))
+emit("zlib_stored", zlib.compress(noise(300, 0xFF), 0))
+
+bits, stream = gif_lzw(64, 64, noise(4096, 0xFF))
+assert bits == 8
+emit("gif_noise", stream)
+bits, stream = gif_lzw(100, 50, runs(5000))
+assert bits == 8
+emit("gif_runs", stream)
+emit("gif_narrow", narrow_gif_lzw(40, 30, noise(1200, 0x03), 2))
+
+emit("tiff_noise", tiff_lzw(64, 64, noise(4096, 0xFF)))
+emit("tiff_runs", tiff_lzw(100, 50, runs(5000)))

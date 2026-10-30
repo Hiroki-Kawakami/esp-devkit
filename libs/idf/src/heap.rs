@@ -3,10 +3,14 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
+use alloc::boxed::Box;
+use alloc::vec::Vec;
 use core::alloc::{AllocError, Allocator, Layout};
 use core::ptr::{self, NonNull};
 
-use crate::sys;
+use devkit::Zeroable;
+
+use crate::{Error, sys};
 
 // HEAP_HAS_EXEC_HEAP has no prompt and is absent from sdkconfig, and so unknown
 // to --check-cfg, when it is off.
@@ -115,6 +119,24 @@ unsafe impl Allocator for Caps {
     }
 }
 
+/// `T` goes straight to the heap, so its size does not matter for the stack.
+pub fn zeroed_box<T: Zeroable>(caps: Caps) -> crate::Result<Box<T, Caps>> {
+    let block = Box::try_new_zeroed_in(caps).map_err(|_| Error::NO_MEM)?;
+    Ok(unsafe { block.assume_init() })
+}
+
+pub fn zeroed_slice<T: Zeroable>(len: usize, caps: Caps) -> crate::Result<Box<[T], Caps>> {
+    let block = Box::try_new_zeroed_slice_in(len, caps).map_err(|_| Error::NO_MEM)?;
+    Ok(unsafe { block.assume_init() })
+}
+
+/// An empty `Vec` with room for exactly `capacity` elements.
+pub fn try_vec<T>(capacity: usize, caps: Caps) -> crate::Result<Vec<T, Caps>> {
+    let mut v = Vec::new_in(caps);
+    v.try_reserve_exact(capacity).map_err(|_| Error::NO_MEM)?;
+    Ok(v)
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub struct Info {
     pub total_free_bytes: usize,
@@ -158,7 +180,7 @@ pub fn info(caps: Caps) -> Info {
 
 #[cfg(test)]
 mod tests {
-    use super::{Caps, free_size, info, largest_free_block};
+    use super::{Caps, free_size, info, largest_free_block, try_vec, zeroed_box, zeroed_slice};
     use core::alloc::{Allocator, Layout};
 
     #[repr(C, align(64))]
@@ -202,6 +224,30 @@ mod tests {
         assert_eq!(p.len(), 0);
         assert_eq!(p.cast::<u8>().as_ptr() as usize, 32);
         unsafe { Caps::DMA.deallocate(p.cast(), layout) };
+    }
+
+    #[test]
+    fn zeroed_box_skips_the_stack() {
+        let b = zeroed_box::<[u32; 1 << 20]>(Caps::SPIRAM).unwrap();
+        assert!(b.iter().all(|&w| w == 0));
+        let s = zeroed_slice::<devkit::A16<[i16; 8]>>(5, Caps::INTERNAL).unwrap();
+        assert_eq!(s.len(), 5);
+        assert_eq!(s.as_ptr() as usize % 16, 0);
+        assert!(s.iter().all(|a| a.0 == [0; 8]));
+    }
+
+    #[test]
+    fn allocation_failure_is_an_error() {
+        assert_eq!(zeroed_slice::<u8>(usize::MAX / 2, Caps::DEFAULT).unwrap_err(), crate::Error::NO_MEM);
+        assert_eq!(try_vec::<u64>(usize::MAX / 16, Caps::DEFAULT).unwrap_err(), crate::Error::NO_MEM);
+    }
+
+    #[test]
+    fn try_vec_reserves_exactly() {
+        let mut v = try_vec::<u16>(100, Caps::DEFAULT).unwrap();
+        assert_eq!((v.len(), v.capacity()), (0, 100));
+        v.extend(0..100);
+        assert_eq!(v[99], 99);
     }
 
     #[test]

@@ -1,0 +1,11 @@
+# PCM processing modules, a graph to connect them, and codecs.
+set(srcs "/dev/null")
+set(have_pie false)
+if(IDF_TARGET STREQUAL "esp32p4")
+    set(srcs "src/aac/kernels_p4.S" "src/mp3/kernels_p4.S")
+    set(have_pie true)
+endif()
+idf_component_register(SRCS ${srcs} PRIV_REQUIRES devkit idf rust_rt)
+devkit_rust_out_dir(out_dir)
+file(CONFIGURE OUTPUT "${out_dir}/pie.rs" CONTENT "pub(crate) const HAVE_PIE: bool = ${have_pie};\n" @ONLY)
+devkit_rust_crate(ROOT "src/lib.rs" TESTS OPT_LEVEL 2)

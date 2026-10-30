@@ -1,0 +1,113 @@
+/*
+ * Writes small baseline and progressive JPEGs (built with libjpeg) into the
+ * working directory, for the host tests of the JPEG decoder. JPEG is lossy, so
+ * the tests assert dimensions and approximate pixel values, not exact bytes.
+ */
+#include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <jpeglib.h>
+
+static void emit(const char *name, const unsigned char *data, unsigned long len) {
+    char path[128];
+    snprintf(path, sizeof path, "%s.bin", name);
+    FILE *f = fopen(path, "wb");
+    if (!f || fwrite(data, 1, len, f) != len) exit(1);
+    fclose(f);
+}
+
+static void make_mode(const char *name, int w, int h, int nc, J_COLOR_SPACE cs,
+                      int subsample, const unsigned char *pixels, int quality,
+                      int progressive, int restart_interval) {
+    struct jpeg_compress_struct cinfo;
+    struct jpeg_error_mgr jerr;
+    cinfo.err = jpeg_std_error(&jerr);
+    jpeg_create_compress(&cinfo);
+    unsigned char *buf = NULL;
+    unsigned long len = 0;
+    jpeg_mem_dest(&cinfo, &buf, &len);
+    cinfo.image_width = w;
+    cinfo.image_height = h;
+    cinfo.input_components = nc;
+    cinfo.in_color_space = cs;
+    jpeg_set_defaults(&cinfo);
+    jpeg_set_quality(&cinfo, quality, TRUE);
+    if (progressive) jpeg_simple_progression(&cinfo);
+    cinfo.restart_interval = restart_interval;
+    if (cs == JCS_RGB && subsample) {  // force 4:2:0 to exercise chroma upsample
+        cinfo.comp_info[0].h_samp_factor = 2;
+        cinfo.comp_info[0].v_samp_factor = 2;
+        cinfo.comp_info[1].h_samp_factor = 1;
+        cinfo.comp_info[1].v_samp_factor = 1;
+        cinfo.comp_info[2].h_samp_factor = 1;
+        cinfo.comp_info[2].v_samp_factor = 1;
+    }
+    jpeg_start_compress(&cinfo, TRUE);
+    while (cinfo.next_scanline < cinfo.image_height) {
+        JSAMPROW row = (JSAMPROW)(pixels + (size_t)cinfo.next_scanline * w * nc);
+        jpeg_write_scanlines(&cinfo, &row, 1);
+    }
+    jpeg_finish_compress(&cinfo);
+    emit(name, buf, len);
+    free(buf);
+    jpeg_destroy_compress(&cinfo);
+}
+
+static void make(const char *name, int w, int h, int nc, J_COLOR_SPACE cs,
+                 int subsample, const unsigned char *pixels, int quality) {
+    make_mode(name, w, h, nc, cs, subsample, pixels, quality, 0, 0);
+}
+
+static void make_prog(const char *name, int w, int h, int nc, J_COLOR_SPACE cs,
+                      int subsample, const unsigned char *pixels, int quality) {
+    make_mode(name, w, h, nc, cs, subsample, pixels, quality, 1, 0);
+}
+
+int main(void) {
+
+    // 16x16 flat gray = 128.
+    unsigned char gray[16 * 16];
+    for (int i = 0; i < 16 * 16; i++) gray[i] = 128;
+    make("kJpgGrayFlat", 16, 16, 1, JCS_GRAYSCALE, 0, gray, 95);
+
+    // 16x16 grayscale, dark left half / bright right half.
+    unsigned char split[16 * 16];
+    for (int y = 0; y < 16; y++)
+        for (int x = 0; x < 16; x++) split[y * 16 + x] = x < 8 ? 40 : 220;
+    make("kJpgGraySplit", 16, 16, 1, JCS_GRAYSCALE, 0, split, 95);
+
+    // 16x16 solid red (220,30,30), 4:2:0.
+    unsigned char red[16 * 16 * 3];
+    for (int i = 0; i < 16 * 16; i++) { red[3*i]=220; red[3*i+1]=30; red[3*i+2]=30; }
+    make("kJpgRgbRed", 16, 16, 3, JCS_RGB, 1, red, 95);
+
+    // 64x64 flat gray = 100, for the decode-time downscale test.
+    unsigned char big[64 * 64];
+    for (int i = 0; i < 64 * 64; i++) big[i] = 100;
+    make("kJpgGrayBig", 64, 64, 1, JCS_GRAYSCALE, 0, big, 95);
+
+    // Progressive (SOF2) twins: same pixels, libjpeg's default scan script.
+    make_prog("kJpgProgGraySplit", 16, 16, 1, JCS_GRAYSCALE, 0, split, 95);
+    make_prog("kJpgProgRgbRed", 16, 16, 3, JCS_RGB, 1, red, 95);
+
+    // 37x23 gradient, 4:2:0 progressive: odd size (partial MCUs) plus AC
+    // scans over a picture with real high-frequency content. Emitted baseline
+    // as well so the test can assert both paths agree.
+    unsigned char grad[37 * 23 * 3];
+    for (int y = 0; y < 23; y++) {
+        for (int x = 0; x < 37; x++) {
+            unsigned char *p = grad + (y * 37 + x) * 3;
+            p[0] = (unsigned char)(x * 7);
+            p[1] = (unsigned char)(y * 11);
+            p[2] = (unsigned char)((x * y) & 0xFF);
+        }
+    }
+    make("kJpgGrad", 37, 23, 3, JCS_RGB, 1, grad, 90);
+    make_prog("kJpgProgGrad", 37, 23, 3, JCS_RGB, 1, grad, 90);
+
+    // Same again with a restart marker every MCU, which in a progressive
+    // stream also resets the end-of-band run.
+    make_mode("kJpgProgGradRst", 37, 23, 3, JCS_RGB, 1, grad, 90, 1, 1);
+
+    return 0;
+}
