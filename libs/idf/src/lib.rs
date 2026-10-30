@@ -4,6 +4,8 @@
  */
 
 #![cfg_attr(not(test), no_std)]
+// CONFIG_SOC_* flags are unknown to --check-cfg on chips without them.
+#![allow(unexpected_cfgs)]
 
 extern crate alloc;
 
@@ -20,6 +22,8 @@ pub mod ldo;
 #[cfg(target_os = "none")]
 pub mod ledc;
 pub mod log;
+#[cfg(any(not(target_os = "none"), CONFIG_SOC_PPA_SUPPORTED))]
+pub mod ppa;
 pub mod sync;
 pub mod system;
 pub mod thread;

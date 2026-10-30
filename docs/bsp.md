@@ -23,7 +23,10 @@ let board = bsp_rs::init(&bsp_rs::Config::default())?;
   host framebuffer, sendable to other tasks. Writing through `as_mut_slice` /
   `row_mut` is `unsafe`: tasks drawing to overlapping areas at the same time
   is the caller's to prevent. DMA engines take `as_ptr()`.
-- `present(i)` puts framebuffer `i` on the panel.
+- `present(i)` puts framebuffer `i` on the panel at the next frame boundary
+  and returns without waiting for it. `wait_frame()` blocks until that boundary
+  and `scanning()` is the framebuffer being scanned, so a framebuffer other than
+  it and the last presented one is free to draw into.
 - `set_brightness` takes 0..=100; the backlight starts off.
 - `PixelFormat::Rgb888` is B, G, R in memory.
 - `readback(area)` lends what the panel shows, in its pixel format, as `Rows`

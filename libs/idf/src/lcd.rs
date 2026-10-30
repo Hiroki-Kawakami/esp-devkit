@@ -66,11 +66,16 @@ impl Drop for Panel {
 
 #[cfg(CONFIG_SOC_MIPI_DSI_SUPPORTED)]
 pub mod dsi {
+    use alloc::boxed::Box;
     use alloc::sync::Arc;
+    use core::ffi::c_void;
     use core::mem;
     use core::ptr::{self, NonNull};
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    use core::time::Duration;
 
     use super::{Panel, PanelIo};
+    use crate::sync::Semaphore;
     use crate::{Error, Result, sys};
 
     pub const MAX_FRAME_BUFFERS: usize = 3;
@@ -187,14 +192,36 @@ pub mod dsi {
                 panel: Panel { handle, _parent: Some(self.0.clone()) },
                 num_fbs: config.num_fbs.max(1),
                 dma2d: false,
+                sync: None,
             })
         }
+    }
+
+    struct FrameSync {
+        queued: AtomicUsize,
+        scanning: AtomicUsize,
+        started: Semaphore,
+    }
+
+    // Flash code in a 2D-DMA ISR path faults at cache-line boundaries on P4.
+    #[unsafe(link_section = ".iram1.idf_dpi_frame_started")]
+    unsafe extern "C" fn frame_started(
+        _panel: sys::esp_lcd_panel_handle_t,
+        _data: *mut sys::esp_lcd_dpi_panel_event_data_t,
+        ctx: *mut c_void,
+    ) -> bool {
+        let sync = unsafe { &*ctx.cast::<FrameSync>() };
+        sync.scanning.store(sync.queued.load(Ordering::Relaxed), Ordering::Release);
+        let mut woken = 0;
+        unsafe { sys::xQueueGiveFromISR(sync.started.raw(), &mut woken) };
+        woken != 0
     }
 
     pub struct DpiPanel {
         panel: Panel,
         num_fbs: u8,
         dma2d: bool,
+        sync: Option<Box<FrameSync>>,
     }
 
     impl DpiPanel {
@@ -206,6 +233,38 @@ pub mod dsi {
             Error::check(unsafe { sys::esp_lcd_dpi_panel_enable_dma2d(self.panel.handle) })?;
             self.dma2d = true;
             Ok(())
+        }
+
+        pub fn enable_frame_sync(&mut self) -> Result<()> {
+            let sync = Box::new(FrameSync {
+                queued: AtomicUsize::new(0),
+                scanning: AtomicUsize::new(0),
+                started: Semaphore::try_new(0, 1)?,
+            });
+            let mut cbs: sys::esp_lcd_dpi_panel_event_callbacks_t = unsafe { mem::zeroed() };
+            cbs.__bindgen_anon_1.on_frame_buf_complete = Some(frame_started);
+            let ctx = (&*sync as *const FrameSync).cast_mut().cast();
+            Error::check(unsafe { sys::esp_lcd_dpi_panel_register_event_callbacks(self.panel.handle, &cbs, ctx) })?;
+            self.sync = Some(sync);
+            Ok(())
+        }
+
+        /// The framebuffer the panel scans from the next frame boundary on.
+        pub fn set_queued(&self, index: usize) {
+            if let Some(sync) = &self.sync {
+                sync.queued.store(index, Ordering::Relaxed);
+            }
+        }
+
+        pub fn scanning(&self) -> Option<usize> {
+            Some(self.sync.as_ref()?.scanning.load(Ordering::Acquire))
+        }
+
+        /// `false` on timeout, or without `enable_frame_sync`.
+        pub fn wait_frame(&self, timeout: Duration) -> bool {
+            let Some(sync) = &self.sync else { return false };
+            sync.started.try_take();
+            sync.started.take_timeout(timeout)
         }
 
         pub fn frame_buffers(&self) -> Result<[Option<NonNull<u8>>; MAX_FRAME_BUFFERS]> {

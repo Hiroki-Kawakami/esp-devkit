@@ -23,6 +23,7 @@ const BACKLIGHT_BITS: u32 = 12;
 const BACKLIGHT_MAX_DUTY: u32 = (1 << BACKLIGHT_BITS) - 1;
 const PHY_LDO_CHANNEL: i32 = 3;
 const PHY_LDO_MV: i32 = 2500;
+const FRAME_TIMEOUT: Duration = Duration::from_millis(200);
 
 pub(crate) struct InitCmd<'a> {
     pub cmd: u8,
@@ -132,6 +133,7 @@ impl MipiDsi {
             },
         })?;
         panel.enable_dma2d()?;
+        panel.enable_frame_sync()?;
         (config.panel_init)(&io, config.pixel_format)?;
         panel.panel().init()?;
         let frame_buffers = panel.frame_buffers()?;
@@ -181,7 +183,17 @@ impl Driver for MipiDsi {
                 i32::from(self.size.height),
                 fb.as_ptr().cast(),
             )
-        }
+        }?;
+        self.panel.set_queued(index);
+        Ok(())
+    }
+
+    fn scanning(&self) -> Option<usize> {
+        self.panel.scanning()
+    }
+
+    fn wait_frame(&self) -> Result<()> {
+        if self.panel.wait_frame(FRAME_TIMEOUT) { Ok(()) } else { Err(Error::TIMEOUT) }
     }
 
     fn shown(&self) -> Option<FrameBuffer> {

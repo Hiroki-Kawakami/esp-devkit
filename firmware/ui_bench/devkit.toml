@@ -1,0 +1,4 @@
+default = "esp32p4"
+
+[targets.esp32p4]
+kind = "idf"

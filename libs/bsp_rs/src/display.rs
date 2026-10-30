@@ -125,6 +125,14 @@ pub(crate) trait Driver: Send + Sync {
         None
     }
 
+    fn scanning(&self) -> Option<usize> {
+        None
+    }
+
+    fn wait_frame(&self) -> Result<()> {
+        Err(Error::NOT_SUPPORTED)
+    }
+
     fn set_brightness(&self, _level: u8) -> Result<()> {
         Err(Error::NOT_SUPPORTED)
     }
@@ -172,6 +180,14 @@ macro_rules! driver_enum {
                 match self { $(Self::$variant(d) => d.shown()),+ }
             }
 
+            fn scanning(&self) -> Option<usize> {
+                match self { $(Self::$variant(d) => d.scanning()),+ }
+            }
+
+            fn wait_frame(&self) -> idf::Result<()> {
+                match self { $(Self::$variant(d) => d.wait_frame()),+ }
+            }
+
             fn set_brightness(&self, level: u8) -> idf::Result<()> {
                 match self { $(Self::$variant(d) => d.set_brightness(level)),+ }
             }
@@ -203,6 +219,17 @@ impl Display {
 
     pub fn present(&self, index: usize) -> Result<()> {
         self.0.present(index)
+    }
+
+    /// The framebuffer the panel is scanning; `present` takes effect at the
+    /// next frame boundary.
+    pub fn scanning(&self) -> Option<usize> {
+        self.0.scanning()
+    }
+
+    /// Blocks until the next frame boundary.
+    pub fn wait_frame(&self) -> Result<()> {
+        self.0.wait_frame()
     }
 
     /// 0..=100; 0 turns the backlight off.

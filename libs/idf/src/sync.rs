@@ -233,6 +233,11 @@ impl Semaphore {
         unsafe { sys::uxQueueMessagesWaiting(self.queue.0) as u32 }
     }
 
+    #[allow(dead_code)]
+    pub(crate) fn raw(&self) -> sys::QueueHandle_t {
+        self.queue.0
+    }
+
     pub fn give_from_isr(&self) -> bool {
         let mut woken = 0;
         let given = unsafe { sys::xQueueGiveFromISR(self.queue.0, &mut woken) == PD_TRUE };
