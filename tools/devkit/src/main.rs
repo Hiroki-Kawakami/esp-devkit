@@ -30,6 +30,8 @@ project (the nearest devkit.toml):
   build   [target]
   flash   [target] [--port P]     P: a port, a serial number or a device name
   run     [target] [--port P] [--headless] [--psram-mb N] [-- fw args]
+          [--script <file|-> [--log] [--window]]
+                                  run a harness script, then stop
   use     [target] [<device>|--clear]
                                   pin a target to a device in devkit.local.toml
   monitor [target] [--port P] [--backlog [N]]
@@ -133,7 +135,7 @@ fn run() -> Result<(), String> {
                 let path = args.strings().into_iter().next().ok_or("script needs a file or -")?;
                 client::read_script(&path)?
             };
-            client::run_lines(&host, lines, log)
+            client::run_lines(&host.socket, lines, log)
         }
         _ => project_command(&command, args, &dir, fw_args),
     }
@@ -203,6 +205,9 @@ fn project_command(command: &str, mut args: Args, dir: &std::path::Path, fw_args
     let opts = Options {
         port: args.take_value("--port")?.map(PathBuf::from),
         headless: args.take_flag("--headless"),
+        script: args.take_value("--script")?.map(|s| s.to_string_lossy().into_owned()),
+        log: args.take_flag("--log"),
+        window: args.take_flag("--window"),
         psram_mb: match args.take_value("--psram-mb")? {
             Some(v) => Some(v.to_str().and_then(|v| v.parse().ok()).ok_or("--psram-mb needs a number")?),
             None => None,

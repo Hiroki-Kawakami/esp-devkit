@@ -33,7 +33,7 @@ pub type Sink = Arc<dyn Fn(String) + Send + Sync>;
 const LOG_LINES: usize = 2000;
 const REPLY_TIMEOUT: Duration = Duration::from_secs(5);
 const SNAP_TIMEOUT: Duration = Duration::from_secs(30);
-const READY_TIMEOUT: Duration = Duration::from_secs(20);
+pub const READY_TIMEOUT: Duration = Duration::from_secs(20);
 const TOUCH_HOLD: Duration = Duration::from_millis(80);
 const DEFAULT_QUALITY: u8 = 90;
 const IMU_POSES: [(&str, &str); 6] = [
@@ -437,6 +437,10 @@ impl Host {
             Some(&"acquire") => s.acquire().map(|_| "OK port".into()).map_err(|e| e.to_string()),
             _ => Err(format!("usage: port release|acquire (now {})", if s.held() { "held" } else { "released" })),
         }
+    }
+
+    pub fn socket(&self) -> Option<PathBuf> {
+        self.socket.lock().unwrap().clone()
     }
 
     /// Accepts clients on `<dir>/<pid>.sock` until the process exits.

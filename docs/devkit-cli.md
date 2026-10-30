@@ -85,6 +85,21 @@ devkit run                        # finds that board wherever it is plugged in
 
 Add `devkit.local.toml` to `.gitignore` in repositories that use esp-devkit.
 
+## Scripted runs
+
+`devkit run [target] --script <file|->` builds the target, starts the host,
+waits for the firmware to come up, runs the script, stops, and exits non-zero
+when a line fails, the firmware exits, or it never comes up:
+
+```sh
+devkit -C firmware/core_hello run simulator --script tests/smoke.txt
+```
+
+A simulator runs headless unless `--window` is given; `--log` prints the
+firmware's log too. On a board the target is flashed and reset first, and the
+firmware needs a harness to count as up. `--script` is relative to the
+working directory, not to `-C`.
+
 ## Hosts
 
 `run` stays in the foreground as the target's *host*: the process that owns

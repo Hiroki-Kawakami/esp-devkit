@@ -14,7 +14,7 @@ use crate::host::decode::Decoder;
 use crate::devices;
 use crate::host::serial::Serial;
 use crate::host::sim::{Device, Status};
-use crate::host::{Flow, Host, Link, Session};
+use crate::host::{Flow, Host, Link, READY_TIMEOUT, Session};
 use crate::project::{Project, Target};
 use crate::view;
 
@@ -27,6 +27,9 @@ pub struct Options {
     pub headless: bool,
     pub psram_mb: Option<usize>,
     pub backlog: Option<Option<usize>>,
+    pub script: Option<String>,
+    pub log: bool,
+    pub window: bool,
     pub fw_args: Vec<OsString>,
 }
 
@@ -120,42 +123,45 @@ pub fn port(project: &Project, name: &str, opts: &Options) -> Result<PathBuf, St
 
 pub fn run(project: &Project, name: &str, target: &Target, opts: &Options) -> Result<(), String> {
     let dir = project.dir(name, target);
+    let script = load_script(opts)?;
     match target {
         Target::Idf { .. } => {
             let port = port(project, name, opts)?;
             flash(project, name, target, &port)?;
-            match running(&format!("serial:{}", port.display())) {
-                Some(host) => attach(&host, opts),
-                None => serve_board(project, name, target, &port, true),
+            match (running(&format!("serial:{}", port.display())), script) {
+                (Some(host), Some(script)) => {
+                    let lines = std::iter::once("reset".to_string()).chain(script);
+                    client::run_lines(&host.socket, lines, opts.log)
+                }
+                (Some(host), None) => attach(&host, opts),
+                (None, script) => serve_board(project, name, target, &port, true, script, opts.log),
             }
         }
+        Target::Sim { build: Some(_), .. } if script.is_some() => Err(format!("{name} only builds")),
         Target::Sim { build: Some(_), .. } => build(project, name, target),
         Target::Sim { window, headless, .. } => {
             build(project, name, target)?;
             let fw = dir.join("build").join("simulator");
             let psram = opts.psram_mb.unwrap_or(DEFAULT_PSRAM_MB) << 20;
-            let headless = opts.headless || headless.unwrap_or(false);
+            let headless = opts.headless || headless.unwrap_or(false) || (script.is_some() && !opts.window);
             // The C bsp's own SDL window.
             let env = if headless { vec![("SIMULATOR_HEADLESS".into(), "1".into())] } else { Vec::new() };
             let device = Device::new(fw, opts.fw_args.clone(), env, psram).map_err(|e| format!("PSRAM region: {e}"))?;
             let host = Host::new(Link::Sim(device.clone()), format!("{}/{name}", project.name()), None);
             let windowed = window.unwrap_or(true) && !headless;
+            if let Some(script) = script {
+                return sim_script(&host, &device, script, opts.log, windowed);
+            }
             serve(&host, || {
                 device.start().map_err(|e| format!("start: {e}"))?;
                 if windowed {
                     return view::run(host.clone(), device.clone()).map_err(|e| format!("window: {e}"));
                 }
-                let (h, d) = (host.clone(), device.clone());
-                std::thread::spawn(move || loop {
-                    std::thread::sleep(std::time::Duration::from_millis(200));
-                    if let Status::Exited(code) = d.status() {
-                        h.shutdown();
-                        std::process::exit(code.unwrap_or(1));
-                    }
-                });
+                exit_with_firmware(&host, &device, false);
                 Ok(())
             }, windowed)
         }
+        Target::Cmd { .. } if script.is_some() => Err(format!("{name} has no firmware to script")),
         Target::Cmd { run, .. } => {
             build(project, name, target)?;
             run.as_deref().map_or(Ok(()), |r| shell(&dir, r))
@@ -170,7 +176,7 @@ pub fn monitor(project: &Project, name: &str, target: &Target, opts: &Options) -
         let port = port(project, name, opts)?;
         match running(&format!("serial:{}", port.display())) {
             Some(host) => attach(&host, opts),
-            None => serve_board(project, name, target, &port, false),
+            None => serve_board(project, name, target, &port, false, None, false),
         }
     } else {
         let host = client::hosts().into_iter().find(|h| h.label == label);
@@ -191,12 +197,77 @@ fn attach(host: &client::HostInfo, opts: &Options) -> Result<(), String> {
     conn.attach()
 }
 
-fn serve_board(project: &Project, name: &str, target: &Target, port: &Path, reset: bool) -> Result<(), String> {
+fn load_script(opts: &Options) -> Result<Option<Vec<String>>, String> {
+    let Some(path) = &opts.script else { return Ok(None) };
+    let lines = client::read_script(path)?;
+    let replay = opts.log.then(|| "backlog".to_string());
+    Ok(Some(replay.into_iter().chain(lines).collect()))
+}
+
+/// Runs `script` once the firmware is up.
+fn run_script(host: &Host, script: Vec<String>, log: bool) -> Result<(), String> {
+    host.wait_ready(READY_TIMEOUT)?;
+    client::run_lines(&host.socket().ok_or("no socket")?, script, log)
+}
+
+fn exit_with_firmware(host: &Arc<Host>, device: &Arc<Device>, unexpected: bool) {
+    let (host, device) = (host.clone(), device.clone());
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        if let Status::Exited(code) = device.status() {
+            host.shutdown();
+            if unexpected {
+                eprintln!("devkit: firmware exited ({code:?}) during the script");
+                std::process::exit(code.filter(|&c| c != 0).unwrap_or(1));
+            }
+            std::process::exit(code.unwrap_or(1));
+        }
+    });
+}
+
+fn sim_script(host: &Arc<Host>, device: &Arc<Device>, script: Vec<String>, log: bool, windowed: bool) -> Result<(), String> {
+    host.serve().map_err(|e| format!("socket: {e}"))?;
+    device.start().map_err(|e| format!("start: {e}"))?;
+    exit_with_firmware(host, device, true);
+    if windowed {
+        let h = host.clone();
+        std::thread::spawn(move || {
+            let result = run_script(&h, script, log);
+            h.shutdown();
+            if let Err(err) = &result {
+                eprintln!("devkit: {err}");
+            }
+            std::process::exit(result.is_err() as i32);
+        });
+        let result = view::run(host.clone(), device.clone()).map_err(|e| format!("window: {e}"));
+        host.shutdown();
+        return result;
+    }
+    let result = run_script(host, script, log);
+    host.shutdown();
+    result
+}
+
+fn serve_board(
+    project: &Project,
+    name: &str,
+    target: &Target,
+    port: &Path,
+    reset: bool,
+    script: Option<Vec<String>>,
+    log: bool,
+) -> Result<(), String> {
     let Target::Idf { monitor_baud, .. } = target else { return Err(format!("{name} is not an idf target")) };
     let serial = Serial::open(port, monitor_baud.unwrap_or(DEFAULT_BAUD)).map_err(|e| format!("{}: {e}", port.display()))?;
     let decoder = Decoder::for_build(&project.dir(name, target).join("build"));
     let host = Host::new(Link::Serial(serial.clone()), format!("{}/{name}", project.name()), decoder);
-    serve(&host, || if reset { serial.reset().map_err(|e| e.to_string()) } else { Ok(()) }, false)
+    let restart = || if reset { serial.reset().map_err(|e| e.to_string()) } else { Ok(()) };
+    let Some(script) = script else { return serve(&host, restart, false) };
+    host.serve().map_err(|e| format!("socket: {e}"))?;
+    restart()?;
+    let result = run_script(&host, script, log);
+    host.shutdown();
+    result
 }
 
 /// Serves clients and this terminal; `foreground` runs on the main thread

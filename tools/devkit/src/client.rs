@@ -137,8 +137,8 @@ pub fn absolutize(line: &str) -> String {
 }
 
 /// Runs `lines` in order, stopping at the first error.
-pub fn run_lines(host: &HostInfo, lines: impl IntoIterator<Item = String>, print_log: bool) -> Result<(), String> {
-    let mut conn = Conn::open(&host.socket).map_err(|e| e.to_string())?;
+pub fn run_lines(socket: &Path, lines: impl IntoIterator<Item = String>, print_log: bool) -> Result<(), String> {
+    let mut conn = Conn::open(socket).map_err(|e| e.to_string())?;
     if print_log {
         conn.run("log on", false).map_err(|e| e.to_string())?;
     }
