@@ -3,15 +3,18 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
+use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::alloc::Allocator;
+use core::any::Any;
 use core::cell::UnsafeCell;
 use core::ffi::CStr;
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use core::time::Duration;
 
 use bsp_rs::display::{self, Blitter, Display, FrameBuffer, PixelFormat, Rotation};
+use devkit::Lease;
 use devkit_gfx::{Bgr888, Damage, DisplayList, GlyphCache, Pixel, Prepared, Rect, Rgb565, Surface, draw};
 use idf::heap::Caps;
 use idf::log::error;
@@ -49,8 +52,14 @@ pub struct Config {
     /// Tasks drawing strips, one per core.
     pub lanes: usize,
     pub priority: u32,
-    /// Internal RAM per strip buffer; each lane has two.
+    /// Strip memory in total, split evenly into two buffers per lane.
     pub strip_bytes: usize,
+    pub strip_caps: Caps,
+    /// The presenter's own lists. Memory that may stay on one heap for the whole
+    /// UI; the default fits boards with PSRAM.
+    pub data_caps: Caps,
+    /// `None` is internal RAM.
+    pub lane_stack_caps: Option<Caps>,
 }
 
 impl Default for Config {
@@ -61,7 +70,10 @@ impl Default for Config {
             rotation: Rotation::R0,
             lanes: MAX_LANES,
             priority: 10,
-            strip_bytes: 64 * 1024,
+            strip_bytes: 4 * 64 * 1024,
+            strip_caps: Caps::DMA | Caps::INTERNAL,
+            data_caps: Caps::SPIRAM,
+            lane_stack_caps: None,
         }
     }
 }
@@ -83,11 +95,88 @@ pub struct Stats {
 #[derive(Clone, Copy)]
 struct Line([u8; 64]);
 
+/// Memory strips can be drawn in.
+pub trait StripMemory: Send + 'static {
+    fn bytes(&mut self) -> &mut [u8];
+}
+
+impl<T: AsMut<[u8]> + Send> StripMemory for Lease<'static, T> {
+    fn bytes(&mut self) -> &mut [u8] {
+        (**self).as_mut()
+    }
+}
+
+struct OwnedStrips(Vec<Line, Caps>);
+
+impl StripMemory for OwnedStrips {
+    fn bytes(&mut self) -> &mut [u8] {
+        let bytes = self.0.len() * size_of::<Line>();
+        unsafe { core::slice::from_raw_parts_mut(self.0.as_mut_ptr().cast(), bytes) }
+    }
+}
+
+/// The memory a presenter draws strips in, handed over with `Presenter::set_strips`.
+pub struct Strips {
+    memory: Box<dyn AnyStrips>,
+    ptr: *mut u8,
+    len: usize,
+}
+
+unsafe impl Send for Strips {}
+
+trait AnyStrips: Send {
+    fn into_any(self: Box<Self>) -> Box<dyn Any>;
+}
+
+impl<M: StripMemory> AnyStrips for M {
+    fn into_any(self: Box<Self>) -> Box<dyn Any> {
+        self
+    }
+}
+
+impl Strips {
+    pub fn new<M: StripMemory>(memory: M) -> Self {
+        let mut memory = Box::new(memory);
+        let bytes = memory.bytes();
+        let (ptr, len) = (bytes.as_mut_ptr(), bytes.len());
+        Self { memory, ptr, len }
+    }
+
+    /// `bytes` from the heap, freed with the value.
+    pub fn allocate(bytes: usize, caps: Caps) -> Result<Self> {
+        let lines = bytes / size_of::<Line>();
+        let mut memory = Vec::new_in(caps);
+        memory.try_reserve_exact(lines).map_err(|_| Error::NO_MEM)?;
+        memory.resize(lines, Line([0; 64]));
+        Ok(Self::new(OwnedStrips(memory)))
+    }
+
+    /// Gives back what `new` took, if it was an `M`.
+    pub fn into_inner<M: StripMemory>(self) -> Option<M> {
+        self.memory.into_any().downcast::<M>().ok().map(|m| *m)
+    }
+
+    /// Two aligned buffers per lane.
+    fn buffers(&self, lanes: usize) -> ([[*mut u8; STRIPS_PER_LANE]; MAX_LANES], usize) {
+        let offset = self.ptr.align_offset(size_of::<Line>());
+        let usable = self.len.saturating_sub(offset);
+        let size = usable / (lanes * STRIPS_PER_LANE) / size_of::<Line>() * size_of::<Line>();
+        let mut buffers = [[core::ptr::null_mut(); STRIPS_PER_LANE]; MAX_LANES];
+        for (lane, pair) in buffers.iter_mut().enumerate().take(lanes) {
+            for (i, buffer) in pair.iter_mut().enumerate() {
+                *buffer = unsafe { self.ptr.add(offset + (lane * STRIPS_PER_LANE + i) * size) };
+            }
+        }
+        (buffers, size)
+    }
+}
+
 struct Job {
     list: *const DisplayList<'static, Caps>,
     strips: Vec<Rect, Caps>,
     fb: Option<FrameBuffer>,
     rotation: Rotation,
+    buffers: [[*mut u8; STRIPS_PER_LANE]; MAX_LANES],
 }
 
 struct Shared {
@@ -106,7 +195,6 @@ unsafe impl Sync for Shared {}
 struct Lane {
     id: usize,
     blitter: Blitter,
-    buffers: [Vec<Line, Caps>; STRIPS_PER_LANE],
     turn: usize,
     last: Rect,
     raster: u32,
@@ -152,7 +240,7 @@ impl Lane {
                 self.wait_blit();
             }
             let t = Instant::now();
-            let buffer = self.buffers[self.turn].as_mut_ptr().cast::<u8>();
+            let buffer = job.buffers[self.id][self.turn];
             self.turn = (self.turn + 1) % STRIPS_PER_LANE;
             self.last = *strip;
             let surface = unsafe { Surface::new(buffer, strip.w as usize * P::BYTES, *strip) };
@@ -181,16 +269,19 @@ pub struct Presenter {
     frame_buffers: usize,
     rotation: Rotation,
     lanes: usize,
-    strip_bytes: usize,
+    strips: Strips,
+    buffer_bytes: usize,
     latest: usize,
     target: Option<usize>,
+    fresh: bool,
 }
 
 impl Presenter {
     pub fn new(display: &'static Display, config: &Config) -> Result<Self> {
-        if !(1..=MAX_LANES).contains(&config.lanes) || config.strip_bytes < 64 {
+        if !(1..=MAX_LANES).contains(&config.lanes) {
             return Err(Error::INVALID_ARG);
         }
+        let strips = Strips::allocate(config.strip_bytes, config.strip_caps)?;
         let shared = Arc::new(Shared {
             start: [Semaphore::try_new(0, 1)?, Semaphore::try_new(0, 1)?],
             done: Semaphore::try_new(0, MAX_LANES as u32)?,
@@ -199,37 +290,34 @@ impl Presenter {
             stall_us: [AtomicU32::new(0), AtomicU32::new(0)],
             job: UnsafeCell::new(Job {
                 list: core::ptr::null(),
-                strips: Vec::with_capacity_in(64, Caps::INTERNAL),
+                strips: Vec::with_capacity_in(64, config.data_caps),
                 fb: None,
                 rotation: Rotation::R0,
+                buffers: [[core::ptr::null_mut(); STRIPS_PER_LANE]; MAX_LANES],
             }),
-            prepared: UnsafeCell::new(Prepared::new_in(Caps::INTERNAL)),
+            prepared: UnsafeCell::new(Prepared::new_in(config.data_caps)),
         });
         for id in 0..MAX_LANES {
-            let lines = config.strip_bytes / size_of::<Line>();
-            let buffer = || {
-                let mut v = Vec::new_in(Caps::DMA | Caps::INTERNAL);
-                v.try_reserve_exact(lines).map_err(|_| Error::NO_MEM)?;
-                v.resize(lines, Line([0; 64]));
-                Ok::<_, Error>(v)
-            };
             let lane = Lane {
                 id,
                 blitter: display.blitter(STRIPS_PER_LANE as u32)?,
-                buffers: [buffer()?, buffer()?],
                 turn: 0,
                 last: Rect::default(),
                 raster: 0,
                 stall: 0,
             };
             let shared = shared.clone();
-            thread::Builder::new()
+            let mut builder = thread::Builder::new()
                 .name("ui_lane")
                 .stack_size(LANE_STACK)
                 .priority(config.priority)
-                .core(Some(id as u32))
-                .spawn(move || lane.run(shared))?;
+                .core(Some(id as u32));
+            if let Some(caps) = config.lane_stack_caps {
+                builder = builder.stack_caps(caps);
+            }
+            builder.spawn(move || lane.run(shared))?;
         }
+        let (_, buffer_bytes) = strips.buffers(config.lanes);
         let mut presenter = Self {
             display,
             shared,
@@ -238,9 +326,11 @@ impl Presenter {
             frame_buffers: config.frame_buffers,
             rotation: config.rotation,
             lanes: config.lanes,
-            strip_bytes: config.strip_bytes,
+            strips,
+            buffer_bytes,
             latest: display.scanning().unwrap_or(0),
             target: None,
+            fresh: true,
         };
         presenter.reset()?;
         Ok(presenter)
@@ -251,6 +341,7 @@ impl Presenter {
         self.damage = [Damage::new(area); MAX_FRAME_BUFFERS];
         self.invalidate_all();
         self.target = None;
+        self.fresh = true;
         if self.mode == PresentMode::InPlace {
             self.latest %= self.frame_buffers();
             self.display.present(self.latest)?;
@@ -270,6 +361,21 @@ impl Presenter {
         self.reset()
     }
 
+    /// Draws in `strips` from the next frame on, with `lanes` lanes, and returns
+    /// the memory used so far: nothing draws in it any more. Refused, handing
+    /// `strips` back, when a buffer cannot hold 16 rows of the logical width.
+    pub fn set_strips(&mut self, strips: Strips, lanes: usize) -> core::result::Result<Strips, Strips> {
+        let (_, buffer_bytes) = strips.buffers(lanes.clamp(1, MAX_LANES));
+        let stride = self.area().w as usize * self.display.pixel_format().bytes();
+        if !(1..=MAX_LANES).contains(&lanes) || buffer_bytes < stride * ROW_GRID as usize {
+            error!(TAG, "strips of {buffer_bytes} bytes hold no 16 rows of {stride}");
+            return Err(strips);
+        }
+        self.lanes = lanes;
+        self.buffer_bytes = buffer_bytes;
+        Ok(core::mem::replace(&mut self.strips, strips))
+    }
+
     /// The logical picture.
     pub fn area(&self) -> Rect {
         let size = self.display.size();
@@ -287,6 +393,12 @@ impl Presenter {
         for damage in &mut self.damage {
             damage.add(aligned);
         }
+    }
+
+    /// Whether a frame is due without new damage: the first one, or one after
+    /// `configure`.
+    pub fn has_new_damage(&self) -> bool {
+        self.fresh
     }
 
     pub fn invalidate_all(&mut self) {
@@ -326,6 +438,7 @@ impl Presenter {
     /// is queued for the next boundary.
     pub fn render<C: Allocator + Clone>(&mut self, list: &DisplayList<'_, Caps>, cache: &mut GlyphCache<C>) -> Result<Stats> {
         self.acquire()?;
+        self.fresh = false;
         let target = self.target.take().ok_or(Error::INVALID_STATE)?;
         let mut stats = Stats::default();
         if self.damage[target].is_empty() {
@@ -345,10 +458,14 @@ impl Presenter {
         job.list = core::ptr::from_ref(list).cast();
         job.fb = Some(fb);
         job.rotation = self.rotation;
+        job.buffers = self.strips.buffers(self.lanes).0;
         job.strips.clear();
         for area in self.damage[target].regions() {
             let stride = area.w as usize * fb.format().bytes();
-            let rows = ((self.strip_bytes / stride) as i16 / ROW_GRID * ROW_GRID).max(ROW_GRID);
+            let rows = (self.buffer_bytes / stride).min(i16::MAX as usize) as i16 / ROW_GRID * ROW_GRID;
+            if rows == 0 {
+                return Err(Error::INVALID_SIZE);
+            }
             let mut y = area.y;
             while y < area.bottom() {
                 let h = rows.min(area.bottom() - y);

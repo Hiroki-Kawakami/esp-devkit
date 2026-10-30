@@ -587,7 +587,86 @@ draw::<Rgb565, _, _>(&list, &prepared, &surface);
 
 ### `devkit_ui` (`libs/devkit_ui`)
 
-UI framework on `bsp_rs`. `Presenter` puts a `DisplayList` on the panel:
+UI framework on `bsp_rs`. A UI is a tree of `Component`s; `firmware/ui_demo` is a
+working example.
+
+```rust
+#[derive(Clone, Copy)]
+enum Msg { Open(u16), ToggleMenu }
+
+impl Component for FileBrowser {
+    type Msg = Msg;
+
+    fn update(&mut self, msg: Msg, cx: &mut Cx<Self>) {
+        match msg {
+            Msg::Open(i) => self.selected = Some(i),
+            Msg::ToggleMenu => self.menu = !self.menu,
+        }
+        cx.rebuild();
+    }
+
+    fn view<'a>(&'a self, ui: &'a Ui<Msg>) -> Element<'a, Msg> {
+        ui.column([
+            ui.row([
+                ui.text(&TITLE, "Download").color(INK).grow(1),
+                ui.icon(&ICONS, icons::MORE).id("more").on_tap(Msg::ToggleMenu),
+            ]).height(80).align(Align::Center),
+            ui.list(0, self.names.len(), 80).grow(1),
+        ])
+    }
+
+    fn list_row<'a>(&'a self, _list: ListId, i: usize, ui: &'a Ui<Msg>) -> Element<'a, Msg> {
+        ui.row([ui.text(&BODY, &self.names[i])]).on_tap(Msg::Open(i as u16))
+    }
+}
+
+let app = App::new(display, board.touch, FileBrowser::new(), &AppConfig::default())?;
+app.run();
+```
+
+- `update` runs when a message arrives and `view` when it called
+  `cx.rebuild()`. `view` only builds descriptions in per-rebuild memory, which is
+  matched against the kept nodes; only what differs is laid out and painted.
+- Messages are `Copy`, at most 8 bytes, and handlers take values, so a rebuild
+  allocates nothing for them. Larger payloads stay in the state.
+- `Child` is a component made by a parent's `view`: `ui.child::<C>(props)`, or
+  `ui.child_mapped` to turn its `cx.emit` events into the parent's messages. It
+  keeps its state and rebuilds only when its props differ or it asks to.
+- Widgets are functions returning an `Element`; the primitives are boxes, text,
+  images, `scroll` and `list`.
+- `list` builds only the rows in view, through `Component::list_row`. Scrolling
+  moves the rows without running `view`. A rebuild of the owner rebuilds them,
+  unless `revision` is given and did not change.
+- `pressed_background` changes without a rebuild.
+- Sizes are `i16` pixels. A row, column or grid places children by `grow`,
+  `gap`, `align` and `justify`; `absolute` takes a child out of the flow.
+- `Handle::post` sends a message to the root component from any task.
+- `Probe` serves test harnesses: `tree`, `tap` (through the touch path, refused
+  when the node is covered), `invoke` (the handler directly), `idle` and `stats`.
+
+Memory goes where `Config` says: `data_caps` for nodes, text, display lists and
+masks, `strip_caps` for the strips and `lane_stack_caps` for the lane stacks;
+`AppConfig` has the glyph cache. Strip memory can change while running, for a UI
+that gives way to something faster:
+
+```rust
+static SRAM: StaticLease<SharedSram> = StaticLease::new(SharedSram([0; BYTES]));
+
+// Video starts: strips move to PSRAM and the decoder gets the internal RAM.
+let sram = handle.set_strips(Strips::allocate(128 * 1024, Caps::SPIRAM)?, 1)?;
+decoder.start(sram.into_inner::<Lease<SharedSram>>());
+// And back.
+handle.set_strips(Strips::new(decoder.stop()), 2)?;
+```
+
+- `set_strips` takes effect between frames and returns the memory in use, with
+  nothing drawing in it any more. Before `run`, `App::set_strips` does the same;
+  from the UI task itself `Handle::set_strips` would wait forever.
+- Memory is split into two buffers per lane, and each must hold 16 rows of the
+  logical width.
+
+`Presenter` puts a `DisplayList` on the panel; `App` runs it, and it can be used
+alone:
 
 ```rust
 let mut presenter = Presenter::new(display, &Config::default())?;

@@ -8,12 +8,7 @@ use alloc::vec::Vec;
 use devkit_gfx::{Align, Color, CornerMask, DisplayList, FontChain, Image, ImageFormat, Overflow, Rect, ShadowMask, TextOptions, TextRun};
 use idf::heap::Caps;
 
-mod resources {
-    #![allow(dead_code)]
-    include!(concat!(env!("OUT_DIR"), "/resources.rs"));
-}
-
-use resources::*;
+use crate::resources::*;
 
 const STATUS_H: i16 = 52;
 const HEADER_H: i16 = 80;
@@ -26,6 +21,7 @@ const THUMB_W: u16 = 176;
 const THUMB_H: u16 = 104;
 const MENU_W: i16 = 380;
 const MENU_H: i16 = 420;
+const SEEK_H: i16 = 128;
 
 const SURFACE: Color = Color::hex(0xe9eaec);
 const WHITE: Color = Color::hex(0xffffff);
@@ -37,11 +33,11 @@ const SLATE: Color = Color::hex(0x455a64);
 const CHEVRON: Color = Color::hex(0xb0bec5);
 const SHADOW: Color = Color::rgba(17, 20, 24, 56);
 
-static CAPTION: FontChain = FontChain::new(&[&CAPTION_20, &JP_20]);
-static BODY: FontChain = FontChain::new(&[&BODY_24, &JP_24]);
-static TITLE: FontChain = FontChain::new(&[&TITLE_28]);
-static SMALL_ICONS: FontChain = FontChain::new(&[&ICON_28]);
-static ICONS: FontChain = FontChain::new(&[&ICON_40]);
+pub(crate) static CAPTION: FontChain = FontChain::new(&[&CAPTION_20, &JP_20]);
+pub(crate) static BODY: FontChain = FontChain::new(&[&BODY_24, &JP_24]);
+pub(crate) static TITLE: FontChain = FontChain::new(&[&TITLE_28]);
+pub(crate) static SMALL_ICONS: FontChain = FontChain::new(&[&ICON_28]);
+pub(crate) static ICONS: FontChain = FontChain::new(&[&ICON_40]);
 
 const NAMES: [&str; 10] = [
     "Archives",
@@ -66,6 +62,7 @@ pub enum Kind {
     Dense,
     Menu,
     Tick,
+    Seek,
 }
 
 fn text(chain: &FontChain, value: &str, options: &TextOptions) -> TextRun<Caps> {
@@ -198,6 +195,7 @@ impl Scene {
     pub fn damage(&self) -> Rect {
         match self.kind {
             Kind::Tick => Rect::new(28, 14, 200, 24),
+            Kind::Seek => Rect::new(0, self.height - SEEK_H, self.width, SEEK_H),
             _ => Rect::new(0, LIST_Y, self.width, self.height - LIST_Y),
         }
     }
@@ -216,7 +214,7 @@ impl Scene {
 
         list.push_clip(Rect::new(0, LIST_Y, w, self.height - LIST_Y));
         match self.kind {
-            Kind::List | Kind::Menu | Kind::Tick => self.rows(a, list),
+            Kind::List | Kind::Menu | Kind::Tick | Kind::Seek => self.rows(a, list),
             Kind::Thumbs => self.thumb_rows(a, list),
             Kind::Dense => self.dense_rows(a, list),
         }
@@ -237,6 +235,14 @@ impl Scene {
 
         if self.kind == Kind::Menu {
             self.menu(a, list);
+        }
+        if self.kind == Kind::Seek {
+            let y = self.height - SEEK_H;
+            let filled = (self.offset % i32::from(w - 48)) as i16;
+            list.fill(Rect::new(0, y, w, SEEK_H), SLATE);
+            list.fill(Rect::new(24, y + 40, w - 48, 8), BORDER);
+            list.fill(Rect::new(24, y + 40, filled, 8), WHITE);
+            list.text(24, y + 64, &a.time, WHITE);
         }
     }
 

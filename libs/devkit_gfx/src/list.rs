@@ -74,6 +74,10 @@ impl<'a, A: Allocator> DisplayList<'a, A> {
         Self { ops: Vec::new_in(alloc), text_ops: 0, clips: 0 }
     }
 
+    pub fn reserve(&mut self, additional: usize) {
+        self.ops.reserve(additional);
+    }
+
     pub fn clear(&mut self) {
         self.ops.clear();
         self.text_ops = 0;
