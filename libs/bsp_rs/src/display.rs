@@ -6,7 +6,11 @@
 use core::marker::PhantomData;
 use core::ptr::NonNull;
 use core::slice;
+#[cfg(any(not(target_os = "none"), CONFIG_SOC_PPA_SUPPORTED))]
+use core::time::Duration;
 
+#[cfg(any(not(target_os = "none"), CONFIG_SOC_PPA_SUPPORTED))]
+use idf::ppa::{self, Srm, SrmOp};
 use idf::{Error, Result};
 
 use crate::Absent;
@@ -41,6 +45,16 @@ impl PixelFormat {
             Self::Rgb888 => 3,
         }
     }
+}
+
+/// Counter-clockwise, from the logical picture to the panel.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Rotation {
+    #[default]
+    R0,
+    R90,
+    R180,
+    R270,
 }
 
 #[derive(Default)]
@@ -101,6 +115,67 @@ impl FrameBuffer {
     pub unsafe fn row_mut(&self, y: usize) -> &mut [u8] {
         assert!(y < usize::from(self.size.height));
         unsafe { slice::from_raw_parts_mut(self.as_ptr().add(y * self.stride), self.stride) }
+    }
+}
+
+/// Copies pixels into framebuffers with the display's 2D engine. One per task;
+/// the engine serves them in turn.
+#[cfg(any(not(target_os = "none"), CONFIG_SOC_PPA_SUPPORTED))]
+pub struct Blitter {
+    srm: Srm,
+}
+
+#[cfg(any(not(target_os = "none"), CONFIG_SOC_PPA_SUPPORTED))]
+impl Blitter {
+    /// Queues `src`, packed rows covering `area` of the logical picture, and
+    /// returns. `src` must stay valid and `fb` unread until [`Self::wait`] has
+    /// returned for it. A rotated copy must span at least 8 rows of `area`:
+    /// the engine stops completing shorter ones while the panel scans out.
+    pub unsafe fn start(&mut self, fb: &FrameBuffer, rotation: Rotation, area: Rect, src: *const u8) -> Result<()> {
+        let format = match fb.format() {
+            PixelFormat::Rgb565 => ppa::ColorMode::Rgb565,
+            PixelFormat::Rgb888 => ppa::ColorMode::Rgb888,
+            PixelFormat::L8 => return Err(Error::NOT_SUPPORTED),
+        };
+        let size = fb.size();
+        let (panel_w, panel_h) = (u32::from(size.width), u32::from(size.height));
+        let (x, y, w, h) = (u32::from(area.x), u32::from(area.y), u32::from(area.width), u32::from(area.height));
+        let (logical_w, logical_h) = match rotation {
+            Rotation::R0 | Rotation::R180 => (panel_w, panel_h),
+            Rotation::R90 | Rotation::R270 => (panel_h, panel_w),
+        };
+        if x + w > logical_w || y + h > logical_h {
+            return Err(Error::INVALID_ARG);
+        }
+        let (dst_x, dst_y, rotation) = match rotation {
+            Rotation::R0 => (x, y, ppa::Rotation::R0),
+            Rotation::R90 => (y, panel_h - x - w, ppa::Rotation::R90),
+            Rotation::R180 => (panel_w - x - w, panel_h - y - h, ppa::Rotation::R180),
+            Rotation::R270 => (panel_w - y - h, x, ppa::Rotation::R270),
+        };
+        let op = SrmOp {
+            src,
+            src_width: w,
+            src_height: h,
+            dst: fb.as_ptr(),
+            dst_size: fb.len() as u32,
+            dst_width: panel_w,
+            dst_height: panel_h,
+            dst_x,
+            dst_y,
+            format,
+            rotation,
+        };
+        unsafe { self.srm.start(&op) }
+    }
+
+    pub fn pending(&self) -> u32 {
+        self.srm.pending()
+    }
+
+    /// `false` on timeout, with the copy still pending.
+    pub fn wait_timeout(&mut self, timeout: Duration) -> bool {
+        self.srm.wait_timeout(timeout)
     }
 }
 
@@ -230,6 +305,12 @@ impl Display {
     /// Blocks until the next frame boundary.
     pub fn wait_frame(&self) -> Result<()> {
         self.0.wait_frame()
+    }
+
+    /// `max_pending` copies may be in flight at once.
+    #[cfg(any(not(target_os = "none"), CONFIG_SOC_PPA_SUPPORTED))]
+    pub fn blitter(&self, max_pending: u32) -> Result<Blitter> {
+        Ok(Blitter { srm: Srm::new(max_pending)? })
     }
 
     /// 0..=100; 0 turns the backlight off.

@@ -34,6 +34,7 @@ set(DEVKIT_DEVICE_COMPONENTS
     libs/devkit_gfx
     libs/devkit_image
     libs/devkit_media
+    libs/devkit_ui
     libs/esp_hosted_enhanced
     libs/harness
     libs/harness_rs
@@ -63,6 +64,7 @@ set(DEVKIT_SIMULATOR_COMPONENTS
     libs/devkit_gfx
     libs/devkit_image
     libs/devkit_media
+    libs/devkit_ui
     libs/harness
     libs/harness_rs
     libs/idf

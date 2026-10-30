@@ -27,6 +27,10 @@ let board = bsp_rs::init(&bsp_rs::Config::default())?;
   and returns without waiting for it. `wait_frame()` blocks until that boundary
   and `scanning()` is the framebuffer being scanned, so a framebuffer other than
   it and the last presented one is free to draw into.
+- `blitter(n)` returns a `Blitter` for the calling task, on chips with a 2D
+  engine and in the simulator. `start` queues packed rows for an area of the
+  logical picture, rotated into a framebuffer, with up to `n` in flight.
+  Rotated copies must span at least 8 rows of the area.
 - `set_brightness` takes 0..=100; the backlight starts off.
 - `PixelFormat::Rgb888` is B, G, R in memory.
 - `readback(area)` lends what the panel shows, in its pixel format, as `Rows`

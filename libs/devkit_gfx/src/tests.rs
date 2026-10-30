@@ -393,7 +393,10 @@ fn damage_merges_and_promotes() {
     assert_eq!(damage.regions().len(), 3);
     damage.add(Rect::new(200, 0, 5, 5));
     assert_eq!(damage.regions().len(), 3);
+    damage.clear();
     damage.add(Rect::new(0, 0, 100, 80));
+    assert_eq!(damage.regions(), &[Rect::new(0, 0, 100, 80)]);
+    damage.add(Rect::new(0, 90, 100, 10));
     assert_eq!(damage.regions(), &[Rect::new(0, 0, 100, 100)]);
     damage.clear();
     assert!(damage.is_empty());

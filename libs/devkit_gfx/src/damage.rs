@@ -8,8 +8,8 @@ use crate::geom::Rect;
 const FULL_PERCENT: u32 = 75;
 
 /// Up to `N` disjoint-ish rectangles to repaint. Rectangles that would exceed
-/// `N` merge with their cheapest neighbour, and covering 75% of `full` promotes
-/// to all of `full`.
+/// `N` merge with their cheapest neighbour, and several covering 75% of `full`
+/// promote to all of `full`.
 #[derive(Clone, Copy)]
 pub struct Damage<const N: usize> {
     full: Rect,
@@ -61,7 +61,7 @@ impl<const N: usize> Damage<N> {
         self.regions[self.count] = rect;
         self.count += 1;
         let area: u32 = self.regions().iter().map(Rect::area).sum();
-        if area * 100 >= self.full.area() * FULL_PERCENT {
+        if self.count > 1 && area * 100 >= self.full.area() * FULL_PERCENT {
             self.add_full();
         }
     }

@@ -46,7 +46,7 @@ fn parse(args: &[&str]) -> Result<Params, String> {
         Some("dense") => Kind::Dense,
         Some("menu") => Kind::Menu,
         Some("tick") => Kind::Tick,
-        _ => return Err("bench <list|thumbs|dense|menu|tick> <inplace|swap2|swap3> <rot0|rot90> <lanes> [frames] [speed] [psram|sram]".to_string()),
+        _ => return Err("bench <list|thumbs|dense|menu|tick> <inplace|swap2|swap3> <rot0|rot90> <lanes> [frames] [speed]".to_string()),
     };
     let present = match args.get(1).copied() {
         Some("inplace") => Present::InPlace,
@@ -63,8 +63,7 @@ fn parse(args: &[&str]) -> Result<Params, String> {
     let lanes = lanes.ok_or("bad lane count")?;
     let frames = args.get(4).and_then(|v| v.parse().ok()).unwrap_or(240);
     let speed = args.get(5).and_then(|v| v.parse().ok()).unwrap_or(7);
-    let cache_in_psram = args.get(6).copied() != Some("sram");
-    Ok(Params { kind, present, rotated, lanes, frames, speed, cache_in_psram })
+    Ok(Params { kind, present, rotated, lanes, frames, speed })
 }
 
 pub fn run() {
@@ -99,18 +98,18 @@ pub fn run() {
 
     let running = Arc::new(AtomicBool::new(false));
     let result = Arc::new(Mutex::new(String::new()));
-    let request = Arc::new(Mutex::new(None::<Params>));
+    let request = Arc::new(Mutex::new(None::<(bool, Params)>));
     let wake = Arc::new(Semaphore::new(0, 1));
 
-    {
+    for (name, latency) in [("bench", false), ("bench-latency", true)] {
         let (running, request, wake) = (running.clone(), request.clone(), wake.clone());
-        harness_rs::register("bench", move |args| {
+        harness_rs::register(name, move |args| {
             if running.swap(true, Ordering::AcqRel) {
                 return Err("busy".to_string());
             }
             match parse(args) {
                 Ok(params) => {
-                    *request.lock() = Some(params);
+                    *request.lock() = Some((latency, params));
                     wake.give();
                     Ok(None)
                 }
@@ -147,8 +146,8 @@ pub fn run() {
 
     loop {
         wake.take();
-        let Some(params) = request.lock().take() else { continue };
-        let line = bench.run(&params);
+        let Some((latency, params)) = request.lock().take() else { continue };
+        let line = if latency { bench.latency(&params) } else { bench.run(&params) };
         info!(TAG, "{line}");
         *result.lock() = line;
         running.store(false, Ordering::Release);

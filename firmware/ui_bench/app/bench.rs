@@ -6,37 +6,20 @@
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::String;
-use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::cell::UnsafeCell;
-use core::ffi::CStr;
-use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use core::time::Duration;
 
-use bsp_rs::display::{Display, FrameBuffer, PixelFormat};
-use devkit_gfx::{Bgr888, Damage, DisplayList, GlyphCache, ImageFormat, Pixel, Prepared, Rect, Rgb565, Surface, draw};
+use bsp_rs::display::{Display, PixelFormat};
+use devkit_gfx::{DisplayList, GlyphCache, ImageFormat};
+use devkit_ui::{Config, PresentMode, Presenter, Rotation, Stats};
 use idf::heap::Caps;
-use idf::log::error;
-use idf::ppa::{ColorMode, Rotation, Srm, SrmOp};
-use idf::sync::Semaphore;
-use idf::thread;
 use idf::time::Instant;
 
 use crate::scene::{Assets, Kind, Scene};
 
-const TAG: &CStr = c"bench";
-
-const LANES: usize = 2;
-const STRIP_BYTES: usize = 64 * 1024;
-const STRIP_ROW_ALIGN: i16 = 16;
-const MAX_FBS: usize = 3;
-const MAX_DAMAGE: usize = 8;
 const GLYPH_CACHE_BYTES: usize = 128 * 1024;
-const SRAM_GLYPH_CACHE_BYTES: usize = 64 * 1024;
-
-#[repr(C, align(64))]
-#[derive(Clone, Copy)]
-struct Line([u8; 64]);
+const WARMUP_FRAMES: usize = 8;
+const MAX_FRAME_PERIOD_US: u32 = 19_000;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Present {
@@ -52,150 +35,17 @@ pub struct Params {
     pub lanes: usize,
     pub frames: usize,
     pub speed: i32,
-    pub cache_in_psram: bool,
-}
-
-struct Job {
-    list: DisplayList<'static, Caps>,
-    prepared: Prepared<Caps>,
-    strips: Vec<Rect, Caps>,
-    fb: Option<FrameBuffer>,
-    rotated: bool,
-}
-
-struct Shared {
-    start: [Semaphore; LANES],
-    done: Semaphore,
-    next: AtomicUsize,
-    raster_us: [AtomicU32; LANES],
-    wait_us: [AtomicU32; LANES],
-    job: UnsafeCell<Job>,
-}
-
-unsafe impl Send for Shared {}
-unsafe impl Sync for Shared {}
-
-struct Lane {
-    id: usize,
-    srm: Srm,
-    buffers: [Vec<Line, Caps>; 2],
-    turn: usize,
-    last: Rect,
-}
-
-impl Lane {
-    fn run(mut self, shared: Arc<Shared>) {
-        loop {
-            shared.start[self.id].take();
-            let job = unsafe { &*shared.job.get() };
-            let (mut raster, mut wait) = (0, 0);
-            match job.fb.map(|fb| fb.format()) {
-                Some(PixelFormat::Rgb888) => self.strips::<Bgr888>(&shared, job, &mut raster, &mut wait),
-                _ => self.strips::<Rgb565>(&shared, job, &mut raster, &mut wait),
-            }
-            let t = Instant::now();
-            while self.srm.pending() > 0 {
-                self.wait_srm();
-            }
-            wait += t.elapsed().as_micros() as u32;
-            shared.raster_us[self.id].store(raster, Ordering::Relaxed);
-            shared.wait_us[self.id].store(wait, Ordering::Relaxed);
-            shared.done.give();
-        }
-    }
-
-    fn wait_srm(&mut self) {
-        while !self.srm.wait_timeout(Duration::from_secs(1)) {
-            error!(TAG, "lane {}: srm stalled, last {:?} pending {}", self.id, self.last, self.srm.pending());
-        }
-    }
-
-    fn strips<P: Pixel>(&mut self, shared: &Shared, job: &Job, raster: &mut u32, wait: &mut u32) {
-        let Some(fb) = job.fb else { return };
-        loop {
-            let index = shared.next.fetch_add(1, Ordering::Relaxed);
-            let Some(strip) = job.strips.get(index) else { return };
-            if self.srm.pending() == 2 {
-                let t = Instant::now();
-                self.wait_srm();
-                *wait += t.elapsed().as_micros() as u32;
-            }
-            let t = Instant::now();
-            let buffer = self.buffers[self.turn].as_mut_ptr().cast::<u8>();
-            self.turn = (self.turn + 1) % 2;
-            self.last = *strip;
-            let surface = unsafe { Surface::new(buffer, strip.w as usize * P::BYTES, *strip) };
-            draw::<P, _, _>(&job.list, &job.prepared, &surface);
-            *raster += t.elapsed().as_micros() as u32;
-            let result = unsafe { self.srm.start(&srm_op(&fb, strip, buffer, job.rotated)) };
-            if let Err(err) = result {
-                error!(TAG, "srm {strip:?}: {err}");
-            }
-        }
-    }
-}
-
-fn srm_op(fb: &FrameBuffer, strip: &Rect, src: *const u8, rotated: bool) -> SrmOp {
-    let size = fb.size();
-    let (x, y, rotation) = if rotated {
-        (strip.y, size.height as i16 - strip.x - strip.w, Rotation::R90)
-    } else {
-        (strip.x, strip.y, Rotation::R0)
-    };
-    SrmOp {
-        src,
-        src_width: strip.w as u32,
-        src_height: strip.h as u32,
-        dst: fb.as_ptr(),
-        dst_size: fb.len() as u32,
-        dst_width: u32::from(size.width),
-        dst_height: u32::from(size.height),
-        dst_x: x as u32,
-        dst_y: y as u32,
-        format: if fb.format() == PixelFormat::Rgb888 { ColorMode::Rgb888 } else { ColorMode::Rgb565 },
-        rotation,
-    }
 }
 
 pub struct Bench {
-    display: &'static Display,
-    shared: Arc<Shared>,
+    presenter: Presenter,
     assets: [&'static Assets; 2],
-    sram_cache: GlyphCache<Caps>,
-    psram_cache: GlyphCache<Caps>,
+    cache: GlyphCache<Caps>,
+    list: DisplayList<'static, Caps>,
 }
 
 impl Bench {
     pub fn new(display: &'static Display) -> idf::Result<Self> {
-        let shared = Arc::new(Shared {
-            start: [Semaphore::try_new(0, 1)?, Semaphore::try_new(0, 1)?],
-            done: Semaphore::try_new(0, LANES as u32)?,
-            next: AtomicUsize::new(0),
-            raster_us: [AtomicU32::new(0), AtomicU32::new(0)],
-            wait_us: [AtomicU32::new(0), AtomicU32::new(0)],
-            job: UnsafeCell::new(Job {
-                list: DisplayList::new_in(Caps::INTERNAL),
-                prepared: Prepared::new_in(Caps::INTERNAL),
-                strips: Vec::with_capacity_in(256, Caps::DMA | Caps::INTERNAL),
-                fb: None,
-                rotated: false,
-            }),
-        });
-        for id in 0..LANES {
-            let buffer = || {
-                let mut v = Vec::with_capacity_in(STRIP_BYTES / 64, Caps::DMA | Caps::INTERNAL);
-                v.resize(STRIP_BYTES / 64, Line([0; 64]));
-                v
-            };
-            let lane = Lane { id, srm: Srm::new(2)?, buffers: [buffer(), buffer()], turn: 0, last: Rect::default() };
-            let shared = shared.clone();
-            thread::Builder::new()
-                .name("lane")
-                .stack_size(8192)
-                .priority(10)
-                .core(Some(id as u32))
-                .spawn(move || lane.run(shared))?;
-        }
         let format = if display.pixel_format() == PixelFormat::Rgb888 { ImageFormat::Rgb888 } else { ImageFormat::Rgb565 };
         let size = display.size();
         let assets = [
@@ -203,145 +53,122 @@ impl Bench {
             &*Box::leak(Box::new(Assets::new(format, size.height as i16))),
         ];
         Ok(Self {
-            display,
-            shared,
+            presenter: Presenter::new(display, &Config::default())?,
             assets,
-            sram_cache: GlyphCache::new_in(SRAM_GLYPH_CACHE_BYTES, Caps::DMA | Caps::INTERNAL),
-            psram_cache: GlyphCache::new_in(GLYPH_CACHE_BYTES, Caps::SPIRAM),
+            cache: GlyphCache::new_in(GLYPH_CACHE_BYTES, Caps::SPIRAM),
+            list: DisplayList::new_in(Caps::INTERNAL),
         })
     }
 
-    fn render(&self, fb: FrameBuffer, rotated: bool, damage: &Damage<MAX_DAMAGE>, lanes: usize) -> u32 {
-        let shared = &*self.shared;
-        let job = unsafe { &mut *shared.job.get() };
-        job.fb = Some(fb);
-        job.rotated = rotated;
-        job.strips.clear();
-        for area in damage.regions() {
-            let stride = area.w as usize * fb.format().bytes();
-            let rows = ((STRIP_BYTES / stride) as i16 & !(STRIP_ROW_ALIGN - 1)).max(STRIP_ROW_ALIGN);
-            let mut y = area.y;
-            while y < area.bottom() {
-                let h = rows.min(area.bottom() - y);
-                job.strips.push(Rect::new(area.x, y, area.w, h));
-                y += h;
-            }
-        }
-        shared.next.store(0, Ordering::Relaxed);
-        // Lane 0 preempts this task on its core, so it must start last.
-        for start in shared.start[..lanes].iter().rev() {
-            start.give();
-        }
-        for _ in 0..lanes {
-            shared.done.take();
-        }
-        job.strips.len() as u32
+    fn setup(&mut self, p: &Params) -> idf::Result<Scene> {
+        let (mode, count) = match p.present {
+            Present::InPlace => (PresentMode::InPlace, 1),
+            Present::Swap2 => (PresentMode::Swap, 2),
+            Present::Swap3 => (PresentMode::Swap, 3),
+        };
+        let rotation = if p.rotated { Rotation::R90 } else { Rotation::R0 };
+        self.presenter.configure(mode, count, rotation, p.lanes)?;
+        let area = self.presenter.area();
+        Ok(Scene { kind: p.kind, width: area.w, height: area.h, offset: 0, speed: p.speed })
+    }
+
+    fn frame(&mut self, scene: &mut Scene) -> idf::Result<Stats> {
+        self.presenter.acquire()?;
+        scene.advance();
+        self.presenter.invalidate(scene.damage());
+        scene.build(self.assets[usize::from(scene.width > scene.height)], &mut self.list);
+        self.presenter.render(&self.list, &mut self.cache)
     }
 
     pub fn run(&mut self, p: &Params) -> String {
-        let display = self.display;
-        let size = display.size();
-        let (width, height) = (size.width as i16, size.height as i16);
-        let (width, height) = if p.rotated { (height, width) } else { (width, height) };
-        let assets = self.assets[usize::from(p.rotated)];
-        let mut scene = Scene { kind: p.kind, width, height, offset: 0, speed: p.speed };
-        let fbs = match p.present {
-            Present::InPlace => 1,
-            Present::Swap2 => 2,
-            Present::Swap3 => 3,
-        };
-        let job = unsafe { &mut *self.shared.job.get() };
-        let mut damage = [Damage::<MAX_DAMAGE>::new(scene.full()); MAX_FBS];
-        for d in &mut damage {
-            d.add_full();
+        match self.run_frames(p) {
+            Ok(line) => line,
+            Err(err) => format!("failed: {err}"),
         }
-        let mut latest = display.scanning().unwrap_or(0);
-        if p.present == Present::InPlace {
-            latest = 0;
-            if let Err(err) = display.present(0) {
-                return format!("present: {err}");
-            }
+    }
+
+    fn run_frames(&mut self, p: &Params) -> idf::Result<String> {
+        let mut scene = self.setup(p)?;
+        for _ in 0..WARMUP_FRAMES {
+            self.frame(&mut scene)?;
         }
-        let mut frame_us = Vec::with_capacity(p.frames);
-        let (mut build, mut render, mut flip, mut raster, mut stall, mut strips) = (0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
-        let (mut prepare, mut decoded, mut missing) = (0u64, 0u32, 0u32);
+        let mut periods = Vec::with_capacity(p.frames);
+        let mut sum = Stats::default();
         let mut last = Instant::now();
-        for frame in 0..p.frames + 8 {
-            let target = match p.present {
-                Present::InPlace => 0,
-                Present::Swap2 => {
-                    while display.scanning() != Some(latest) {
-                        if let Err(err) = display.wait_frame() {
-                            return format!("wait_frame: {err}");
-                        }
-                    }
-                    (latest + 1) % fbs
-                }
-                Present::Swap3 => {
-                    let scanning = display.scanning().unwrap_or(0);
-                    (0..fbs).find(|&i| i != scanning && i != latest).unwrap_or((latest + 1) % fbs)
-                }
-            };
-            let t0 = Instant::now();
-            scene.advance();
-            for d in &mut damage {
-                d.add(scene.damage());
-            }
-            scene.build(assets, &mut job.list);
-            let t1 = Instant::now();
-            let cache = if p.cache_in_psram { &mut self.psram_cache } else { &mut self.sram_cache };
-            let before = cache.decoded();
-            job.prepared.prepare(&job.list, damage[target].regions(), cache);
-            let frame_decoded = cache.decoded() - before;
-            let t_prepared = Instant::now();
-            let Some(fb) = display.frame_buffer(target) else { return format!("no framebuffer {target}") };
-            let n = self.render(fb, p.rotated, &damage[target], p.lanes);
-            damage[target].clear();
-            let t2 = Instant::now();
-            if p.present != Present::InPlace {
-                while display.scanning() != Some(latest) {
-                    if let Err(err) = display.wait_frame() {
-                        return format!("wait_frame: {err}");
-                    }
-                }
-                if let Err(err) = display.present(target) {
-                    return format!("present: {err}");
-                }
-                latest = target;
-            }
-            let t3 = Instant::now();
-            if frame >= 8 {
-                frame_us.push(t3.duration_since(last).as_micros() as u32);
-                build += t1.duration_since(t0).as_micros() as u64;
-                prepare += t_prepared.duration_since(t1).as_micros() as u64;
-                render += t2.duration_since(t_prepared).as_micros() as u64;
-                decoded += frame_decoded;
-                missing += job.prepared.missing();
-                flip += t3.duration_since(t2).as_micros() as u64;
-                strips += u64::from(n);
-                for lane in 0..p.lanes {
-                    raster += u64::from(self.shared.raster_us[lane].load(Ordering::Relaxed));
-                    stall += u64::from(self.shared.wait_us[lane].load(Ordering::Relaxed));
-                }
-            }
-            last = t3;
+        for _ in 0..p.frames {
+            let stats = self.frame(&mut scene)?;
+            let now = Instant::now();
+            periods.push(now.duration_since(last).as_micros() as u32);
+            last = now;
+            sum.prepare_us += stats.prepare_us;
+            sum.draw_us += stats.draw_us;
+            sum.flip_us += stats.flip_us;
+            sum.raster_us += stats.raster_us;
+            sum.stall_us += stats.stall_us;
+            sum.strips += stats.strips;
+            sum.glyphs_decoded += stats.glyphs_decoded;
+            sum.glyphs_missing += stats.glyphs_missing;
         }
-        frame_us.sort_unstable();
-        let n = p.frames as u64;
-        let total: u64 = frame_us.iter().map(|&v| u64::from(v)).sum();
-        let ms = |v: u64| v as f32 / n as f32 / 1000.0;
-        format!(
-            "fps={:.1} frame={:.2} p95={:.2} build={:.2} prepare={:.2} render={:.2} raster={:.2} ppa_wait={:.2} flip={:.2} strips={} decoded={decoded} missing={missing}",
-            n as f32 * 1_000_000.0 / total as f32,
-            ms(total),
-            frame_us[frame_us.len() * 95 / 100] as f32 / 1000.0,
-            ms(build),
-            ms(prepare),
-            ms(render),
-            ms(raster),
-            ms(stall),
-            ms(flip),
-            strips / n,
-        )
+        periods.sort_unstable();
+        let total: u64 = periods.iter().map(|&v| u64::from(v)).sum();
+        let n = p.frames as f32;
+        let ms = |v: u32| v as f32 / n / 1000.0;
+        Ok(format!(
+            "fps={:.1} frame={:.2} p95={:.2} prepare={:.2} draw={:.2} flip={:.2} raster={:.2} stall={:.2} strips={} decoded={} missing={}",
+            n * 1_000_000.0 / total as f32,
+            total as f32 / n / 1000.0,
+            periods[periods.len() * 95 / 100] as f32 / 1000.0,
+            ms(sum.prepare_us),
+            ms(sum.draw_us),
+            ms(sum.flip_us),
+            ms(sum.raster_us),
+            ms(sum.stall_us),
+            sum.strips / p.frames as u32,
+            sum.glyphs_decoded,
+            sum.glyphs_missing,
+        ))
+    }
+
+    pub fn latency(&mut self, p: &Params) -> String {
+        match self.run_latency(p) {
+            Ok(line) => line,
+            Err(err) => format!("failed: {err}"),
+        }
+    }
+
+    /// From a state change at a random point of the frame until the frame is
+    /// written (`InPlace`) or on the panel (`Swap`).
+    fn run_latency(&mut self, p: &Params) -> idf::Result<String> {
+        let mut scene = self.setup(p)?;
+        for _ in 0..WARMUP_FRAMES {
+            self.frame(&mut scene)?;
+        }
+        self.presenter.wait_visible()?;
+        let mut samples = Vec::with_capacity(p.frames);
+        let mut seed = 0x2545_F491u32;
+        for _ in 0..p.frames {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            let delay = Duration::from_micros(u64::from(seed % MAX_FRAME_PERIOD_US));
+            let start = Instant::now();
+            while start.elapsed() < delay {
+                core::hint::spin_loop();
+            }
+            let t0 = Instant::now();
+            self.frame(&mut scene)?;
+            self.presenter.wait_visible()?;
+            samples.push(t0.elapsed().as_micros() as u32);
+        }
+        samples.sort_unstable();
+        let total: u64 = samples.iter().map(|&v| u64::from(v)).sum();
+        let at = |q: usize| samples[(samples.len() - 1) * q / 100] as f32 / 1000.0;
+        Ok(format!(
+            "avg={:.2} p50={:.2} p95={:.2} max={:.2}",
+            total as f32 / samples.len() as f32 / 1000.0,
+            at(50),
+            at(95),
+            at(100),
+        ))
     }
 }

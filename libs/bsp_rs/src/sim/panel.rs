@@ -6,14 +6,16 @@
 use alloc::vec::Vec;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicUsize, Ordering};
+use core::time::Duration;
 
 use idf::heap::Caps;
-use idf::{Error, Result};
+use idf::{Error, Result, thread};
 use super::Host;
 use super::protocol::{self, Event};
 use crate::display::{Driver, FrameBuffer, PixelFormat, Size};
 
 const MAX_FRAME_BUFFERS: usize = 3;
+const FRAME_PERIOD: Duration = Duration::from_millis(16);
 
 pub(crate) struct SimPanel {
     host: &'static Host,
@@ -80,6 +82,15 @@ impl Driver for SimPanel {
 
     fn shown(&self) -> Option<FrameBuffer> {
         self.frame_buffer(self.shown.load(Ordering::Relaxed))
+    }
+
+    fn scanning(&self) -> Option<usize> {
+        Some(self.shown.load(Ordering::Relaxed))
+    }
+
+    fn wait_frame(&self) -> Result<()> {
+        thread::sleep(FRAME_PERIOD);
+        Ok(())
     }
 
     fn set_brightness(&self, level: u8) -> Result<()> {

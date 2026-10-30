@@ -580,10 +580,38 @@ draw::<Rgb565, _, _>(&list, &prepared, &surface);
 - `CornerMask` and `ShadowMask` are generated once and never freed; keep them
   with the theme. `Op::Shadow` leaves the middle of its rectangle unpainted, so
   something opaque must cover it.
-- Damage merges into at most `N` rectangles and promotes to the full area at
-  75% coverage.
+- Damage merges into at most `N` rectangles, and several rectangles covering
+  75% promote to the full area.
 - `Pixel` implements a framebuffer format: `Rgb565` and `Bgr888` (B, G, R in
   memory).
+
+### `devkit_ui` (`libs/devkit_ui`)
+
+UI framework on `bsp_rs`. `Presenter` puts a `DisplayList` on the panel:
+
+```rust
+let mut presenter = Presenter::new(display, &Config::default())?;
+loop {
+    presenter.acquire()?;
+    let dirty = apply_input();
+    presenter.invalidate(dirty);
+    build(&mut list);
+    presenter.render(&list, &mut cache)?;
+}
+```
+
+- Damaged rows are drawn into internal RAM strips, by one task per core, and
+  copied into a framebuffer with `Blitter`, rotated as `Config::rotation` says.
+- `PresentMode::Swap` flips at a frame boundary without tearing. With three
+  framebuffers a new frame starts drawing while the last one waits for the
+  boundary; with two, it waits too. `PresentMode::InPlace` overwrites the
+  framebuffer on the panel. It answers up to a frame sooner, and tears.
+- Damage is tracked per framebuffer: a frame repaints what changed since that
+  framebuffer was last drawn, and nothing is copied between framebuffers.
+- Damage rows are aligned to a 16 row grid.
+- Call `acquire` before reading input: it may wait for a framebuffer. `render`
+  takes it by itself otherwise.
+- A stalled copy logs `blit stalled` every second and keeps waiting.
 
 ## Runtime (`libs/rust_rt`)
 

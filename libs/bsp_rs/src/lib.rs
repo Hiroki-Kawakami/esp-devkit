@@ -4,6 +4,8 @@
  */
 
 #![cfg_attr(not(test), no_std)]
+// CONFIG_SOC_* flags are unknown to --check-cfg on chips without them.
+#![allow(unexpected_cfgs)]
 
 extern crate alloc;
 
