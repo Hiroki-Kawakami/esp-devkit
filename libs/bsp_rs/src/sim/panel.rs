@@ -9,9 +9,8 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use idf::heap::Caps;
 use idf::{Error, Result};
-use sim_device::Host;
-use sim_device::protocol::{self, Event};
-
+use super::Host;
+use super::protocol::{self, Event};
 use crate::display::{Driver, FrameBuffer, PixelFormat, Size};
 
 const MAX_FRAME_BUFFERS: usize = 3;

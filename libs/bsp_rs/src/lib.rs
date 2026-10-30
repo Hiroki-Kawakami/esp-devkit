@@ -17,6 +17,8 @@ mod devices;
 pub mod dispatch;
 pub mod display;
 mod driver;
+#[cfg(not(target_os = "none"))]
+mod sim;
 #[cfg_attr(not(target_os = "none"), allow(dead_code))]
 pub mod touch;
 

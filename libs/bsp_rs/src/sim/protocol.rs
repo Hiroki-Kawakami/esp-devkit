@@ -2,8 +2,8 @@
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 Hiroki Kawakami
  *
- * Events between the simulator host and the firmware process; shared by
- * tools/devkit and libs/sim_device. See docs/simulator.md.
+ * Events between the debug host and a simulator firmware; compiled into both
+ * this crate and tools/devkit. See docs/simulator.md.
  */
 
 pub const VERSION: u32 = 2;

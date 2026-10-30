@@ -3,11 +3,11 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
-#![cfg_attr(not(test), no_std)]
-
-extern crate alloc;
-
-pub mod protocol;
+// Shared with tools/devkit, which uses the parts this side does not.
+#[allow(dead_code)]
+pub(crate) mod protocol;
+pub(crate) mod panel;
+pub(crate) mod touch;
 
 use alloc::boxed::Box;
 use core::ffi::{CStr, c_int, c_void};
@@ -17,18 +17,18 @@ use idf::log::{error, warn};
 use idf::sync::{Mutex, OnceLock};
 use idf::thread::Builder;
 
-use protocol::{ENV_SOCKET_FD, EXIT_RESTART, Event, RECORD_SIZE, TouchPoint, VERSION};
+use self::protocol::{ENV_SOCKET_FD, EXIT_RESTART, Event, RECORD_SIZE, TouchPoint, VERSION};
 
 mod ffi {
     #![allow(dead_code, non_camel_case_types, non_snake_case, non_upper_case_globals)]
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 }
 
-const TAG: &CStr = c"sim_device";
+const TAG: &CStr = c"sim";
 
-pub type TouchListener = Box<dyn Fn(&[TouchPoint]) + Send + Sync>;
+pub(crate) type TouchListener = Box<dyn Fn(&[TouchPoint]) + Send + Sync>;
 
-pub struct Host {
+pub(crate) struct Host {
     fd: c_int,
     send_lock: Mutex<()>,
     psram_base: usize,
@@ -39,7 +39,7 @@ static HOST: OnceLock<Option<Host>> = OnceLock::new();
 static TOUCH: OnceLock<TouchListener> = OnceLock::new();
 
 /// `None` when the firmware does not run under the simulator host.
-pub fn host() -> Option<&'static Host> {
+pub(crate) fn host() -> Option<&'static Host> {
     HOST.get_or_init(connect).as_ref()
 }
 
@@ -54,7 +54,7 @@ fn connect() -> Option<Host> {
         error!(TAG, "no PSRAM region from the host");
         return None;
     }
-    if let Err(err) = Builder::new().name("sim_device").stack_size(4096).spawn(move || receive(fd)) {
+    if let Err(err) = Builder::new().name("sim_link").stack_size(4096).spawn(move || receive(fd)) {
         error!(TAG, "receiver task: {err}");
         return None;
     }
@@ -64,7 +64,7 @@ fn connect() -> Option<Host> {
 }
 
 impl Host {
-    pub fn send(&self, event: &Event) {
+    pub(crate) fn send(&self, event: &Event) {
         let record = event.encode();
         let _guard = self.send_lock.lock();
         let mut at = 0;
@@ -79,13 +79,13 @@ impl Host {
     }
 
     /// Offset of `p` in the shared PSRAM region.
-    pub fn psram_offset(&self, p: *const u8) -> Option<u64> {
+    pub(crate) fn psram_offset(&self, p: *const u8) -> Option<u64> {
         let offset = (p as usize).checked_sub(self.psram_base)?;
         (offset < self.psram_size).then_some(offset as u64)
     }
 
     /// Runs on the receiver task. Only the first listener is kept.
-    pub fn set_touch_listener(&self, listener: TouchListener) {
+    pub(crate) fn set_touch_listener(&self, listener: TouchListener) {
         if TOUCH.set(listener).is_err() {
             warn!(TAG, "touch listener already set");
         }

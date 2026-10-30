@@ -9,8 +9,8 @@ use alloc::vec::Vec;
 
 use idf::Result;
 use idf::sync::Mutex;
-use sim_device::Host;
 
+use super::Host;
 use crate::touch::{self, Driver, Point, Touch};
 
 pub(crate) struct SimTouch {

@@ -115,7 +115,7 @@
               ./tools/devkit/Cargo.lock
               ./tools/devkit/src
               ./tools/devkit/assets
-              ./libs/sim_device/src/protocol.rs
+              ./libs/bsp_rs/src/sim/protocol.rs
             ];
           };
           cargoRoot = "tools/devkit";

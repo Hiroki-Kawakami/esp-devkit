@@ -62,7 +62,6 @@ set(DEVKIT_SIMULATOR_COMPONENTS
     libs/media_framework
     libs/rust_rt
     libs/sensors
-    libs/sim_device
     libs/ui_framework
     libs/usb_device
     libs/usb_host

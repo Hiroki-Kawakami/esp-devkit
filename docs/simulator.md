@@ -31,14 +31,15 @@ The host starts the firmware with:
 - idf_compat maps the region and serves `MALLOC_CAP_SPIRAM` from it, so
   framebuffers land where the host can read them. Without the variables
   SPIRAM comes from the host heap.
-- `libs/sim_device` owns the socket (`sim_device::host()`, `None` without a
-  host). The firmware exits when the host closes it.
+- `libs/bsp_rs/src/sim` owns the socket (`None` from `sim::host()` without a
+  host) and the simulated panel and touch. The firmware exits when the host
+  closes it.
 - `esp_restart()` exits with status 75; the host starts the firmware again.
   Any other exit leaves it stopped until Reset or Power on.
 
 ## Events
 
-Fixed 64-byte records, defined once in `libs/sim_device/src/protocol.rs` and
+Fixed 64-byte records, defined once in `libs/bsp_rs/src/sim/protocol.rs` and
 compiled into the firmware and `tools/devkit`. Byte 0 is the tag, fields follow little-endian.
 
 | event | direction | fields |

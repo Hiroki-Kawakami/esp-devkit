@@ -6,12 +6,12 @@
 use idf::Result;
 use idf::log::{info, warn};
 use idf::sync::OnceLock;
-use sim_device::protocol::Event;
 
 use super::{PANEL_SIZE, TAG, resolve_fb_num, resolve_pixel_format};
 use crate::display;
-use crate::driver::sim_panel::SimPanel;
-use crate::driver::sim_touch;
+use crate::sim::panel::SimPanel;
+use crate::sim::protocol::Event;
+use crate::sim::{self, touch as sim_touch};
 use crate::touch;
 use crate::{Board, Config};
 
@@ -21,7 +21,7 @@ static DISPLAY: OnceLock<display::Display> = OnceLock::new();
 
 // Without the simulator host there is nothing to show or touch.
 pub(crate) fn init(config: &Config) -> Result<Board> {
-    let Some(host) = sim_device::host() else {
+    let Some(host) = sim::host() else {
         info!(TAG, "board: Tab5 (simulator, no host)");
         return Ok(Board { display: None, touch: None });
     };
