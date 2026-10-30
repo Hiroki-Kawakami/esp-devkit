@@ -5,6 +5,7 @@
 
 use core::ffi::CStr;
 use core::ptr::NonNull;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
 
 use idf::lcd::PanelIo;
@@ -69,6 +70,7 @@ pub(crate) struct MipiDsi {
     format: PixelFormat,
     frame_buffers: [Option<NonNull<u8>>; dsi::MAX_FRAME_BUFFERS],
     fb_num: u8,
+    shown: AtomicUsize,
 }
 
 unsafe impl Send for MipiDsi {}
@@ -145,6 +147,7 @@ impl MipiDsi {
             format: config.pixel_format,
             frame_buffers,
             fb_num,
+            shown: AtomicUsize::new(0),
         })
     }
 }
@@ -169,6 +172,7 @@ impl Driver for MipiDsi {
 
     fn present(&self, index: usize) -> Result<()> {
         let fb = self.frame_buffers.get(index).copied().flatten().ok_or(Error::INVALID_ARG)?;
+        self.shown.store(index, Ordering::Relaxed);
         unsafe {
             self.panel.panel().draw_bitmap(
                 0,
@@ -178,6 +182,10 @@ impl Driver for MipiDsi {
                 fb.as_ptr().cast(),
             )
         }
+    }
+
+    fn shown(&self) -> Option<FrameBuffer> {
+        self.frame_buffer(self.shown.load(Ordering::Relaxed))
     }
 
     fn set_brightness(&self, level: u8) -> Result<()> {

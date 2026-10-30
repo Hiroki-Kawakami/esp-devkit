@@ -26,3 +26,13 @@ let board = bsp_rs::init(&bsp_rs::Config::default())?;
 - `present(i)` puts framebuffer `i` on the panel.
 - `set_brightness` takes 0..=100; the backlight starts off.
 - `PixelFormat::Rgb888` is B, G, R in memory.
+- `readback(area)` lends what the panel shows, in its pixel format, as `Rows`
+  from `next()`. It is `unsafe`: rows may be torn by concurrent drawing, and
+  only one `Readback` may exist at a time.
+
+## Touch
+
+`board.touch` is shared the same way. `read` returns the latest sample without
+waiting on the dispatch task, `set_event_cb` delivers each sample on that task,
+and `wait_interrupt` blocks until the controller signals. `inject` delivers
+points as if the controller had reported them, without waking `wait_interrupt`.

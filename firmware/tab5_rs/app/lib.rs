@@ -62,8 +62,14 @@ pub fn run() {
     if let Err(err) = display.set_brightness(100) {
         error!(TAG, "set_brightness: {err}");
     }
+    if let Some(touch) = board.touch {
+        trace_touches(display, touch);
+    }
+    if let Err(err) = harness_rs::start(&board) {
+        error!(TAG, "harness: {err}");
+    }
     match board.touch {
-        Some(touch) => trace_touches(display, touch),
+        Some(touch) => log_touches(touch),
         None => cycle(display),
     }
 }
@@ -79,7 +85,7 @@ fn cycle(display: &Display) -> ! {
     }
 }
 
-fn trace_touches(display: &'static Display, touch: &Touch) -> ! {
+fn trace_touches(display: &'static Display, touch: &Touch) {
     if let Err(err) = display.present(0) {
         error!(TAG, "present(0): {err}");
     }
@@ -92,7 +98,9 @@ fn trace_touches(display: &'static Display, touch: &Touch) -> ! {
             error!(TAG, "present(0): {err}");
         }
     })));
+}
 
+fn log_touches(touch: &Touch) -> ! {
     let mut last = 0;
     let mut points = [Point::default(); bsp_rs::touch::MAX_POINTS];
     loop {

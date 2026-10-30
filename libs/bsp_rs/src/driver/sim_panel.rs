@@ -5,6 +5,7 @@
 
 use alloc::vec::Vec;
 use core::ptr::NonNull;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use idf::heap::Caps;
 use idf::{Error, Result};
@@ -20,6 +21,7 @@ pub(crate) struct SimPanel {
     size: Size,
     format: PixelFormat,
     buffers: Vec<Vec<u8, Caps>>,
+    shown: AtomicUsize,
 }
 
 impl SimPanel {
@@ -37,7 +39,7 @@ impl SimPanel {
             fb.resize(len, 0);
             buffers.push(fb);
         }
-        Ok(Self { host, size, format, buffers })
+        Ok(Self { host, size, format, buffers, shown: AtomicUsize::new(0) })
     }
 }
 
@@ -62,6 +64,7 @@ impl Driver for SimPanel {
     fn present(&self, index: usize) -> Result<()> {
         let fb = self.buffers.get(index).ok_or(Error::INVALID_ARG)?;
         let offset = self.host.psram_offset(fb.as_ptr()).ok_or(Error::INVALID_STATE)?;
+        self.shown.store(index, Ordering::Relaxed);
         self.host.send(&Event::Present {
             offset,
             width: self.size.width,
@@ -74,6 +77,10 @@ impl Driver for SimPanel {
             },
         });
         Ok(())
+    }
+
+    fn shown(&self) -> Option<FrameBuffer> {
+        self.frame_buffer(self.shown.load(Ordering::Relaxed))
     }
 
     fn set_brightness(&self, level: u8) -> Result<()> {

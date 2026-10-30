@@ -144,10 +144,12 @@ impl Host {
 
     fn on_firmware_line(&self, line: String) {
         if line.starts_with('#') {
+            // With no command waiting this is a late answer, such as to a ping
+            // sent during boot; in the log a client would take it for a reply.
             if let Some(tx) = self.waiter.lock().unwrap().as_ref() {
                 let _ = tx.send(line);
-                return;
             }
+            return;
         }
         let feed = self.decoder.lock().unwrap().as_mut().map(|d| d.feed(&line));
         let Some(feed) = feed else {
@@ -229,11 +231,8 @@ impl Host {
             let done = body.starts_with("ERR")
                 || body.starts_with("END")
                 || (body.split_whitespace().take(2).eq(["OK", name]) && name != "snap");
-            let ours = done || body.starts_with("D ") || body.split_whitespace().take(2).eq(["OK", name]);
-            if ours {
+            if done || body.starts_with("D ") || body.split_whitespace().take(2).eq(["OK", name]) {
                 lines.push(body);
-            } else {
-                self.log_line(reply);
             }
             if done {
                 break Ok(lines);

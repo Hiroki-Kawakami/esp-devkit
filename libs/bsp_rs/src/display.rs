@@ -3,6 +3,7 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
+use core::marker::PhantomData;
 use core::ptr::NonNull;
 use core::slice;
 
@@ -12,6 +13,14 @@ use crate::Absent;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Size {
+    pub width: u16,
+    pub height: u16,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Rect {
+    pub x: u16,
+    pub y: u16,
     pub width: u16,
     pub height: u16,
 }
@@ -111,6 +120,11 @@ pub(crate) trait Driver: Send + Sync {
         Err(Error::NOT_SUPPORTED)
     }
 
+    /// The framebuffer on the panel.
+    fn shown(&self) -> Option<FrameBuffer> {
+        None
+    }
+
     fn set_brightness(&self, _level: u8) -> Result<()> {
         Err(Error::NOT_SUPPORTED)
     }
@@ -154,6 +168,10 @@ macro_rules! driver_enum {
                 match self { $(Self::$variant(d) => d.present(index)),+ }
             }
 
+            fn shown(&self) -> Option<$crate::display::FrameBuffer> {
+                match self { $(Self::$variant(d) => d.shown()),+ }
+            }
+
             fn set_brightness(&self, level: u8) -> idf::Result<()> {
                 match self { $(Self::$variant(d) => d.set_brightness(level)),+ }
             }
@@ -190,5 +208,75 @@ impl Display {
     /// 0..=100; 0 turns the backlight off.
     pub fn set_brightness(&self, level: u8) -> Result<()> {
         self.0.set_brightness(level)
+    }
+
+    /// Reads what the panel shows, in its pixel format. Rows may be torn by
+    /// concurrent drawing, and only one `Readback` may exist at a time.
+    pub unsafe fn readback(&self, area: Rect) -> Result<Readback<'_>> {
+        let fb = self.0.shown().ok_or(Error::NOT_SUPPORTED)?;
+        let size = fb.size();
+        if u32::from(area.x) + u32::from(area.width) > u32::from(size.width)
+            || u32::from(area.y) + u32::from(area.height) > u32::from(size.height)
+        {
+            return Err(Error::INVALID_ARG);
+        }
+        Ok(Readback { fb, area, next_row: 0, _display: PhantomData })
+    }
+}
+
+/// Lent rows of a [`Readback`]: `height` rows `stride` bytes apart, from panel
+/// row `y`.
+pub struct Rows<'a> {
+    pub y: u16,
+    pub height: u16,
+    pub stride: usize,
+    pub data: &'a [u8],
+}
+
+pub struct Readback<'a> {
+    fb: FrameBuffer,
+    area: Rect,
+    next_row: u16,
+    _display: PhantomData<&'a Display>,
+}
+
+impl Readback<'_> {
+    pub fn next(&mut self) -> Result<Option<Rows<'_>>> {
+        let height = self.area.height - self.next_row;
+        if height == 0 {
+            return Ok(None);
+        }
+        let y = self.area.y + self.next_row;
+        let bytes = self.fb.format().bytes();
+        let start = usize::from(y) * self.fb.stride() + usize::from(self.area.x) * bytes;
+        let len = (usize::from(height) - 1) * self.fb.stride() + usize::from(self.area.width) * bytes;
+        self.next_row = self.area.height;
+        let data = unsafe { slice::from_raw_parts(self.fb.as_ptr().add(start), len) };
+        Ok(Some(Rows { y, height, stride: self.fb.stride(), data }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Display, FrameBuffer, PixelFormat, Readback, Rect, Size};
+    use core::marker::PhantomData;
+    use core::ptr::NonNull;
+
+    #[test]
+    fn readback_lends_the_area_once() {
+        let mut memory = [0u8; 4 * 3 * 2];
+        for (i, b) in memory.iter_mut().enumerate() {
+            *b = i as u8;
+        }
+        let ptr = NonNull::new(memory.as_mut_ptr()).unwrap();
+        let fb = unsafe { FrameBuffer::new(ptr, Size { width: 4, height: 3 }, PixelFormat::Rgb565) };
+        let area = Rect { x: 1, y: 1, width: 2, height: 2 };
+        let mut rb: Readback<'_> = Readback { fb, area, next_row: 0, _display: PhantomData::<&Display> };
+        let rows = rb.next().unwrap().unwrap();
+        assert_eq!((rows.y, rows.height, rows.stride), (1, 2, 8));
+        assert_eq!(rows.data.len(), 8 + 4);
+        assert_eq!(rows.data[0], 10);
+        assert_eq!(rows.data[8], 18);
+        assert!(rb.next().unwrap().is_none());
     }
 }

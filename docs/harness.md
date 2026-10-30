@@ -13,6 +13,7 @@ JPEG of what the screen shows.
 |---|---|
 | `bsp/inc/bsp_harness.h` | BSP hooks: synthetic touch/button/IMU injection, panel readback (`CONFIG_BSP_HARNESS`) |
 | `libs/harness` | the line protocol and its transport — IDF console on device, stdin/stdout on the host (`CONFIG_HARNESS`) |
+| `libs/harness_rs` | the same protocol for firmware on `libs/bsp_rs`: one console transport for both targets, app commands through `harness_rs::register`, idle through `set_idle`; start it with `harness_rs::start(&board)` once the app is ready for input |
 | `devkit` (docs/devkit-cli.md) | PC side: runs scripts, does the timing, writes captures |
 
 Injected input feeds the same paths real hardware does — a touch goes through
@@ -195,8 +196,8 @@ snap [quality]          -> #OK snap <w> <h>, then #D <base64> lines, #END <bytes
 quit                    -> #OK quit
 ```
 
-Every `OK` reply names the command it answers; the host takes a `#` line that
-names another command for log, so a handler that replies itself should start
+Every `OK` reply names the command it answers; the host drops `#` lines that
+answer nothing it is waiting for, so a handler that replies itself should start
 with `OK <name>` too. After `reset` the host sends `ping <token>` until an
 `OK ping` comes back.
 

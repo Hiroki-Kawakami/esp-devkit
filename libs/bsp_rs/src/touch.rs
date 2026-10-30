@@ -4,6 +4,7 @@
  */
 
 use alloc::boxed::Box;
+use alloc::vec::Vec;
 use core::ffi::CStr;
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicUsize, Ordering, fence};
 use core::time::Duration;
@@ -83,6 +84,8 @@ pub struct Touch {
     int_pending: AtomicBool,
     callback: Mutex<Option<Option<EventCallback>>>,
     callback_changed: AtomicBool,
+    injected: Mutex<Option<Vec<Point>>>,
+    has_injected: AtomicBool,
     notifier: OnceLock<Notifier>,
 }
 
@@ -95,6 +98,8 @@ impl Touch {
             int_pending: AtomicBool::new(false),
             callback: Mutex::try_new(None)?,
             callback_changed: AtomicBool::new(false),
+            injected: Mutex::try_new(None)?,
+            has_injected: AtomicBool::new(false),
             notifier: OnceLock::new(),
         })
     }
@@ -130,6 +135,16 @@ impl Touch {
     pub fn set_event_cb(&self, callback: Option<EventCallback>) {
         *self.callback.lock() = Some(callback);
         self.callback_changed.store(true, Ordering::Release);
+        if let Some(n) = self.notifier.get() {
+            n.notify();
+        }
+    }
+
+    /// Delivers `points`, in display space, as a sample from the controller;
+    /// an empty slice is a release. Runs through the dispatch task.
+    pub fn inject(&self, points: &[Point]) {
+        *self.injected.lock() = Some(points.iter().take(MAX_POINTS).copied().collect());
+        self.has_injected.store(true, Ordering::Release);
         if let Some(n) = self.notifier.get() {
             n.notify();
         }
@@ -246,6 +261,12 @@ impl<D: Driver> Source for TouchSource<D> {
         if self.touch.callback_changed.swap(false, Ordering::Acquire) {
             if let Some(cb) = self.touch.callback.lock().take() {
                 self.callback = cb;
+            }
+        }
+
+        if self.touch.has_injected.swap(false, Ordering::Acquire) {
+            if let Some(points) = self.touch.injected.lock().take() {
+                self.emit(&points);
             }
         }
 
@@ -384,6 +405,23 @@ mod tests {
         assert!(events[2].is_empty());
         let mut out = [Point::default(); 2];
         assert_eq!(touch.read(&mut out), 0);
+    }
+
+    #[test]
+    fn injected_points_reach_readers_and_the_callback() {
+        let (mut src, _, touch) = source(config(Int::External));
+        let count = Arc::new(Mutex::new(0));
+        let c = count.clone();
+        src.callback = Some(Box::new(move |_| *c.lock() += 1));
+        touch.inject(&[p(5, 6)]);
+        src.tick();
+        let mut out = [Point::default(); 2];
+        assert_eq!(touch.read(&mut out), 1);
+        assert_eq!(out[0], p(5, 6));
+        touch.inject(&[]);
+        src.tick();
+        assert_eq!(touch.read(&mut out), 0);
+        assert_eq!(*count.lock(), 2);
     }
 
     #[test]
