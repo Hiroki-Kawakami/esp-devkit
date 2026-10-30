@@ -11,7 +11,8 @@ use std::sync::Arc;
 
 use crate::client;
 use crate::host::decode::Decoder;
-use crate::host::serial::{self, Serial};
+use crate::devices;
+use crate::host::serial::Serial;
 use crate::host::sim::{Device, Status};
 use crate::host::{Flow, Host, Link, Session};
 use crate::project::{Project, Target};
@@ -103,10 +104,17 @@ pub fn flash(project: &Project, name: &str, target: &Target, port: &Path) -> Res
     result
 }
 
-pub fn port(opts: &Options) -> Result<PathBuf, String> {
-    match &opts.port {
-        Some(p) => Ok(p.clone()),
-        None => serial::find_port(),
+/// `--port`, else `ESPPORT`, else the target's pin, else the only device.
+pub fn port(project: &Project, name: &str, opts: &Options) -> Result<PathBuf, String> {
+    if let Some(spec) = &opts.port {
+        return devices::resolve(&spec.to_string_lossy());
+    }
+    if let Some(port) = std::env::var_os("ESPPORT") {
+        return Ok(PathBuf::from(port));
+    }
+    match project.pins().get(name) {
+        Some(spec) => devices::resolve(spec),
+        None => devices::only_port(),
     }
 }
 
@@ -114,7 +122,7 @@ pub fn run(project: &Project, name: &str, target: &Target, opts: &Options) -> Re
     let dir = project.dir(name, target);
     match target {
         Target::Idf { .. } => {
-            let port = port(opts)?;
+            let port = port(project, name, opts)?;
             flash(project, name, target, &port)?;
             match running(&format!("serial:{}", port.display())) {
                 Some(host) => attach(&host, opts),
@@ -159,7 +167,7 @@ pub fn run(project: &Project, name: &str, target: &Target, opts: &Options) -> Re
 pub fn monitor(project: &Project, name: &str, target: &Target, opts: &Options) -> Result<(), String> {
     let label = format!("{}/{name}", project.name());
     if let Target::Idf { .. } = target {
-        let port = port(opts)?;
+        let port = port(project, name, opts)?;
         match running(&format!("serial:{}", port.display())) {
             Some(host) => attach(&host, opts),
             None => serve_board(project, name, target, &port, false),

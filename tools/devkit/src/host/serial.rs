@@ -218,33 +218,3 @@ fn configure(fd: libc::c_int, baud: u32) -> io::Result<()> {
     }
     Ok(())
 }
-
-/// `ESPPORT`, else the only USB serial port present.
-pub fn find_port() -> Result<PathBuf, String> {
-    if let Some(p) = std::env::var_os("ESPPORT") {
-        return Ok(PathBuf::from(p));
-    }
-    let prefixes: &[&str] = if cfg!(target_os = "macos") {
-        &["cu.usbmodem", "cu.usbserial", "cu.SLAB_USBtoUART", "cu.wchusbserial"]
-    } else {
-        &["ttyACM", "ttyUSB"]
-    };
-    let mut found: Vec<PathBuf> = std::fs::read_dir("/dev")
-        .map_err(|e| format!("/dev: {e}"))?
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| {
-            let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            prefixes.iter().any(|pre| name.starts_with(pre))
-        })
-        .collect();
-    found.sort();
-    match found.len() {
-        0 => Err("no serial port found; pass --port or set ESPPORT".into()),
-        1 => Ok(found.remove(0)),
-        _ => Err(format!(
-            "several serial ports: {}; pass --port or set ESPPORT",
-            found.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")
-        )),
-    }
-}

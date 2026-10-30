@@ -2,6 +2,7 @@ build
 managed_components
 sdkconfig
 sdkconfig.old
+devkit.local.toml
 nvs_data.toml
 .cache
 .deps

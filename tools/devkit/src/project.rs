@@ -6,9 +6,21 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 pub const FILE: &str = "devkit.toml";
+const LOCAL_FILE: &str = "devkit.local.toml";
+
+#[derive(Serialize, Deserialize, Default)]
+struct Local {
+    #[serde(default)]
+    targets: BTreeMap<String, LocalTarget>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct LocalTarget {
+    device: String,
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -87,6 +99,32 @@ impl Project {
             None if matches!(target, Target::Cmd { .. }) => self.root.clone(),
             None => self.root.join(name),
         }
+    }
+
+    fn local(&self) -> Local {
+        std::fs::read_to_string(self.root.join(LOCAL_FILE)).ok().and_then(|t| toml::from_str(&t).ok()).unwrap_or_default()
+    }
+
+    /// Devices pinned in `devkit.local.toml`, by target.
+    pub fn pins(&self) -> BTreeMap<String, String> {
+        self.local().targets.into_iter().map(|(k, v)| (k, v.device)).collect()
+    }
+
+    pub fn pin(&self, name: &str, device: Option<String>) -> Result<(), String> {
+        let mut local = self.local();
+        match device {
+            Some(device) => local.targets.insert(name.to_string(), LocalTarget { device }),
+            None => local.targets.remove(name),
+        };
+        let path = self.root.join(LOCAL_FILE);
+        if local.targets.is_empty() {
+            return match std::fs::remove_file(&path) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(format!("{}: {e}", path.display())),
+                _ => Ok(()),
+            };
+        }
+        let text = toml::to_string(&local).map_err(|e| e.to_string())?;
+        std::fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))
     }
 
     fn list(&self) -> String {

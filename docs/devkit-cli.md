@@ -54,13 +54,36 @@ run = "pc/target/release/pcapp"
 | `save-defconfig [target]` | write the differences from the defaults to its `sdkconfig.defaults` |
 | `reconfigure [target]` | regenerate its sdkconfig and build files, as needed after changing a `Kconfig` |
 | `idf [target] <args>` | `idf.py` in the target's directory (`menuconfig`, `fullclean`, ...) |
+| `devices` | list connected serial devices: port, USB id, serial number, name, product, the host holding it |
+| `devices name <name> <device>` | name a device, for every project (`~/.config/esp-devkit/devices.toml`) |
+| `devices unname <name>` | forget a name |
+| `use [target] <device>` | pin a target to a device in `devkit.local.toml` |
+| `use [target] --clear` | remove the pin; `use` alone lists the pins |
 | `hosts` | list running hosts |
 | `cmd [-t H] [--log] <line>...` | run harness lines, print each reply, stop at the first error |
 | `script [-t H] [--log] <file\|->` | the same for a script file or stdin |
 
 `run` takes `--headless` (no window) and `--psram-mb N` (simulator PSRAM,
-default 32); arguments after `--` go to the simulator firmware. The port comes
-from `--port`, else `ESPPORT`, else the only USB serial port present.
+default 32); arguments after `--` go to the simulator firmware.
+
+## Devices
+
+A device is given by port path, USB serial number or name, anywhere one is
+expected. The port for a target comes from `--port`, else `ESPPORT`, else its
+pin, else the only USB serial device connected.
+
+`devkit.local.toml` sits next to `devkit.toml`, is not tracked, and holds a
+target's pin without touching tracked files. It stores the serial number when
+the device has one, so the pin follows the board across USB ports, the port
+path otherwise, or the name when pinned by name:
+
+```sh
+devkit devices name tab5-st7121 /dev/cu.usbmodem114201
+devkit use esp32p4 tab5-st7121
+devkit run                        # finds that board wherever it is plugged in
+```
+
+Add `devkit.local.toml` to `.gitignore` in repositories that use esp-devkit.
 
 ## Hosts
 

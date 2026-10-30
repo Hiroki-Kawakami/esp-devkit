@@ -7,6 +7,7 @@
  */
 
 mod client;
+mod devices;
 mod frame;
 mod host;
 mod project;
@@ -27,14 +28,21 @@ usage: devkit [-C <dir>] <command> [args]
 project (the nearest devkit.toml):
   targets                         list the targets
   build   [target]
-  flash   [target] [--port P]
+  flash   [target] [--port P]     P: a port, a serial number or a device name
   run     [target] [--port P] [--headless] [--psram-mb N] [-- fw args]
+  use     [target] [<device>|--clear]
+                                  pin a target to a device in devkit.local.toml
   monitor [target] [--port P] [--backlog [N]]
                                   log and commands; attaches to a running host
   menuconfig [target]             edit the target's sdkconfig
   save-defconfig [target]         write its sdkconfig.defaults
   reconfigure [target]            regenerate its sdkconfig and build files
   idf     [target] <idf.py args>  idf.py in the target's directory
+
+connected devices:
+  devices                         list them
+  devices name <name> <device>    name one, for every project
+  devices unname <name>
 
 running hosts (`run` and `monitor` start one):
   hosts                           list them
@@ -105,6 +113,7 @@ fn run() -> Result<(), String> {
     }
     let command = args.rest.remove(0).to_string_lossy().into_owned();
     match command.as_str() {
+        "devices" => devices_command(&args.strings()),
         "hosts" => {
             let hosts = client::hosts();
             if hosts.is_empty() {
@@ -130,6 +139,65 @@ fn run() -> Result<(), String> {
     }
 }
 
+fn devices_command(args: &[String]) -> Result<(), String> {
+    match args {
+        [] => {
+            let holders: Vec<(PathBuf, String)> = client::hosts()
+                .into_iter()
+                .filter_map(|h| Some((PathBuf::from(h.kind.strip_prefix("serial:")?), format!("{} {}", h.pid, h.label))))
+                .collect();
+            println!("{}", devices::table(&holders));
+            Ok(())
+        }
+        [cmd, name, device] if cmd == "name" => {
+            let id = devices::id_of(device)?;
+            let mut names = devices::Names::load();
+            names.names.insert(name.clone(), id);
+            names.save()
+        }
+        [cmd, name] if cmd == "unname" => {
+            let mut names = devices::Names::load();
+            names.names.remove(name).ok_or_else(|| format!("no device named {name}"))?;
+            names.save()
+        }
+        _ => Err("usage: devkit devices [name <name> <device> | unname <name>]".into()),
+    }
+}
+
+fn use_command(project: &Project, positional: &[String], clear: bool) -> Result<(), String> {
+    let is_target = |s: &String| project.targets.contains_key(s);
+    let (target, device) = match positional {
+        [] if !clear => {
+            for (name, device) in project.pins() {
+                println!("{name}  {device}");
+            }
+            return Ok(());
+        }
+        [] => (None, None),
+        [one] if is_target(one) => (Some(one.as_str()), None),
+        [one] => (None, Some(one)),
+        [t, d] => (Some(t.as_str()), Some(d)),
+        _ => return Err("usage: devkit use [target] [<device>|--clear]".into()),
+    };
+    let (name, target) = project.target(target)?;
+    if !matches!(target, Target::Idf { .. }) {
+        return Err(format!("{name} is not an idf target"));
+    }
+    match (device, clear) {
+        (Some(_), true) => Err("give a device or --clear, not both".into()),
+        (Some(d), false) => {
+            // A name stays a name, so renaming or swapping the board follows it.
+            let spec = if devices::Names::load().names.contains_key(d) { d.clone() } else { devices::id_of(d)? };
+            project.pin(&name, Some(spec))
+        }
+        (None, true) => project.pin(&name, None),
+        (None, false) => {
+            println!("{name}  {}", project.pins().get(&name).map_or("-", String::as_str));
+            Ok(())
+        }
+    }
+}
+
 fn project_command(command: &str, mut args: Args, dir: &std::path::Path, fw_args: Vec<OsString>) -> Result<(), String> {
     let project = Project::find(dir)?;
     let opts = Options {
@@ -142,7 +210,11 @@ fn project_command(command: &str, mut args: Args, dir: &std::path::Path, fw_args
         backlog: args.take_optional("--backlog"),
         fw_args,
     };
+    let clear = args.take_flag("--clear");
     let positional = args.strings();
+    if command == "use" {
+        return use_command(&project, &positional, clear);
+    }
     if command == "targets" {
         for (name, target) in &project.targets {
             let kind = match target {
@@ -173,7 +245,7 @@ fn project_command(command: &str, mut args: Args, dir: &std::path::Path, fw_args
     let (name, target) = project.target(positional.first().map(String::as_str))?;
     match command {
         "build" => tasks::build(&project, &name, &target),
-        "flash" => tasks::flash(&project, &name, &target, &tasks::port(&opts)?),
+        "flash" => tasks::flash(&project, &name, &target, &tasks::port(&project, &name, &opts)?),
         "run" => tasks::run(&project, &name, &target, &opts),
         "monitor" => tasks::monitor(&project, &name, &target, &opts),
         "menuconfig" | "save-defconfig" | "reconfigure" => tasks::config(&project, &name, &target, command),
