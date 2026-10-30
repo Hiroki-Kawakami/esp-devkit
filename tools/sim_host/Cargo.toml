@@ -8,3 +8,4 @@ publish = false
 eframe = "0.31"
 jpeg-encoder = "0.6"
 libc = "0.2"
+resvg = "0.45"

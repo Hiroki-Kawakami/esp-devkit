@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 974 1528" width="487" height="764">
+  <defs>
+    <radialGradient id="lens" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#141416"/>
+      <stop offset="0.4" stop-color="#1c1d20"/>
+      <stop offset="0.5" stop-color="#36373b"/>
+      <stop offset="1" stop-color="#2e2f33"/>
+    </radialGradient>
+    <filter id="shadow" x="-5%" y="-5%" width="110%" height="110%">
+      <feDropShadow dx="0" dy="0" stdDeviation="6" flood-color="#000" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+
+  <g id="frame">
+    <path id="housing" fill-rule="evenodd" fill="#f4f4f2" filter="url(#shadow)" d="M70,24 H904 A46,46 0 0 1 950,70 V1458 A46,46 0 0 1 904,1504 H70 A46,46 0 0 1 24,1458 V70 A46,46 0 0 1 70,24 Z M128,128 H848 V1408 H128 Z"/>
+    <path id="housing-edge" fill="none" stroke="#cfcfcc" stroke-width="2" d="M70,24 H904 A46,46 0 0 1 950,70 V1458 A46,46 0 0 1 904,1504 H70 A46,46 0 0 1 24,1458 V70 A46,46 0 0 1 70,24 Z"/>
+    <path id="front-glass" fill-rule="evenodd" fill="#262629" d="M70,38 H904 A32,32 0 0 1 936,70 V1458 A32,32 0 0 1 904,1490 H70 A32,32 0 0 1 38,1458 V70 A32,32 0 0 1 70,38 Z M128,128 H848 V1408 H128 Z"/>
+    <path id="glass-edge" fill="none" stroke="#161618" stroke-width="1.5" d="M70,38 H904 A32,32 0 0 1 936,70 V1458 A32,32 0 0 1 904,1490 H70 A32,32 0 0 1 38,1458 V70 A32,32 0 0 1 70,38 Z"/>
+
+    <g id="camera" transform="translate(487 78)">
+      <circle r="22" fill="#1c1c1e"/>
+      <circle r="20" fill="url(#lens)"/>
+      <circle r="5" fill="#0e0e10"/>
+    </g>
+    <circle id="mic-r" cx="66" cy="842" r="6" fill="#0a0a0b" stroke="#55565a" stroke-width="1"/>
+    <circle id="mic-l" cx="66" cy="1234" r="6" fill="#0a0a0b" stroke="#55565a" stroke-width="1"/>
+  </g>
+
+  <rect id="screen-area" x="128" y="128" width="720" height="1280" fill="none" stroke="none"/>
+</svg>

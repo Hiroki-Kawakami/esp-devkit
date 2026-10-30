@@ -50,6 +50,7 @@ struct State {
     ready: bool,
     present: Option<Present>,
     brightness: u8,
+    name: Option<String>,
     log: VecDeque<String>,
 }
 
@@ -93,7 +94,14 @@ impl Device {
             fw,
             args,
             psram: map_psram(psram_size)?,
-            state: Mutex::new(State { status: Status::Off, ready: false, present: None, brightness: 0, log: VecDeque::new() }),
+            state: Mutex::new(State {
+                status: Status::Off,
+                ready: false,
+                present: None,
+                brightness: 0,
+                name: None,
+                log: VecDeque::new(),
+            }),
             run: Mutex::new(None),
             generation: AtomicU64::new(0),
             contacts: Mutex::new(BTreeMap::new()),
@@ -101,7 +109,8 @@ impl Device {
         }))
     }
 
-    /// Firmware stdout lines go here as well as into the log.
+    /// Firmware stdout lines go here; stderr goes to the host's stderr. Both
+    /// also go into the log.
     pub fn forward_lines(&self, tx: Sender<String>) {
         *self.lines.lock().unwrap() = Some(tx);
     }
@@ -123,7 +132,7 @@ impl Device {
             .env(ENV_PSRAM_SIZE.to_str().unwrap(), self.psram.len.to_string())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
+            .stderr(Stdio::piped())
             .spawn();
         unsafe { libc::close(fw_fd) };
         let mut child = match spawned {
@@ -142,12 +151,23 @@ impl Device {
             state.brightness = 0;
         }
         let stdout = child.stdout.take().unwrap();
+        let stderr = child.stderr.take().unwrap();
         let stdin = child.stdin.take().unwrap();
         *self.run.lock().unwrap() = Some(Run { pid: child.id() as libc::pid_t, stdin, sock: host_fd });
 
         let me = self.clone();
         thread::spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                if let Some(tx) = me.lines.lock().unwrap().as_ref() {
+                    let _ = tx.send(line.clone());
+                }
+                me.log_line(line);
+            }
+        });
+        let me = self.clone();
+        thread::spawn(move || {
+            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                eprintln!("{line}");
                 me.log_line(line);
             }
         });
@@ -203,6 +223,10 @@ impl Device {
                     state.present = Some(Present { offset, width, height, stride, format })
                 }
                 Some(Event::Brightness { level }) => state.brightness = level,
+                Some(Event::Device { name }) => {
+                    let end = name.iter().position(|&b| b == 0).unwrap_or(name.len());
+                    state.name = Some(String::from_utf8_lossy(&name[..end]).into_owned());
+                }
                 Some(Event::Touch { .. }) | None => {}
             }
         }
@@ -210,9 +234,6 @@ impl Device {
     }
 
     fn log_line(&self, line: String) {
-        if let Some(tx) = self.lines.lock().unwrap().as_ref() {
-            let _ = tx.send(line.clone());
-        }
         let mut state = self.state.lock().unwrap();
         if state.log.len() == LOG_LINES {
             state.log.pop_front();
@@ -259,6 +280,11 @@ impl Device {
 
     pub fn brightness(&self) -> u8 {
         self.state.lock().unwrap().brightness
+    }
+
+    /// The board the firmware reported last, kept across restarts.
+    pub fn name(&self) -> Option<String> {
+        self.state.lock().unwrap().name.clone()
     }
 
     pub fn present(&self) -> Option<Present> {

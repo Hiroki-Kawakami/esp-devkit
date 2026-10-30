@@ -6,9 +6,10 @@
  * tools/sim_host and libs/sim_device. See docs/simulator.md.
  */
 
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 pub const RECORD_SIZE: usize = 64;
 pub const MAX_TOUCH_POINTS: usize = 10;
+pub const MAX_NAME: usize = 48;
 
 use core::ffi::CStr;
 
@@ -48,6 +49,8 @@ pub struct TouchPoint {
 pub enum Event {
     /// Firmware to host, once at start.
     Hello { version: u32 },
+    /// Firmware to host: the board being simulated, NUL-padded UTF-8.
+    Device { name: [u8; MAX_NAME] },
     /// Firmware to host: puts the frame at `offset` into the PSRAM region on
     /// the panel.
     Present { offset: u64, width: u16, height: u16, stride: u32, format: PixelFormat },
@@ -61,6 +64,7 @@ const TAG_HELLO: u8 = 1;
 const TAG_PRESENT: u8 = 2;
 const TAG_BRIGHTNESS: u8 = 3;
 const TAG_TOUCH: u8 = 4;
+const TAG_DEVICE: u8 = 5;
 
 struct Writer {
     buf: [u8; RECORD_SIZE],
@@ -112,6 +116,14 @@ impl Reader<'_> {
 }
 
 impl Event {
+    /// Truncated to `MAX_NAME` bytes.
+    pub fn device(name: &str) -> Self {
+        let mut buf = [0; MAX_NAME];
+        let n = name.len().min(MAX_NAME);
+        buf[..n].copy_from_slice(&name.as_bytes()[..n]);
+        Self::Device { name: buf }
+    }
+
     pub fn encode(&self) -> [u8; RECORD_SIZE] {
         match *self {
             Self::Hello { version } => Writer::new(TAG_HELLO).put(&version.to_le_bytes()).buf,
@@ -123,6 +135,7 @@ impl Event {
                 .put(&[format as u8])
                 .buf,
             Self::Brightness { level } => Writer::new(TAG_BRIGHTNESS).put(&[level]).buf,
+            Self::Device { name } => Writer::new(TAG_DEVICE).put(&name).buf,
             Self::Touch { count, points } => {
                 let mut w = Writer::new(TAG_TOUCH);
                 w.put(&[count]);
@@ -151,6 +164,7 @@ impl Event {
                 },
             },
             TAG_BRIGHTNESS => Self::Brightness { level: r.u8() },
+            TAG_DEVICE => Self::Device { name: r.take() },
             TAG_TOUCH => {
                 let count = r.u8().min(MAX_TOUCH_POINTS as u8);
                 let mut points = [TouchPoint::default(); MAX_TOUCH_POINTS];
@@ -177,6 +191,7 @@ mod tests {
             Event::Hello { version: 1 },
             Event::Present { offset: 0x1_2345_6789, width: 720, height: 1280, stride: 1440, format: PixelFormat::Rgb565 },
             Event::Brightness { level: 100 },
+            Event::device("M5Stack Tab5"),
             Event::Touch { count: 10, points },
         ] {
             assert_eq!(Event::decode(&e.encode()), Some(e));

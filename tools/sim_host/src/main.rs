@@ -7,6 +7,7 @@
  */
 
 mod device;
+mod frame;
 mod harness;
 mod protocol;
 mod view;

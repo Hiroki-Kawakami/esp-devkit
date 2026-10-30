@@ -6,6 +6,7 @@
 use idf::Result;
 use idf::log::{info, warn};
 use idf::sync::OnceLock;
+use sim_device::protocol::Event;
 
 use super::{PANEL_SIZE, TAG, resolve_fb_num, resolve_pixel_format};
 use crate::display;
@@ -25,6 +26,7 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
         return Ok(Board { display: None, touch: None });
     };
     info!(TAG, "board: Tab5 (simulator)");
+    host.send(&Event::device("M5Stack Tab5"));
     let panel = SimPanel::new(host, PANEL_SIZE, resolve_pixel_format(config), resolve_fb_num(config))?;
     let touch = sim_touch::start(host, touch::Config {
         width: PANEL_SIZE.width,
