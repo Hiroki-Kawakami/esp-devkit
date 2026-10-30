@@ -23,7 +23,7 @@ use crate::erased::Erased;
 use crate::nav::{NavigatorNode, Overlay, Root, Saved};
 use crate::node::{ListNode, NONE, Node, NodeContent, NodeId, ScrollNode, TextNode};
 use crate::presenter::Strips;
-use crate::style::{Dimension, Insets, Role, ScreenStyle};
+use crate::style::{Dimension, Insets, Role, ScreenStyle, State};
 use crate::theme::Theme;
 
 const OVERSCAN_ROWS: i32 = 1;
@@ -402,6 +402,12 @@ impl Tree {
         node.role = element.role;
         node.tap = element.tap;
         node.drag = element.drag;
+        let kept = node.state & (State::PRESSED | State::HOVERED | State::FOCUSED);
+        let state = kept | element.state;
+        if state != node.state {
+            node.state = state;
+            node.paint_dirty = true;
+        }
     }
 
     fn update_node<M: Copy>(&mut self, owner: u16, id: NodeId, element: &Element<'_, M>) {
@@ -423,7 +429,7 @@ impl Tree {
                     let size = (text.run.width(), text.run.height());
                     text.font = font;
                     text.options = *options;
-                    let width_free = node.style.grow > 0 || matches!(node.style.width, Dimension::Px(_));
+                    let width_free = node.style.grow > 0 || !matches!(node.style.width, Dimension::Auto);
                     if let (true, Some(width)) = (same_font, text.laid_out) {
                         let mut options = *options;
                         options.max_width = (width != i16::MAX).then_some(width);
@@ -821,6 +827,9 @@ impl Tree {
         if !inside && clips {
             return None;
         }
+        if inside && node.state.contains(State::DISABLED) {
+            return Some(Hit { tap: NONE, scroller: NONE, drag: NONE });
+        }
         if matches!(&node.content, NodeContent::Navigator(nav) if nav.slide.is_some()) {
             return None;
         }
@@ -865,10 +874,8 @@ impl Tree {
     fn set_pressed(&mut self, id: NodeId, pressed: bool) {
         if id != NONE {
             let node = &mut self.nodes[id as usize];
-            node.pressed = pressed;
-            if node.style.pressed_background.is_some() {
-                node.paint_dirty = true;
-            }
+            node.state.set(State::PRESSED, pressed);
+            node.paint_dirty |= node.style.look.is_some();
         }
     }
 
@@ -1000,6 +1007,9 @@ impl Tree {
                 out.push_str("; ");
             }
             let _ = write!(out, "{} {} {} {} {} {}", node.id.unwrap_or("-"), node.role.name(), r.x, r.y, r.w, r.h);
+            if node.state.contains(State::DISABLED) {
+                out.push_str(" disabled");
+            }
             if let NodeContent::Text(text) = &node.content {
                 let _ = write!(out, " {:?}", text.text());
             }
@@ -1010,6 +1020,9 @@ impl Tree {
     /// The point a tap on `name` lands on, if it is the topmost target there.
     pub(crate) fn tap_point(&self, name: &str) -> Result<(i16, i16), String> {
         let id = self.find(name).ok_or_else(|| format!("no node {name}"))?;
+        if self.nodes[id as usize].state.contains(State::DISABLED) {
+            return Err(format!("{name} is disabled"));
+        }
         let r = self.nodes[id as usize].screen;
         let (x, y) = (r.x + r.w / 2, r.y + r.h / 2);
         let hit = self.hit(self.root, 0, 0, i32::from(x), i32::from(y));
@@ -1023,6 +1036,9 @@ impl Tree {
     pub(crate) fn invoke(&mut self, name: &str) -> Result<(), String> {
         let id = self.find(name).ok_or_else(|| format!("no node {name}"))?;
         let node = &self.nodes[id as usize];
+        if node.state.contains(State::DISABLED) {
+            return Err(format!("{name} is disabled"));
+        }
         let msg = node.tap.ok_or_else(|| format!("{name} takes no taps"))?;
         self.queue.push_back((node.owner, msg));
         Ok(())

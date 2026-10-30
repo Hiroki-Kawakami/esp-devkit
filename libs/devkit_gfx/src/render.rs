@@ -115,6 +115,24 @@ fn draw_round_rect<P: Pixel>(s: &Surface, rect: &Rect, corner: &CornerMask, clip
     s.fill::<P>(&Rect::new(rect.x + r, low, rect.w - r * 2, r), clip, color);
 }
 
+fn draw_border<P: Pixel>(s: &Surface, rect: &Rect, ring: Option<&CornerMask>, stroke: i16, clip: &Rect, color: Color) {
+    let r = ring.map_or(0, |ring| ring.radius() as i16);
+    if let Some(ring) = ring {
+        let stride = isize::from(r) * 2;
+        let data = ring.data();
+        let last_row = unsafe { data.offset(isize::from(r - 1) * stride) };
+        let (right, low) = (rect.right() - r, rect.bottom() - r);
+        s.mask::<P>(&Rect::new(rect.x, rect.y, r, r), clip, data, stride, color);
+        s.mask::<P>(&Rect::new(right, rect.y, r, r), clip, unsafe { data.add(r as usize) }, stride, color);
+        s.mask::<P>(&Rect::new(rect.x, low, r, r), clip, last_row, -stride, color);
+        s.mask::<P>(&Rect::new(right, low, r, r), clip, unsafe { last_row.add(r as usize) }, -stride, color);
+    }
+    s.fill::<P>(&Rect::new(rect.x + r, rect.y, rect.w - r * 2, stroke), clip, color);
+    s.fill::<P>(&Rect::new(rect.x + r, rect.bottom() - stroke, rect.w - r * 2, stroke), clip, color);
+    s.fill::<P>(&Rect::new(rect.x, rect.y + r, stroke, rect.h - r * 2), clip, color);
+    s.fill::<P>(&Rect::new(rect.right() - stroke, rect.y + r, stroke, rect.h - r * 2), clip, color);
+}
+
 fn draw_shadow<P: Pixel>(s: &Surface, rect: &Rect, mask: &ShadowMask, clip: &Rect, color: Color) {
     let outer = rect.expand(mask.blur() as i16);
     let m = mask.margin() as i16;
@@ -175,6 +193,7 @@ pub fn draw<P: Pixel, A: Allocator, L: Allocator>(list: &DisplayList<'_, L>, pre
         match *op {
             Op::Fill { rect, color } => surface.fill::<P>(&rect, &clip, color),
             Op::RoundRect { rect, corner, color } => draw_round_rect::<P>(surface, &rect, &corner, &clip, color),
+            Op::Border { rect, ring, stroke, color } => draw_border::<P>(surface, &rect, ring.as_ref(), stroke, &clip, color),
             Op::Shadow { rect, mask, color } => draw_shadow::<P>(surface, &rect, &mask, &clip, color),
             Op::Image { x, y, image, tint } => surface.image::<P>(x, y, &image, &clip, tint),
             Op::Text { x, y, glyphs, color, slot, .. } => {

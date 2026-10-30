@@ -640,6 +640,17 @@ app.run();
 - `pressed_background` changes without a rebuild.
 - Sizes are `i16` pixels. A row, column or grid places children by `grow`,
   `gap`, `align` and `justify`; `absolute` takes a child out of the flow.
+- Layout works as in CSS flex. A parent offers each child what it has and the
+  child says what it wants; overflow along the main axis comes out of `shrink`
+  children, text by default, free space goes to `grow` children, and those are
+  measured again for their final size, which is where wrapped text gets its
+  height. `width_fraction` takes a share of the parent, `max_width` and
+  `min_width` bound it.
+- `State` says what a node is going through: `PRESSED`, `HOVERED` and `FOCUSED`
+  come from input, without a rebuild; `.disabled()`, `.selected()` and
+  `.checked()` from the view. A `WidgetLook` maps states to a `Look`, and its
+  foreground colors text inside that sets none. A disabled node takes no input
+  and shields what is below it.
 - `Handle::post` sends a message to the root component from any task.
 - `Screen` is a component a `Navigator` shows. `ui.navigator::<K, S>(props)`
   places one, marked by a type `K`, anywhere in a view; `App` adds `Root`, and

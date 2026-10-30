@@ -20,6 +20,7 @@ pub(crate) const MAX_CLIPS: usize = 8;
 pub enum Op<'a> {
     Fill { rect: Rect, color: Color },
     RoundRect { rect: Rect, corner: CornerMask, color: Color },
+    Border { rect: Rect, ring: Option<CornerMask>, stroke: i16, color: Color },
     Shadow { rect: Rect, mask: ShadowMask, color: Color },
     Image { x: i16, y: i16, image: Image<'a>, tint: Color },
     Text { x: i16, y: i16, glyphs: &'a [PlacedGlyph], bounds: Rect, color: Color, slot: u32 },
@@ -30,7 +31,7 @@ pub enum Op<'a> {
 impl Op<'_> {
     pub(crate) fn bounds(&self) -> Rect {
         match *self {
-            Self::Fill { rect, .. } | Self::RoundRect { rect, .. } => rect,
+            Self::Fill { rect, .. } | Self::RoundRect { rect, .. } | Self::Border { rect, .. } => rect,
             Self::Shadow { rect, mask, .. } => rect.expand(mask.blur() as i16),
             Self::Image { x, y, image, .. } => Rect::new(x, y, image.width() as i16, image.height() as i16),
             Self::Text { bounds, .. } => bounds,
@@ -99,6 +100,12 @@ impl<'a, A: Allocator> DisplayList<'a, A> {
     /// `rect` must be at least twice the corner radius on each side.
     pub fn round_rect(&mut self, rect: Rect, corner: CornerMask, color: Color) {
         self.ops.push(Op::RoundRect { rect, corner, color });
+    }
+
+    /// An outline `stroke` px wide inside `rect`; `ring` rounds its corners and
+    /// must have been made for the same stroke.
+    pub fn border(&mut self, rect: Rect, ring: Option<CornerMask>, stroke: i16, color: Color) {
+        self.ops.push(Op::Border { rect, ring, stroke, color });
     }
 
     /// Paints only around the middle of `rect`, which something opaque must

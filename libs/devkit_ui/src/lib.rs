@@ -32,5 +32,5 @@ pub use component::{Animation, Child, Component, Cx, ListId, Nav, Property, Rend
 pub use element::{ChildElement, Children, Drag, Element, Ui};
 pub use nav::{Overlay, Root};
 pub use presenter::{Config, PresentMode, Presenter, Stats, StripMemory, Strips};
-pub use style::{Align, Bars, Dimension, Direction, Insets, Justify, Role, ScreenStyle, Shadow, Style};
-pub use theme::{Fonts, Metrics, Motion, Palette, Theme, Transition, WidgetStyle};
+pub use style::{Align, Bars, Dimension, Direction, Insets, Justify, Role, ScreenStyle, Shadow, State, Style};
+pub use theme::{Border, Fonts, Look, Looks, Metrics, Motion, Palette, Theme, Transition, WidgetLook};

@@ -79,6 +79,11 @@ fn tap(tree: &mut Tree, id: &str) {
     tree.update();
 }
 
+static PRESS_LOOK: WidgetLook = WidgetLook {
+    base: Look::background(RED),
+    states: &[(State::PRESSED, Look::background(WHITE)), (State::DISABLED, Look::opacity(100))],
+};
+
 #[derive(Clone, Copy)]
 enum Msg {
     Inc,
@@ -130,7 +135,7 @@ impl Component for Sample {
         ui.column([
             ui.row([
                 ui.text(self.font, ui.format(format_args!("n={}", self.count))).id("count").grow(1),
-                ui.column([]).size(40, 30).background(RED).id("button").on_tap(Msg::Inc).pressed_background(WHITE),
+                ui.column([]).size(40, 30).look(&PRESS_LOOK).id("button").on_tap(Msg::Inc),
             ])
             .height(40)
             .padding_x(10)
@@ -511,7 +516,7 @@ impl Component for Page {
             ui.row([]).size(40, 40).id("open").on_tap(PageMsg::Open),
             ui.row([]).size(40, 40).id("open-root").on_tap(PageMsg::OpenRoot),
             ui.row([]).size(40, 40).id("back").on_tap(PageMsg::Back),
-            widgets::slider(ui, self.value, 200, |d| PageMsg::Slide(widgets::slider_value(d))).id("slider"),
+            widgets::slider(ui, self.value, |d| PageMsg::Slide(widgets::slider_value(d))).width(200).id("slider"),
             ui.list(0, 100, 50).id("rows").grow(1),
         ])
     }
@@ -710,6 +715,119 @@ fn an_animation_moves_a_node_without_a_rebuild() {
     assert!(!tree.animating());
     run(&mut tree);
     assert_eq!(views.get(), before);
+}
+
+fn layout_tree(build: for<'a> fn(&'a Ui<()>, &'static FontChain) -> Element<'a, ()>) -> Tree {
+    struct View(for<'a> fn(&'a Ui<()>, &'static FontChain) -> Element<'a, ()>, &'static FontChain);
+    impl Component for View {
+        type Msg = ();
+        fn update(&mut self, _: (), _: &mut Cx<Self>) {}
+        fn view<'a>(&'a self, ui: &'a Ui<()>) -> Element<'a, ()> {
+            (self.0)(ui, self.1)
+        }
+    }
+    impl Screen for View {}
+    let mut tree = Tree::new(View(build, chain()), SCREEN, Caps::INTERNAL, theme());
+    run(&mut tree);
+    tree
+}
+
+const LONG: &str = "AAAA AAAA AAAA AAAA AAAA AAAA AAAA";
+const LONGER: &str = "AAAA AAAA AAAA AAAA AAAA AAAA AAAA AAAA AAAA AAAA AAAA AAAA";
+
+#[test]
+fn text_in_a_row_shrinks_wraps_and_makes_the_row_taller() {
+    let tree = layout_tree(|ui, font| {
+        ui.column([
+            ui.row([ui.text(font, LONG).wrap().id("a"), ui.text(font, LONG).wrap().id("b")]).id("row"),
+            ui.column([]).height(10).id("below"),
+        ])
+    });
+    let (a, b, row) = (rect_of(&tree, "a"), rect_of(&tree, "b"), rect_of(&tree, "row"));
+    assert_eq!(a.w + b.w, 400);
+    assert_eq!(a.h, 24, "wrapped to two lines of 12: {a:?}");
+    assert_eq!(row.h, a.h);
+    assert_eq!(rect_of(&tree, "below").y, a.h);
+}
+
+#[test]
+fn a_fixed_sibling_keeps_its_size_and_a_short_text_does_not_shrink() {
+    let tree = layout_tree(|ui, font| {
+        ui.column([
+            ui.row([ui.column([]).size(100, 10).id("fixed"), ui.text(font, LONGER).wrap().id("long")]).id("first"),
+            ui.row([ui.text(font, "AB").id("short"), ui.column([]).height(10).grow(1).id("rest")]),
+        ])
+    });
+    assert_eq!(rect_of(&tree, "fixed").w, 100);
+    assert_eq!(rect_of(&tree, "long").w, 300);
+    assert!(rect_of(&tree, "long").h > 12);
+    assert_eq!(rect_of(&tree, "short").w, 16);
+    assert_eq!(rect_of(&tree, "rest").w, 384);
+}
+
+#[test]
+fn ellipsis_applies_to_the_width_a_row_leaves() {
+    let tree = layout_tree(|ui, font| ui.row([ui.text(font, LONG).ellipsis().id("t"), ui.column([]).size(300, 10)]));
+    assert_eq!(rect_of(&tree, "t").w, 100);
+}
+
+#[test]
+fn fractions_and_limits_follow_the_parent() {
+    let tree = layout_tree(|ui, font| {
+        ui.column([
+            ui.column([ui.column([]).width_fraction(1, 4).height(10).id("quarter")]).width(200),
+            ui.column([]).height_fraction(1, 2).id("half"),
+            ui.text(font, LONG).wrap().max_width(100).id("narrow"),
+            ui.column([ui.column([]).height(50)]).max_height(20).id("capped"),
+            ui.column([]).height(4).max_width(90).id("stretched"),
+        ])
+    });
+    assert_eq!(rect_of(&tree, "quarter").w, 50);
+    assert_eq!(rect_of(&tree, "half").h, 300);
+    assert_eq!(rect_of(&tree, "narrow").w, 100);
+    assert!(rect_of(&tree, "narrow").h > 12);
+    assert_eq!(rect_of(&tree, "capped").h, 20);
+    assert_eq!(rect_of(&tree, "stretched").w, 90);
+}
+
+#[test]
+fn disabled_nodes_take_no_input_and_block_what_is_below() {
+    #[derive(Clone, Copy)]
+    enum M {
+        Tap,
+    }
+    struct View(&'static core::cell::Cell<u32>, bool);
+    impl Component for View {
+        type Msg = M;
+        fn update(&mut self, _: M, _: &mut Cx<Self>) {
+            self.0.set(self.0.get() + 1);
+        }
+        fn view<'a>(&'a self, ui: &'a Ui<M>) -> Element<'a, M> {
+            ui.column([ui.column([]).size(50, 50).id("under").on_tap(M::Tap), ui.column([]).size(50, 50).absolute(Some(0), Some(0), None, None).id("over").on_tap(M::Tap).disabled(self.1)])
+        }
+    }
+    impl Screen for View {}
+    let taps = Box::leak(Box::new(core::cell::Cell::new(0)));
+    let mut tree = Tree::new(View(taps, true), SCREEN, Caps::INTERNAL, theme());
+    run(&mut tree);
+    tree.touch(Some((10, 10)), 0);
+    tree.touch(None, 10);
+    tree.update();
+    assert_eq!(taps.get(), 0);
+    assert!(tree.invoke("over").is_err());
+    assert!(tree.describe().contains("disabled"));
+}
+
+#[test]
+fn looks_stack_by_state_and_foreground_reaches_text() {
+    static LOOK: WidgetLook = WidgetLook {
+        base: Look::fill(RED, WHITE),
+        states: &[(State::SELECTED, Look::background(WHITE)), (State::PRESSED, Look { foreground: Some(RED), ..Look::NONE })],
+    };
+    assert_eq!(LOOK.resolve(State::empty()).background, Some(RED));
+    assert_eq!(LOOK.resolve(State::SELECTED).background, Some(WHITE));
+    let both = LOOK.resolve(State::SELECTED | State::PRESSED);
+    assert_eq!((both.background, both.foreground), (Some(WHITE), Some(RED)));
 }
 
 #[test]

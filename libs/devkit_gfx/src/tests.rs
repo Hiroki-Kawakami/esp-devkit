@@ -215,6 +215,28 @@ fn corners_are_symmetric() {
 }
 
 #[test]
+fn rounded_border_is_hollow_and_symmetric() {
+    let ring = CornerMask::ring_in(8, 2, Global);
+    let mut list = DisplayList::new();
+    list.fill(Rect::new(0, 0, 24, 24), Color::rgb(0, 0, 0));
+    list.border(Rect::new(0, 0, 24, 24), Some(ring), 2, Color::rgb(255, 255, 255));
+    let out = render::<Bgr888>(&list, &mut GlyphCache::new(64), 24, 24, &[Rect::new(0, 0, 24, 24)]);
+    let at = |x: usize, y: usize| out[(y * 24 + x) * 3];
+    assert_eq!(at(0, 0), 0);
+    assert_eq!(at(12, 0), 255);
+    assert_eq!(at(12, 1), 255);
+    assert_eq!(at(12, 2), 0);
+    assert_eq!(at(12, 12), 0);
+    assert_eq!(at(0, 12), 255);
+    for y in 0..24 {
+        for x in 0..24 {
+            assert_eq!(at(x, y), at(23 - x, y));
+            assert_eq!(at(x, y), at(x, 23 - y));
+        }
+    }
+}
+
+#[test]
 fn shadow_fades_outwards_and_stays_symmetric() {
     let shadow = ShadowMask::new_in(8, 4, Global);
     let rect = Rect::new(24, 24, 40, 30);

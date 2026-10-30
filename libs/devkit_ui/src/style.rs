@@ -5,6 +5,8 @@
 
 use devkit_gfx::Color;
 
+use crate::theme::{Border, WidgetLook};
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Direction {
     #[default]
@@ -19,6 +21,8 @@ pub enum Dimension {
     #[default]
     Auto,
     Px(i16),
+    /// `.0 / .1` of what the parent offers; `Auto` where it offers no limit.
+    Fraction(u16, u16),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -61,6 +65,20 @@ impl Role {
     }
 }
 
+devkit::bitflags! {
+    /// What a node is going through. The framework sets `PRESSED`, `HOVERED` and
+    /// `FOCUSED` without a rebuild; views pass the others.
+    #[derive(Default)]
+    pub struct State: u8 {
+        const PRESSED = 1 << 0;
+        const HOVERED = 1 << 1;
+        const FOCUSED = 1 << 2;
+        const DISABLED = 1 << 3;
+        const SELECTED = 1 << 4;
+        const CHECKED = 1 << 5;
+    }
+}
+
 /// Reaches `blur` px around the box, moved down by `y`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Shadow {
@@ -85,7 +103,11 @@ pub struct Style {
     pub(crate) height: Dimension,
     pub(crate) min_width: i16,
     pub(crate) min_height: i16,
+    /// 0 is no limit.
+    pub(crate) max_width: i16,
+    pub(crate) max_height: i16,
     pub(crate) grow: u8,
+    pub(crate) shrink: u8,
     pub(crate) aspect: Option<(u8, u8)>,
     pub(crate) padding: [i16; 4],
     pub(crate) gap_x: i16,
@@ -96,8 +118,9 @@ pub struct Style {
     pub(crate) absolute: Option<Inset>,
 
     pub(crate) background: Option<Color>,
-    pub(crate) pressed_background: Option<Color>,
+    pub(crate) look: Option<&'static WidgetLook>,
     pub(crate) radius: u8,
+    pub(crate) border: Option<Border>,
     pub(crate) border_top: Option<Color>,
     pub(crate) border_bottom: Option<Color>,
     pub(crate) shadow: Option<Shadow>,
@@ -112,7 +135,10 @@ impl Style {
             && self.height == other.height
             && self.min_width == other.min_width
             && self.min_height == other.min_height
+            && self.max_width == other.max_width
+            && self.max_height == other.max_height
             && self.grow == other.grow
+            && self.shrink == other.shrink
             && self.aspect == other.aspect
             && self.padding == other.padding
             && self.gap_x == other.gap_x

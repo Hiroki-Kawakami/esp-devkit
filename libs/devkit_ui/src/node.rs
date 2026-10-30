@@ -12,7 +12,7 @@ use crate::component::ListId;
 use crate::element::DragMap;
 use crate::erased::Erased;
 use crate::nav::NavigatorNode;
-use crate::style::{Role, Style};
+use crate::style::{Role, State, Style};
 
 pub(crate) type NodeId = u32;
 pub(crate) const NONE: NodeId = u32::MAX;
@@ -20,7 +20,7 @@ pub(crate) const NONE: NodeId = u32::MAX;
 pub(crate) struct TextNode {
     pub(crate) font: &'static FontChain,
     pub(crate) string: Vec<u8, Caps>,
-    pub(crate) color: Color,
+    pub(crate) color: Option<Color>,
     pub(crate) options: TextOptions,
     pub(crate) run: TextRun<Caps>,
     /// The width `run` was laid out for; `None` until it is.
@@ -95,7 +95,11 @@ pub(crate) struct Node {
     /// Where it was last painted.
     pub(crate) screen: Rect,
     pub(crate) paint_dirty: bool,
-    pub(crate) pressed: bool,
+    pub(crate) state: State,
+    /// The main-axis size the parent's flow gave it, and whether that differs
+    /// from what it asked for.
+    pub(crate) flow_size: i16,
+    pub(crate) flow_resized: bool,
     /// Scrolled since the last frame; its viewport is already damaged.
     pub(crate) scrolled: bool,
     pub(crate) measured: Option<(i16, i16, i16, i16)>,
@@ -120,7 +124,9 @@ impl Node {
             rect: Rect::default(),
             screen: Rect::default(),
             paint_dirty: true,
-            pressed: false,
+            state: State::empty(),
+            flow_size: 0,
+            flow_resized: false,
             scrolled: false,
             measured: None,
         }

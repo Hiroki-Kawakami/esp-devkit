@@ -16,11 +16,21 @@ fn inner(avail: i16, before: i16, after: i16) -> i16 {
     if avail == UNBOUNDED { UNBOUNDED } else { (avail - before - after).max(0) }
 }
 
-fn fixed(dimension: Dimension) -> Option<i16> {
+fn fixed(dimension: Dimension, offered: i16) -> Option<i16> {
     match dimension {
         Dimension::Px(px) => Some(px),
-        Dimension::Auto => None,
+        Dimension::Fraction(n, d) if offered != UNBOUNDED => Some((i32::from(offered) * i32::from(n) / i32::from(d)) as i16),
+        _ => None,
     }
+}
+
+fn clamp(size: i16, min: i16, max: i16) -> i16 {
+    let size = if max > 0 { size.min(max) } else { size };
+    size.max(min)
+}
+
+fn offer(limit: i16, max: i16) -> i16 {
+    if max > 0 { limit.min(max) } else { limit }
 }
 
 impl Tree {
@@ -51,8 +61,10 @@ impl Tree {
         }
         let limits = (avail_w, avail_h);
         let style = node.style;
-        let avail_w = fixed(style.width).unwrap_or(avail_w);
-        let avail_h = fixed(style.height).unwrap_or(avail_h);
+        let fixed_w = fixed(style.width, avail_w);
+        let fixed_h = fixed(style.height, avail_h);
+        let avail_w = offer(fixed_w.unwrap_or(avail_w), style.max_width);
+        let avail_h = offer(fixed_h.unwrap_or(avail_h), style.max_height);
         let [left, top, right, bottom] = style.padding;
         let content_w = inner(avail_w, left, right);
         let content_h = inner(avail_h, top, bottom);
@@ -66,13 +78,13 @@ impl Tree {
             }
             NodeContent::Box => self.measure_box(id, &style, content_w, content_h),
         };
-        let mut width = fixed(style.width).unwrap_or(w + left + right).max(style.min_width);
-        let mut height = fixed(style.height).unwrap_or(h + top + bottom).max(style.min_height);
+        let mut width = clamp(fixed_w.unwrap_or(w + left + right), style.min_width, style.max_width);
+        let mut height = clamp(fixed_h.unwrap_or(h + top + bottom), style.min_height, style.max_height);
         if let Some((a, b)) = style.aspect {
-            if fixed(style.height).is_none() && avail_w != UNBOUNDED {
+            if fixed_h.is_none() && avail_w != UNBOUNDED {
                 width = avail_w;
                 height = (i32::from(avail_w) * i32::from(b) / i32::from(a)) as i16;
-            } else if fixed(style.width).is_none() {
+            } else if fixed_w.is_none() {
                 width = (i32::from(height) * i32::from(a) / i32::from(b)) as i16;
             }
         }
@@ -96,58 +108,8 @@ impl Tree {
 
     fn measure_box(&mut self, id: NodeId, style: &Style, content_w: i16, content_h: i16) -> (i16, i16) {
         match style.direction {
-            Direction::Column => {
-                let (mut w, mut h) = (0, 0);
-                let mut child = self.first_flow(id);
-                let mut first = true;
-                while child != NONE {
-                    let (cw, ch) = self.measure(child, content_w, UNBOUNDED);
-                    w = w.max(cw);
-                    h += ch + if first { 0 } else { style.gap_y };
-                    first = false;
-                    child = self.next_flow(child);
-                }
-                (w, h)
-            }
-            Direction::Row => {
-                let (mut w, mut h) = (0, 0);
-                let mut grow = 0u32;
-                let mut child = self.first_flow(id);
-                let mut first = true;
-                while child != NONE {
-                    w += if first { 0 } else { style.gap_x };
-                    first = false;
-                    let weight = self.nodes[child as usize].style.grow;
-                    if weight > 0 {
-                        grow += u32::from(weight);
-                    } else {
-                        let (cw, ch) = self.measure(child, UNBOUNDED, content_h);
-                        w += cw;
-                        h = h.max(ch);
-                    }
-                    child = self.next_flow(child);
-                }
-                if grow > 0 {
-                    let free = if content_w == UNBOUNDED { UNBOUNDED } else { (content_w - w).max(0) };
-                    let mut child = self.first_flow(id);
-                    while child != NONE {
-                        let weight = u32::from(self.nodes[child as usize].style.grow);
-                        if weight > 0 {
-                            let share = if free == UNBOUNDED { UNBOUNDED } else { (i64::from(free) * i64::from(weight) / i64::from(grow)) as i16 };
-                            let (cw, ch) = self.measure(child, share, content_h);
-                            h = h.max(ch);
-                            if free == UNBOUNDED {
-                                w += cw;
-                            }
-                        }
-                        child = self.next_flow(child);
-                    }
-                    if free != UNBOUNDED {
-                        w = content_w;
-                    }
-                }
-                (w, h)
-            }
+            Direction::Column => self.solve_axis(id, style, content_h, content_w, true),
+            Direction::Row => self.solve_axis(id, style, content_w, content_h, false),
             Direction::Grid(columns) => {
                 let columns = i16::from(columns.max(1));
                 let cell = content_w.saturating_sub((columns - 1) * style.gap_x) / columns;
@@ -273,26 +235,80 @@ impl Tree {
         }
     }
 
+    /// Sizes the flow children along the main axis, as CSS flex does: each asks
+    /// for what it wants; overflow comes out of the shrinking ones and free
+    /// space goes to the growing ones, and those are measured again, which is
+    /// where wrapped text gets its height. Returns the size of the flow, in
+    /// the box's (width, height).
+    fn solve_axis(&mut self, id: NodeId, style: &Style, main: i16, cross: i16, vertical: bool) -> (i16, i16) {
+        let gap = if vertical { style.gap_y } else { style.gap_x };
+        let (mut used, mut count, mut grow, mut shrink_total) = (0i32, 0i32, 0u32, 0i64);
+        let mut child = self.first_flow(id);
+        while child != NONE {
+            let node_style = self.nodes[child as usize].style;
+            let mut size = 0;
+            if node_style.grow == 0 {
+                let (w, h) = if vertical { self.measure(child, cross, main_offer(node_style.height, main)) } else { self.measure(child, main_offer(node_style.width, main), cross) };
+                size = if vertical { h } else { w };
+                shrink_total += i64::from(size) * i64::from(node_style.shrink);
+            }
+            grow += u32::from(node_style.grow);
+            used += i32::from(size);
+            count += 1;
+            let node = &mut self.nodes[child as usize];
+            node.flow_size = size;
+            node.flow_resized = false;
+            child = self.next_flow(child);
+        }
+        let gaps = i32::from(gap) * (count - 1).max(0);
+        let bounded = main != UNBOUNDED;
+        let overflow = if bounded { used + gaps - i32::from(main) } else { 0 };
+        let free = if bounded { (i32::from(main) - used - gaps).max(0) } else { 0 };
+        let (mut total, mut across) = (gaps, 0i16);
+        child = self.first_flow(id);
+        while child != NONE {
+            let node = &self.nodes[child as usize];
+            let (node_style, mut size) = (node.style, node.flow_size);
+            let mut resized = node_style.grow > 0 && bounded;
+            if resized {
+                size = (i64::from(free) * i64::from(node_style.grow) / i64::from(grow)) as i16;
+            } else if overflow > 0 && node_style.shrink > 0 && shrink_total > 0 {
+                let weight = i64::from(size) * i64::from(node_style.shrink);
+                let cut = ((i64::from(overflow) * weight + shrink_total - 1) / shrink_total) as i16;
+                size = (size - cut).max(if vertical { node_style.min_height } else { node_style.min_width }).max(0);
+                resized = true;
+            }
+            let (w, h) = match (resized, vertical) {
+                (true, true) => self.measure(child, cross, size),
+                (true, false) => self.measure(child, size, cross),
+                (false, true) => self.measure(child, cross, main_offer(node_style.height, main)),
+                (false, false) => self.measure(child, main_offer(node_style.width, main), cross),
+            };
+            if !resized && node_style.grow > 0 {
+                size = if vertical { h } else { w };
+            }
+            let node = &mut self.nodes[child as usize];
+            node.flow_size = size;
+            node.flow_resized = resized;
+            total += i32::from(size);
+            across = across.max(if vertical { w } else { h });
+            child = self.next_flow(child);
+        }
+        let total = total.min(i32::from(i16::MAX)) as i16;
+        if vertical { (across, total) } else { (total, across) }
+    }
+
     fn arrange_axis(&mut self, id: NodeId, style: &Style, content: Rect, vertical: bool) {
         let (main, cross) = if vertical { (content.h, content.w) } else { (content.w, content.h) };
         let gap = if vertical { style.gap_y } else { style.gap_x };
-        let mut used = 0;
-        let mut grow = 0u32;
+        let (solved_w, solved_h) = self.solve_axis(id, style, main, cross, vertical);
+        let leftover = (main - if vertical { solved_h } else { solved_w }).max(0);
         let mut count = 0;
         let mut child = self.first_flow(id);
         while child != NONE {
-            let weight = self.nodes[child as usize].style.grow;
-            if weight > 0 {
-                grow += u32::from(weight);
-            } else {
-                let (w, h) = if vertical { self.measure(child, cross, UNBOUNDED) } else { self.measure(child, UNBOUNDED, cross) };
-                used += if vertical { h } else { w };
-            }
             count += 1;
             child = self.next_flow(child);
         }
-        let free = (main - used - gap * (count - 1).max(0)).max(0);
-        let leftover = if grow > 0 { 0 } else { free };
         let (mut position, spacing) = match style.justify {
             Justify::Start => (0, 0),
             Justify::Center => (leftover / 2, 0),
@@ -302,19 +318,20 @@ impl Tree {
         };
         child = self.first_flow(id);
         while child != NONE {
-            let node_style = self.nodes[child as usize].style;
-            let (size, wanted) = if node_style.grow > 0 {
-                let size = (i64::from(free) * i64::from(node_style.grow) / i64::from(grow)) as i16;
-                let (w, h) = if vertical { self.measure(child, cross, size) } else { self.measure(child, size, cross) };
-                (size, if vertical { w } else { h })
-            } else {
-                let (w, h) = if vertical { self.measure(child, cross, UNBOUNDED) } else { self.measure(child, UNBOUNDED, cross) };
-                if vertical { (h, w) } else { (w, h) }
+            let node = &self.nodes[child as usize];
+            let (node_style, size, resized) = (node.style, node.flow_size, node.flow_resized);
+            let (w, h) = match (resized, vertical) {
+                (true, true) => self.measure(child, cross, size),
+                (true, false) => self.measure(child, size, cross),
+                (false, true) => self.measure(child, cross, main_offer(node_style.height, main)),
+                (false, false) => self.measure(child, main_offer(node_style.width, main), cross),
             };
+            let wanted = if vertical { w } else { h };
             let align = node_style.align_self.unwrap_or(style.align);
-            let fixed_cross = fixed(if vertical { node_style.width } else { node_style.height }).is_some();
+            let cross_style = if vertical { node_style.width } else { node_style.height };
+            let cross_max = if vertical { node_style.max_width } else { node_style.max_height };
             let (offset, length) = match align {
-                Align::Stretch if !fixed_cross => (0, cross),
+                Align::Stretch if cross_style == Dimension::Auto => (0, clamp(cross, 0, cross_max)),
                 Align::Stretch | Align::Start => (0, wanted),
                 Align::Center => ((cross - wanted) / 2, wanted),
                 Align::End => (cross - wanted, wanted),
@@ -329,4 +346,10 @@ impl Tree {
             child = self.next_flow(child);
         }
     }
+}
+
+/// What a child is offered along the main axis: nothing limits what it wants,
+/// but a share of the parent needs the parent's size.
+fn main_offer(dimension: Dimension, main: i16) -> i16 {
+    if matches!(dimension, Dimension::Fraction(..)) { main } else { UNBOUNDED }
 }

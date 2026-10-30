@@ -43,6 +43,34 @@ impl CornerMask {
         Self { radius, data: data.leak() }
     }
 
+    /// The corners of a rounded outline `stroke` px wide.
+    pub fn ring_in<A: Allocator + 'static>(radius: u16, stroke: u16, alloc: A) -> Self {
+        let r = i32::from(radius);
+        let inner = (r - i32::from(stroke)).max(0);
+        let width = usize::from(radius) * 2;
+        let mut data = Vec::with_capacity_in(width * usize::from(radius), alloc);
+        let outer_limit = (r * SUBSAMPLES * 2) * (r * SUBSAMPLES * 2);
+        let inner_limit = (inner * SUBSAMPLES * 2) * (inner * SUBSAMPLES * 2);
+        for y in 0..r {
+            let mut row = [0u8; 256];
+            for x in 0..r {
+                let mut inside = 0;
+                for sy in 0..SUBSAMPLES {
+                    for sx in 0..SUBSAMPLES {
+                        let dx = (r - x) * SUBSAMPLES * 2 - sx * 2 - 1;
+                        let dy = (r - y) * SUBSAMPLES * 2 - sy * 2 - 1;
+                        let distance = dx * dx + dy * dy;
+                        inside += i32::from(distance <= outer_limit && distance > inner_limit);
+                    }
+                }
+                row[x as usize] = (inside * 255 / (SUBSAMPLES * SUBSAMPLES)) as u8;
+            }
+            data.extend_from_slice(&row[..usize::from(radius)]);
+            data.extend(row[..usize::from(radius)].iter().rev());
+        }
+        Self { radius, data: data.leak() }
+    }
+
     pub const fn radius(&self) -> u16 {
         self.radius
     }

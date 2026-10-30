@@ -19,7 +19,6 @@ const FILE_COUNT: usize = 500;
 const ROW_IDS: [&str; 8] = ["row0", "row1", "row2", "row3", "row4", "row5", "row6", "row7"];
 const SIDEBAR_WIDTH: i16 = 400;
 const VIDEO_STRIP_BYTES: usize = 2 * 64 * 1024;
-const SLIDER_WIDTH: i16 = 400;
 
 const FONTS: Fonts = Fonts { title: &TITLE, body: &BODY, caption: &CAPTION, icons: &ICONS };
 pub static LIGHT: Theme = Theme::light(FONTS);
@@ -233,7 +232,7 @@ impl Component for Browser {
 
     fn list_row<'a>(&'a self, _list: ListId, index: usize, ui: &'a Ui<Msg>) -> Element<'a, Msg> {
         let row = list_item(ui, Some(FILE_ICONS[index % FILE_ICONS.len()]), &self.names[index], None, None, Msg::Open(index as u16));
-        let row = if self.selected == Some(index as u16) { row.background(ui.theme().colors.selected) } else { row };
+        let row = row.selected(self.selected == Some(index as u16));
         match ROW_IDS.get(index) {
             Some(id) => row.id(id),
             None => row,
@@ -315,8 +314,13 @@ impl Component for Detail {
                 ui.row([ui.text(theme.fonts.body, "Starred").color(c.on_surface).grow(1), checkbox(ui, self.star, DetailMsg::Star).id("star")]).align(Align::Center),
                 ui.row([ui.text(theme.fonts.body, "Video mode").color(c.on_surface).grow(1), switch(ui, self.video, DetailMsg::Video).id("video")]).align(Align::Center),
                 ui.text(theme.fonts.caption, ui.format(format_args!("Volume {}", self.volume))).color(c.muted),
-                slider(ui, self.volume, SLIDER_WIDTH, |d| DetailMsg::Volume(slider_value(d))).id("volume"),
-                button(ui, "Delete", DetailMsg::Ask).id("delete"),
+                slider(ui, self.volume, |d| DetailMsg::Volume(slider_value(d))).id("volume"),
+                ui.row([
+                    button(ui, "Rename", theme.looks.button_secondary, DetailMsg::Back).grow(1).disabled(!self.keep).id("rename"),
+                    button(ui, "Delete", theme.looks.button, DetailMsg::Ask).grow(1).id("delete"),
+                ])
+                .gap(m.gap),
+                ui.text(theme.fonts.caption, "This note is long enough to wrap, and what follows it moves down with its height.").color(c.muted).wrap().id("note"),
             ])
             .padding(m.padding)
             .gap(m.padding)
@@ -349,7 +353,7 @@ impl Component for Confirm {
             .column([
                 ui.text(theme.fonts.title, "Delete this file?").color(theme.colors.on_surface),
                 ui.text(theme.fonts.body, "This cannot be undone.").color(theme.colors.muted),
-                button(ui, "Cancel", ConfirmMsg::Close).id("cancel"),
+                button(ui, "Cancel", theme.looks.button_secondary, ConfirmMsg::Close).id("cancel"),
             ])
             .gap(theme.metrics.padding);
         modal(ui, content, ConfirmMsg::Close)

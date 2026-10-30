@@ -15,8 +15,8 @@ use devkit_gfx::{Align as TextAlign, Color, FontChain, Image, Overflow, TextOpti
 use crate::bump::Bump;
 use crate::component::{AnyHost, Child, EventMap, Host, ListId, Screen, call_event_map, screen_host};
 use crate::erased::Erased;
-use crate::style::{Align, Dimension, Direction, Inset, Insets, Justify, Role, ScreenStyle, Shadow, Style};
-use crate::theme::Theme;
+use crate::style::{Align, Dimension, Direction, Inset, Insets, Justify, Role, ScreenStyle, Shadow, State, Style};
+use crate::theme::{Border, Theme, WidgetLook};
 
 /// Creates or updates a child component during reconciliation.
 pub(crate) trait ChildSpec {
@@ -61,7 +61,8 @@ impl<C: Child, M: Copy + 'static> ChildSpec for ChildElement<C, M> {
 pub(crate) enum Content<'a> {
     Empty,
     Box,
-    Text { font: &'static FontChain, text: &'a str, color: Color, options: TextOptions },
+    /// Without a color, the foreground of the nearest look, or the theme's.
+    Text { font: &'static FontChain, text: &'a str, color: Option<Color>, options: TextOptions },
     Image { image: Image<'static>, tint: Color },
     Scroll,
     List { id: ListId, count: usize, row_height: i16, revision: Option<u32> },
@@ -122,12 +123,13 @@ pub struct Element<'a, M: Copy> {
     pub(crate) role: Role,
     pub(crate) tap: Option<Erased>,
     pub(crate) drag: Option<DragMap>,
+    pub(crate) state: State,
     _msg: PhantomData<fn() -> M>,
 }
 
 impl<'a, M: Copy> Element<'a, M> {
     fn new(content: Content<'a>, children: &'a [Element<'a, M>]) -> Self {
-        Self { content, children, style: Style::default(), key: None, id: None, role: Role::None, tap: None, drag: None, _msg: PhantomData }
+        Self { content, children, style: Style::default(), key: None, id: None, role: Role::None, tap: None, drag: None, state: State::empty(), _msg: PhantomData }
     }
 
     pub const fn is_empty(&self) -> bool {
@@ -174,6 +176,34 @@ impl<'a, M: Copy> Element<'a, M> {
 
     pub fn size(self, width: i16, height: i16) -> Self {
         self.width(width).height(height)
+    }
+
+    /// A share of what the parent offers: `numerator / denominator`.
+    pub fn width_fraction(mut self, numerator: u16, denominator: u16) -> Self {
+        self.style.width = Dimension::Fraction(numerator, denominator.max(1));
+        self
+    }
+
+    pub fn height_fraction(mut self, numerator: u16, denominator: u16) -> Self {
+        self.style.height = Dimension::Fraction(numerator, denominator.max(1));
+        self
+    }
+
+    pub fn max_width(mut self, px: i16) -> Self {
+        self.style.max_width = px;
+        self
+    }
+
+    pub fn max_height(mut self, px: i16) -> Self {
+        self.style.max_height = px;
+        self
+    }
+
+    /// Takes this share of what siblings overflow the main axis by, and is
+    /// measured again for the size left. Text has 1, other nodes 0.
+    pub fn shrink(mut self, weight: u8) -> Self {
+        self.style.shrink = weight;
+        self
     }
 
     pub fn min_width(mut self, px: i16) -> Self {
@@ -259,14 +289,36 @@ impl<'a, M: Copy> Element<'a, M> {
         self
     }
 
-    /// Shown while pressed, without rebuilding the view.
-    pub fn pressed_background(mut self, color: Color) -> Self {
-        self.style.pressed_background = Some(color);
+    /// Appearance by state.
+    pub fn look(mut self, look: &'static WidgetLook) -> Self {
+        self.style.look = Some(look);
+        self
+    }
+
+    /// Takes no input, and looks it.
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.state.set(State::DISABLED, disabled);
+        self
+    }
+
+    pub fn selected(mut self, selected: bool) -> Self {
+        self.state.set(State::SELECTED, selected);
+        self
+    }
+
+    pub fn checked(mut self, checked: bool) -> Self {
+        self.state.set(State::CHECKED, checked);
         self
     }
 
     pub fn radius(mut self, px: u8) -> Self {
         self.style.radius = px;
+        self
+    }
+
+    /// An outline inside the box, following its radius.
+    pub fn border(mut self, color: Color, width: u8) -> Self {
+        self.style.border = Some(Border { color, width });
         self
     }
 
@@ -306,7 +358,7 @@ impl<'a, M: Copy> Element<'a, M> {
 
     pub fn color(mut self, color: Color) -> Self {
         if let Content::Text { color: c, .. } = &mut self.content {
-            *c = color;
+            *c = Some(color);
         }
         self
     }
@@ -432,8 +484,9 @@ impl<M: Copy> Ui<M> {
 
     pub fn text<'a>(&'a self, font: &'static FontChain, text: &'a str) -> Element<'a, M> {
         let options = TextOptions::default();
-        let mut element = Element::new(Content::Text { font, text, color: Color::rgb(0, 0, 0), options }, &[]);
+        let mut element = Element::new(Content::Text { font, text, color: None, options }, &[]);
         element.role = Role::Text;
+        element.style.shrink = 1;
         element
     }
 
