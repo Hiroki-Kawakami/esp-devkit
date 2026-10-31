@@ -14,6 +14,8 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use idf::{Error, Result};
 
 mod absent;
+#[cfg_attr(not(target_os = "none"), allow(dead_code))]
+pub mod audio;
 mod boards;
 mod devices;
 pub mod dispatch;
@@ -31,6 +33,7 @@ pub use absent::Absent;
 
 #[non_exhaustive]
 pub struct Board {
+    pub audio: Option<&'static audio::Audio>,
     pub display: Option<&'static display::Display>,
     pub touch: Option<&'static touch::Touch>,
 }
@@ -38,6 +41,7 @@ pub struct Board {
 #[derive(Default)]
 #[non_exhaustive]
 pub struct Config {
+    pub audio: audio::Config,
     pub display: display::Config,
     pub dispatch: dispatch::Config,
 }

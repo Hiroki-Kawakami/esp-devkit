@@ -11,13 +11,24 @@ use core::ffi::CStr;
 use core::time::Duration;
 
 use alloc::boxed::Box;
+use alloc::vec::Vec;
 
+use bsp_rs::audio::{Audio, Format, Pcm, SampleFormat, SpeakerMode};
 use bsp_rs::display::{Display, FrameBuffer, PixelFormat};
+use devkit::math::sinf;
 use bsp_rs::touch::{Point, Touch};
 use idf::log::{error, info};
 use idf::thread;
 
 const TAG: &CStr = c"tab5_rs";
+
+const TONE_RATE: u32 = 48_000;
+const TONE_HZ: f32 = 440.0;
+const TONE_SECONDS: usize = 2;
+const TONE_VOLUME: u8 = 70;
+const TONE_CHUNK: usize = 480;
+const TONE_REPEATS: usize = 2;
+const TONE_GAP: Duration = Duration::from_secs(1);
 
 const BARS: [(u8, u8, u8); 8] = [
     (255, 255, 255),
@@ -33,6 +44,7 @@ const BARS: [(u8, u8, u8); 8] = [
 pub fn run() {
     let mut config = bsp_rs::Config::default();
     config.display.pixel_format = Some(PixelFormat::Rgb565);
+    config.audio.speaker_mode = SpeakerMode::Auto;
     let board = match bsp_rs::init(&config) {
         Ok(board) => board,
         Err(err) => {
@@ -68,10 +80,52 @@ pub fn run() {
     if let Err(err) = harness_rs::start(&board) {
         error!(TAG, "harness: {err}");
     }
+    if let Some(audio) = board.audio {
+        play_tone(audio);
+    }
     match board.touch {
         Some(touch) => log_touches(touch),
         None => cycle(display),
     }
+}
+
+fn play_tone(audio: &'static Audio) {
+    if let Err(err) = audio.set_headphone_callback(Some(Box::new(|inserted| info!(TAG, "headphone: {inserted}")))) {
+        error!(TAG, "set_headphone_callback: {err}");
+    }
+    if let Err(err) = audio.set_volume(TONE_VOLUME) {
+        error!(TAG, "set_volume: {err}");
+    }
+    let spawned = thread::Builder::new().name("tone").spawn(move || {
+        let format = Format { sample_rate: TONE_RATE, sample: SampleFormat::S16, channels: 2 };
+        for _ in 0..TONE_REPEATS {
+            if let Err(err) = tone(audio, format) {
+                error!(TAG, "tone: {err}");
+            }
+            thread::sleep(TONE_GAP);
+        }
+    });
+    if let Err(err) = spawned {
+        error!(TAG, "tone thread: {err}");
+    }
+}
+
+fn tone(audio: &Audio, format: Format) -> idf::Result<()> {
+    let mut stream = audio.open(format)?;
+    let step = core::f32::consts::TAU * TONE_HZ / TONE_RATE as f32;
+    let mut phase = 0.0f32;
+    let mut pcm = Vec::with_capacity(TONE_CHUNK * 2);
+    for _ in 0..TONE_SECONDS * TONE_RATE as usize / TONE_CHUNK {
+        pcm.clear();
+        for _ in 0..TONE_CHUNK {
+            let sample = (sinf(phase) * f32::from(i16::MAX / 2)) as i16;
+            pcm.extend_from_slice(&[sample, sample]);
+            phase = (phase + step) % core::f32::consts::TAU;
+        }
+        stream.write(Pcm::S16(&pcm))?;
+    }
+    info!(TAG, "tone queued {:?} frames", stream.queued());
+    stream.close()
 }
 
 fn cycle(display: &Display) -> ! {

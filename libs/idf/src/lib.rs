@@ -15,6 +15,8 @@ pub mod fs;
 pub mod gpio;
 pub mod heap;
 pub mod i2c;
+#[cfg(all(target_os = "none", CONFIG_SOC_I2S_SUPPORTED))]
+pub mod i2s;
 #[cfg(target_os = "none")]
 pub mod lcd;
 #[cfg(target_os = "none")]

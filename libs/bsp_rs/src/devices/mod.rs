@@ -3,6 +3,8 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
+#[cfg(CONFIG_BSP_RS_DEVICE_ES8388)]
+pub(crate) mod es8388;
 #[cfg(CONFIG_BSP_RS_DEVICE_GT911)]
 pub(crate) mod gt911;
 #[cfg(CONFIG_BSP_RS_DEVICE_ILI9881C)]

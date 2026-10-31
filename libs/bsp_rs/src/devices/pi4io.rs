@@ -17,6 +17,7 @@ const REG_OUT_SET: u8 = 0x05;
 const REG_OUT_H_IM: u8 = 0x07;
 const REG_IN_DEF_STA: u8 = 0x09;
 const REG_PULL_EN: u8 = 0x0B;
+const REG_IN_STA: u8 = 0x0F;
 const REG_INT_MASK: u8 = 0x11;
 
 const SCL_HZ: u32 = 400_000;
@@ -108,6 +109,18 @@ impl<'bus> Pi4io<'bus> {
         self.write_reg(REG_OUT_SET, output)?;
         self.output = output;
         Ok(())
+    }
+
+    /// An output pin reads back its last written level.
+    pub(crate) fn get_input(&self, pin: u8) -> Result<bool> {
+        if pin >= 8 {
+            return Err(Error::INVALID_ARG);
+        }
+        let mask = 1 << pin;
+        if self.direction & mask != 0 {
+            return Ok(self.output & mask != 0);
+        }
+        Ok(self.read_reg(REG_IN_STA)? & mask != 0)
     }
 
     fn write_reg(&self, reg: u8, value: u8) -> Result<()> {

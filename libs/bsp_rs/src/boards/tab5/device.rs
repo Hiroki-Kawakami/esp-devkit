@@ -7,10 +7,12 @@ use core::time::Duration;
 
 use idf::i2c::{BusConfig, MasterBus};
 use idf::log::{error, info, warn};
-use idf::sync::OnceLock;
+use idf::sync::{Mutex, OnceLock};
 use idf::{Error, Result, gpio, thread};
 
+use super::audio::AudioDriver;
 use super::{PANEL_SIZE, TAG, resolve_fb_num, resolve_pixel_format};
+use crate::audio::{self, Audio};
 use crate::devices::gt911::{self, Gt911};
 use crate::devices::st712x_touch::{self, St712xTouch};
 use crate::devices::{ili9881c, st7121, st7123};
@@ -46,6 +48,7 @@ crate::display::driver_enum! {
 
 static I2C: OnceLock<MasterBus> = OnceLock::new();
 static DISPLAY: OnceLock<display::Display> = OnceLock::new();
+static PI4IOE1: OnceLock<Mutex<Pi4io<'static>>> = OnceLock::new();
 
 pub(crate) fn init(config: &Config) -> Result<Board> {
     let bus = I2C
@@ -63,16 +66,18 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
     let (mut pi4ioe1, _pi4ioe2) =
         io_expanders_init(bus).inspect_err(|err| error!(TAG, "io expanders: {err}"))?;
     reset_panel_and_touch(&mut pi4ioe1)?;
+    let pi4ioe1 = PI4IOE1.get_or_try_init(|| Mutex::try_new(pi4ioe1))?;
 
     let display = panel_init(config, bus)?;
     let touch = touch_init(bus, &display);
-    Ok(Board { display: Some(DISPLAY.get_or_init(|| display::Display(display))), touch })
+    let audio = audio_init(config, bus, pi4ioe1);
+    Ok(Board { audio, display: Some(DISPLAY.get_or_init(|| display::Display(display))), touch })
 }
 
 // PI4IOE1 owns LCD_RST + TP_RST + SPK_EN + the headphone-detect input; PI4IOE2
 // owns the power rails. SPK_EN starts LOW so the codec stays muted until audio
 // bring-up enables it.
-fn io_expanders_init(bus: &MasterBus) -> Result<(Pi4io<'_>, Pi4io<'_>)> {
+fn io_expanders_init(bus: &'static MasterBus) -> Result<(Pi4io<'static>, Pi4io<'static>)> {
     let mut pi4ioe1 = [PinConfig::default(); 8];
     pi4ioe1[0] = PinConfig::output(false); // RF_INT_EXT_SWITCH
     pi4ioe1[1] = PinConfig::output(false); // SPK_EN
@@ -184,6 +189,18 @@ fn touch_init(bus: &'static MasterBus, display: &Display) -> Option<&'static Tou
         .and_then(|st712x| touch::start(st712x, config)),
     };
     result.inspect_err(|err| warn!(TAG, "touch unavailable: {err}")).ok()
+}
+
+// Non-fatal: a codec failure leaves the board without audio.
+fn audio_init(
+    config: &Config,
+    bus: &'static MasterBus,
+    io: &'static Mutex<Pi4io<'static>>,
+) -> Option<&'static Audio> {
+    AudioDriver::new(bus, io)
+        .and_then(|driver| audio::start(driver, &config.audio))
+        .inspect_err(|err| warn!(TAG, "audio unavailable: {err}"))
+        .ok()
 }
 
 fn st712x_version(bus: &MasterBus) -> Option<u8> {

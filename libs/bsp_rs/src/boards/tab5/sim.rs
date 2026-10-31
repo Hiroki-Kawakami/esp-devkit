@@ -8,6 +8,7 @@ use idf::log::{info, warn};
 use idf::sync::OnceLock;
 
 use super::{PANEL_SIZE, TAG, resolve_fb_num, resolve_pixel_format};
+use crate::Absent;
 use crate::display;
 use crate::sim::panel::SimPanel;
 use crate::sim::protocol::Event;
@@ -15,6 +16,7 @@ use crate::sim::{self, touch as sim_touch};
 use crate::touch;
 use crate::{Board, Config};
 
+pub(crate) type AudioDriver = Absent;
 pub(crate) type Display = SimPanel;
 
 static DISPLAY: OnceLock<display::Display> = OnceLock::new();
@@ -23,7 +25,7 @@ static DISPLAY: OnceLock<display::Display> = OnceLock::new();
 pub(crate) fn init(config: &Config) -> Result<Board> {
     let Some(host) = sim::host() else {
         info!(TAG, "board: Tab5 (simulator, no host)");
-        return Ok(Board { display: None, touch: None });
+        return Ok(Board { audio: None, display: None, touch: None });
     };
     info!(TAG, "board: Tab5 (simulator)");
     host.send(&Event::device("M5Stack Tab5"));
@@ -38,5 +40,5 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
     })
     .inspect_err(|err| warn!(TAG, "touch unavailable: {err}"))
     .ok();
-    Ok(Board { display: Some(DISPLAY.get_or_init(|| display::Display(panel))), touch })
+    Ok(Board { audio: None, display: Some(DISPLAY.get_or_init(|| display::Display(panel))), touch })
 }
