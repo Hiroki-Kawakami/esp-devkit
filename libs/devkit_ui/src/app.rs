@@ -22,9 +22,11 @@ use idf::time::Instant;
 
 use crate::component::{Component, Screen};
 use crate::erased::Erased;
+use crate::keyboard::KeyboardMode;
 use crate::paint::Effects;
 use crate::presenter::{Config, Presenter, Strips};
 use crate::style::Insets;
+use crate::text_buffer::TextInput;
 use crate::theme::Theme;
 use crate::tree::Tree;
 
@@ -32,6 +34,8 @@ const TAG: &CStr = c"ui";
 const QUEUE_DEPTH: usize = 32;
 const FRAME: Duration = Duration::from_millis(16);
 const IDLE_WAIT: Duration = Duration::from_secs(3600);
+const CARET_WAIT: Duration = Duration::from_millis(250);
+const REPEAT_WAIT: Duration = Duration::from_millis(20);
 const TAP_HOLD: Duration = Duration::from_millis(40);
 const ROOT: u16 = 0;
 const DROP_LOG_EVERY: u32 = 256;
@@ -41,11 +45,12 @@ pub struct AppConfig {
     pub presenter: Config,
     pub glyph_cache_bytes: usize,
     pub glyph_cache_caps: Caps,
+    pub keyboard: KeyboardMode,
 }
 
 impl AppConfig {
     pub fn new(theme: &'static Theme) -> Self {
-        Self { theme, presenter: Config::default(), glyph_cache_bytes: 128 * 1024, glyph_cache_caps: Caps::SPIRAM }
+        Self { theme, presenter: Config::default(), glyph_cache_bytes: 128 * 1024, glyph_cache_caps: Caps::SPIRAM, keyboard: KeyboardMode::Auto }
     }
 }
 
@@ -69,6 +74,9 @@ struct StripSwap {
 }
 
 enum Event {
+    Input(TextInput),
+    KeyboardConnected(bool),
+    SetKeyboardMode(KeyboardMode),
     SetStrips(Arc<StripSwap>),
     Touch(Option<(u16, u16)>, u32),
     Post(u16, Erased),
@@ -147,6 +155,29 @@ impl<M: Copy> Handle<M> {
         }
         swap.done.take();
         swap.strips.lock().take().expect("answered")
+    }
+}
+
+/// Feeds text input from another task, as a physical keyboard does.
+#[derive(Clone)]
+pub struct Input {
+    shared: Arc<Shared>,
+}
+
+impl Input {
+    /// To the focused input. `false` when the queue is full.
+    pub fn send(&self, input: TextInput) -> bool {
+        self.shared.send(Event::Input(input))
+    }
+
+    /// With `KeyboardMode::Auto` the on-screen keyboard steps aside while a
+    /// physical one is connected.
+    pub fn set_keyboard_connected(&self, connected: bool) -> bool {
+        self.shared.send(Event::KeyboardConnected(connected))
+    }
+
+    pub fn set_keyboard_mode(&self, mode: KeyboardMode) -> bool {
+        self.shared.send(Event::SetKeyboardMode(mode))
     }
 }
 
@@ -274,7 +305,11 @@ impl<C: Screen> App<C> {
         Ok(Self {
             shared,
             receiver,
-            tree: Tree::new(root, area, config.presenter.data_caps, config.theme),
+            tree: {
+                let mut tree = Tree::new(root, area, config.presenter.data_caps, config.theme);
+                tree.add_keyboard(config.keyboard);
+                tree
+            },
             presenter,
             cache: GlyphCache::new_in(config.glyph_cache_bytes, config.glyph_cache_caps),
             effects: Effects::new(config.presenter.data_caps),
@@ -300,12 +335,19 @@ impl<C: Screen> App<C> {
         Handle { shared: self.shared.clone(), slot: ROOT, _msg: PhantomData }
     }
 
+    pub fn input(&self) -> Input {
+        Input { shared: self.shared.clone() }
+    }
+
     pub fn probe(&self) -> Probe {
         Probe { shared: self.shared.clone() }
     }
 
     fn handle_event(&mut self, event: Event) {
         match event {
+            Event::Input(input) => self.tree.input(input),
+            Event::KeyboardConnected(connected) => self.tree.set_keyboard_connected(connected),
+            Event::SetKeyboardMode(mode) => self.tree.set_keyboard_mode(mode),
             Event::SetStrips(swap) => {
                 let mut slot = swap.strips.lock();
                 if let Some(Ok(strips)) = slot.take() {
@@ -385,8 +427,15 @@ impl<C: Screen> App<C> {
             self.shared.busy.store(!self.tree.idle(), Ordering::Release);
             // While animating the presenter paces frames; a timed wait here
             // would add at least two ticks to each.
+            let wait = if self.tree.repeating() {
+                REPEAT_WAIT
+            } else if self.tree.has_caret() {
+                CARET_WAIT
+            } else {
+                IDLE_WAIT
+            };
             if !self.tree.animating()
-                && let Some(event) = self.receiver.recv_timeout(IDLE_WAIT)
+                && let Some(event) = self.receiver.recv_timeout(wait)
             {
                 self.shared.busy.store(true, Ordering::Release);
                 self.handle_event(event);

@@ -11,6 +11,7 @@ use devkit_gfx::{Color, Font, FontChain, Rect};
 use idf::heap::Caps;
 
 use crate::*;
+use crate::keyboard::InputKind;
 use crate::node::NodeContent;
 use crate::tree::Tree;
 use crate::widgets;
@@ -59,7 +60,9 @@ fn chain() -> &'static FontChain {
 
 fn theme() -> &'static Theme {
     let chain = chain();
-    Box::leak(Box::new(Theme::light(Fonts { title: chain, body: chain, caption: chain, icons: chain })))
+    let icon = Icon { font: chain, glyph: 'A' };
+    let icons = Icons { back: icon, more: icon, close: icon, check: icon, chevron: icon, shift: icon, backspace: icon, enter: icon };
+    Box::leak(Box::new(Theme::light(Fonts { title: chain, body: chain, caption: chain }, icons)))
 }
 
 fn run(tree: &mut Tree) -> Vec<Rect> {
@@ -828,6 +831,294 @@ fn looks_stack_by_state_and_foreground_reaches_text() {
     assert_eq!(LOOK.resolve(State::SELECTED).background, Some(WHITE));
     let both = LOOK.resolve(State::SELECTED | State::PRESSED);
     assert_eq!((both.background, both.foreground), (Some(WHITE), Some(RED)));
+}
+
+#[test]
+fn a_text_buffer_edits_around_the_cursor() {
+    let mut buffer = TextBuffer::new();
+    for c in "aあb".chars() {
+        assert!(buffer.apply(TextInput::Char(c)));
+    }
+    assert_eq!(buffer.as_str(), "aあb");
+    assert_eq!(buffer.cursor(), 5);
+    buffer.apply(TextInput::Left);
+    assert_eq!(buffer.cursor(), 4);
+    buffer.apply(TextInput::Backspace);
+    assert_eq!(buffer.as_str(), "ab");
+    assert_eq!(buffer.cursor(), 1);
+    buffer.apply(TextInput::Delete);
+    assert_eq!(buffer.as_str(), "a");
+    buffer.apply(TextInput::Home);
+    assert_eq!(buffer.cursor(), 0);
+    assert!(!buffer.apply(TextInput::Backspace));
+    buffer.set_text("one\ntwo");
+    buffer.apply(TextInput::Up);
+    assert_eq!(buffer.cursor(), 3);
+    buffer.apply(TextInput::Place(100));
+    assert_eq!(buffer.cursor(), 7);
+}
+
+#[derive(Clone, Copy)]
+enum FormMsg {
+    Name(TextInput),
+    Pin(TextInput),
+    Other,
+}
+
+struct Form {
+    name: TextBuffer,
+    pin: TextBuffer,
+}
+
+impl Component for Form {
+    type Msg = FormMsg;
+
+    fn update(&mut self, msg: FormMsg, cx: &mut Cx<Self>) {
+        match msg {
+            FormMsg::Name(input) => {
+                self.name.apply(input);
+            }
+            FormMsg::Pin(input) => {
+                self.pin.apply(input);
+            }
+            FormMsg::Other => {}
+        }
+        cx.rebuild();
+    }
+
+    fn view<'a>(&'a self, ui: &'a Ui<FormMsg>) -> Element<'a, FormMsg> {
+        ui.column([
+            widgets::text_field(ui, &self.name, FormMsg::Name).placeholder("Name").id("name"),
+            widgets::text_field(ui, &self.pin, FormMsg::Pin).placeholder("PIN").input(InputKind::Number).id("pin"),
+            ui.column([]).size(100, 40).id("other").on_tap(FormMsg::Other),
+        ])
+    }
+}
+
+impl Screen for Form {}
+
+fn form_tree() -> Tree {
+    let mut tree = Tree::new(Form { name: TextBuffer::new(), pin: TextBuffer::new() }, SCREEN, Caps::INTERNAL, theme());
+    tree.add_keyboard(crate::keyboard::KeyboardMode::Auto);
+    run(&mut tree);
+    tree
+}
+
+fn text_of(tree: &Tree, id: &str) -> alloc::string::String {
+    let NodeContent::Text(text) = &tree.nodes[tree.find(id).unwrap() as usize].content else { panic!() };
+    alloc::string::String::from(text.text())
+}
+
+#[test]
+fn focus_routes_input_and_shows_the_field_keyboard() {
+    let mut tree = form_tree();
+    assert!(tree.find("keyboard").is_none());
+    assert_eq!(tree.context(0).insets.bottom, 0);
+
+    tap(&mut tree, "name");
+    run(&mut tree);
+    let keyboard = rect_of(&tree, "keyboard");
+    assert_eq!(keyboard.bottom(), 600);
+    assert_eq!(tree.context(0).insets.bottom, keyboard.h);
+    tree.input(TextInput::Char('x'));
+    tree.input(TextInput::Char('y'));
+    run(&mut tree);
+    assert_eq!(text_of(&tree, "name"), "xy");
+
+    let qwerty = rect_of(&tree, "keyboard").h;
+    tap(&mut tree, "pin");
+    run(&mut tree);
+    assert_eq!(rect_of(&tree, "keyboard").h, qwerty, "both layouts have four rows");
+    tree.input(TextInput::Char('7'));
+    run(&mut tree);
+    assert_eq!(text_of(&tree, "pin"), "7");
+    assert_eq!(text_of(&tree, "name"), "xy");
+
+    tree.touch(Some((390, 200)), 0);
+    tree.touch(None, 10);
+    run(&mut tree);
+    assert!(tree.find("keyboard").is_none(), "a tap elsewhere ends the input");
+    assert_eq!(tree.context(0).insets.bottom, 0);
+}
+
+#[test]
+fn a_physical_keyboard_hides_the_panel_and_keeps_input_working() {
+    let mut tree = form_tree();
+    tree.set_keyboard_connected(true);
+    tap(&mut tree, "name");
+    run(&mut tree);
+    assert!(tree.find("keyboard").is_none());
+    tree.input(TextInput::Char('k'));
+    run(&mut tree);
+    assert_eq!(text_of(&tree, "name"), "k");
+    tree.set_keyboard_connected(false);
+    run(&mut tree);
+    assert!(tree.find("keyboard").is_some());
+}
+
+#[test]
+fn keys_line_up_across_rows_and_type_through_layers() {
+    let mut tree = form_tree();
+    tap(&mut tree, "name");
+    run(&mut tree);
+    let keyboard = rect_of(&tree, "keyboard");
+    let press = |tree: &mut Tree, x: i16, y: i16| {
+        tree.touch(Some((x, y)), 0);
+        tree.touch(None, 10);
+        run(tree);
+    };
+    let k = theme().keyboards;
+    let pitch = (400 - k.gap) / 10;
+    let row_y = |row: i16| keyboard.y + k.gap + row * (k.key_height + k.gap) + 10;
+    // Shift, then one upper case letter, then back to lower case.
+    press(&mut tree, k.gap + 10, row_y(2));
+    press(&mut tree, k.gap + pitch + 10, row_y(0));
+    press(&mut tree, k.gap + pitch + 10, row_y(0));
+    assert_eq!(text_of(&tree, "name"), "Ww");
+    // A double tap locks upper case, a third tap leaves it.
+    press(&mut tree, k.gap + 10, row_y(2));
+    press(&mut tree, k.gap + 10, row_y(2));
+    press(&mut tree, k.gap + pitch + 10, row_y(0));
+    press(&mut tree, k.gap + pitch + 10, row_y(0));
+    press(&mut tree, k.gap + 10, row_y(2));
+    press(&mut tree, k.gap + pitch + 10, row_y(0));
+    assert_eq!(text_of(&tree, "name"), "WwWWw");
+    // A tap between keys neither ends the input nor reaches what is beneath.
+    press(&mut tree, 2, row_y(0));
+    assert_eq!(text_of(&tree, "name"), "WwWWw");
+    assert!(tree.find("keyboard").is_some());
+    // Symbols stay until asked to leave.
+    press(&mut tree, k.gap + 10, row_y(3));
+    press(&mut tree, k.gap + 10, row_y(0));
+    press(&mut tree, k.gap + 10, row_y(0));
+    assert_eq!(text_of(&tree, "name"), "WwWWw11");
+}
+
+#[test]
+fn a_long_field_keeps_its_width_and_the_caret_in_view() {
+    let mut tree = form_tree();
+    let empty = rect_of(&tree, "name");
+    tap(&mut tree, "name");
+    run(&mut tree);
+    for _ in 0..200 {
+        tree.input(TextInput::Char('A'));
+    }
+    run(&mut tree);
+    let field = rect_of(&tree, "name");
+    assert_eq!((field.w, field.h), (empty.w, empty.h));
+    let NodeContent::Text(text) = &tree.nodes[tree.find("name").unwrap() as usize].content else { panic!() };
+    let [left, _, right, _] = tree.nodes[tree.find("name").unwrap() as usize].style.padding;
+    let width = field.w - left - right;
+    assert_eq!(text.scroll(width), text.run.caret(200).unwrap().0 + 2 - width);
+}
+
+#[test]
+fn a_field_scrolls_only_when_the_cursor_leaves_it() {
+    let mut tree = form_tree();
+    tap(&mut tree, "name");
+    run(&mut tree);
+    for _ in 0..200 {
+        tree.input(TextInput::Char('A'));
+    }
+    run(&mut tree);
+    let id = tree.find("name").unwrap() as usize;
+    let [left, _, right, _] = tree.nodes[id].style.padding;
+    let width = tree.nodes[id].screen.w - left - right;
+    let scroll = |tree: &Tree| {
+        let NodeContent::Text(text) = &tree.nodes[id].content else { panic!() };
+        text.scroll(width)
+    };
+    let end = scroll(&tree);
+    tree.input(TextInput::Left);
+    run(&mut tree);
+    assert_eq!(scroll(&tree), end);
+    tree.input(TextInput::Home);
+    run(&mut tree);
+    assert_eq!(scroll(&tree), 0);
+    tree.input(TextInput::End);
+    run(&mut tree);
+    assert_eq!(scroll(&tree), end);
+}
+
+#[test]
+fn a_tap_in_a_field_places_the_cursor() {
+    let mut tree = form_tree();
+    tap(&mut tree, "name");
+    run(&mut tree);
+    tree.input(TextInput::Char('A'));
+    tree.input(TextInput::Char('B'));
+    run(&mut tree);
+    let field = rect_of(&tree, "name");
+    let left = tree.nodes[tree.find("name").unwrap() as usize].style.padding[0];
+    tree.touch(Some((field.x + left + 11, field.y + 10)), 0);
+    tree.touch(None, 10);
+    run(&mut tree);
+    tree.input(TextInput::Char('x'));
+    run(&mut tree);
+    assert_eq!(text_of(&tree, "name"), "AxB");
+}
+
+struct Empty;
+
+impl Component for Empty {
+    type Msg = ();
+
+    fn update(&mut self, _: (), _: &mut Cx<Self>) {}
+
+    fn view<'a>(&'a self, ui: &'a Ui<()>) -> Element<'a, ()> {
+        ui.empty()
+    }
+}
+
+#[test]
+fn the_bottom_inset_is_the_larger_of_chrome_and_keyboard() {
+    let mut tree = Tree::new(Form { name: TextBuffer::new(), pin: TextBuffer::new() }, SCREEN, Caps::INTERNAL, theme());
+    tree.add_chrome(Empty, Insets { top: 10, bottom: 30, ..Insets::default() });
+    tree.add_keyboard(crate::keyboard::KeyboardMode::Auto);
+    run(&mut tree);
+    assert_eq!(tree.context(0).insets.bottom, 30);
+    tap(&mut tree, "name");
+    run(&mut tree);
+    assert_eq!(tree.context(0).insets.bottom, rect_of(&tree, "keyboard").h);
+}
+
+#[test]
+fn full_rows_end_at_the_panel_edge() {
+    let mut tree = form_tree();
+    tap(&mut tree, "name");
+    run(&mut tree);
+    let keyboard = rect_of(&tree, "keyboard");
+    let gap = theme().keyboards.gap;
+    let y = keyboard.y + gap + 2 * (theme().keyboards.key_height + gap) + 10;
+    tree.touch(Some((keyboard.right() - gap - 1, y)), 0);
+    tree.update();
+    assert!(tree.repeating(), "the last pixel of the row is the repeating key");
+}
+
+#[test]
+fn a_held_key_repeats_and_its_release_adds_nothing() {
+    let mut tree = form_tree();
+    tap(&mut tree, "name");
+    run(&mut tree);
+    for _ in 0..3 {
+        tree.input(TextInput::Char('a'));
+    }
+    run(&mut tree);
+    assert_eq!(text_of(&tree, "name"), "aaa");
+    let keyboard = rect_of(&tree, "keyboard");
+    let k = theme().keyboards;
+    let y = keyboard.y + k.gap + 2 * (k.key_height + k.gap) + 10;
+    tree.touch(Some((380, y)), 0);
+    tree.update();
+    assert!(tree.repeating());
+    tree.tick(400);
+    tree.update();
+    tree.tick(60);
+    run(&mut tree);
+    assert_eq!(text_of(&tree, "name"), "a");
+    tree.touch(None, 500);
+    run(&mut tree);
+    assert_eq!(text_of(&tree, "name"), "a");
 }
 
 #[test]

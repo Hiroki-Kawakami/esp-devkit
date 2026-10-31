@@ -26,7 +26,7 @@ use core::time::Duration;
 use bsp_rs::Board;
 use bsp_rs::display::{Display, PixelFormat};
 use devkit::StaticLease;
-use devkit_ui::{App, AppConfig, Insets, Rotation, Strips};
+use devkit_ui::{App, AppConfig, Insets, Rotation, Strips, TextInput};
 use idf::heap::Caps;
 use idf::log::{error, info};
 use idf::sync::{Mutex, Semaphore};
@@ -185,6 +185,21 @@ fn run_demo(board: &Board, display: &'static Display, settings: &Settings) {
         let probe = probe.clone();
         harness_rs::set_idle(move || probe.idle());
     }
+    let input = app.input();
+    let key = {
+        let input = input.clone();
+        move |k| {
+            input.send(k);
+            Ok(None)
+        }
+    };
+    let connect = {
+        let input = input.clone();
+        move |connected| {
+            input.set_keyboard_connected(connected);
+            Ok(None)
+        }
+    };
     let status = app.chrome(StatusBar::new(), Insets { top: INSET_TOP, ..Insets::default() });
     let Some(sram) = SRAM.take() else {
         error!(TAG, "strips: taken");
@@ -202,7 +217,26 @@ fn run_demo(board: &Board, display: &'static Display, settings: &Settings) {
         ["stats"] => probe.stats().map(Some),
         ["tap", id] => probe.tap(id).map(|()| None),
         ["invoke", id] => probe.invoke(id).map(|()| None),
-        _ => Err("ui <tree|stats|tap <id>|invoke <id>>".to_string()),
+        ["type", words @ ..] => {
+            for c in words.join(" ").chars() {
+                while !input.send(TextInput::Char(c)) {
+                    thread::sleep(Duration::from_millis(10));
+                }
+            }
+            Ok(None)
+        }
+        ["key", "backspace"] => key(TextInput::Backspace),
+        ["key", "delete"] => key(TextInput::Delete),
+        ["key", "enter"] => key(TextInput::Enter),
+        ["key", "left"] => key(TextInput::Left),
+        ["key", "right"] => key(TextInput::Right),
+        ["key", "up"] => key(TextInput::Up),
+        ["key", "down"] => key(TextInput::Down),
+        ["key", "home"] => key(TextInput::Home),
+        ["key", "end"] => key(TextInput::End),
+        ["keyboard", "connected"] => connect(true),
+        ["keyboard", "removed"] => connect(false),
+        _ => Err("ui <tree|stats|tap <id>|invoke <id>|type <text>|key <name>|keyboard <connected|removed>>".to_string()),
     });
     let clock = thread::Builder::new().name("clock").stack_size(4096).spawn(move || {
         loop {

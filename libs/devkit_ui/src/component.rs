@@ -14,13 +14,14 @@ use crate::nav::{Action, NavOp};
 use crate::node::NodeId;
 use crate::presenter::Strips;
 use crate::style::ScreenStyle;
+use crate::text_buffer::TextInput;
 use crate::theme::Theme;
 use crate::tree::Tree;
 
 /// Which `Ui::list` of a component a row belongs to.
 pub type ListId = u16;
 
-/// A piece of UI with its own state. Messages are `Copy` and at most 8 bytes;
+/// A piece of UI with its own state. Messages are `Copy` and at most 16 bytes;
 /// larger payloads stay in the state and messages carry an index.
 pub trait Component: 'static {
     type Msg: Copy + 'static;
@@ -103,6 +104,8 @@ pub(crate) struct Requests {
     pub(crate) theme: Option<&'static Theme>,
     pub(crate) replaced: Option<Strips>,
     pub(crate) animations: Vec<(&'static str, Animation)>,
+    pub(crate) focus: Option<&'static str>,
+    pub(crate) input: Vec<TextInput>,
 }
 
 /// What an animation moves, without running a view or layout.
@@ -156,6 +159,15 @@ impl<C: Component> Cx<C> {
     /// inside it, then anywhere.
     pub fn nav_of<K: 'static>(&mut self) -> Nav<'_> {
         Nav { requests: &mut self.requests, target: Some(TypeId::of::<K>()) }
+    }
+
+    /// Moves the focus to the node with this id, after the view has been built.
+    pub fn focus(&mut self, id: &'static str) {
+        self.requests.focus = Some(id);
+    }
+
+    pub(crate) fn input(&mut self, input: TextInput) {
+        self.requests.input.push(input);
     }
 
     /// Animates the node with this id, after the view has been built.

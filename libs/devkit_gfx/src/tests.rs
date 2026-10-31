@@ -358,6 +358,22 @@ fn text_wraps_at_spaces_and_wide_characters() {
 }
 
 #[test]
+fn carets_follow_wrapped_lines_and_taps_find_them() {
+    let chain = test_chain();
+    let options = TextOptions { max_width: Some(40), wrap: true, carets: true, ..TextOptions::default() };
+    let run = layout(&chain, "AAA AAA\nA", options);
+    assert_eq!(run.caret(0), Some((0, 0)));
+    assert_eq!(run.caret(2), Some((20, 0)));
+    assert_eq!(run.caret(4), Some((0, 14)));
+    assert_eq!(run.caret(5), Some((10, 14)));
+    assert_eq!(run.caret(8), Some((0, 28)));
+    assert_eq!(run.caret(9), Some((10, 28)));
+    assert_eq!(run.byte_at(11, 2), 1);
+    assert_eq!(run.byte_at(11, 16), 5);
+    assert_eq!(run.byte_at(500, 500), 9);
+}
+
+#[test]
 fn text_ellipsizes_on_the_last_line() {
     let chain = test_chain();
     let options = TextOptions { max_width: Some(30), overflow: Overflow::Ellipsis, ..TextOptions::default() };

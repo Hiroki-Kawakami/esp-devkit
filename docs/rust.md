@@ -627,7 +627,7 @@ app.run();
 - `update` runs when a message arrives and `view` when it called
   `cx.rebuild()`. `view` only builds descriptions in per-rebuild memory, which is
   matched against the kept nodes; only what differs is laid out and painted.
-- Messages are `Copy`, at most 8 bytes, and handlers take values, so a rebuild
+- Messages are `Copy`, at most 16 bytes, and handlers take values, so a rebuild
   allocates nothing for them. Larger payloads stay in the state.
 - `Child` is a component made by a parent's `view`: `ui.child::<C>(props)`, or
   `ui.child_mapped` to turn its `cx.emit` events into the parent's messages. It
@@ -668,6 +668,45 @@ app.run();
 - `devkit_ui::widgets` are functions over the theme. State stays with the caller.
 - `cx.animate(id, animation)` moves a node's offset or opacity, without running a
   view or layout.
+- Text comes through one path: the on-screen keyboard and `App::input` (a
+  physical keyboard, a test harness) both reach the focused node as `TextInput`.
+  A tap on another node ends the input unless it has `.keep_focus()`;
+  `cx.focus("id")` moves the focus from `update`.
+- `TextBuffer` stays with the caller, which applies what the input reports.
+  `Enter` and `Custom` are left to it. The caret blinks without a view.
+
+  ```rust
+  text_field(ui, &self.name, Msg::Name).placeholder("Name").id("name")
+  text_field(ui, &self.pin, Msg::Pin).input(InputKind::Number)
+  // Msg::Name(input) => { self.name.apply(input); cx.rebuild(); }
+  ```
+
+- `AppConfig::keyboard` says when the docked keyboard shows: with
+  `KeyboardMode::Auto`, while an input has focus and no physical keyboard is
+  reported by `Input::set_keyboard_connected`. It raises `insets().bottom`.
+  `widgets::keyboard` places one in a view instead.
+- A `Keyboard` is static data. Label and action of a `Key` are separate, a look
+  or font can replace the theme's, and widths go by quarters of a column: a key
+  `n` wide covers `n` pitches less one gap, so a wide key spans the gaps it
+  covers. `Theme::keyboards` holds the defaults, `.input` picks one of them and
+  `.keyboard` overrides it.
+
+  ```rust
+  static PORT_KEYS: Keyboard = Keyboard {
+      columns: 3,
+      rows: 1,
+      layers: &[Layer {
+          rows: &[&[
+              Key::text("."),
+              Key::text(":"),
+              Key::action(KeyLabel::Text("OK"), KeyAction::Custom(1)).role(KeyRole::Primary),
+          ]],
+      }],
+  };
+  ```
+
+- `TextBuffer::set_composing` marks text an input method has not committed; the
+  field underlines it. Input methods live outside this crate.
 - `Probe` serves test harnesses: `tree`, `tap` (through the touch path, refused
   when the node is covered), `invoke` (the handler directly), `idle` and `stats`.
 

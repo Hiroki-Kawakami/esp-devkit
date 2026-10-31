@@ -7,7 +7,9 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use devkit_ui::widgets::{button, checkbox, icon_button, list_item, menu, menu_item, modal, slider, slider_value, switch, top_bar};
-use devkit_ui::{Align, Bars, Child, Component, Cx, Element, Fonts, ListId, Overlay, RenderMode, Root, Screen, ScreenStyle, Strips, Theme, Ui};
+use devkit_ui::keyboard::InputKind;
+use devkit_ui::widgets::{password_field, text_area, text_field};
+use devkit_ui::{Align, Bars, Child, Component, Cx, Element, Fonts, Icon, Icons, ListId, Overlay, RenderMode, Root, Screen, ScreenStyle, Strips, TextBuffer, TextInput, Theme, Ui};
 use idf::heap::Caps;
 use idf::sync::{LazyLock, Mutex};
 
@@ -20,9 +22,25 @@ const ROW_IDS: [&str; 8] = ["row0", "row1", "row2", "row3", "row4", "row5", "row
 const SIDEBAR_WIDTH: i16 = 400;
 const VIDEO_STRIP_BYTES: usize = 2 * 64 * 1024;
 
-const FONTS: Fonts = Fonts { title: &TITLE, body: &BODY, caption: &CAPTION, icons: &ICONS };
-pub static LIGHT: Theme = Theme::light(FONTS);
-pub static DARK: Theme = Theme::dark(FONTS);
+const FONTS: Fonts = Fonts { title: &TITLE, body: &BODY, caption: &CAPTION };
+const fn icon(glyph: char) -> Icon {
+    Icon { font: &ICONS, glyph }
+}
+const fn small_icon(glyph: char) -> Icon {
+    Icon { font: &SMALL_ICONS, glyph }
+}
+const THEME_ICONS: Icons = Icons {
+    back: icon(icons::BACK),
+    more: icon(icons::MORE),
+    close: icon(icons::CLOSE),
+    check: icon(icons::CHECK),
+    chevron: small_icon(icons::CHEVRON_RIGHT),
+    shift: small_icon(icons::SHIFT),
+    backspace: small_icon(icons::BACKSPACE),
+    enter: small_icon(icons::ENTER),
+};
+pub static LIGHT: Theme = Theme::light(FONTS, THEME_ICONS);
+pub static DARK: Theme = Theme::dark(FONTS, THEME_ICONS);
 
 /// The strip memory not in use.
 pub static SPARE_STRIPS: LazyLock<Mutex<Option<Strips>>> = LazyLock::new(|| Mutex::new(None));
@@ -75,8 +93,8 @@ impl Component for StatusBar {
         let time = ui.format(format_args!("{:02}:{:02}:{:02}", self.seconds / 3600, self.seconds / 60 % 60, self.seconds % 60));
         ui.row([
             ui.text(&CAPTION, time).color(color).id("clock").grow(1),
-            ui.icon(&SMALL_ICONS, icons::WIFI).color(color),
-            ui.icon(&SMALL_ICONS, icons::BATTERY).color(color),
+            ui.icon(small_icon(icons::WIFI)).color(color),
+            ui.icon(small_icon(icons::BATTERY)).color(color),
             ui.text(&CAPTION, "78%").color(color),
         ])
         .height(ui.insets().top)
@@ -209,8 +227,8 @@ impl Component for Browser {
     fn view<'a>(&'a self, ui: &'a Ui<Msg>) -> Element<'a, Msg> {
         let theme = ui.theme();
         let (width, height) = ui.screen_size();
-        let back = (height > width).then_some((icons::BACK, Msg::Back));
-        let more = icon_button(ui, icons::MORE, Msg::ToggleMenu).id("more");
+        let back = (height > width).then_some(Msg::Back);
+        let more = icon_button(ui, ui.theme().icons.more, Msg::ToggleMenu).id("more");
         let popup = if self.menu {
             menu(ui, 124, [menu_item(ui, "Compact", Msg::ToggleMenu), menu_item(ui, "Settings", Msg::OpenSettings).id("open-settings")], Msg::ToggleMenu)
         } else {
@@ -231,7 +249,7 @@ impl Component for Browser {
     }
 
     fn list_row<'a>(&'a self, _list: ListId, index: usize, ui: &'a Ui<Msg>) -> Element<'a, Msg> {
-        let row = list_item(ui, Some(FILE_ICONS[index % FILE_ICONS.len()]), &self.names[index], None, None, Msg::Open(index as u16));
+        let row = list_item(ui, Some(icon(FILE_ICONS[index % FILE_ICONS.len()])), &self.names[index], None, None, Msg::Open(index as u16));
         let row = row.selected(self.selected == Some(index as u16));
         match ROW_IDS.get(index) {
             Some(id) => row.id(id),
@@ -308,7 +326,7 @@ impl Component for Detail {
         let theme = ui.theme();
         let (c, m) = (&theme.colors, &theme.metrics);
         ui.column([
-            top_bar(ui, Some((icons::BACK, DetailMsg::Back)), &self.name, ui.empty()),
+            top_bar(ui, Some(DetailMsg::Back), &self.name, ui.empty()),
             ui.column([
                 ui.row([ui.text(theme.fonts.body, "Keep").color(c.on_surface).grow(1), switch(ui, self.keep, DetailMsg::Keep).id("keep")]).align(Align::Center),
                 ui.row([ui.text(theme.fonts.body, "Starred").color(c.on_surface).grow(1), checkbox(ui, self.star, DetailMsg::Star).id("star")]).align(Align::Center),
@@ -366,15 +384,31 @@ impl Screen for Confirm {}
 pub enum SettingsMsg {
     Back,
     Dark,
+    Name(TextInput),
+    Pin(TextInput),
+    Password(TextInput),
+    Note(TextInput),
 }
 
 pub struct Settings {
     dark: bool,
+    name: TextBuffer,
+    pin: TextBuffer,
+    password: TextBuffer,
+    note: TextBuffer,
 }
 
 impl Settings {
     fn new() -> Self {
-        Self { dark: false }
+        Self { dark: false, name: TextBuffer::new(), pin: TextBuffer::new(), password: TextBuffer::new(), note: TextBuffer::new() }
+    }
+}
+
+fn edit(buffer: &mut TextBuffer, input: TextInput) {
+    if input == TextInput::Enter {
+        buffer.apply(TextInput::Char('\n'));
+    } else {
+        buffer.apply(input);
     }
 }
 
@@ -388,6 +422,16 @@ impl Component for Settings {
                 self.dark = !self.dark;
                 cx.set_theme(if self.dark { &DARK } else { &LIGHT });
             }
+            SettingsMsg::Name(input) => {
+                self.name.apply(input);
+            }
+            SettingsMsg::Pin(input) => {
+                self.pin.apply(input);
+            }
+            SettingsMsg::Password(input) => {
+                self.password.apply(input);
+            }
+            SettingsMsg::Note(input) => edit(&mut self.note, input),
         }
         cx.rebuild();
     }
@@ -396,14 +440,22 @@ impl Component for Settings {
         let theme = ui.theme();
         let (c, m) = (&theme.colors, &theme.metrics);
         ui.column([
-            top_bar(ui, Some((icons::BACK, SettingsMsg::Back)), "Settings", ui.empty()),
+            top_bar(ui, Some(SettingsMsg::Back), "Settings", ui.empty()),
             ui.row([ui.text(theme.fonts.body, "Dark mode").color(c.on_surface).grow(1), switch(ui, self.dark, SettingsMsg::Dark).id("dark")])
                 .padding_x(m.padding)
                 .height(m.row_height)
                 .align(Align::Center)
                 .border_top(c.divider),
+            ui.column([
+                text_field(ui, &self.name, SettingsMsg::Name).placeholder("Device name").id("name"),
+                text_field(ui, &self.pin, SettingsMsg::Pin).placeholder("PIN").input(InputKind::Number).id("pin"),
+                password_field(ui, &self.password, SettingsMsg::Password).placeholder("Password").id("password"),
+                text_area(ui, &self.note, SettingsMsg::Note).placeholder("Notes").id("note"),
+            ])
+            .padding(m.padding)
+            .gap(m.gap),
         ])
-        .padding_each(0, ui.insets().top, 0, 0)
+        .padding_each(0, ui.insets().top, 0, ui.insets().bottom)
         .background(c.surface)
     }
 }

@@ -97,11 +97,13 @@ pub struct TextOptions {
     pub align: Align,
     /// `None` is the chain's.
     pub line_height: Option<i16>,
+    /// Records where each character starts, for `TextRun::caret`.
+    pub carets: bool,
 }
 
 impl Default for TextOptions {
     fn default() -> Self {
-        Self { max_width: None, wrap: false, max_lines: 0, overflow: Overflow::Clip, align: Align::Start, line_height: None }
+        Self { max_width: None, wrap: false, max_lines: 0, overflow: Overflow::Clip, align: Align::Start, line_height: None, carets: false }
     }
 }
 
@@ -119,6 +121,8 @@ pub struct PlacedGlyph {
 /// string: moving it costs nothing, laying it out again does.
 pub struct TextRun<A: Allocator = Global> {
     glyphs: Vec<PlacedGlyph, A>,
+    carets: Vec<Caret, A>,
+    line_height: i16,
     width: i16,
     height: i16,
     lines: u16,
@@ -137,8 +141,18 @@ impl Default for TextRun<Global> {
     }
 }
 
+#[derive(Clone, Copy)]
+struct Caret {
+    byte: u32,
+    x: i16,
+    line: u16,
+}
+
 struct Line {
     start: usize,
+    caret_start: usize,
+    break_caret: usize,
+    splitting: bool,
     pen: i32,
     ink: i32,
     break_glyph: usize,
@@ -153,13 +167,37 @@ fn px(pen: i32) -> i16 {
     ((pen + 8) >> 4) as i16
 }
 
-impl<A: Allocator> TextRun<A> {
+impl<A: Allocator + Clone> TextRun<A> {
     pub fn new_in(alloc: A) -> Self {
-        Self { glyphs: Vec::new_in(alloc), width: 0, height: 0, lines: 0, bounds: Rect::default() }
+        Self { glyphs: Vec::new_in(alloc.clone()), carets: Vec::new_in(alloc), line_height: 0, width: 0, height: 0, lines: 0, bounds: Rect::default() }
     }
+}
 
+impl<A: Allocator> TextRun<A> {
     pub fn glyphs(&self) -> &[PlacedGlyph] {
         &self.glyphs
+    }
+
+    /// Where the character at `byte` starts, its line's top left; needs
+    /// `TextOptions::carets`.
+    pub fn caret(&self, byte: usize) -> Option<(i16, i16)> {
+        let found = self.carets.iter().rev().find(|c| c.byte as usize <= byte)?;
+        Some((found.x, found.line as i16 * self.line_height))
+    }
+
+    /// The character boundary nearest to a point, as a byte offset.
+    pub fn byte_at(&self, x: i16, y: i16) -> usize {
+        let line = (y.max(0) / self.line_height.max(1)) as u16;
+        let last = self.carets.iter().map(|c| c.line).max().unwrap_or(0);
+        let line = line.min(last);
+        let mut best = (i16::MAX, 0);
+        for c in self.carets.iter().filter(|c| c.line == line) {
+            let distance = (c.x - x).abs();
+            if distance < best.0 {
+                best = (distance, c.byte as usize);
+            }
+        }
+        best.1
     }
 
     pub const fn width(&self) -> i16 {
@@ -207,6 +245,13 @@ impl<A: Allocator> TextRun<A> {
             g.x += shift;
             g.y += baseline;
         }
+        let caret_end = if end == self.glyphs.len() && !line.splitting { self.carets.len() } else { line.break_caret };
+        let number = line.number;
+        for c in &mut self.carets[line.caret_start..caret_end] {
+            c.x += shift;
+            c.line = number;
+        }
+        line.caret_start = caret_end;
         self.width = self.width.max(width);
         line.start = end;
         line.top += line_height;
@@ -217,6 +262,9 @@ impl<A: Allocator> TextRun<A> {
         let shift = px(from_pen);
         for g in &mut self.glyphs[line.start..] {
             g.x -= shift;
+        }
+        for c in &mut self.carets[line.caret_start..] {
+            c.x -= shift;
         }
         line.pen -= from_pen;
         line.ink = (line.ink - from_pen).max(0);
@@ -253,26 +301,34 @@ impl<A: Allocator> TextRun<A> {
 
     pub fn layout(&mut self, chain: &FontChain, text: &str, options: &TextOptions) {
         self.glyphs.clear();
+        self.carets.clear();
         self.width = 0;
         let line_height = options.line_height.unwrap_or(chain.line_height());
+        self.line_height = line_height;
         let limit = options.max_width.map_or(i32::MAX, |w| i32::from(w) * 16);
-        let mut line = Line { start: 0, pen: 0, ink: 0, break_glyph: 0, break_pen: 0, break_ink: 0, number: 0, top: 0 };
-        let mut chars = text.chars().peekable();
-        while let Some(c) = chars.next() {
+        let mut line = Line { start: 0, caret_start: 0, break_caret: 0, splitting: false, pen: 0, ink: 0, break_glyph: 0, break_pen: 0, break_ink: 0, number: 0, top: 0 };
+        let mut chars = text.char_indices().peekable();
+        while let Some((byte, c)) = chars.next() {
             let mut codepoint = c as u32;
             if codepoint == VOICED_MARK || codepoint == SEMI_VOICED_MARK {
                 continue;
             }
+            if options.carets {
+                self.carets.push(Caret { byte: byte as u32, x: px(line.pen), line: 0 });
+            }
             if c == '\n' {
                 let ink = line.ink;
                 let end = self.glyphs.len();
+                line.break_caret = self.carets.len();
+                line.splitting = true;
                 self.finish(&mut line, end, ink, chain, options, line_height);
+                line.splitting = false;
                 line.pen = 0;
                 self.start_next(&mut line, 0);
                 line.ink = 0;
                 continue;
             }
-            if let Some(&next) = chars.peek()
+            if let Some(&(_, next)) = chars.peek()
                 && matches!(next as u32, VOICED_MARK | SEMI_VOICED_MARK)
             {
                 codepoint = compose(codepoint, next as u32);
@@ -280,6 +336,7 @@ impl<A: Allocator> TextRun<A> {
             let Some((font, glyph, record)) = chain.resolve(codepoint) else { continue };
             let space = c == ' ';
             if !space && codepoint >= FIRST_WIDE && line.pen > 0 {
+                line.break_caret = self.carets.len().saturating_sub(1);
                 line.break_glyph = self.glyphs.len();
                 line.break_pen = line.pen;
                 line.break_ink = line.ink;
@@ -290,9 +347,12 @@ impl<A: Allocator> TextRun<A> {
                     let (end, from, ink) = if line.break_pen > 0 {
                         (line.break_glyph, line.break_pen, line.break_ink)
                     } else {
+                        line.break_caret = self.carets.len().saturating_sub(1);
                         (self.glyphs.len(), line.pen, line.ink)
                     };
+                    line.splitting = true;
                     self.finish(&mut line, end, ink, chain, options, line_height);
+                    line.splitting = false;
                     self.start_next(&mut line, from);
                 } else if options.overflow == Overflow::Ellipsis {
                     self.ellipsize(&mut line, chain, limit);
@@ -303,12 +363,16 @@ impl<A: Allocator> TextRun<A> {
             }
             self.place(&mut line, font, glyph, &record);
             if space {
+                line.break_caret = self.carets.len();
                 line.break_glyph = self.glyphs.len();
                 line.break_pen = line.pen;
                 line.break_ink = line.ink;
             } else {
                 line.ink = line.pen;
             }
+        }
+        if options.carets {
+            self.carets.push(Caret { byte: text.len() as u32, x: px(line.pen), line: 0 });
         }
         let (end, ink) = (self.glyphs.len(), line.ink);
         self.finish(&mut line, end, ink, chain, options, line_height);

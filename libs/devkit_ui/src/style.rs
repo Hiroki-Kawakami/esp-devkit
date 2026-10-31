@@ -51,6 +51,7 @@ pub enum Role {
     Text,
     List,
     Header,
+    TextField,
 }
 
 impl Role {
@@ -61,6 +62,7 @@ impl Role {
             Self::Text => "text",
             Self::List => "list",
             Self::Header => "header",
+            Self::TextField => "text-field",
         }
     }
 }

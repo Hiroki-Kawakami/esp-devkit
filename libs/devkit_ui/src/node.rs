@@ -4,15 +4,19 @@
  */
 
 use alloc::vec::Vec;
+use core::cell::Cell;
 
 use devkit_gfx::{Color, FontChain, Image, Rect, TextOptions, TextRun};
 use idf::heap::Caps;
 
 use crate::component::ListId;
-use crate::element::DragMap;
+use crate::element::{DragMap, Edit, InputMap};
 use crate::erased::Erased;
+use crate::keyboard::{InputKind, Keyboard};
 use crate::nav::NavigatorNode;
 use crate::style::{Role, State, Style};
+
+const CARET_WIDTH: i16 = 2;
 
 pub(crate) type NodeId = u32;
 pub(crate) const NONE: NodeId = u32::MAX;
@@ -25,11 +29,27 @@ pub(crate) struct TextNode {
     pub(crate) run: TextRun<Caps>,
     /// The width `run` was laid out for; `None` until it is.
     pub(crate) laid_out: Option<i16>,
+    pub(crate) edit: Option<Edit>,
+    pub(crate) scroll: Cell<i16>,
 }
 
 impl TextNode {
     pub(crate) fn text(&self) -> &str {
         unsafe { core::str::from_utf8_unchecked(&self.string) }
+    }
+
+    /// How far a single line moves left, which changes only as far as it
+    /// takes to keep the cursor in `width`.
+    pub(crate) fn scroll(&self, width: i16) -> i16 {
+        let Some(edit) = &self.edit else { return 0 };
+        if self.options.wrap {
+            return 0;
+        }
+        let (x, _) = self.run.caret(edit.cursor as usize).unwrap_or((0, 0));
+        let offset = self.scroll.get().min(x).max(x + CARET_WIDTH - width);
+        let offset = offset.min(self.run.width() + CARET_WIDTH - width).max(0);
+        self.scroll.set(offset);
+        offset
     }
 }
 
@@ -86,6 +106,12 @@ pub(crate) struct Node {
     pub(crate) owner: u16,
     pub(crate) tap: Option<Erased>,
     pub(crate) drag: Option<DragMap>,
+    pub(crate) input: Option<InputMap>,
+    pub(crate) focusable: bool,
+    pub(crate) keep_focus: bool,
+    pub(crate) keyboard: Option<&'static Keyboard>,
+    pub(crate) input_kind: InputKind,
+    pub(crate) repeat: bool,
     /// Moves the node and what is in it, without layout.
     pub(crate) translate: (i16, i16),
     /// An animated opacity, over the style's.
@@ -119,6 +145,12 @@ impl Node {
             owner,
             tap: None,
             drag: None,
+            input: None,
+            focusable: false,
+            keep_focus: false,
+            keyboard: None,
+            input_kind: InputKind::Text,
+            repeat: false,
             translate: (0, 0),
             opacity: None,
             rect: Rect::default(),

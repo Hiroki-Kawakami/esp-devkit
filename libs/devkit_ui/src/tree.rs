@@ -9,6 +9,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::any::TypeId;
+use core::cell::Cell;
 use core::fmt::Write;
 use core::ptr::NonNull;
 use core::slice;
@@ -19,11 +20,13 @@ use idf::heap::Caps;
 use crate::bump::Bump;
 use crate::component::{Animation, AnyHost, EventMap, Hook, Host, Property, RenderRequest, Requests, Screen, screen_host};
 use crate::element::{BuildContext, Content, Drag, Element};
+use crate::keyboard::{InputKind, KeyboardMode, KeyboardPanel};
 use crate::erased::Erased;
 use crate::nav::{NavigatorNode, Overlay, Root, Saved};
 use crate::node::{ListNode, NONE, Node, NodeContent, NodeId, ScrollNode, TextNode};
 use crate::presenter::Strips;
 use crate::style::{Dimension, Insets, Role, ScreenStyle, State};
+use crate::text_buffer::TextInput;
 use crate::theme::Theme;
 
 const OVERSCAN_ROWS: i32 = 1;
@@ -36,6 +39,9 @@ const FLING_STALE_MS: u32 = 80;
 /// Share of the speed lost per millisecond.
 const FLING_DECAY: f32 = 0.0025;
 const MAX_FLING_STEP_MS: f32 = 32.0;
+const CARET_BLINK_MS: u32 = 500;
+const REPEAT_DELAY_MS: u32 = 400;
+const REPEAT_EVERY_MS: u32 = 60;
 
 pub(crate) struct Slot {
     pub(crate) host: Option<Box<dyn AnyHost>>,
@@ -81,6 +87,17 @@ pub(crate) struct Tree {
     insets: Insets,
     pub(crate) render_request: Option<(u16, RenderRequest)>,
     pending_animations: Vec<(&'static str, Animation)>,
+    pending_focus: Option<&'static str>,
+    focus: NodeId,
+    keyboard_changed: bool,
+    caret_on: bool,
+    caret_ms: u32,
+    keyboard_slot: Option<u16>,
+    keyboard_height: i16,
+    keyboard_mode: KeyboardMode,
+    keyboard_connected: bool,
+    held_ms: u32,
+    repeated: bool,
     animations: Vec<(NodeId, Animation, u32)>,
     parked_strips: Option<Strips>,
     bump: Box<Bump>,
@@ -112,6 +129,17 @@ impl Tree {
             insets: Insets::default(),
             render_request: None,
             pending_animations: Vec::new(),
+            pending_focus: None,
+            focus: NONE,
+            keyboard_changed: false,
+            caret_on: true,
+            caret_ms: 0,
+            keyboard_slot: None,
+            keyboard_height: 0,
+            keyboard_mode: KeyboardMode::Auto,
+            keyboard_connected: false,
+            held_ms: 0,
+            repeated: false,
             animations: Vec::new(),
             parked_strips: None,
             bump: Box::new(Bump::new(caps)),
@@ -200,7 +228,7 @@ impl Tree {
     pub(crate) fn context(&self, slot: u16) -> BuildContext {
         BuildContext {
             theme: self.slots[usize::from(slot)].theme,
-            insets: self.insets,
+            insets: Insets { bottom: self.insets.bottom.max(self.keyboard_height), ..self.insets },
             area: self.area,
             screen_style: self.screen_style,
         }
@@ -282,6 +310,10 @@ impl Tree {
             self.fling = None;
         }
         self.animations.retain(|a| a.0 != id);
+        if self.focus == id {
+            self.focus = NONE;
+            self.keyboard_changed = true;
+        }
     }
 
     pub(crate) fn build_component(&mut self, slot: u16) {
@@ -402,6 +434,12 @@ impl Tree {
         node.role = element.role;
         node.tap = element.tap;
         node.drag = element.drag;
+        node.input = element.input;
+        node.focusable = element.focusable;
+        node.keep_focus = element.keep_focus;
+        node.keyboard = element.keyboard;
+        node.input_kind = element.input_kind;
+        node.repeat = element.repeat;
         let kept = node.state & (State::PRESSED | State::HOVERED | State::FOCUSED);
         let state = kept | element.state;
         if state != node.state {
@@ -415,7 +453,11 @@ impl Tree {
         self.nodes[id as usize].owner = owner;
         let node = &mut self.nodes[id as usize];
         match (&mut node.content, &element.content) {
-            (NodeContent::Text(text), Content::Text { font, text: string, color, options }) => {
+            (NodeContent::Text(text), Content::Text { font, text: string, color, options, edit }) => {
+                if text.edit != *edit {
+                    text.edit = *edit;
+                    node.paint_dirty = true;
+                }
                 let same_options = text.options.wrap == options.wrap
                     && text.options.max_lines == options.max_lines
                     && text.options.overflow == options.overflow
@@ -492,11 +534,11 @@ impl Tree {
     fn create_node<M: Copy>(&mut self, owner: u16, element: &Element<'_, M>) -> NodeId {
         let content = match element.content {
             Content::Empty | Content::Box => NodeContent::Box,
-            Content::Text { font, text, color, options } => {
+            Content::Text { font, text, color, options, edit } => {
                 let run = devkit_gfx::TextRun::new_in(self.caps);
                 let mut string = Vec::with_capacity_in(text.len(), self.caps);
                 string.extend_from_slice(text.as_bytes());
-                NodeContent::Text(TextNode { font, string, color, options, run, laid_out: None })
+                NodeContent::Text(TextNode { font, string, color, options, run, laid_out: None, edit, scroll: Cell::new(0) })
             }
             Content::Image { image, tint } => NodeContent::Image { image, tint },
             Content::Scroll => NodeContent::Scroll(ScrollNode { offset: 0, content: 0 }),
@@ -628,6 +670,12 @@ impl Tree {
             self.render_request = Some((slot, render));
         }
         self.pending_animations.extend(requests.animations);
+        if requests.focus.is_some() {
+            self.pending_focus = requests.focus;
+        }
+        for input in requests.input {
+            self.input(input);
+        }
         for op in requests.nav {
             self.apply_nav(slot, op);
         }
@@ -670,6 +718,17 @@ impl Tree {
             self.sync_list(self.lists[i]);
         }
         self.sync_screen(self.root, 0, 0, self.area, false);
+        if let Some(name) = self.pending_focus.take() {
+            match self.find(name) {
+                Some(id) => self.set_focus(id),
+                None => idf::log::error!(c"ui", "focus: no node {name}"),
+            }
+        }
+        if core::mem::take(&mut self.keyboard_changed) {
+            self.sync_keyboard();
+            self.update();
+            return;
+        }
         if !self.pending_animations.is_empty() {
             self.start_animations();
             self.sync_screen(self.root, 0, 0, self.area, false);
@@ -722,6 +781,104 @@ impl Tree {
                 self.animations[i].2 = elapsed;
                 i += 1;
             }
+        }
+    }
+
+    pub(crate) fn caret_visible(&self, id: NodeId) -> bool {
+        self.focus == id && self.caret_on
+    }
+
+    pub(crate) fn has_caret(&self) -> bool {
+        self.focus != NONE
+    }
+
+    fn set_focus(&mut self, id: NodeId) {
+        if self.focus == id {
+            return;
+        }
+        if self.focus != NONE {
+            let node = &mut self.nodes[self.focus as usize];
+            node.state.remove(State::FOCUSED);
+            node.paint_dirty = true;
+        }
+        self.focus = id;
+        if id != NONE {
+            let node = &mut self.nodes[id as usize];
+            node.state.insert(State::FOCUSED);
+            node.paint_dirty = true;
+        }
+        self.caret_on = true;
+        self.caret_ms = 0;
+        self.keyboard_changed = true;
+    }
+
+    pub(crate) fn input(&mut self, input: TextInput) {
+        if self.focus == NONE {
+            return;
+        }
+        let node = &self.nodes[self.focus as usize];
+        let Some(map) = node.input else { return };
+        let msg = unsafe { (map.call)(map.function, input) };
+        self.queue.push_back((node.owner, msg));
+        self.caret_on = true;
+        self.caret_ms = 0;
+    }
+
+    /// Adds the docked on-screen keyboard above everything.
+    pub(crate) fn add_keyboard(&mut self, mode: KeyboardMode) {
+        let slot = self.alloc_slot();
+        let node = self.alloc_node(Node::new(NodeContent::Child(slot), slot));
+        let index = usize::from(slot);
+        self.slots[index].host = Some(Box::new(Host::<KeyboardPanel> { component: KeyboardPanel::docked(), props: None }));
+        self.slots[index].node = node;
+        self.slots[index].theme = self.theme;
+        self.keyboard_slot = Some(slot);
+        self.keyboard_mode = mode;
+        self.nodes[node as usize].style.absolute = Some(crate::style::Inset { left: Some(0), top: Some(0), right: Some(0), bottom: Some(0) });
+        self.nodes[node as usize].parent = self.root;
+        let mut child = self.nodes[self.root as usize].first_child;
+        while self.nodes[child as usize].next != NONE {
+            child = self.nodes[child as usize].next;
+        }
+        self.nodes[child as usize].next = node;
+        self.mark_slot_dirty(slot);
+        self.keyboard_changed = true;
+    }
+
+    pub(crate) fn set_keyboard_connected(&mut self, connected: bool) {
+        self.keyboard_connected = connected;
+        self.keyboard_changed = true;
+    }
+
+    pub(crate) fn set_keyboard_mode(&mut self, mode: KeyboardMode) {
+        self.keyboard_mode = mode;
+        self.keyboard_changed = true;
+    }
+
+    fn sync_keyboard(&mut self) {
+        let Some(slot) = self.keyboard_slot else { return };
+        let index = usize::from(slot);
+        let theme = self.slots[index].theme;
+        let focused = (self.focus != NONE).then(|| &self.nodes[self.focus as usize]);
+        let wanted = focused.filter(|n| n.input.is_some()).map(|n| {
+            n.keyboard.unwrap_or(match n.input_kind {
+                InputKind::Text => theme.keyboards.text,
+                InputKind::Number => theme.keyboards.number,
+            })
+        });
+        let layout = match self.keyboard_mode {
+            KeyboardMode::Never => None,
+            KeyboardMode::Always => Some(wanted.unwrap_or(theme.keyboards.text)),
+            KeyboardMode::Auto => wanted.filter(|_| !self.keyboard_connected),
+        };
+        let Some(host) = self.slots[index].host.as_mut() else { return };
+        let Some(panel) = host.as_any().downcast_mut::<Host<KeyboardPanel>>() else { return };
+        panel.component.show(layout);
+        self.mark_slot_dirty(slot);
+        let height = layout.map_or(0, |l| KeyboardPanel::height(l, theme));
+        if height != self.keyboard_height {
+            self.keyboard_height = height;
+            self.mark_all_dirty();
         }
     }
 
@@ -788,6 +945,7 @@ impl Tree {
             && self.fling.is_none()
             && !self.sliding()
             && self.animations.is_empty()
+            && !self.keyboard_changed
             && self.contact.is_none()
             && self.damage.is_empty()
             && !self.layout_dirty
@@ -795,6 +953,10 @@ impl Tree {
 
     pub(crate) fn animating(&self) -> bool {
         self.fling.is_some() || self.sliding() || !self.animations.is_empty()
+    }
+
+    pub(crate) fn repeating(&self) -> bool {
+        self.contact.is_some_and(|c| self.nodes.get(c.tap as usize).is_some_and(|n| n.repeat))
     }
 
     fn scroll_by(&mut self, id: NodeId, delta: i32) -> bool {
@@ -852,7 +1014,7 @@ impl Tree {
                 }
             } else if node.drag.is_some() {
                 found = Some(Hit { tap: NONE, scroller: NONE, drag: id });
-            } else if node.tap.is_some() {
+            } else if node.tap.is_some() || node.input.is_some() || node.focusable {
                 found = Some(Hit { tap: id, scroller: if scrollable { id } else { NONE }, drag: NONE });
             } else if scrollable {
                 found = Some(Hit { tap: NONE, scroller: id, drag: NONE });
@@ -889,6 +1051,8 @@ impl Tree {
                 let hit = hit.unwrap_or(Hit { tap: NONE, scroller: NONE, drag: NONE });
                 self.set_pressed(hit.tap, true);
                 self.send_drag(hit.drag, p, false);
+                self.held_ms = 0;
+                self.repeated = false;
                 self.contact = Some(Contact {
                     start: p,
                     last: p,
@@ -933,13 +1097,68 @@ impl Tree {
                         self.fling = Some((contact.scroller, contact.velocity));
                     }
                 } else if contact.tap != NONE {
-                    let node = &self.nodes[contact.tap as usize];
-                    if let Some(msg) = node.tap {
-                        self.queue.push_back((node.owner, msg));
-                    }
+                    self.finish_tap(contact.tap, contact.last);
+                } else if contact.drag == NONE {
+                    self.set_focus(NONE);
                 }
             }
             (None, None) => {}
+        }
+    }
+
+    fn finish_tap(&mut self, id: NodeId, point: (i16, i16)) {
+        let node = &self.nodes[id as usize];
+        let owner = node.owner;
+        let tap = node.tap;
+        if node.input.is_some() || node.focusable {
+            let place = match &node.content {
+                NodeContent::Text(text) if node.input.is_some() => {
+                    let [left, top, right, _] = node.style.padding;
+                    let scroll = text.scroll(node.screen.w - left - right);
+                    Some(text.run.byte_at(point.0 - node.screen.x - left + scroll, point.1 - node.screen.y - top))
+                }
+                _ => None,
+            };
+            self.set_focus(id);
+            if let Some(byte) = place {
+                self.input(TextInput::Place(byte as u32));
+            }
+        } else if !node.keep_focus {
+            self.set_focus(NONE);
+        }
+        if !self.repeated
+            && let Some(msg) = tap
+        {
+            self.queue.push_back((owner, msg));
+        }
+    }
+
+    fn tick_repeat(&mut self, dt_ms: u32) {
+        let Some(contact) = self.contact else { return };
+        if contact.tap == NONE || !self.nodes[contact.tap as usize].repeat {
+            return;
+        }
+        let before = self.held_ms;
+        self.held_ms += dt_ms;
+        let steps = |ms: u32| if ms < REPEAT_DELAY_MS { 0 } else { (ms - REPEAT_DELAY_MS) / REPEAT_EVERY_MS + 1 };
+        let node = &self.nodes[contact.tap as usize];
+        if let Some(msg) = node.tap {
+            for _ in steps(before)..steps(self.held_ms) {
+                self.queue.push_back((node.owner, msg));
+                self.repeated = true;
+            }
+        }
+    }
+
+    fn tick_caret(&mut self, dt_ms: u32) {
+        if self.focus == NONE {
+            return;
+        }
+        self.caret_ms += dt_ms;
+        if self.caret_ms >= CARET_BLINK_MS {
+            self.caret_ms = 0;
+            self.caret_on = !self.caret_on;
+            self.nodes[self.focus as usize].paint_dirty = true;
         }
     }
 
@@ -959,6 +1178,8 @@ impl Tree {
     pub(crate) fn tick(&mut self, dt_ms: u32) {
         self.tick_slides(dt_ms);
         self.tick_animations(dt_ms);
+        self.tick_repeat(dt_ms);
+        self.tick_caret(dt_ms);
         let Some((id, velocity)) = self.fling else { return };
         let dt = (dt_ms as f32).min(MAX_FLING_STEP_MS);
         let step = (velocity * dt_ms as f32) as i32;

@@ -5,6 +5,7 @@
 
 use devkit_gfx::{Color, FontChain};
 
+use crate::keyboard::{Keyboard, NUMERIC, QWERTY};
 use crate::style::{Shadow, State};
 
 #[derive(Clone, Copy)]
@@ -37,7 +38,39 @@ pub struct Fonts {
     pub title: &'static FontChain,
     pub body: &'static FontChain,
     pub caption: &'static FontChain,
-    pub icons: &'static FontChain,
+}
+
+/// A glyph of an icon font.
+#[derive(Clone, Copy)]
+pub struct Icon {
+    pub font: &'static FontChain,
+    pub glyph: char,
+}
+
+/// The icons widgets use. Apps give them from their own resources.
+#[derive(Clone, Copy)]
+pub struct Icons {
+    pub back: Icon,
+    pub more: Icon,
+    pub close: Icon,
+    pub check: Icon,
+    pub chevron: Icon,
+    pub shift: Icon,
+    pub backspace: Icon,
+    pub enter: Icon,
+}
+
+/// The on-screen keyboard of a theme.
+#[derive(Clone, Copy)]
+pub struct Keyboards {
+    pub text: &'static Keyboard,
+    pub number: &'static Keyboard,
+    pub font: &'static FontChain,
+    pub key_height: i16,
+    pub gap: i16,
+    pub key: &'static WidgetLook,
+    pub special: &'static WidgetLook,
+    pub primary: &'static WidgetLook,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -120,6 +153,9 @@ pub struct Looks {
     pub icon_button: &'static WidgetLook,
     pub row: &'static WidgetLook,
     pub menu_item: &'static WidgetLook,
+    pub text_field: &'static WidgetLook,
+    pub key: &'static WidgetLook,
+    pub key_special: &'static WidgetLook,
 }
 
 #[derive(Clone, Copy)]
@@ -127,6 +163,8 @@ pub struct Theme {
     pub colors: Palette,
     pub metrics: Metrics,
     pub fonts: Fonts,
+    pub icons: Icons,
+    pub keyboards: Keyboards,
     pub motion: Motion,
     pub looks: Looks,
 }
@@ -156,7 +194,22 @@ macro_rules! looks {
                 base: Look { foreground: Some($on_surface), ..Look::NONE },
                 states: &[(State::PRESSED, Look::background($pressed)), DISABLED],
             };
-            Looks { button: &BUTTON, button_secondary: &BUTTON_SECONDARY, icon_button: &ICON_BUTTON, row: &ROW, menu_item: &MENU_ITEM }
+            static TEXT_FIELD: WidgetLook = WidgetLook {
+                base: Look { border: Some(Border { color: $divider, width: 2 }), ..Look::fill($surface, $on_surface) },
+                states: &[(State::FOCUSED, Look::outline($primary, 2)), DISABLED],
+            };
+            static KEY: WidgetLook = WidgetLook { base: Look::fill($surface, $on_surface), states: &[(State::PRESSED, Look::background($pressed))] };
+            static KEY_SPECIAL: WidgetLook = WidgetLook { base: Look::fill($divider, $on_surface), states: &[(State::PRESSED, Look::background($pressed))] };
+            Looks {
+                button: &BUTTON,
+                button_secondary: &BUTTON_SECONDARY,
+                icon_button: &ICON_BUTTON,
+                row: &ROW,
+                menu_item: &MENU_ITEM,
+                text_field: &TEXT_FIELD,
+                key: &KEY,
+                key_special: &KEY_SPECIAL,
+            }
         };
     };
 }
@@ -168,7 +221,20 @@ const TOUCH_METRICS: Metrics = Metrics { bar_height: 80, row_height: 80, touch_s
 const SLIDE: Motion = Motion { transition: Transition::Slide, duration_ms: 200 };
 
 impl Theme {
-    pub const fn light(fonts: Fonts) -> Self {
+    const fn keyboards(fonts: &Fonts, looks: &Looks) -> Keyboards {
+        Keyboards {
+            text: &QWERTY,
+            number: &NUMERIC,
+            font: fonts.body,
+            key_height: 80,
+            gap: 8,
+            key: looks.key,
+            special: looks.key_special,
+            primary: looks.button,
+        }
+    }
+
+    pub const fn light(fonts: Fonts, icons: Icons) -> Self {
         Self {
             colors: Palette {
                 surface: Color::hex(0xffffff),
@@ -185,12 +251,14 @@ impl Theme {
             },
             metrics: TOUCH_METRICS,
             fonts,
+            icons,
+            keyboards: Self::keyboards(&fonts, &LIGHT_LOOKS),
             motion: SLIDE,
             looks: LIGHT_LOOKS,
         }
     }
 
-    pub const fn dark(fonts: Fonts) -> Self {
+    pub const fn dark(fonts: Fonts, icons: Icons) -> Self {
         Self {
             colors: Palette {
                 surface: Color::hex(0x1b1e22),
@@ -207,6 +275,8 @@ impl Theme {
             },
             metrics: TOUCH_METRICS,
             fonts,
+            icons,
+            keyboards: Self::keyboards(&fonts, &DARK_LOOKS),
             motion: SLIDE,
             looks: DARK_LOOKS,
         }

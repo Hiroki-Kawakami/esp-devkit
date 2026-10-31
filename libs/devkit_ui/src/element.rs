@@ -16,7 +16,9 @@ use crate::bump::Bump;
 use crate::component::{AnyHost, Child, EventMap, Host, ListId, Screen, call_event_map, screen_host};
 use crate::erased::Erased;
 use crate::style::{Align, Dimension, Direction, Inset, Insets, Justify, Role, ScreenStyle, Shadow, State, Style};
-use crate::theme::{Border, Theme, WidgetLook};
+use crate::keyboard::{InputKind, Keyboard};
+use crate::text_buffer::TextInput;
+use crate::theme::{Border, Icon, Theme, WidgetLook};
 
 /// Creates or updates a child component during reconciliation.
 pub(crate) trait ChildSpec {
@@ -62,12 +64,31 @@ pub(crate) enum Content<'a> {
     Empty,
     Box,
     /// Without a color, the foreground of the nearest look, or the theme's.
-    Text { font: &'static FontChain, text: &'a str, color: Option<Color>, options: TextOptions },
+    Text { font: &'static FontChain, text: &'a str, color: Option<Color>, options: TextOptions, edit: Option<Edit> },
     Image { image: Image<'static>, tint: Color },
     Scroll,
     List { id: ListId, count: usize, row_height: i16, revision: Option<u32> },
     Child(&'a dyn ChildSpec),
     Navigator { key: TypeId, initial: Option<&'a dyn ChildSpec> },
+}
+
+/// What an editable text shows besides the text.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct Edit {
+    pub(crate) cursor: u32,
+    pub(crate) underline: Option<(u32, u32)>,
+}
+
+/// Where a focused input's text comes from.
+#[derive(Clone, Copy)]
+pub(crate) struct InputMap {
+    pub(crate) function: *const (),
+    pub(crate) call: unsafe fn(*const (), TextInput) -> Erased,
+}
+
+unsafe fn call_input_map<M: Copy>(function: *const (), input: TextInput) -> Erased {
+    let function: fn(TextInput) -> M = unsafe { core::mem::transmute(function) };
+    Erased::new(function(input))
 }
 
 /// A drag on a node, in the node's coordinates.
@@ -123,13 +144,19 @@ pub struct Element<'a, M: Copy> {
     pub(crate) role: Role,
     pub(crate) tap: Option<Erased>,
     pub(crate) drag: Option<DragMap>,
+    pub(crate) input: Option<InputMap>,
+    pub(crate) focusable: bool,
+    pub(crate) keep_focus: bool,
+    pub(crate) keyboard: Option<&'static Keyboard>,
+    pub(crate) input_kind: InputKind,
+    pub(crate) repeat: bool,
     pub(crate) state: State,
     _msg: PhantomData<fn() -> M>,
 }
 
 impl<'a, M: Copy> Element<'a, M> {
     fn new(content: Content<'a>, children: &'a [Element<'a, M>]) -> Self {
-        Self { content, children, style: Style::default(), key: None, id: None, role: Role::None, tap: None, drag: None, state: State::empty(), _msg: PhantomData }
+        Self { content, children, style: Style::default(), key: None, id: None, role: Role::None, tap: None, drag: None, input: None, focusable: false, keep_focus: false, keyboard: None, input_kind: InputKind::Text, repeat: false, state: State::empty(), _msg: PhantomData }
     }
 
     pub const fn is_empty(&self) -> bool {
@@ -162,6 +189,61 @@ impl<'a, M: Copy> Element<'a, M> {
     pub fn on_drag(mut self, on_drag: fn(Drag) -> M) -> Self {
         self.drag = Some(DragMap { function: on_drag as *const (), call: call_drag_map::<M> });
         self
+    }
+
+    /// Takes focus on a tap and receives what is typed.
+    pub fn on_input(mut self, on_input: fn(TextInput) -> M) -> Self {
+        self.input = Some(InputMap { function: on_input as *const (), call: call_input_map::<M> });
+        self
+    }
+
+    /// Takes focus on a tap, for `State::FOCUSED` and `cx.focus`.
+    pub fn focusable(mut self) -> Self {
+        self.focusable = true;
+        self
+    }
+
+    /// A tap here leaves the focus where it is.
+    pub fn keep_focus(mut self) -> Self {
+        self.keep_focus = true;
+        self
+    }
+
+    /// The on-screen keyboard for this input, over `input`.
+    pub fn keyboard(mut self, keyboard: &'static Keyboard) -> Self {
+        self.keyboard = Some(keyboard);
+        self
+    }
+
+    /// Picks the theme's keyboard for this kind of text.
+    pub fn input(mut self, kind: InputKind) -> Self {
+        self.input_kind = kind;
+        self
+    }
+
+    /// Shown while the text is empty.
+    pub fn placeholder(mut self, placeholder: &'a str) -> Self {
+        if let Content::Text { text, .. } = &mut self.content
+            && text.is_empty()
+        {
+            *text = placeholder;
+        }
+        self
+    }
+
+    /// Repeats `on_tap` while held.
+    pub fn repeat(mut self, repeat: bool) -> Self {
+        self.repeat = repeat;
+        self
+    }
+
+    pub(crate) fn edit(self, cursor: usize, underline: Option<(usize, usize)>) -> Self {
+        let edit = Edit { cursor: cursor as u32, underline: underline.map(|(a, b)| (a as u32, b as u32)) };
+        let mut element = self.with_options(|o| o.carets = true);
+        if let Content::Text { edit: slot, .. } = &mut element.content {
+            *slot = Some(edit);
+        }
+        element
     }
 
     pub fn width(mut self, px: i16) -> Self {
@@ -484,16 +566,15 @@ impl<M: Copy> Ui<M> {
 
     pub fn text<'a>(&'a self, font: &'static FontChain, text: &'a str) -> Element<'a, M> {
         let options = TextOptions::default();
-        let mut element = Element::new(Content::Text { font, text, color: None, options }, &[]);
+        let mut element = Element::new(Content::Text { font, text, color: None, options, edit: None }, &[]);
         element.role = Role::Text;
         element.style.shrink = 1;
         element
     }
 
-    /// A single character, as icon fonts use.
-    pub fn icon<'a>(&'a self, font: &'static FontChain, icon: char) -> Element<'a, M> {
+    pub fn icon<'a>(&'a self, icon: Icon) -> Element<'a, M> {
         let mut buffer = [0; 4];
-        self.text(font, self.store(icon.encode_utf8(&mut buffer)))
+        self.text(icon.font, self.store(icon.glyph.encode_utf8(&mut buffer)))
     }
 
     /// Copies text into the rebuild's memory.

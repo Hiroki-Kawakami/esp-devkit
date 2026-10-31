@@ -19,7 +19,10 @@
       "icon": {
         "CHEVRON_RIGHT": "icons/chevron-right.svg",
         "WIFI": "icons/wifi.svg",
-        "BATTERY": "icons/battery-3.svg"
+        "BATTERY": "icons/battery-3.svg",
+        "SHIFT": "icons/arrow-big-up.svg",
+        "BACKSPACE": "icons/backspace.svg",
+        "ENTER": "icons/corner-down-left.svg"
       }
     },
     "icon_40": {
@@ -27,6 +30,8 @@
       "icon": {
         "BACK": "icons/chevron-left.svg",
         "MORE": "icons/dots.svg",
+        "CLOSE": "icons/x.svg",
+        "CHECK": "icons/check.svg",
         "FOLDER": "icons/folder-filled.svg",
         "FILE": "icons/file.svg",
         "PHOTO": "icons/photo.svg",

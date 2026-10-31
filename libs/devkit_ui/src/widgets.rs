@@ -7,8 +7,10 @@
  */
 
 use crate::element::{Children, Drag, Element, Ui};
+use crate::keyboard::{Keyboard, KeyboardPanel, KeyboardProps};
+use crate::text_buffer::{TextBuffer, TextInput};
 use crate::style::{Align, Justify, Role};
-use crate::theme::WidgetLook;
+use crate::theme::{Icon, WidgetLook};
 
 const SWITCH_WIDTH: i16 = 64;
 const SWITCH_HEIGHT: i16 = 36;
@@ -34,10 +36,10 @@ pub fn button<'a, M: Copy>(ui: &'a Ui<M>, label: &'a str, look: &'static WidgetL
         .on_tap(on_tap)
 }
 
-pub fn icon_button<'a, M: Copy>(ui: &'a Ui<M>, icon: char, on_tap: M) -> Element<'a, M> {
+pub fn icon_button<'a, M: Copy>(ui: &'a Ui<M>, icon: Icon, on_tap: M) -> Element<'a, M> {
     let theme = ui.theme();
     let size = theme.metrics.touch_size;
-    ui.row([ui.icon(theme.fonts.icons, icon)])
+    ui.row([ui.icon(icon)])
         .look(theme.looks.icon_button)
         .size(size, size)
         .radius((size / 2) as u8)
@@ -47,12 +49,11 @@ pub fn icon_button<'a, M: Copy>(ui: &'a Ui<M>, icon: char, on_tap: M) -> Element
         .on_tap(on_tap)
 }
 
-/// `leading` and `trailing` are icon characters.
-pub fn list_item<'a, M: Copy>(ui: &'a Ui<M>, leading: Option<char>, title: &'a str, meta: Option<&'a str>, trailing: Option<char>, on_tap: M) -> Element<'a, M> {
+pub fn list_item<'a, M: Copy>(ui: &'a Ui<M>, leading: Option<Icon>, title: &'a str, meta: Option<&'a str>, trailing: Option<Icon>, on_tap: M) -> Element<'a, M> {
     let theme = ui.theme();
     let (c, m) = (&theme.colors, &theme.metrics);
-    let lead = leading.map_or(ui.empty(), |icon| ui.icon(theme.fonts.icons, icon).color(c.muted));
-    let tail = trailing.map_or(ui.empty(), |icon| ui.icon(theme.fonts.icons, icon).color(c.divider));
+    let lead = leading.map_or(ui.empty(), |icon| ui.icon(icon).color(c.muted));
+    let tail = trailing.map_or(ui.empty(), |icon| ui.icon(icon).color(c.divider));
     let detail = meta.map_or(ui.empty(), |text| ui.text(theme.fonts.caption, text).color(c.muted));
     ui.row([lead, ui.column([ui.text(theme.fonts.body, title).ellipsis(), detail]).gap(4).grow(1), tail])
         .look(theme.looks.row)
@@ -65,10 +66,10 @@ pub fn list_item<'a, M: Copy>(ui: &'a Ui<M>, leading: Option<char>, title: &'a s
         .on_tap(on_tap)
 }
 
-/// `back` is an icon button before the title; `actions` follow it.
-pub fn top_bar<'a, M: Copy + 'static>(ui: &'a Ui<M>, back: Option<(char, M)>, title: &'a str, actions: Element<'a, M>) -> Element<'a, M> {
+/// `back` adds the theme's back button before the title; `actions` follow it.
+pub fn top_bar<'a, M: Copy + 'static>(ui: &'a Ui<M>, back: Option<M>, title: &'a str, actions: Element<'a, M>) -> Element<'a, M> {
     let theme = ui.theme();
-    let lead = back.map_or(ui.empty(), |(icon, msg)| icon_button(ui, icon, msg).id("back"));
+    let lead = back.map_or(ui.empty(), |msg| icon_button(ui, theme.icons.back, msg).id("back"));
     ui.row([lead, ui.text(theme.fonts.title, title).ellipsis().grow(1), actions])
         .height(theme.metrics.bar_height)
         .padding_x(theme.metrics.gap)
@@ -156,4 +157,40 @@ pub fn toast<'a, M: Copy>(ui: &'a Ui<M>, text: &'a str) -> Element<'a, M> {
         .radius(theme.metrics.radius)
         .background(theme.colors.on_surface)
         .absolute(None, None, Some(theme.metrics.padding), Some(theme.metrics.padding))
+}
+
+fn editable<'a, M: Copy>(ui: &'a Ui<M>, text: &'a str, cursor: usize, underline: Option<(usize, usize)>, on_input: fn(TextInput) -> M) -> Element<'a, M> {
+    let theme = ui.theme();
+    let element = ui.text(theme.fonts.body, text).edit(cursor, underline);
+    let element = if text.is_empty() { element.color(theme.colors.muted) } else { element };
+    element
+        .look(theme.looks.text_field)
+        .radius(theme.metrics.radius)
+        .padding_x(theme.metrics.gap)
+        .padding_y(theme.metrics.gap)
+        .role(Role::TextField)
+        .on_input(on_input)
+}
+
+/// One line of text. `buffer` belongs to the caller, which applies what
+/// `on_input` reports.
+pub fn text_field<'a, M: Copy>(ui: &'a Ui<M>, buffer: &'a TextBuffer, on_input: fn(TextInput) -> M) -> Element<'a, M> {
+    editable(ui, buffer.as_str(), buffer.cursor(), buffer.composing(), on_input)
+}
+
+/// A field showing one mark per byte, so tap positions stay byte offsets.
+pub fn password_field<'a, M: Copy>(ui: &'a Ui<M>, buffer: &'a TextBuffer, on_input: fn(TextInput) -> M) -> Element<'a, M> {
+    let marks = "*".repeat(buffer.as_str().len());
+    editable(ui, ui.store(&marks), buffer.cursor(), None, on_input)
+}
+
+/// Text over several lines, wrapping at the width it is given.
+pub fn text_area<'a, M: Copy>(ui: &'a Ui<M>, buffer: &'a TextBuffer, on_input: fn(TextInput) -> M) -> Element<'a, M> {
+    text_field(ui, buffer, on_input).wrap().min_height(ui.theme().metrics.row_height * 2)
+}
+
+/// A keyboard placed by the view, for inputs that keep one on screen. Its keys
+/// type into the focused input, as the docked one does.
+pub fn keyboard<'a, M: Copy + 'static>(ui: &'a Ui<M>, keyboard: &'static Keyboard, width: i16) -> Element<'a, M> {
+    ui.child::<KeyboardPanel>(KeyboardProps { keyboard, width })
 }

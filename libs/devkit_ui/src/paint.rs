@@ -105,13 +105,32 @@ impl Tree {
             list.fill(Rect::new(sx, rect.bottom() - 1, rect.w, 1), dim(color, opacity));
         }
 
-        let [left, top, _, _] = style.padding;
+        let [left, top, right, bottom] = style.padding;
         let (cx, cy) = (x + i32::from(left), y + i32::from(top));
         match &node.content {
             NodeContent::Text(text) => {
                 let theme = self.slots[usize::from(node.owner)].theme;
                 let color = dim(text.color.or(down.foreground).unwrap_or(theme.colors.on_surface), opacity);
-                list.text(cx as i16, cy as i16, &text.run, color);
+                if let Some(edit) = &text.edit {
+                    let content = Rect::new(cx as i16, cy as i16, rect.w - left - right, rect.h - top - bottom);
+                    let scroll = text.scroll(content.w);
+                    list.push_clip(content.intersect(&clip));
+                    list.text(cx as i16 - scroll, cy as i16, &text.run, color);
+                    let line = text.font.line_height();
+                    let at = |byte: u32| text.run.caret(byte as usize).unwrap_or((0, 0));
+                    if let Some((from, to)) = edit.underline {
+                        let (a, b) = (at(from), at(to));
+                        let underline = Rect::new(cx as i16 - scroll + a.0, cy as i16 + a.1 + line - 2, b.0 - a.0, 2);
+                        list.fill(underline, dim(theme.colors.primary, opacity));
+                    }
+                    if self.caret_visible(id) {
+                        let (x, y) = at(edit.cursor);
+                        list.fill(Rect::new(cx as i16 - scroll + x, cy as i16 + y, 2, line), dim(theme.colors.primary, opacity));
+                    }
+                    list.pop_clip();
+                } else {
+                    list.text(cx as i16, cy as i16, &text.run, color);
+                }
             }
             NodeContent::Image { image, tint } => list.image(cx as i16, cy as i16, *image, dim(*tint, opacity)),
             NodeContent::Scroll(scroll) => {

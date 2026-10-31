@@ -10,12 +10,12 @@ use core::ptr;
 /// allocation when a view is rebuilt.
 #[derive(Clone, Copy)]
 #[repr(C, align(8))]
-pub(crate) struct Erased([u8; 8]);
+pub(crate) struct Erased([u8; 16]);
 
 impl Erased {
     pub(crate) fn new<M: Copy>(message: M) -> Self {
-        const { assert!(size_of::<M>() <= 8, "a message is at most 8 bytes") };
-        let mut out = Self([0; 8]);
+        const { assert!(size_of::<M>() <= 16, "a message is at most 16 bytes") };
+        let mut out = Self([0; 16]);
         unsafe { ptr::write(out.0.as_mut_ptr().cast::<M>(), message) };
         out
     }
