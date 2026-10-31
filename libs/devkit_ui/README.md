@@ -101,6 +101,46 @@ app.run();
 - `cx.animate(id, animation)` moves a node's offset or opacity, without running a
   view or layout.
 
+## Rotation
+
+The UI turns when told to, with `Input::set_rotation`. Everything is built and
+painted again at the new size; `ui.rotation()` and `ui.screen_size()` tell the
+views.
+
+```rust
+let input = app.input();
+input.set_rotation(Rotation::R90);
+```
+
+`AutoRotation` does the usual thing on top of that: it follows the IMU, and keeps
+the turn and a lock in NVS.
+
+```rust
+let rotation = AutoRotation::new(board.imu)?;
+config.apply(&rotation);
+let app = App::new(display, board.touch, root, &config)?;
+rotation.start(&app)?;
+
+// In a settings screen.
+rotation.set_locked(true);
+```
+
+- `AutoRotation::with_namespace` picks the NVS namespace, `devkit_ui` by default.
+  The keys are `rotation` and `locked`. A new turn is saved once it has held for
+  5 seconds, a lock at once.
+- It takes the IMU's pose callback. `imu.read` and `imu.orientation` stay
+  available; an app that wants the poses itself leaves this type out and calls
+  `Input::set_rotation` from its own callback.
+- `ScreenStyle::rotations` limits the screen in front. `R0` to `R270` are the
+  panel's, so which is upright differs by board; `PORTRAIT` and `LANDSCAPE` mean
+  the shape on any board, and `CURRENT` keeps the turn the screen found. The turn
+  asked for comes back when a screen allows it.
+- A turn waits for a slide to end. Fingers on the screen act on nothing until
+  they lift, flings stop, and an `ExternalSurface` is asked to write again, with
+  `frame.rotation` and `frame.area` new from the next frame.
+- A strip buffer must hold 16 rows of the longer side; otherwise the turn is
+  refused and logged.
+
 ## Text input
 
 - Text comes through one path: the on-screen keyboard and `App::input` (a

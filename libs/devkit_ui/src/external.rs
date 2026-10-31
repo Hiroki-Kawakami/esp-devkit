@@ -183,6 +183,14 @@ impl ExternalSurface {
         }
     }
 
+    pub(crate) fn set_rotation(&self, rotation: Rotation) {
+        let mut state = self.0.state.lock();
+        state.rect_changes = state.rect_changes.wrapping_add(1);
+        if let Some(link) = &mut state.link {
+            link.rotation = rotation;
+        }
+    }
+
     pub(crate) fn set_composite(&self, composite: bool) {
         self.0.state.lock().composite = composite;
     }

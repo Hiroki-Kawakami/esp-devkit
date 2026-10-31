@@ -5,6 +5,7 @@
 
 use devkit_gfx::Color;
 
+use crate::rotation::Rotations;
 use crate::theme::{Border, WidgetLook};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -156,6 +157,7 @@ impl Style {
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct ScreenStyle {
     pub bars: Bars,
+    pub rotations: Rotations,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]

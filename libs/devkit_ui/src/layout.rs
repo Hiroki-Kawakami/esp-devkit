@@ -163,8 +163,12 @@ impl Tree {
             }
             NodeContent::List(list) => {
                 let (row_height, rows) = (list.row_height, list.rows.clone());
+                let end = list.count as i32 * i32::from(row_height) - i32::from(content.h);
                 for (_, row) in rows {
                     self.arrange(row, Rect::new(0, 0, content.w, row_height));
+                }
+                if let NodeContent::List(list) = &mut self.nodes[id as usize].content {
+                    list.offset = list.offset.min(end.max(0));
                 }
             }
             NodeContent::Text(_) => {

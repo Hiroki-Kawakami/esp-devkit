@@ -258,6 +258,25 @@ impl Tree {
         }
     }
 
+    /// Lays everything out again for a turned screen. Fingers on it no longer
+    /// mean what they did, so they act on nothing until they lift.
+    pub(crate) fn set_area(&mut self, area: Rect) {
+        for index in 0..self.contacts.len() {
+            let contact = self.contacts[index];
+            self.set_pressed(contact.tap, false);
+            self.send_drag(contact.drag, contact.last, true);
+            let contact = &mut self.contacts[index];
+            (contact.tap, contact.scroller, contact.drag, contact.gesture) = (NONE, NONE, NONE, NONE);
+            (contact.passive, contact.dragging) = (true, false);
+        }
+        self.trackers.clear();
+        self.flings.clear();
+        self.area = area;
+        self.layout_dirty = true;
+        self.keyboard_changed = true;
+        self.mark_all_dirty();
+    }
+
     pub(crate) fn set_pixel_format(&mut self, format: ImageFormat) {
         self.format = format;
     }

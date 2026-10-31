@@ -26,7 +26,7 @@ use core::time::Duration;
 use bsp_rs::Board;
 use bsp_rs::display::{Display, PixelFormat};
 use devkit::StaticLease;
-use devkit_ui::{App, AppConfig, Insets, Rotation, Strips, TextInput};
+use devkit_ui::{App, AppConfig, AutoRotation, Insets, Rotation, Strips, TextInput};
 use idf::heap::Caps;
 use idf::log::{error, info};
 use idf::sync::{Mutex, Semaphore};
@@ -162,9 +162,13 @@ pub fn run() {
 
 fn run_demo(board: &Board, display: &'static Display, settings: &Settings) {
     demo::set_display(display);
+    let rotation = if settings.rotated { None } else { AutoRotation::new(board.imu).inspect_err(|err| error!(TAG, "rotation: {err}")).ok() };
     let mut config = AppConfig::new(&LIGHT);
     if settings.rotated {
         config.presenter.rotation = Rotation::R90;
+    }
+    if let Some(rotation) = &rotation {
+        config.apply(rotation);
     }
     if settings.data_internal {
         config.presenter.data_caps = Caps::INTERNAL;
@@ -201,6 +205,12 @@ fn run_demo(board: &Board, display: &'static Display, settings: &Settings) {
             Ok(None)
         }
     };
+    if let Some(rotation) = &rotation {
+        if let Err(err) = rotation.start(&app) {
+            error!(TAG, "rotation: {err}");
+        }
+        demo::set_rotation(rotation.clone());
+    }
     let status = app.chrome(StatusBar::new(), Insets { top: INSET_TOP, ..Insets::default() });
     let Some(sram) = SRAM.take() else {
         error!(TAG, "strips: taken");

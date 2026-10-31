@@ -8,7 +8,7 @@ use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use core::ffi::CStr;
 use core::marker::PhantomData;
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use core::time::Duration;
 
 use bsp_rs::display::{Display, PixelFormat, Rotation};
@@ -77,6 +77,7 @@ struct StripSwap {
 
 enum Event {
     Wake,
+    SetRotation(Rotation),
     Input(TextInput),
     KeyboardConnected(bool),
     SetKeyboardMode(KeyboardMode),
@@ -92,7 +93,7 @@ struct Shared {
     dropped: AtomicU32,
     busy: AtomicBool,
     display: &'static Display,
-    rotation: Rotation,
+    rotation: AtomicU8,
     touch: Option<&'static Touch>,
 }
 
@@ -109,7 +110,7 @@ impl Shared {
     fn to_logical(&self, x: u16, y: u16) -> (i16, i16) {
         let size = self.display.size();
         let (x, y, w, h) = (x as i16, y as i16, size.width as i16, size.height as i16);
-        match self.rotation {
+        match ROTATIONS[usize::from(self.rotation.load(Ordering::Acquire))] {
             Rotation::R0 => (x, y),
             Rotation::R90 => (h - 1 - y, x),
             Rotation::R180 => (w - 1 - x, h - 1 - y),
@@ -120,7 +121,7 @@ impl Shared {
     fn to_panel(&self, x: i16, y: i16) -> (u16, u16) {
         let size = self.display.size();
         let (w, h) = (size.width as i16, size.height as i16);
-        let (px, py) = match self.rotation {
+        let (px, py) = match ROTATIONS[usize::from(self.rotation.load(Ordering::Acquire))] {
             Rotation::R0 => (x, y),
             Rotation::R90 => (y, h - 1 - x),
             Rotation::R180 => (w - 1 - x, h - 1 - y),
@@ -177,6 +178,12 @@ impl Input {
     /// physical one is connected.
     pub fn set_keyboard_connected(&self, connected: bool) -> bool {
         self.shared.send(Event::KeyboardConnected(connected))
+    }
+
+    /// Turns the UI, as far as the screen in front allows; it comes back when
+    /// another screen does.
+    pub fn set_rotation(&self, rotation: Rotation) -> bool {
+        self.shared.send(Event::SetRotation(rotation))
     }
 
     pub fn set_keyboard_mode(&self, mode: KeyboardMode) -> bool {
@@ -258,6 +265,12 @@ impl Timing {
     }
 }
 
+const ROTATIONS: [Rotation; 4] = [Rotation::R0, Rotation::R90, Rotation::R180, Rotation::R270];
+
+fn rotation_code(rotation: Rotation) -> u8 {
+    ROTATIONS.iter().position(|r| *r == rotation).unwrap_or(0) as u8
+}
+
 /// Keeps a picture to whole 16 row blocks, which a rotated copy needs.
 fn grid_rows(rect: Rect) -> Rect {
     let top = rect.y.div_euclid(ROW_GRID) * ROW_GRID;
@@ -287,6 +300,9 @@ pub struct App<C: Screen> {
     overlay: Option<Rect>,
     exclusive: bool,
     waiting: Option<Instant>,
+    requested: Rotation,
+    rotation: Rotation,
+    rotated: bool,
     _root: PhantomData<fn(C)>,
 }
 
@@ -300,7 +316,7 @@ impl<C: Screen> App<C> {
             dropped: AtomicU32::new(0),
             busy: AtomicBool::new(true),
             display,
-            rotation: config.presenter.rotation,
+            rotation: AtomicU8::new(rotation_code(config.presenter.rotation)),
             touch,
         });
         if let Some(touch) = touch {
@@ -342,6 +358,9 @@ impl<C: Screen> App<C> {
             overlay: None,
             exclusive: false,
             waiting: None,
+            requested: config.presenter.rotation,
+            rotation: config.presenter.rotation,
+            rotated: false,
             _root: PhantomData,
         })
     }
@@ -373,6 +392,7 @@ impl<C: Screen> App<C> {
     fn handle_event(&mut self, event: Event) {
         match event {
             Event::Wake => {}
+            Event::SetRotation(rotation) => self.requested = rotation,
             Event::Input(input) => self.tree.input(input),
             Event::KeyboardConnected(connected) => self.tree.set_keyboard_connected(connected),
             Event::SetKeyboardMode(mode) => self.tree.set_keyboard_mode(mode),
@@ -422,6 +442,33 @@ impl<C: Screen> App<C> {
         self.tree.render_done(slot, request.reply, given_up);
     }
 
+    fn follow_rotation(&mut self) {
+        if self.tree.sliding() {
+            return;
+        }
+        let size = self.shared.display.size();
+        let panel = (size.width as i16, size.height as i16);
+        let next = self.tree.screen_style.rotations.pick(self.requested, self.rotation, panel);
+        if next == self.rotation {
+            return;
+        }
+        if let Err(err) = self.presenter.set_rotation(next) {
+            error!(TAG, "rotation: {err}");
+            self.requested = self.rotation;
+            return;
+        }
+        self.rotation = next;
+        self.shared.rotation.store(rotation_code(next), Ordering::Release);
+        self.tree.set_area(self.presenter.area());
+        self.rotated = true;
+        self.overlay = None;
+        if let Some(surface) = &self.surface {
+            surface.set_rotation(next);
+            surface.set_overlay(None);
+        }
+        self.tree.update();
+    }
+
     fn attach_surface(&mut self) -> Option<(ExternalSurface, Option<Rect>)> {
         let shown = self.tree.external().map(|(surface, hole)| (surface.clone(), hole));
         let attached = self.surface.as_ref();
@@ -436,7 +483,7 @@ impl<C: Screen> App<C> {
                 let wake = Arc::new(move || {
                     shared.send(Event::Wake);
                 });
-                surface.attach(self.shared.display, self.shared.rotation, self.presenter.buffers(), wake);
+                surface.attach(self.shared.display, self.rotation, self.presenter.buffers(), wake);
                 self.surface = shown.as_ref().map(|s| s.0.clone());
             }
         }
@@ -471,6 +518,7 @@ impl<C: Screen> App<C> {
     fn frame(&mut self) {
         let start = Instant::now();
         self.tree.update();
+        self.follow_rotation();
         self.apply_render_mode();
         let mut update = (0, 0);
         let updated = note(&mut update, start);
@@ -483,7 +531,7 @@ impl<C: Screen> App<C> {
                 self.presenter.set_external(whole, true);
                 surface.set_rect(whole);
                 self.hole = whole;
-                if !core::mem::replace(&mut self.exclusive, true) {
+                if !core::mem::replace(&mut self.exclusive, true) || core::mem::take(&mut self.rotated) {
                     surface.request_refresh(self.presenter.area());
                 }
                 for rect in damage {
@@ -500,6 +548,9 @@ impl<C: Screen> App<C> {
                     self.presenter.invalidate(rect);
                 }
                 return;
+            }
+            if let (true, Some(hole)) = (core::mem::take(&mut self.rotated), hole) {
+                surface.request_refresh(*hole);
             }
         }
         if damage.is_empty() && !self.presenter.has_new_damage() && !waited && !self.presenter.behind() {

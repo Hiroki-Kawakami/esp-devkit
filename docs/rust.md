@@ -510,6 +510,9 @@ the simulator.
 `idf::nvs::init()` initializes the default NVS partition for every user of it
 and may be called by each of them; it does the work once. A partition without
 free pages or written by a newer IDF is erased first, losing what it held.
+`Nvs::open` opens a namespace of 15 bytes at most, created when missing;
+`get_u8` gives `None` for a missing key, and what `set_u8` writes lasts once
+`commit` has returned.
 
 `idf::fs` follows `std::fs` over the POSIX calls, with `&CStr` paths:
 

@@ -441,6 +441,18 @@ impl Presenter {
         Ok(core::mem::replace(&mut self.strips, strips))
     }
 
+    /// Turns the picture from the next frame on, which repaints everything.
+    /// Refused when a buffer cannot hold 16 rows of the new logical width.
+    pub fn set_rotation(&mut self, rotation: Rotation) -> Result<()> {
+        let previous = core::mem::replace(&mut self.rotation, rotation);
+        let stride = self.area().w as usize * self.display.pixel_format().bytes();
+        if self.buffer_bytes < stride * ROW_GRID as usize {
+            self.rotation = previous;
+            return Err(Error::INVALID_SIZE);
+        }
+        self.reset()
+    }
+
     /// The logical picture.
     pub fn area(&self) -> Rect {
         let size = self.display.size();

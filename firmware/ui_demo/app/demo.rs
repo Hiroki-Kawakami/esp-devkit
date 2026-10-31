@@ -15,7 +15,7 @@ use devkit_gfx::{Color, TextOptions, TextRun};
 use devkit_ui::widgets::{button, checkbox, icon_button, list_item, menu, menu_item, modal, slider, slider_value, switch, top_bar};
 use devkit_ui::keyboard::InputKind;
 use devkit_ui::widgets::{password_field, text_area, text_field};
-use devkit_ui::{Align, Bars, Canvas, CanvasId, Child, Component, Cx, Element, ExternalSurface, Fonts, Gesture, Gestures, Icon, Icons, ListId, Overlay, Phase, Policy, Raster, RasterTarget, Rect, RenderMode, Root, Screen, ScreenStyle, Strips, TextBuffer, TextInput, Theme, Ui};
+use devkit_ui::{Align, AutoRotation, Bars, Canvas, CanvasId, Child, Component, Cx, Element, ExternalSurface, Fonts, Gesture, Gestures, Icon, Icons, ListId, Overlay, Phase, Policy, Raster, RasterTarget, Rect, RenderMode, Root, Rotations, Screen, ScreenStyle, Strips, TextBuffer, TextInput, Theme, Ui};
 use idf::heap::Caps;
 use idf::sync::{LazyLock, Mutex, OnceLock};
 use idf::thread;
@@ -406,6 +406,7 @@ impl Screen for Confirm {}
 pub enum SettingsMsg {
     Back,
     Dark,
+    RotationLock,
     Name(TextInput),
     Pin(TextInput),
     Password(TextInput),
@@ -444,6 +445,11 @@ impl Component for Settings {
                 self.dark = !self.dark;
                 cx.set_theme(if self.dark { &DARK } else { &LIGHT });
             }
+            SettingsMsg::RotationLock => {
+                if let Some(rotation) = ROTATION.get() {
+                    rotation.set_locked(!rotation.locked());
+                }
+            }
             SettingsMsg::Name(input) => {
                 self.name.apply(input);
             }
@@ -468,6 +474,14 @@ impl Component for Settings {
                 .height(m.row_height)
                 .align(Align::Center)
                 .border_top(c.divider),
+            ui.row([
+                ui.text(theme.fonts.body, "Rotation lock").color(c.on_surface).grow(1),
+                switch(ui, ROTATION.get().is_some_and(AutoRotation::locked), SettingsMsg::RotationLock).id("rotation-lock"),
+            ])
+            .padding_x(m.padding)
+            .height(m.row_height)
+            .align(Align::Center)
+            .border_top(c.divider),
             ui.column([
                 text_field(ui, &self.name, SettingsMsg::Name).placeholder("Device name").id("name"),
                 text_field(ui, &self.pin, SettingsMsg::Pin).placeholder("PIN").input(InputKind::Number).id("pin"),
@@ -484,7 +498,7 @@ impl Component for Settings {
 
 impl Screen for Settings {
     fn style(&self) -> ScreenStyle {
-        ScreenStyle { bars: if self.dark { Bars::Light } else { Bars::Dark } }
+        ScreenStyle { bars: if self.dark { Bars::Light } else { Bars::Dark }, ..ScreenStyle::default() }
     }
 }
 
@@ -493,6 +507,12 @@ pub static VIDEO_FRAMES: AtomicU32 = AtomicU32::new(0);
 const BAND_ROWS: usize = 64;
 const BAR_WIDTH: usize = 90;
 const BARS: [[u8; 3]; 4] = [[0xE5, 0x39, 0x35], [0x43, 0xA0, 0x47], [0x1E, 0x88, 0xE5], [0xFD, 0xD8, 0x35]];
+
+static ROTATION: OnceLock<AutoRotation> = OnceLock::new();
+
+pub fn set_rotation(rotation: AutoRotation) {
+    let _ = ROTATION.set(rotation);
+}
 
 pub fn set_display(display: &'static Display) {
     let _ = DISPLAY.set(display);
@@ -880,6 +900,10 @@ impl Component for GestureDemo {
     }
 }
 
-impl Screen for GestureDemo {}
+impl Screen for GestureDemo {
+    fn style(&self) -> ScreenStyle {
+        ScreenStyle { rotations: Rotations::LANDSCAPE, ..ScreenStyle::default() }
+    }
+}
 
 pub const INSET_TOP: i16 = 52;

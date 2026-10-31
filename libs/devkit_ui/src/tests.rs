@@ -12,6 +12,7 @@ use idf::heap::Caps;
 
 use crate::*;
 use crate::external::ExternalSurface;
+use crate::rotation::Rotations;
 use crate::gesture::{Gesture, Gestures};
 use crate::keyboard::InputKind;
 use crate::node::NodeContent;
@@ -1611,6 +1612,36 @@ fn a_surface_keeps_to_the_row_grid_and_sees_what_lies_over_it() {
     tap(&mut tree, "open");
     run(&mut tree);
     assert_eq!(overlap_of(&tree, hole), Some(Rect::new(10, 40, 50, 20)));
+}
+
+#[test]
+fn portrait_and_landscape_follow_the_shape_of_the_panel() {
+    let tall = (720, 1280);
+    let wide = (1280, 720);
+    let (r0, r90, r180, r270) = (Rotation::R0, Rotation::R90, Rotation::R180, Rotation::R270);
+    assert_eq!(Rotations::LANDSCAPE.pick(r90, r0, tall), r90);
+    assert_eq!(Rotations::LANDSCAPE.pick(r0, r0, tall), r90, "the first turn allowed");
+    assert_eq!(Rotations::LANDSCAPE.pick(r180, r270, tall), r270, "the current one is still fine");
+    assert_eq!(Rotations::LANDSCAPE.pick(r0, r180, wide), r0);
+    assert_eq!(Rotations::PORTRAIT.pick(r0, r0, wide), r90);
+    assert_eq!(Rotations::CURRENT.pick(r90, r0, tall), r0);
+    assert_eq!(Rotations::default().pick(r270, r0, tall), r270);
+    assert_eq!((Rotations::R0 | Rotations::R180).pick(r90, r180, tall), r180);
+}
+
+#[test]
+fn turning_lays_out_again_and_drops_the_fingers() {
+    let mut tree = Tree::new(Scope { tall: false, size: (0, 0) }, Rect::new(0, 0, 400, 600), Caps::INTERNAL, theme());
+    run(&mut tree);
+    assert_eq!(rect_of(&tree, "scope").w, 400);
+    let point = tree.tap_point("toggle").unwrap();
+    tree.touch(&[(0, point)], 0);
+    tree.set_area(Rect::new(0, 0, 600, 400));
+    run(&mut tree);
+    assert_eq!(rect_of(&tree, "scope").w, 600);
+    tree.touch(&[], 10);
+    run(&mut tree);
+    assert_eq!(rect_of(&tree, "scope").h, 100, "the finger's tap is gone");
 }
 
 #[test]
