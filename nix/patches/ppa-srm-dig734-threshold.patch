@@ -1,0 +1,25 @@
+Widens the ESP32-P4 DIG-734 workaround in ppa_srm.c: the driver bypasses the
+macro-block order only when the last corner block is under the 12 * 128 bit
+FIFO depth, but a rotated transfer whose corner was 5x15 px RGB888 (1800 bits)
+still ended without EOF. The 4096-bit limit is empirical (1800 stalled, 4056
+was seen to complete), not from Espressif. Apply after
+ppa-srm-rotation-dig734.patch.
+
+--- a/components/esp_driver_ppa/src/ppa_srm.c
++++ b/components/esp_driver_ppa/src/ppa_srm.c
+@@ -184,11 +184,13 @@
+     uint32_t h_in_left = in_block_h % h_mb;
+     h_in_left = (h_in_left == 0) ? h_mb : h_in_left;
+     uint32_t h_left = h_in_left * scale_y_int + h_in_left * scale_y_frag / PPA_LL_SRM_SCALING_FRAG_MAX;
+-    const uint32_t dma2d_fifo_depth_bits = 12 * 128;
++    // Corners up to 1800 bits were seen to stall as well, so the bypass covers
++    // more than the 12 * 128 bit FIFO depth.
++    const uint32_t bypass_below_bits = 4096;
+     uint32_t out_pixel_depth = color_hal_pixel_format_fourcc_get_bit_depth((esp_color_fourcc_t)ppa_out_color_mode);
+     bool bypass_mb_order = false;
+     if (((w_out > w_divisor) || (in_block_h > h_mb)) && // will be cut into more than one trans unit
+-            ((w_left * h_left * out_pixel_depth) < dma2d_fifo_depth_bits)
++            ((w_left * h_left * out_pixel_depth) < bypass_below_bits)
+        ) {
+         bypass_mb_order = true;
+     }
