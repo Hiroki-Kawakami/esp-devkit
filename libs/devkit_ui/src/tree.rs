@@ -52,6 +52,10 @@ pub(crate) struct Slot {
 
 #[derive(Clone, Copy)]
 struct Contact {
+    /// The controller's id for this finger.
+    track: u8,
+    /// Landed on something another finger holds, and acts on nothing.
+    passive: bool,
     start: (i16, i16),
     last: (i16, i16),
     /// When the contact last moved; a sample at the same place is not news.
@@ -61,6 +65,8 @@ struct Contact {
     drag: NodeId,
     dragging: bool,
     velocity: f32,
+    held_ms: u32,
+    repeated: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -96,8 +102,6 @@ pub(crate) struct Tree {
     keyboard_height: i16,
     keyboard_mode: KeyboardMode,
     keyboard_connected: bool,
-    held_ms: u32,
-    repeated: bool,
     animations: Vec<(NodeId, Animation, u32)>,
     parked_strips: Option<Strips>,
     bump: Box<Bump>,
@@ -107,8 +111,8 @@ pub(crate) struct Tree {
     dirty: Vec<u16>,
     pub(crate) layout_dirty: bool,
     pub(crate) damage: Vec<Rect>,
-    contact: Option<Contact>,
-    fling: Option<(NodeId, f32)>,
+    contacts: Vec<Contact>,
+    flings: Vec<(NodeId, f32)>,
 }
 
 impl Tree {
@@ -138,8 +142,6 @@ impl Tree {
             keyboard_height: 0,
             keyboard_mode: KeyboardMode::Auto,
             keyboard_connected: false,
-            held_ms: 0,
-            repeated: false,
             animations: Vec::new(),
             parked_strips: None,
             bump: Box::new(Bump::new(caps)),
@@ -149,8 +151,8 @@ impl Tree {
             dirty: Vec::new(),
             layout_dirty: true,
             damage: Vec::new(),
-            contact: None,
-            fling: None,
+            contacts: Vec::new(),
+            flings: Vec::new(),
         };
         tree.root = tree.alloc_node(Node::new(NodeContent::Box, 0));
         let nav = tree.new_navigator(TypeId::of::<Root>(), 0);
@@ -298,17 +300,18 @@ impl Tree {
         node.content = NodeContent::Box;
         node.first_child = NONE;
         self.free.push(id);
-        if let Some(contact) = &mut self.contact {
+        for contact in &mut self.contacts {
             if contact.tap == id {
                 contact.tap = NONE;
             }
             if contact.scroller == id {
                 contact.scroller = NONE;
             }
+            if contact.drag == id {
+                contact.drag = NONE;
+            }
         }
-        if self.fling.is_some_and(|(node, _)| node == id) {
-            self.fling = None;
-        }
+        self.flings.retain(|f| f.0 != id);
         self.animations.retain(|a| a.0 != id);
         if self.focus == id {
             self.focus = NONE;
@@ -942,21 +945,21 @@ impl Tree {
     pub(crate) fn idle(&self) -> bool {
         self.queue.is_empty()
             && self.dirty.is_empty()
-            && self.fling.is_none()
+            && self.flings.is_empty()
             && !self.sliding()
             && self.animations.is_empty()
             && !self.keyboard_changed
-            && self.contact.is_none()
+            && self.contacts.is_empty()
             && self.damage.is_empty()
             && !self.layout_dirty
     }
 
     pub(crate) fn animating(&self) -> bool {
-        self.fling.is_some() || self.sliding() || !self.animations.is_empty()
+        !self.flings.is_empty() || self.sliding() || !self.animations.is_empty()
     }
 
     pub(crate) fn repeating(&self) -> bool {
-        self.contact.is_some_and(|c| self.nodes.get(c.tap as usize).is_some_and(|n| n.repeat))
+        self.contacts.iter().any(|c| self.nodes.get(c.tap as usize).is_some_and(|n| n.repeat))
     }
 
     fn scroll_by(&mut self, id: NodeId, delta: i32) -> bool {
@@ -1041,72 +1044,92 @@ impl Tree {
         }
     }
 
-    /// The primary contact in logical coordinates, `None` when lifted, at the
-    /// time it was sampled.
-    pub(crate) fn touch(&mut self, point: Option<(i16, i16)>, now_ms: u32) {
-        match (self.contact, point) {
-            (None, Some(p)) => {
-                self.fling = None;
-                let hit = self.hit(self.root, 0, 0, i32::from(p.0), i32::from(p.1));
-                let hit = hit.unwrap_or(Hit { tap: NONE, scroller: NONE, drag: NONE });
-                self.set_pressed(hit.tap, true);
-                self.send_drag(hit.drag, p, false);
-                self.held_ms = 0;
-                self.repeated = false;
-                self.contact = Some(Contact {
-                    start: p,
-                    last: p,
-                    last_ms: now_ms,
-                    tap: hit.tap,
-                    scroller: hit.scroller,
-                    drag: hit.drag,
-                    dragging: false,
-                    velocity: 0.0,
-                });
+    /// Every finger on the panel in logical coordinates, with the controller's
+    /// track id, at the time they were sampled.
+    pub(crate) fn touch(&mut self, points: &[(u8, (i16, i16))], now_ms: u32) {
+        let mut i = 0;
+        while i < self.contacts.len() {
+            if points.iter().any(|p| p.0 == self.contacts[i].track) {
+                i += 1;
+            } else {
+                let contact = self.contacts.swap_remove(i);
+                self.release(contact, now_ms);
             }
-            (Some(mut contact), Some(p)) => {
-                self.send_drag(contact.drag, p, false);
-                let moved = i32::from(p.1) - i32::from(contact.start.1);
-                let starting = !contact.dragging && moved.abs() > TAP_SLOP && contact.scroller != NONE;
-                if starting {
-                    contact.dragging = true;
-                    self.set_pressed(contact.tap, false);
-                    contact.tap = NONE;
-                }
-                let delta = i32::from(contact.last.1) - i32::from(p.1);
-                if !contact.dragging {
-                    contact.last_ms = now_ms;
-                } else if delta != 0 {
-                    self.scroll_by(contact.scroller, delta);
-                    let dt = now_ms.wrapping_sub(contact.last_ms).max(1) as f32;
-                    let speed = delta as f32 / dt;
-                    let weight = if starting { 1.0 } else { dt / (dt + VELOCITY_TAU_MS) };
-                    contact.velocity += (speed - contact.velocity) * weight;
-                    contact.last_ms = now_ms;
-                }
-                contact.last = p;
-                self.contact = Some(contact);
+        }
+        for &(track, p) in points {
+            match self.contacts.iter().position(|c| c.track == track) {
+                Some(index) => self.contact_moved(index, p, now_ms),
+                None => self.press(track, p, now_ms),
             }
-            (Some(contact), None) => {
-                self.contact = None;
-                self.set_pressed(contact.tap, false);
-                self.send_drag(contact.drag, contact.last, true);
-                if contact.dragging {
-                    let rest = now_ms.wrapping_sub(contact.last_ms);
-                    if rest < FLING_STALE_MS && contact.velocity.abs() > FLING_MIN {
-                        self.fling = Some((contact.scroller, contact.velocity));
-                    }
-                } else if contact.tap != NONE {
-                    self.finish_tap(contact.tap, contact.last);
-                } else if contact.drag == NONE {
-                    self.set_focus(NONE);
-                }
-            }
-            (None, None) => {}
         }
     }
 
-    fn finish_tap(&mut self, id: NodeId, point: (i16, i16)) {
+    fn press(&mut self, track: u8, p: (i16, i16), now_ms: u32) {
+        let hit = self.hit(self.root, 0, 0, i32::from(p.0), i32::from(p.1));
+        let hit = hit.unwrap_or(Hit { tap: NONE, scroller: NONE, drag: NONE });
+        let held = |id: NodeId, of: fn(&Contact) -> NodeId| id != NONE && self.contacts.iter().any(|c| of(c) == id);
+        let passive = held(hit.scroller, |c| c.scroller) || held(hit.tap, |c| c.tap) || held(hit.drag, |c| c.drag);
+        let hit = if passive { Hit { tap: NONE, scroller: NONE, drag: NONE } } else { hit };
+        self.flings.retain(|f| f.0 != hit.scroller);
+        self.set_pressed(hit.tap, true);
+        self.send_drag(hit.drag, p, false);
+        self.contacts.push(Contact {
+            track,
+            passive,
+            start: p,
+            last: p,
+            last_ms: now_ms,
+            tap: hit.tap,
+            scroller: hit.scroller,
+            drag: hit.drag,
+            dragging: false,
+            velocity: 0.0,
+            held_ms: 0,
+            repeated: false,
+        });
+    }
+
+    fn contact_moved(&mut self, index: usize, p: (i16, i16), now_ms: u32) {
+        let mut contact = self.contacts[index];
+        self.send_drag(contact.drag, p, false);
+        let moved = i32::from(p.1) - i32::from(contact.start.1);
+        let starting = !contact.dragging && moved.abs() > TAP_SLOP && contact.scroller != NONE;
+        if starting {
+            contact.dragging = true;
+            self.set_pressed(contact.tap, false);
+            contact.tap = NONE;
+        }
+        let delta = i32::from(contact.last.1) - i32::from(p.1);
+        if !contact.dragging {
+            contact.last_ms = now_ms;
+        } else if delta != 0 && contact.scroller != NONE {
+            self.scroll_by(contact.scroller, delta);
+            let dt = now_ms.wrapping_sub(contact.last_ms).max(1) as f32;
+            let speed = delta as f32 / dt;
+            let weight = if starting { 1.0 } else { dt / (dt + VELOCITY_TAU_MS) };
+            contact.velocity += (speed - contact.velocity) * weight;
+            contact.last_ms = now_ms;
+        }
+        contact.last = p;
+        self.contacts[index] = contact;
+    }
+
+    fn release(&mut self, contact: Contact, now_ms: u32) {
+        self.set_pressed(contact.tap, false);
+        self.send_drag(contact.drag, contact.last, true);
+        if contact.dragging {
+            let rest = now_ms.wrapping_sub(contact.last_ms);
+            if rest < FLING_STALE_MS && contact.velocity.abs() > FLING_MIN && contact.scroller != NONE {
+                self.flings.push((contact.scroller, contact.velocity));
+            }
+        } else if contact.tap != NONE {
+            self.finish_tap(contact.tap, contact.last, contact.repeated);
+        } else if contact.drag == NONE && !contact.passive {
+            self.set_focus(NONE);
+        }
+    }
+
+    fn finish_tap(&mut self, id: NodeId, point: (i16, i16), repeated: bool) {
         let node = &self.nodes[id as usize];
         let owner = node.owner;
         let tap = node.tap;
@@ -1126,7 +1149,7 @@ impl Tree {
         } else if !node.keep_focus {
             self.set_focus(NONE);
         }
-        if !self.repeated
+        if !repeated
             && let Some(msg) = tap
         {
             self.queue.push_back((owner, msg));
@@ -1134,18 +1157,19 @@ impl Tree {
     }
 
     fn tick_repeat(&mut self, dt_ms: u32) {
-        let Some(contact) = self.contact else { return };
-        if contact.tap == NONE || !self.nodes[contact.tap as usize].repeat {
-            return;
-        }
-        let before = self.held_ms;
-        self.held_ms += dt_ms;
         let steps = |ms: u32| if ms < REPEAT_DELAY_MS { 0 } else { (ms - REPEAT_DELAY_MS) / REPEAT_EVERY_MS + 1 };
-        let node = &self.nodes[contact.tap as usize];
-        if let Some(msg) = node.tap {
-            for _ in steps(before)..steps(self.held_ms) {
-                self.queue.push_back((node.owner, msg));
-                self.repeated = true;
+        for contact in &mut self.contacts {
+            if contact.tap == NONE || !self.nodes[contact.tap as usize].repeat {
+                continue;
+            }
+            let before = contact.held_ms;
+            contact.held_ms += dt_ms;
+            let node = &self.nodes[contact.tap as usize];
+            if let Some(msg) = node.tap {
+                for _ in steps(before)..steps(contact.held_ms) {
+                    self.queue.push_back((node.owner, msg));
+                    contact.repeated = true;
+                }
             }
         }
     }
@@ -1180,12 +1204,19 @@ impl Tree {
         self.tick_animations(dt_ms);
         self.tick_repeat(dt_ms);
         self.tick_caret(dt_ms);
-        let Some((id, velocity)) = self.fling else { return };
         let dt = (dt_ms as f32).min(MAX_FLING_STEP_MS);
-        let step = (velocity * dt_ms as f32) as i32;
-        let at_end = !self.scroll_by(id, step) && step != 0;
-        let velocity = velocity * (1.0 - FLING_DECAY * dt);
-        self.fling = (!at_end && velocity.abs() > FLING_MIN).then_some((id, velocity));
+        let mut i = 0;
+        while let Some(&(id, velocity)) = self.flings.get(i) {
+            let step = (velocity * dt_ms as f32) as i32;
+            let at_end = !self.scroll_by(id, step) && step != 0;
+            let velocity = velocity * (1.0 - FLING_DECAY * dt);
+            if at_end || velocity.abs() <= FLING_MIN {
+                self.flings.swap_remove(i);
+            } else {
+                self.flings[i].1 = velocity;
+                i += 1;
+            }
+        }
     }
 
     fn walk(&self, id: NodeId, f: &mut impl FnMut(NodeId, &Node)) {

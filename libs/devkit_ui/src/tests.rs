@@ -77,8 +77,8 @@ fn rect_of(tree: &Tree, id: &str) -> Rect {
 
 fn tap(tree: &mut Tree, id: &str) {
     let point = tree.tap_point(id).unwrap();
-    tree.touch(Some(point), 0);
-    tree.touch(None, 10);
+    tree.touch(&[(0, point)], 0);
+    tree.touch(&[], 10);
     tree.update();
 }
 
@@ -238,7 +238,7 @@ fn press_needs_no_rebuild() {
     run(&mut tree);
     let before = views.get();
     let point = tree.tap_point("button").unwrap();
-    tree.touch(Some(point), 0);
+    tree.touch(&[(0, point)], 0);
     let damage = run(&mut tree);
     assert_eq!(views.get(), before);
     assert!(damage.contains(&Rect::new(350, 5, 40, 30)));
@@ -303,15 +303,15 @@ fn list_builds_only_visible_rows_and_keeps_them_while_scrolling() {
     assert!(rows(&tree).len() <= viewport.h as usize / 50 + 3);
     let nodes = tree.nodes.len();
     let x = viewport.x + 10;
-    tree.touch(Some((x, viewport.y + 200)), 0);
-    tree.touch(Some((x, viewport.y + 100)), 16);
-    tree.touch(Some((x, viewport.y + 20)), 32);
+    tree.touch(&[(0, (x, viewport.y + 200))], 0);
+    tree.touch(&[(0, (x, viewport.y + 100))], 16);
+    tree.touch(&[(0, (x, viewport.y + 20))], 32);
     let damage = run(&mut tree);
     assert!(damage.iter().all(|r| *r == viewport));
     let shown = rows(&tree);
     assert!(shown[0] > 0);
     assert!(tree.nodes.len() <= nodes + 8);
-    tree.touch(None, 40);
+    tree.touch(&[], 40);
     assert!(tree.animating());
     tree.tick(16);
     assert!(tree.animating());
@@ -371,13 +371,13 @@ fn a_fling_survives_a_slow_last_sample_but_not_a_pause() {
     let viewport = rect_of(&tree, "list");
     let x = viewport.x + 10;
     let drag = |tree: &mut Tree, last_ms: u32, up_ms: u32| {
-        tree.touch(Some((x, viewport.y + 300)), 0);
-        tree.touch(Some((x, viewport.y + 260)), 10);
-        tree.touch(Some((x, viewport.y + 220)), 20);
-        tree.touch(Some((x, viewport.y + 180)), 30);
-        tree.touch(Some((x, viewport.y + 178)), last_ms);
-        tree.touch(Some((x, viewport.y + 178)), last_ms + 10);
-        tree.touch(None, up_ms);
+        tree.touch(&[(0, (x, viewport.y + 300))], 0);
+        tree.touch(&[(0, (x, viewport.y + 260))], 10);
+        tree.touch(&[(0, (x, viewport.y + 220))], 20);
+        tree.touch(&[(0, (x, viewport.y + 180))], 30);
+        tree.touch(&[(0, (x, viewport.y + 178))], last_ms);
+        tree.touch(&[(0, (x, viewport.y + 178))], last_ms + 10);
+        tree.touch(&[], up_ms);
     };
     drag(&mut tree, 40, 55);
     assert!(tree.animating(), "the last slow samples do not cancel the throw");
@@ -395,12 +395,12 @@ fn repeated_samples_leave_the_speed_alone_and_a_short_tick_keeps_the_fling() {
     run(&mut tree);
     let viewport = rect_of(&tree, "list");
     let x = viewport.x + 10;
-    tree.touch(Some((x, viewport.y + 300)), 0);
-    tree.touch(Some((x, viewport.y + 260)), 10);
-    tree.touch(Some((x, viewport.y + 220)), 20);
-    tree.touch(Some((x, viewport.y + 220)), 30);
-    tree.touch(Some((x, viewport.y + 220)), 40);
-    tree.touch(None, 45);
+    tree.touch(&[(0, (x, viewport.y + 300))], 0);
+    tree.touch(&[(0, (x, viewport.y + 260))], 10);
+    tree.touch(&[(0, (x, viewport.y + 220))], 20);
+    tree.touch(&[(0, (x, viewport.y + 220))], 30);
+    tree.touch(&[(0, (x, viewport.y + 220))], 40);
+    tree.touch(&[], 45);
     let offset = |tree: &Tree| match &tree.nodes[tree.find("list").unwrap() as usize].content {
         NodeContent::List(list) => list.offset,
         _ => panic!(),
@@ -418,9 +418,9 @@ fn drag_cancels_the_tap_of_a_row() {
     let mut tree = Tree::new(Sample::new(), SCREEN, Caps::INTERNAL, theme());
     run(&mut tree);
     let point = tree.tap_point("row2").unwrap();
-    tree.touch(Some(point), 0);
-    tree.touch(Some((point.0, point.1 - 40)), 16);
-    tree.touch(None, 500);
+    tree.touch(&[(0, point)], 0);
+    tree.touch(&[(0, (point.0, point.1 - 40))], 16);
+    tree.touch(&[], 500);
     tree.update();
     assert!(tree.find("panel").is_none());
 }
@@ -626,10 +626,10 @@ fn state_and_scroll_position_come_back_and_taps_wait_for_the_slide() {
     settle(&mut tree);
     let list = rect_of(&tree, "rows");
     let x = list.x + 10;
-    tree.touch(Some((x, list.y + 200)), 0);
-    tree.touch(Some((x, list.y + 100)), 500);
-    tree.touch(Some((x, list.y + 50)), 1000);
-    tree.touch(None, 2000);
+    tree.touch(&[(0, (x, list.y + 200))], 0);
+    tree.touch(&[(0, (x, list.y + 100))], 500);
+    tree.touch(&[(0, (x, list.y + 50))], 1000);
+    tree.touch(&[], 2000);
     settle(&mut tree);
     let offset = |tree: &Tree, name: &str| match &tree.nodes[tree.find(name).unwrap() as usize].content {
         NodeContent::List(list) => list.offset,
@@ -684,16 +684,16 @@ fn a_drag_follows_the_contact_without_a_tap_slop() {
     let mut tree = Tree::new(PageRoot(Page::new("first", log)), SCREEN, Caps::INTERNAL, theme());
     settle(&mut tree);
     let slider = rect_of(&tree, "slider");
-    tree.touch(Some((slider.x + 100, slider.y + 10)), 0);
+    tree.touch(&[(0, (slider.x + 100, slider.y + 10))], 0);
     tree.update();
     let filled = |tree: &Tree| tree.nodes[tree.find("slider").unwrap() as usize].first_child;
     let track = filled(&tree);
     let fill = tree.nodes[track as usize].next;
     assert_eq!(tree.nodes[fill as usize].rect.w, 99);
-    tree.touch(Some((slider.x + 150, slider.y + 10)), 16);
+    tree.touch(&[(0, (slider.x + 150, slider.y + 10))], 16);
     tree.update();
     assert_eq!(tree.nodes[fill as usize].rect.w, 149);
-    tree.touch(None, 32);
+    tree.touch(&[], 32);
     tree.update();
 }
 
@@ -813,8 +813,8 @@ fn disabled_nodes_take_no_input_and_block_what_is_below() {
     let taps = Box::leak(Box::new(core::cell::Cell::new(0)));
     let mut tree = Tree::new(View(taps, true), SCREEN, Caps::INTERNAL, theme());
     run(&mut tree);
-    tree.touch(Some((10, 10)), 0);
-    tree.touch(None, 10);
+    tree.touch(&[(0, (10, 10))], 0);
+    tree.touch(&[], 10);
     tree.update();
     assert_eq!(taps.get(), 0);
     assert!(tree.invoke("over").is_err());
@@ -934,8 +934,8 @@ fn focus_routes_input_and_shows_the_field_keyboard() {
     assert_eq!(text_of(&tree, "pin"), "7");
     assert_eq!(text_of(&tree, "name"), "xy");
 
-    tree.touch(Some((390, 200)), 0);
-    tree.touch(None, 10);
+    tree.touch(&[(0, (390, 200))], 0);
+    tree.touch(&[], 10);
     run(&mut tree);
     assert!(tree.find("keyboard").is_none(), "a tap elsewhere ends the input");
     assert_eq!(tree.context(0).insets.bottom, 0);
@@ -963,8 +963,8 @@ fn keys_line_up_across_rows_and_type_through_layers() {
     run(&mut tree);
     let keyboard = rect_of(&tree, "keyboard");
     let press = |tree: &mut Tree, x: i16, y: i16| {
-        tree.touch(Some((x, y)), 0);
-        tree.touch(None, 10);
+        tree.touch(&[(0, (x, y))], 0);
+        tree.touch(&[], 10);
         run(tree);
     };
     let k = theme().keyboards;
@@ -1050,8 +1050,8 @@ fn a_tap_in_a_field_places_the_cursor() {
     run(&mut tree);
     let field = rect_of(&tree, "name");
     let left = tree.nodes[tree.find("name").unwrap() as usize].style.padding[0];
-    tree.touch(Some((field.x + left + 11, field.y + 10)), 0);
-    tree.touch(None, 10);
+    tree.touch(&[(0, (field.x + left + 11, field.y + 10))], 0);
+    tree.touch(&[], 10);
     run(&mut tree);
     tree.input(TextInput::Char('x'));
     run(&mut tree);
@@ -1090,7 +1090,7 @@ fn full_rows_end_at_the_panel_edge() {
     let keyboard = rect_of(&tree, "keyboard");
     let gap = theme().keyboards.gap;
     let y = keyboard.y + gap + 2 * (theme().keyboards.key_height + gap) + 10;
-    tree.touch(Some((keyboard.right() - gap - 1, y)), 0);
+    tree.touch(&[(0, (keyboard.right() - gap - 1, y))], 0);
     tree.update();
     assert!(tree.repeating(), "the last pixel of the row is the repeating key");
 }
@@ -1108,7 +1108,7 @@ fn a_held_key_repeats_and_its_release_adds_nothing() {
     let keyboard = rect_of(&tree, "keyboard");
     let k = theme().keyboards;
     let y = keyboard.y + k.gap + 2 * (k.key_height + k.gap) + 10;
-    tree.touch(Some((380, y)), 0);
+    tree.touch(&[(0, (380, y))], 0);
     tree.update();
     assert!(tree.repeating());
     tree.tick(400);
@@ -1116,9 +1116,126 @@ fn a_held_key_repeats_and_its_release_adds_nothing() {
     tree.tick(60);
     run(&mut tree);
     assert_eq!(text_of(&tree, "name"), "a");
-    tree.touch(None, 500);
+    tree.touch(&[], 500);
     run(&mut tree);
     assert_eq!(text_of(&tree, "name"), "a");
+}
+
+struct Pair;
+
+impl Component for Pair {
+    type Msg = ();
+
+    fn update(&mut self, _: (), _: &mut Cx<Self>) {}
+
+    fn view<'a>(&'a self, ui: &'a Ui<()>) -> Element<'a, ()> {
+        ui.row([ui.list(0, 100, 40).grow(1).id("left"), ui.list(1, 100, 40).grow(1).id("right")])
+    }
+
+    fn list_row<'a>(&'a self, _: ListId, _: usize, ui: &'a Ui<()>) -> Element<'a, ()> {
+        ui.column([]).height(40)
+    }
+}
+
+impl Screen for Pair {}
+
+fn offset_of(tree: &Tree, id: &str) -> i32 {
+    let NodeContent::List(list) = &tree.nodes[tree.find(id).unwrap() as usize].content else { panic!() };
+    list.offset
+}
+
+#[test]
+fn two_fingers_scroll_two_lists_apart_and_throw_both() {
+    let mut tree = Tree::new(Pair, SCREEN, Caps::INTERNAL, theme());
+    run(&mut tree);
+    let (left, right) = (rect_of(&tree, "left"), rect_of(&tree, "right"));
+    let (a, b) = (left.x + 10, right.x + 10);
+    tree.touch(&[(3, (a, 400)), (7, (b, 400))], 0);
+    tree.touch(&[(3, (a, 340)), (7, (b, 400))], 10);
+    tree.touch(&[(3, (a, 280)), (7, (b, 370))], 20);
+    tree.touch(&[(3, (a, 220)), (7, (b, 340))], 30);
+    assert_eq!(offset_of(&tree, "left"), 180);
+    assert_eq!(offset_of(&tree, "right"), 60);
+    tree.touch(&[(7, (b, 310))], 40);
+    assert!(tree.animating(), "one list thrown while the other is held");
+    tree.touch(&[], 45);
+    let before = (offset_of(&tree, "left"), offset_of(&tree, "right"));
+    tree.tick(16);
+    assert!(offset_of(&tree, "left") > before.0);
+    assert!(offset_of(&tree, "right") > before.1);
+}
+
+#[test]
+fn a_press_stops_only_the_fling_it_lands_on() {
+    let mut tree = Tree::new(Pair, SCREEN, Caps::INTERNAL, theme());
+    run(&mut tree);
+    let (left, right) = (rect_of(&tree, "left"), rect_of(&tree, "right"));
+    let (a, b) = (left.x + 10, right.x + 10);
+    for (i, y) in [400, 340, 280, 220].into_iter().enumerate() {
+        tree.touch(&[(0, (a, y))], i as u32 * 10);
+    }
+    tree.touch(&[], 35);
+    tree.touch(&[(1, (b, 400))], 40);
+    let before = offset_of(&tree, "left");
+    tree.tick(16);
+    assert!(offset_of(&tree, "left") > before);
+    tree.touch(&[(1, (b, 400)), (2, (a, 400))], 50);
+    let before = offset_of(&tree, "left");
+    tree.tick(16);
+    assert_eq!(offset_of(&tree, "left"), before);
+}
+
+#[test]
+fn a_second_finger_on_a_held_list_does_nothing() {
+    let mut tree = Tree::new(Pair, SCREEN, Caps::INTERNAL, theme());
+    run(&mut tree);
+    let left = rect_of(&tree, "left");
+    let a = left.x + 10;
+    tree.touch(&[(0, (a, 400))], 0);
+    tree.touch(&[(0, (a, 340)), (1, (a + 20, 400))], 10);
+    tree.touch(&[(0, (a, 340)), (1, (a + 20, 200))], 20);
+    assert_eq!(offset_of(&tree, "left"), 60);
+    tree.touch(&[(1, (a + 20, 100))], 200);
+    tree.touch(&[(1, (a + 20, 50))], 210);
+    assert_eq!(offset_of(&tree, "left"), 60, "the first finger left, the second still does nothing");
+    tree.touch(&[], 220);
+    assert!(!tree.animating());
+}
+
+#[test]
+fn keys_pressed_together_both_type_in_release_order() {
+    let mut tree = form_tree();
+    tap(&mut tree, "name");
+    run(&mut tree);
+    let keyboard = rect_of(&tree, "keyboard");
+    let k = theme().keyboards;
+    let pitch = (keyboard.w - k.gap) / 10;
+    let y = keyboard.y + k.gap + 10;
+    let (q, w) = (k.gap + 10, k.gap + pitch + 10);
+    tree.touch(&[(0, (q, y))], 0);
+    tree.touch(&[(0, (q, y)), (1, (w, y))], 10);
+    tree.touch(&[(0, (q, y))], 20);
+    tree.touch(&[], 30);
+    run(&mut tree);
+    assert_eq!(text_of(&tree, "name"), "wq");
+}
+
+#[test]
+fn a_finger_on_a_held_key_does_not_end_the_input() {
+    let mut tree = form_tree();
+    tap(&mut tree, "name");
+    run(&mut tree);
+    let keyboard = rect_of(&tree, "keyboard");
+    let y = keyboard.y + theme().keyboards.gap + 10;
+    let x = theme().keyboards.gap + 10;
+    tree.touch(&[(0, (x, y))], 0);
+    tree.touch(&[(0, (x, y)), (1, (x + 2, y))], 10);
+    tree.touch(&[(0, (x, y))], 20);
+    run(&mut tree);
+    assert!(tree.find("keyboard").is_some());
+    tree.touch(&[], 30);
+    run(&mut tree);
+    assert_eq!(text_of(&tree, "name"), "q");
 }
 
 #[test]

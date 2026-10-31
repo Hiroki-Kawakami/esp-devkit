@@ -8,7 +8,7 @@ use core::time::Duration;
 use idf::i2c::{Device, MasterBus};
 use idf::{Result, gpio};
 
-use crate::touch::{Driver, Point};
+use crate::touch::{Driver, Point, assign_tracks};
 
 pub(crate) const ADDR: u16 = 0x55;
 pub(crate) const DEFAULT_HZ: u32 = 100_000;
@@ -30,6 +30,7 @@ pub(crate) struct St712xTouch {
     dev: Device<'static>,
     points: [Point; MAX_POINTS],
     count: usize,
+    next_track: u8,
 }
 
 impl St712xTouch {
@@ -39,7 +40,7 @@ impl St712xTouch {
             gpio::set_direction(pin, gpio::Mode::Input)?;
             gpio::set_pull(pin, gpio::Pull::Up)?;
         }
-        Ok(Self { dev: bus.add_device(ADDR, config.clock_hz)?, points: [Point::default(); MAX_POINTS], count: 0 })
+        Ok(Self { dev: bus.add_device(ADDR, config.clock_hz)?, points: [Point::default(); MAX_POINTS], count: 0, next_track: 0 })
     }
 
     fn read_reg(&self, reg: u16, buf: &mut [u8]) -> Result<()> {
@@ -60,16 +61,19 @@ impl Driver for St712xTouch {
                 self.read_reg(REG_REPORT_COORD, &mut raw[..reports * POINT_SIZE])?;
             }
             let valid = raw.chunks_exact(POINT_SIZE).take(reports).filter(|r| r[0] & 0x80 != 0);
+            let last = self.points;
+            let last_count = self.count;
             self.count = 0;
             for r in valid {
-                // Reports carry no track id; the index among valid reports stands in.
                 self.points[self.count] = Point {
                     x: u16::from(r[0] & 0x3F) << 8 | u16::from(r[1]),
                     y: u16::from(r[2]) << 8 | u16::from(r[3]),
-                    id: self.count as u8,
+                    id: 0,
                 };
                 self.count += 1;
             }
+            // Reports carry no track id.
+            assign_tracks(&last[..last_count], &mut self.points[..self.count], &mut self.next_track);
         }
         Ok(&self.points[..self.count])
     }

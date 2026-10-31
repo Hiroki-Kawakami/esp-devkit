@@ -12,7 +12,7 @@ use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use core::time::Duration;
 
 use bsp_rs::display::{Display, Rotation};
-use bsp_rs::touch::{Point, Touch};
+use bsp_rs::touch::{MAX_POINTS, Point, Touch};
 use devkit_gfx::{DisplayList, GlyphCache};
 use idf::heap::Caps;
 use idf::log::error;
@@ -78,7 +78,7 @@ enum Event {
     KeyboardConnected(bool),
     SetKeyboardMode(KeyboardMode),
     SetStrips(Arc<StripSwap>),
-    Touch(Option<(u16, u16)>, u32),
+    Touch([Point; MAX_POINTS], u8, u32),
     Post(u16, Erased),
     Ask(Arc<Exchange>),
 }
@@ -291,9 +291,11 @@ impl<C: Screen> App<C> {
         if let Some(touch) = touch {
             let shared = shared.clone();
             touch.set_event_cb(Some(Box::new(move |points: &[Point]| {
-                let first = points.iter().min_by_key(|p| p.id).map(|p| (p.x, p.y));
+                let mut frame = [Point::default(); MAX_POINTS];
+                let count = points.len().min(MAX_POINTS);
+                frame[..count].copy_from_slice(&points[..count]);
                 let now = Instant::now().since_boot().as_millis() as u32;
-                if !shared.send(Event::Touch(first, now)) {
+                if !shared.send(Event::Touch(frame, count as u8, now)) {
                     let dropped = shared.dropped.fetch_add(1, Ordering::Relaxed);
                     if dropped % DROP_LOG_EVERY == 0 {
                         error!(TAG, "input queue full, {} samples dropped", dropped + 1);
@@ -356,9 +358,12 @@ impl<C: Screen> App<C> {
                 drop(slot);
                 swap.done.give();
             }
-            Event::Touch(point, sampled_ms) => {
-                let logical = point.map(|(x, y)| self.shared.to_logical(x, y));
-                self.tree.touch(logical, sampled_ms);
+            Event::Touch(frame, count, sampled_ms) => {
+                let mut points = [(0, (0, 0)); MAX_POINTS];
+                for (point, sample) in points.iter_mut().zip(&frame[..usize::from(count)]) {
+                    *point = (sample.id, self.shared.to_logical(sample.x, sample.y));
+                }
+                self.tree.touch(&points[..usize::from(count)], sampled_ms);
             }
             Event::Post(slot, msg) => self.tree.post(slot, msg),
             Event::Ask(exchange) => {

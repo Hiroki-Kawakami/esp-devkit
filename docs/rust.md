@@ -638,6 +638,9 @@ app.run();
   moves the rows without running `view`. A rebuild of the owner rebuilds them,
   unless `revision` is given and did not change.
 - `pressed_background` changes without a rebuild.
+- Each finger acts on its own, so separate lists scroll and flings run at the
+  same time. A node belongs to the first finger on it; another finger landing
+  on it does nothing until it lifts and lands again.
 - Sizes are `i16` pixels. A row, column or grid places children by `grow`,
   `gap`, `align` and `justify`; `absolute` takes a child out of the flow.
 - Layout works as in CSS flex. A parent offers each child what it has and the

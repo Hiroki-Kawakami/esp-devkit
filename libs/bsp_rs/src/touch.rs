@@ -20,6 +20,7 @@ const TAG: &CStr = c"touch";
 pub const MAX_POINTS: usize = 10;
 const DEFAULT_SETTLE_COUNT: u8 = 5;
 const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const TRACK_REACH: i32 = 200;
 
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub struct Point {
@@ -30,6 +31,37 @@ pub struct Point {
 }
 
 pub type EventCallback = Box<dyn FnMut(&[Point]) + Send>;
+
+/// Gives a chip's untracked points ids: each takes the id of the nearest point
+/// of the last sample within reach, or a new one.
+#[allow(dead_code)]
+pub(crate) fn assign_tracks(last: &[Point], next: &mut [Point], next_track: &mut u8) {
+    let distance = |a: &Point, b: &Point| {
+        let (dx, dy) = (i32::from(a.x) - i32::from(b.x), i32::from(a.y) - i32::from(b.y));
+        dx * dx + dy * dy
+    };
+    let mut taken = [false; MAX_POINTS];
+    let mut matched = [false; MAX_POINTS];
+    for (point, matched) in next.iter_mut().zip(&mut matched) {
+        let nearest = (0..last.len()).filter(|&i| !taken[i]).min_by_key(|&i| distance(point, &last[i]));
+        if let Some(i) = nearest.filter(|&i| distance(point, &last[i]) <= TRACK_REACH * TRACK_REACH) {
+            taken[i] = true;
+            point.id = last[i].id;
+            *matched = true;
+        }
+    }
+    for i in 0..next.len() {
+        if !matched[i] {
+            // Past every id of the last sample, so a new finger is never read
+            // as a lifted one that jumped.
+            while last.iter().any(|p| p.id == *next_track) {
+                *next_track = next_track.wrapping_add(1);
+            }
+            next[i].id = *next_track;
+            *next_track = next_track.wrapping_add(1);
+        }
+    }
+}
 
 pub(crate) trait Driver: Send + 'static {
     /// The latest known touches in chip space. A chip with a data-ready
@@ -318,7 +350,7 @@ impl<D: Driver> Source for TouchSource<D> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Config, DEFAULT_SETTLE_COUNT, Driver, Int, Point, Touch, TouchSource};
+    use super::{Config, DEFAULT_SETTLE_COUNT, Driver, Int, Point, Touch, TouchSource, assign_tracks};
     use crate::dispatch::{Next, Source};
     use alloc::boxed::Box;
     use alloc::sync::Arc;
@@ -454,5 +486,42 @@ mod tests {
         touch.set_event_cb(None);
         src.tick();
         assert_eq!(*count.lock(), 1);
+    }
+
+    fn at(x: u16, y: u16) -> Point {
+        Point { x, y, id: 0 }
+    }
+
+    #[test]
+    fn a_finger_keeps_its_id_when_the_one_before_it_lifts() {
+        let mut track = 0;
+        let mut first = [at(100, 100), at(600, 100)];
+        assign_tracks(&[], &mut first, &mut track);
+        assert_ne!(first[0].id, first[1].id);
+        let mut second = [at(605, 110)];
+        assign_tracks(&first, &mut second, &mut track);
+        assert_eq!(second[0].id, first[1].id);
+    }
+
+    #[test]
+    fn a_far_landing_in_the_sample_of_a_lift_is_a_new_finger() {
+        let mut track = 0;
+        let mut first = [at(100, 100)];
+        assign_tracks(&[], &mut first, &mut track);
+        let mut second = [at(600, 900)];
+        assign_tracks(&first, &mut second, &mut track);
+        assert_ne!(second[0].id, first[0].id);
+    }
+
+    #[test]
+    fn new_ids_avoid_those_still_held() {
+        let mut track = 255;
+        let mut first = [at(100, 100), at(300, 100)];
+        assign_tracks(&[], &mut first, &mut track);
+        track = first[0].id;
+        let mut second = [at(100, 100), at(300, 100), at(700, 900)];
+        assign_tracks(&first, &mut second, &mut track);
+        assert_ne!(second[2].id, first[0].id);
+        assert_ne!(second[2].id, first[1].id);
     }
 }
