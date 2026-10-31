@@ -31,6 +31,10 @@ impl Surface {
         self.area
     }
 
+    pub(crate) fn bytes<P: Pixel>(&self, x: i16, y: i16, pixels: usize) -> *mut [u8] {
+        core::ptr::slice_from_raw_parts_mut(self.row::<P>(x, y), pixels * P::BYTES)
+    }
+
     fn row<P: Pixel>(&self, x: i16, y: i16) -> *mut u8 {
         let offset = (y - self.area.y) as usize * self.stride + (x - self.area.x) as usize * P::BYTES;
         unsafe { self.ptr.add(offset) }

@@ -1458,6 +1458,114 @@ fn one_finger_scrolls_past_a_pinch_and_a_second_stops_it() {
     assert!(!tree.animating());
 }
 
+static VIEWS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+#[derive(Clone, Copy)]
+enum ScopeMsg {
+    Sized(i16, i16),
+    Toggle,
+    Part,
+}
+
+struct Scope {
+    tall: bool,
+    size: (i16, i16),
+}
+
+struct Ticks;
+
+impl devkit_gfx::Raster for Ticks {
+    fn raster(&self, _: &mut devkit_gfx::RasterTarget<'_>) {}
+}
+
+static TICKS: Ticks = Ticks;
+
+impl Component for Scope {
+    type Msg = ScopeMsg;
+
+    fn update(&mut self, msg: ScopeMsg, cx: &mut Cx<Self>) {
+        match msg {
+            ScopeMsg::Sized(width, height) => self.size = (width, height),
+            ScopeMsg::Toggle => {
+                self.tall = !self.tall;
+                cx.rebuild();
+            }
+            ScopeMsg::Part => cx.redraw_rect("scope", Rect::new(10, 20, 30, 4)),
+        }
+    }
+
+    fn view<'a>(&'a self, ui: &'a Ui<ScopeMsg>) -> Element<'a, ScopeMsg> {
+        VIEWS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        ui.column([
+            ui.column([]).height(10),
+            ui.canvas(3).height(if self.tall { 200 } else { 100 }).padding(5).id("scope").on_size(ScopeMsg::Sized),
+            ui.column([]).size(10, 10).id("toggle").on_tap(ScopeMsg::Toggle),
+            ui.column([]).size(10, 10).id("part").on_tap(ScopeMsg::Part),
+        ])
+    }
+
+    fn draw<'a>(&'a self, id: CanvasId, canvas: &mut Canvas<'a, '_>) {
+        assert_eq!(id, 3);
+        assert_eq!(canvas.size(), self.size, "the size arrives before the drawing at it");
+        assert!(canvas.needs(Rect::new(0, 0, 4, 4)));
+        assert!(!canvas.needs(Rect::new(0, 80, 4, 4)));
+        canvas.fill(Rect::new(1, 2, 3, 4), Color::rgb(1, 2, 3));
+        canvas.push_clip(Rect::new(0, 0, 5, 5));
+        canvas.raster(Rect::new(0, 0, 5, 5), &TICKS);
+    }
+}
+
+impl Screen for Scope {}
+
+fn paint_scope(tree: &Tree, regions: &[Rect]) -> Vec<devkit_gfx::Rect> {
+    let mut effects = crate::paint::Effects::new(Caps::INTERNAL);
+    let mut list = devkit_gfx::DisplayList::new_in(Caps::INTERNAL);
+    tree.paint(&mut effects, regions, &mut list);
+    let mut fills = Vec::new();
+    let (mut pushed, mut popped) = (0, 0);
+    for op in list.ops() {
+        match op {
+            devkit_gfx::Op::Fill { rect, .. } => fills.push(*rect),
+            devkit_gfx::Op::PushClip(_) => pushed += 1,
+            devkit_gfx::Op::PopClip => popped += 1,
+            _ => {}
+        }
+    }
+    assert_eq!(pushed, popped, "clips left open are closed");
+    fills
+}
+
+#[test]
+fn a_canvas_learns_its_size_before_drawing_and_again_when_it_changes() {
+    let mut tree = Tree::new(Scope { tall: false, size: (0, 0) }, SCREEN, Caps::INTERNAL, theme());
+    run(&mut tree);
+    let r = rect_of(&tree, "scope");
+    assert_eq!(r.h, 100);
+    let regions = [Rect::new(r.x, r.y, r.w, 20)];
+    assert_eq!(paint_scope(&tree, &regions), [Rect::new(r.x + 6, r.y + 7, 3, 4)]);
+    tap(&mut tree, "toggle");
+    run(&mut tree);
+    assert_eq!(rect_of(&tree, "scope").h, 200);
+    paint_scope(&tree, &regions);
+}
+
+#[test]
+fn redrawing_a_part_damages_it_alone_without_a_view() {
+    let mut tree = Tree::new(Scope { tall: false, size: (0, 0) }, SCREEN, Caps::INTERNAL, theme());
+    run(&mut tree);
+    let r = rect_of(&tree, "scope");
+    tree.take_damage();
+    let views = VIEWS.load(core::sync::atomic::Ordering::Relaxed);
+    let point = tree.tap_point("part").unwrap();
+    tree.touch(&[(0, point)], 0);
+    tree.touch(&[], 10);
+    tree.update();
+    let damage = tree.take_damage();
+    assert!(damage.contains(&Rect::new(r.x + 15, r.y + 25, 30, 4)), "{damage:?}");
+    assert!(damage.iter().all(|d| d.h <= 10), "{damage:?}");
+    assert_eq!(VIEWS.load(core::sync::atomic::Ordering::Relaxed), views);
+}
+
 #[test]
 fn strips_give_back_the_lent_memory() {
     use devkit::{Lease, StaticLease};

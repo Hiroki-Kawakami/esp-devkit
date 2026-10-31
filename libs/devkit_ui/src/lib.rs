@@ -10,6 +10,7 @@ extern crate alloc;
 
 mod app;
 mod bump;
+mod canvas;
 mod component;
 mod element;
 mod erased;
@@ -31,7 +32,9 @@ mod tests;
 
 pub use app::{App, AppConfig, Handle, Input, Probe};
 pub use bsp_rs::display::Rotation;
+pub use canvas::{Canvas, CanvasId};
 pub use component::{Animation, Child, Component, Cx, ListId, Nav, Property, RenderMode, Screen};
+pub use devkit_gfx::{ImageFormat, Raster, RasterTarget, Rect};
 pub use element::{ChildElement, Children, Drag, Element, Ui};
 pub use gesture::{Direction as SwipeDirection, Gesture, Gestures, Phase};
 pub use nav::{Overlay, Root};

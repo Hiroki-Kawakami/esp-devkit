@@ -3,6 +3,9 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
+use devkit_gfx::Rect;
+
+use crate::canvas::{Canvas, CanvasId};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::any::{Any, TypeId};
@@ -38,6 +41,9 @@ pub trait Component: 'static {
     fn list_row<'a>(&'a self, _list: ListId, _index: usize, ui: &'a Ui<Self::Msg>) -> Element<'a, Self::Msg> {
         ui.empty()
     }
+
+    /// Paints a `Ui::canvas`, in every frame that shows it.
+    fn draw<'a>(&'a self, _id: CanvasId, _canvas: &mut Canvas<'a, '_>) {}
 }
 
 /// A component created by a parent's view.
@@ -106,6 +112,7 @@ pub(crate) struct Requests {
     pub(crate) animations: Vec<(&'static str, Animation)>,
     pub(crate) focus: Option<&'static str>,
     pub(crate) input: Vec<TextInput>,
+    pub(crate) redraw: Vec<(&'static str, Option<Rect>)>,
 }
 
 /// What an animation moves, without running a view or layout.
@@ -159,6 +166,16 @@ impl<C: Component> Cx<C> {
     /// inside it, then anywhere.
     pub fn nav_of<K: 'static>(&mut self) -> Nav<'_> {
         Nav { requests: &mut self.requests, target: Some(TypeId::of::<K>()) }
+    }
+
+    /// Paints the canvas with this id again, without a view or layout.
+    pub fn redraw(&mut self, id: &'static str) {
+        self.requests.redraw.push((id, None));
+    }
+
+    /// The same for a part of it, in its coordinates.
+    pub fn redraw_rect(&mut self, id: &'static str, rect: Rect) {
+        self.requests.redraw.push((id, Some(rect)));
     }
 
     /// Moves the focus to the node with this id, after the view has been built.
@@ -243,6 +260,7 @@ pub(crate) trait AnyHost {
     fn dispatch(&mut self, msg: Erased, replaced: Option<Strips>) -> Requests;
     fn build(&self, tree: &mut Tree, id: u16, node: NodeId);
     fn build_row(&self, tree: &mut Tree, id: u16, list: ListId, index: usize, row: NodeId);
+    fn draw<'a>(&'a self, id: CanvasId, canvas: &mut Canvas<'a, '_>);
     fn as_any(&mut self) -> &mut dyn Any;
 
     fn hook(&mut self, _hook: Hook) -> Requests {
@@ -282,6 +300,10 @@ impl<C: Component> AnyHost for Host<C> {
         tree.reconcile(id, row, &element);
     }
 
+    fn draw<'a>(&'a self, id: CanvasId, canvas: &mut Canvas<'a, '_>) {
+        self.component.draw(id, canvas);
+    }
+
     fn as_any(&mut self) -> &mut dyn Any {
         self
     }
@@ -294,6 +316,10 @@ pub(crate) struct ScreenHost<S: Screen> {
 impl<S: Screen> AnyHost for ScreenHost<S> {
     fn dispatch(&mut self, msg: Erased, replaced: Option<Strips>) -> Requests {
         self.inner.dispatch(msg, replaced)
+    }
+
+    fn draw<'a>(&'a self, id: CanvasId, canvas: &mut Canvas<'a, '_>) {
+        self.inner.draw(id, canvas);
     }
 
     fn build(&self, tree: &mut Tree, id: u16, node: NodeId) {

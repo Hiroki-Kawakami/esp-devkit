@@ -452,6 +452,13 @@ impl Presenter {
 
     /// Draws what was invalidated and shows it. `Swap` returns once the frame
     /// is queued for the next boundary.
+    /// What the next `render` repaints. May wait for a framebuffer.
+    pub fn regions(&mut self) -> Result<&[Rect]> {
+        self.acquire()?;
+        let target = self.target.ok_or(Error::INVALID_STATE)?;
+        Ok(self.damage[target].regions())
+    }
+
     pub fn render<C: Allocator + Clone>(&mut self, list: &DisplayList<'_, Caps>, cache: &mut GlyphCache<C>) -> Result<Stats> {
         self.acquire()?;
         self.fresh = false;

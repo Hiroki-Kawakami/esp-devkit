@@ -8,6 +8,7 @@ use alloc::vec::Vec;
 use devkit_gfx::{Color, CornerMask, DisplayList, Rect, ShadowMask};
 use idf::heap::Caps;
 
+use crate::canvas::Canvas;
 use crate::node::{NONE, NodeContent, NodeId};
 use crate::style::Shadow;
 use crate::theme::{Border, Look};
@@ -26,7 +27,7 @@ impl Effects {
         Self { corners: Vec::new(), rings: Vec::new(), shadows: Vec::new(), caps }
     }
 
-    fn corner(&mut self, radius: u8) -> CornerMask {
+    pub(crate) fn corner(&mut self, radius: u8) -> CornerMask {
         if let Some(corner) = self.corners.iter().find(|c| c.radius() == u16::from(radius)) {
             return *corner;
         }
@@ -35,7 +36,7 @@ impl Effects {
         corner
     }
 
-    fn ring(&mut self, radius: u8, stroke: u8) -> CornerMask {
+    pub(crate) fn ring(&mut self, radius: u8, stroke: u8) -> CornerMask {
         if let Some((_, _, ring)) = self.rings.iter().find(|(r, s, _)| *r == radius && *s == stroke) {
             return *ring;
         }
@@ -61,13 +62,13 @@ struct Inherited {
     foreground: Option<Color>,
 }
 
-fn dim(color: Color, opacity: u8) -> Color {
+pub(crate) fn dim(color: Color, opacity: u8) -> Color {
     color.with_opacity(opacity)
 }
 
 impl Tree {
     /// `(dx, dy)` is the origin of `id`'s parent content on the screen.
-    fn paint_node<'a>(&'a self, id: NodeId, dx: i32, dy: i32, clip: Rect, inherited: Inherited, effects: &mut Effects, list: &mut DisplayList<'a, Caps>) {
+    fn paint_node<'a>(&'a self, id: NodeId, dx: i32, dy: i32, clip: Rect, inherited: Inherited, effects: &mut Effects, regions: &[Rect], list: &mut DisplayList<'a, Caps>) {
         let node = &self.nodes[id as usize];
         let x = dx + i32::from(node.rect.x) + i32::from(node.translate.0);
         let y = dy + i32::from(node.rect.y) + i32::from(node.translate.1);
@@ -133,10 +134,28 @@ impl Tree {
                 }
             }
             NodeContent::Image { image, tint } => list.image(cx as i16, cy as i16, *image, dim(*tint, opacity)),
+            NodeContent::Canvas(canvas) => {
+                let viewport = rect.intersect(&clip);
+                let Some(host) = &self.slots[usize::from(node.owner)].host else { return };
+                list.push_clip(viewport);
+                let mut target = Canvas {
+                    list,
+                    effects,
+                    regions,
+                    theme: self.slots[usize::from(node.owner)].theme,
+                    origin: (cx as i16, cy as i16),
+                    size: (rect.w - left - right, rect.h - top - bottom),
+                    opacity,
+                    clips: 0,
+                };
+                host.draw(canvas.id, &mut target);
+                target.finish();
+                list.pop_clip();
+            }
             NodeContent::Scroll(scroll) => {
                 let viewport = rect.intersect(&clip);
                 list.push_clip(viewport);
-                self.paint_children(id, cx, cy - scroll.offset, viewport, down, effects, list);
+                self.paint_children(id, cx, cy - scroll.offset, viewport, down, effects, regions, list);
                 list.pop_clip();
             }
             NodeContent::List(l) => {
@@ -144,30 +163,31 @@ impl Tree {
                 list.push_clip(viewport);
                 for &(index, row) in &l.rows {
                     let row_y = cy + index as i32 * i32::from(l.row_height) - l.offset;
-                    self.paint_node(row, cx, row_y, viewport, down, effects, list);
+                    self.paint_node(row, cx, row_y, viewport, down, effects, regions, list);
                 }
                 list.pop_clip();
             }
             _ if style.clip => {
                 let viewport = rect.intersect(&clip);
                 list.push_clip(viewport);
-                self.paint_children(id, x, y, viewport, down, effects, list);
+                self.paint_children(id, x, y, viewport, down, effects, regions, list);
                 list.pop_clip();
             }
-            _ => self.paint_children(id, x, y, clip, down, effects, list),
+            _ => self.paint_children(id, x, y, clip, down, effects, regions, list),
         }
     }
 
-    fn paint_children<'a>(&'a self, id: NodeId, dx: i32, dy: i32, clip: Rect, inherited: Inherited, effects: &mut Effects, list: &mut DisplayList<'a, Caps>) {
+    fn paint_children<'a>(&'a self, id: NodeId, dx: i32, dy: i32, clip: Rect, inherited: Inherited, effects: &mut Effects, regions: &[Rect], list: &mut DisplayList<'a, Caps>) {
         let mut child = self.nodes[id as usize].first_child;
         while child != NONE {
-            self.paint_node(child, dx, dy, clip, inherited, effects, list);
+            self.paint_node(child, dx, dy, clip, inherited, effects, regions, list);
             child = self.nodes[child as usize].next;
         }
     }
 
-    pub(crate) fn paint<'a>(&'a self, effects: &mut Effects, list: &mut DisplayList<'a, Caps>) {
+    /// `regions` are what the frame repaints.
+    pub(crate) fn paint<'a>(&'a self, effects: &mut Effects, regions: &[Rect], list: &mut DisplayList<'a, Caps>) {
         list.reserve(self.nodes.len());
-        self.paint_node(self.root, 0, 0, self.area, Inherited { opacity: 255, foreground: None }, effects, list);
+        self.paint_node(self.root, 0, 0, self.area, Inherited { opacity: 255, foreground: None }, effects, regions, list);
     }
 }

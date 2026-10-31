@@ -14,6 +14,7 @@ use crate::geom::Rect;
 use crate::glyph_cache::GlyphCache;
 use crate::list::{DisplayList, MAX_CLIPS, Op};
 use crate::pixel::Pixel;
+use crate::raster::RasterTarget;
 use crate::surface::Surface;
 use crate::text::PlacedGlyph;
 
@@ -202,6 +203,9 @@ pub fn draw<P: Pixel, A: Allocator, L: Allocator>(list: &DisplayList<'_, L>, pre
                     let masks = &prepared.masks[start as usize..start as usize + glyphs.len()];
                     draw_text::<P>(surface, glyphs, masks, x, y, &clip, color);
                 }
+            }
+            Op::Raster { rect, origin, raster } => {
+                raster.raster(&mut RasterTarget::new::<P>(surface, rect.intersect(&clip), origin));
             }
             Op::PushClip(_) | Op::PopClip => {}
         }

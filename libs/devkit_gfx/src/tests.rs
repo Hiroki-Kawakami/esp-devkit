@@ -357,6 +357,52 @@ fn text_wraps_at_spaces_and_wide_characters() {
     assert_eq!(run.glyphs()[3].x, 0);
 }
 
+struct Stripes;
+
+impl Raster for Stripes {
+    fn raster(&self, target: &mut RasterTarget<'_>) {
+        let area = target.area();
+        for y in area.y..area.bottom() {
+            if y % 2 == 0 {
+                target.fill(Rect::new(0, y, 100, 1), Color::rgb(255, 0, 0));
+            } else {
+                target.row(y).fill(0xFF);
+            }
+        }
+    }
+}
+
+#[test]
+fn a_raster_sees_its_own_coordinates_and_matches_across_strips() {
+    fn picture<P: Pixel>() {
+        let mut cache = GlyphCache::new(1024);
+        let mut list = DisplayList::new();
+        list.fill(Rect::new(0, 0, 40, 40), Color::rgb(0, 0, 0));
+        list.push_clip(Rect::new(0, 0, 30, 40));
+        list.raster(Rect::new(10, 5, 100, 20), (10, 5), &Stripes);
+        list.pop_clip();
+        let whole = render::<P>(&list, &mut cache, 40, 40, &[Rect::new(0, 0, 40, 40)]);
+        let strips: Vec<Rect> = (0..4).map(|i| Rect::new(0, i * 10, 40, 10)).collect();
+        assert_eq!(whole, render::<P>(&list, &mut cache, 40, 40, &strips));
+        let stride = 40 * P::BYTES;
+        let at = |x: usize, y: usize| &whole[y * stride + x * P::BYTES..][..P::BYTES];
+        let red = render_color::<P>(Color::rgb(255, 0, 0));
+        assert_eq!(at(10, 5), &red[..]);
+        assert!(at(10, 6).iter().all(|&b| b == 0xFF));
+        assert!(at(30, 6).iter().all(|&b| b == 0), "clipped");
+        assert!(at(9, 6).iter().all(|&b| b == 0));
+        assert!(at(10, 25).iter().all(|&b| b == 0));
+    }
+    picture::<Rgb565>();
+    picture::<Bgr888>();
+}
+
+fn render_color<P: Pixel>(color: Color) -> Vec<u8> {
+    let mut list = DisplayList::new();
+    list.fill(Rect::new(0, 0, 1, 1), color);
+    render::<P>(&list, &mut GlyphCache::new(1024), 1, 1, &[Rect::new(0, 0, 1, 1)])
+}
+
 #[test]
 fn carets_follow_wrapped_lines_and_taps_find_them() {
     let chain = test_chain();

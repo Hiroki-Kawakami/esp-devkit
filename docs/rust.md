@@ -718,6 +718,34 @@ app.run();
 
 - `TextBuffer::set_composing` marks text an input method has not committed; the
   field underlines it. Input methods live outside this crate.
+- `ui.canvas(id)` is a node painted by `Component::draw`, in its own coordinates
+  and clipped to it. `cx.redraw(id)` and `cx.redraw_rect(id, rect)` repaint it
+  without a view or layout; `canvas.needs(rect)` tells what this frame repaints,
+  across framebuffers, so the rest need not be recorded.
+
+  ```rust
+  ui.canvas(TERMINAL).grow(1).id("term").on_size(Msg::Resized).on_input(Msg::Key)
+
+  fn draw<'a>(&'a self, _: CanvasId, canvas: &mut Canvas<'a, '_>) {
+      for (row, run) in self.rows.iter().enumerate() {
+          let rect = Rect::new(0, row as i16 * LINE, canvas.size().0, LINE);
+          if canvas.needs(rect) {
+              canvas.fill(rect, BACKGROUND);
+              canvas.text(0, rect.y, run, FOREGROUND);
+          }
+      }
+  }
+  ```
+
+- `.on_size(Msg)` comes with the first layout and whenever the size changes,
+  before the canvas is drawn at that size. `draw` takes `&self`, so whatever
+  depends on the size is made there. `canvas.size()` is enough to only draw.
+- `canvas.raster(rect, &self.plot)` writes pixels through a `Raster`. It runs on
+  every drawing task at once, each with its own part of the picture, in the
+  panel's format. Text is not available there.
+- Keeping a picture across frames is the app's: draw into its own memory through
+  a `Surface`, in the format of `ui.pixel_format()`, and show it with
+  `canvas.image` and `Image::from_pixels`.
 - `Probe` serves test harnesses: `tree`, `tap` (through the touch path, refused
   when the node is covered), `invoke` (the handler directly), `idle` and `stats`.
 

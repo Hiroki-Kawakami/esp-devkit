@@ -12,6 +12,7 @@ use crate::effect::{CornerMask, ShadowMask};
 use crate::format::ImageFormat;
 use crate::geom::Rect;
 use crate::image::Image;
+use crate::raster::Raster;
 use crate::text::{PlacedGlyph, TextRun};
 
 pub(crate) const MAX_CLIPS: usize = 8;
@@ -24,6 +25,7 @@ pub enum Op<'a> {
     Shadow { rect: Rect, mask: ShadowMask, color: Color },
     Image { x: i16, y: i16, image: Image<'a>, tint: Color },
     Text { x: i16, y: i16, glyphs: &'a [PlacedGlyph], bounds: Rect, color: Color, slot: u32 },
+    Raster { rect: Rect, origin: (i16, i16), raster: &'a dyn Raster },
     PushClip(Rect),
     PopClip,
 }
@@ -31,7 +33,7 @@ pub enum Op<'a> {
 impl Op<'_> {
     pub(crate) fn bounds(&self) -> Rect {
         match *self {
-            Self::Fill { rect, .. } | Self::RoundRect { rect, .. } | Self::Border { rect, .. } => rect,
+            Self::Fill { rect, .. } | Self::RoundRect { rect, .. } | Self::Border { rect, .. } | Self::Raster { rect, .. } => rect,
             Self::Shadow { rect, mask, .. } => rect.expand(mask.blur() as i16),
             Self::Image { x, y, image, .. } => Rect::new(x, y, image.width() as i16, image.height() as i16),
             Self::Text { bounds, .. } => bounds,
@@ -124,6 +126,11 @@ impl<'a, A: Allocator> DisplayList<'a, A> {
         self.text_ops += 1;
         let bounds = run.bounds().offset(x, y);
         self.ops.push(Op::Text { x, y, glyphs: run.glyphs(), bounds, color, slot });
+    }
+
+    /// `raster` paints `rect`, seeing `origin` as its `(0, 0)`.
+    pub fn raster(&mut self, rect: Rect, origin: (i16, i16), raster: &'a dyn Raster) {
+        self.ops.push(Op::Raster { rect, origin, raster });
     }
 
     pub fn push_clip(&mut self, rect: Rect) {

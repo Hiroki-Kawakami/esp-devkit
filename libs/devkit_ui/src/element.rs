@@ -10,12 +10,13 @@ use core::fmt::{self, Write};
 use core::marker::PhantomData;
 use core::ptr::{self, NonNull};
 
-use devkit_gfx::{Align as TextAlign, Color, FontChain, Image, Overflow, TextOptions};
+use devkit_gfx::{Align as TextAlign, Color, FontChain, Image, ImageFormat, Overflow, TextOptions};
 
 use crate::bump::Bump;
 use crate::component::{AnyHost, Child, EventMap, Host, ListId, Screen, call_event_map, screen_host};
 use crate::erased::Erased;
 use crate::style::{Align, Dimension, Direction, Inset, Insets, Justify, Role, ScreenStyle, Shadow, State, Style};
+use crate::canvas::CanvasId;
 use crate::gesture::{Gesture, GestureMap, Gestures, call_gesture_map};
 use crate::keyboard::{InputKind, Keyboard};
 use crate::text_buffer::TextInput;
@@ -69,8 +70,20 @@ pub(crate) enum Content<'a> {
     Image { image: Image<'static>, tint: Color },
     Scroll,
     List { id: ListId, count: usize, row_height: i16, revision: Option<u32> },
+    Canvas(CanvasId),
     Child(&'a dyn ChildSpec),
     Navigator { key: TypeId, initial: Option<&'a dyn ChildSpec> },
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct SizeMap {
+    pub(crate) function: *const (),
+    pub(crate) call: unsafe fn(*const (), i16, i16) -> Erased,
+}
+
+unsafe fn call_size_map<M: Copy>(function: *const (), width: i16, height: i16) -> Erased {
+    let function: fn(i16, i16) -> M = unsafe { core::mem::transmute(function) };
+    Erased::new(function(width, height))
 }
 
 /// What an editable text shows besides the text.
@@ -146,6 +159,7 @@ pub struct Element<'a, M: Copy> {
     pub(crate) tap: Option<Erased>,
     pub(crate) drag: Option<DragMap>,
     pub(crate) gestures: Option<GestureMap>,
+    pub(crate) size: Option<SizeMap>,
     pub(crate) input: Option<InputMap>,
     pub(crate) focusable: bool,
     pub(crate) keep_focus: bool,
@@ -158,7 +172,7 @@ pub struct Element<'a, M: Copy> {
 
 impl<'a, M: Copy> Element<'a, M> {
     fn new(content: Content<'a>, children: &'a [Element<'a, M>]) -> Self {
-        Self { content, children, style: Style::default(), key: None, id: None, role: Role::None, tap: None, drag: None, gestures: None, input: None, focusable: false, keep_focus: false, keyboard: None, input_kind: InputKind::Text, repeat: false, state: State::empty(), _msg: PhantomData }
+        Self { content, children, style: Style::default(), key: None, id: None, role: Role::None, tap: None, drag: None, gestures: None, size: None, input: None, focusable: false, keep_focus: false, keyboard: None, input_kind: InputKind::Text, repeat: false, state: State::empty(), _msg: PhantomData }
     }
 
     pub const fn is_empty(&self) -> bool {
@@ -199,6 +213,13 @@ impl<'a, M: Copy> Element<'a, M> {
     /// `DOUBLE_TAP`, the node's own `on_tap` waits to see no second tap comes.
     pub fn gestures(mut self, gestures: Gestures, on_gesture: fn(Gesture) -> M) -> Self {
         self.gestures = Some(GestureMap { gestures, function: on_gesture as *const (), call: call_gesture_map::<M> });
+        self
+    }
+
+    /// A canvas's size, once laid out and whenever it changes, before it is
+    /// drawn at that size.
+    pub fn on_size(mut self, on_size: fn(i16, i16) -> M) -> Self {
+        self.size = Some(SizeMap { function: on_size as *const (), call: call_size_map::<M> });
         self
     }
 
@@ -508,6 +529,7 @@ pub(crate) struct BuildContext {
     pub(crate) insets: Insets,
     pub(crate) area: devkit_gfx::Rect,
     pub(crate) screen_style: ScreenStyle,
+    pub(crate) format: ImageFormat,
 }
 
 /// Builds elements; everything it hands out lives for the rebuild.
@@ -527,6 +549,11 @@ impl<M: Copy> Ui<M> {
     }
 
     /// The space the chrome covers.
+    /// The format `Image::from_pixels` copies without conversion.
+    pub fn pixel_format(&self) -> ImageFormat {
+        self.context.format
+    }
+
     pub fn insets(&self) -> Insets {
         self.context.insets
     }
@@ -601,6 +628,11 @@ impl<M: Copy> Ui<M> {
 
     pub fn image<'a>(&'a self, image: Image<'static>) -> Element<'a, M> {
         Element::new(Content::Image { image, tint: Color::rgb(0, 0, 0) }, &[])
+    }
+
+    /// Pixels drawn by `Component::draw`. Takes the size the parent gives it.
+    pub fn canvas<'a>(&'a self, id: CanvasId) -> Element<'a, M> {
+        Element::new(Content::Canvas(id), &[])
     }
 
     /// Scrolls one child vertically. Takes the size the parent gives it.

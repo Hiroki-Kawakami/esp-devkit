@@ -14,7 +14,7 @@ use core::fmt::Write;
 use core::ptr::NonNull;
 use core::slice;
 
-use devkit_gfx::Rect;
+use devkit_gfx::{ImageFormat, Rect};
 use idf::heap::Caps;
 
 use crate::bump::Bump;
@@ -24,7 +24,7 @@ use crate::gesture::{Gestures, Tracker};
 use crate::keyboard::{InputKind, KeyboardMode, KeyboardPanel};
 use crate::erased::Erased;
 use crate::nav::{NavigatorNode, Overlay, Root, Saved};
-use crate::node::{ListNode, NONE, Node, NodeContent, NodeId, ScrollNode, TextNode};
+use crate::node::{CanvasNode, ListNode, NONE, Node, NodeContent, NodeId, ScrollNode, TextNode};
 use crate::presenter::Strips;
 use crate::style::{Dimension, Insets, Role, ScreenStyle, State};
 use crate::text_buffer::TextInput;
@@ -92,6 +92,9 @@ pub(crate) struct Tree {
     pub(crate) area: Rect,
     pub(crate) slots: Vec<Slot>,
     lists: Vec<NodeId>,
+    canvases: Vec<NodeId>,
+    pending_redraw: Vec<(&'static str, Option<Rect>)>,
+    format: ImageFormat,
     pub(crate) navigators: Vec<NodeId>,
     pub(crate) root_navigator: NodeId,
     pub(crate) chrome: Vec<u16>,
@@ -160,6 +163,9 @@ impl Tree {
             dirty: Vec::new(),
             layout_dirty: true,
             damage: Vec::new(),
+            canvases: Vec::new(),
+            pending_redraw: Vec::new(),
+            format: ImageFormat::Rgb565,
             contacts: Vec::new(),
             trackers: Vec::new(),
             flings: Vec::new(),
@@ -243,7 +249,12 @@ impl Tree {
             insets: Insets { bottom: self.insets.bottom.max(self.keyboard_height), ..self.insets },
             area: self.area,
             screen_style: self.screen_style,
+            format: self.format,
         }
+    }
+
+    pub(crate) fn set_pixel_format(&mut self, format: ImageFormat) {
+        self.format = format;
     }
 
     pub(crate) fn alloc_slot(&mut self) -> u16 {
@@ -297,6 +308,7 @@ impl Tree {
                 }
                 self.lists.retain(|l| *l != id);
             }
+            NodeContent::Canvas(_) => self.canvases.retain(|c| *c != id),
             NodeContent::Navigator(_) => self.navigators.retain(|n| *n != id),
             NodeContent::Child(slot) => {
                 let slot = usize::from(*slot);
@@ -449,6 +461,7 @@ impl Tree {
         node.tap = element.tap;
         node.drag = element.drag;
         node.gestures = element.gestures;
+        node.size = element.size;
         node.input = element.input;
         node.focusable = element.focusable;
         node.keep_focus = element.keep_focus;
@@ -514,6 +527,10 @@ impl Tree {
                     self.layout_dirty = true;
                 }
             }
+            (NodeContent::Canvas(canvas), Content::Canvas(canvas_id)) => {
+                node.paint_dirty |= canvas.id != *canvas_id;
+                canvas.id = *canvas_id;
+            }
             (NodeContent::List(list), Content::List { id: list_id, count, row_height, revision }) => {
                 list.stale |= revision.is_none() || *revision != list.revision;
                 list.revision = *revision;
@@ -560,6 +577,7 @@ impl Tree {
             Content::List { id, count, row_height, revision } => {
                 NodeContent::List(ListNode { id, count, row_height, revision, offset: 0, rows: Vec::new_in(self.caps), stale: false })
             }
+            Content::Canvas(id) => NodeContent::Canvas(CanvasNode { id, reported: (0, 0) }),
             Content::Child(_) => NodeContent::Box,
             Content::Navigator { key, .. } => NodeContent::Navigator(NavigatorNode { key, stack: Vec::new(), slide: None }),
         };
@@ -567,6 +585,7 @@ impl Tree {
         self.layout_dirty = true;
         self.apply_common(id, element);
         match element.content {
+            Content::Canvas(_) => self.canvases.push(id),
             Content::List { id: list_id, .. } => {
                 self.lists.push(id);
                 let saved = self.restoring.last().and_then(|s| s.lists.iter().find(|l| l.0 == list_id));
@@ -691,6 +710,7 @@ impl Tree {
         for input in requests.input {
             self.input(input);
         }
+        self.pending_redraw.extend(requests.redraw);
         for op in requests.nav {
             self.apply_nav(slot, op);
         }
@@ -734,6 +754,11 @@ impl Tree {
             self.sync_list(self.lists[i]);
         }
         self.sync_screen(self.root, 0, 0, self.area, false);
+        if self.report_sizes() {
+            self.update();
+            return;
+        }
+        self.apply_redraws();
         if let Some(name) = self.pending_focus.take() {
             match self.find(name) {
                 Some(id) => self.set_focus(id),
@@ -800,12 +825,45 @@ impl Tree {
         }
     }
 
+    fn report_sizes(&mut self) -> bool {
+        let mut reported = false;
+        for &id in &self.canvases {
+            let node = &mut self.nodes[id as usize];
+            let [left, top, right, bottom] = node.style.padding;
+            let size = (node.rect.w - left - right, node.rect.h - top - bottom);
+            let NodeContent::Canvas(canvas) = &mut node.content else { continue };
+            if canvas.reported == size {
+                continue;
+            }
+            canvas.reported = size;
+            if let Some(map) = node.size {
+                let msg = unsafe { (map.call)(map.function, size.0, size.1) };
+                self.queue.push_back((node.owner, msg));
+                reported = true;
+            }
+        }
+        reported
+    }
+
+    fn apply_redraws(&mut self) {
+        for (name, rect) in core::mem::take(&mut self.pending_redraw) {
+            let Some(id) = self.find(name) else {
+                idf::log::error!(c"ui", "redraw: no node {name}");
+                continue;
+            };
+            let node = &self.nodes[id as usize];
+            let [left, top, _, _] = node.style.padding;
+            let screen = node.screen;
+            self.damage.push(rect.map_or(screen, |r| r.offset(screen.x + left, screen.y + top).intersect(&screen)));
+        }
+    }
+
     pub(crate) fn caret_visible(&self, id: NodeId) -> bool {
         self.focus == id && self.caret_on
     }
 
     pub(crate) fn has_caret(&self) -> bool {
-        self.focus != NONE
+        self.focus != NONE && matches!(&self.nodes[self.focus as usize].content, NodeContent::Text(text) if text.edit.is_some())
     }
 
     fn set_focus(&mut self, id: NodeId) {
@@ -965,6 +1023,7 @@ impl Tree {
             && self.contacts.is_empty()
             && self.trackers.is_empty()
             && self.damage.is_empty()
+            && self.pending_redraw.is_empty()
             && !self.layout_dirty
     }
 
@@ -1214,7 +1273,7 @@ impl Tree {
     }
 
     fn tick_caret(&mut self, dt_ms: u32) {
-        if self.focus == NONE {
+        if !self.has_caret() {
             return;
         }
         self.caret_ms += dt_ms;

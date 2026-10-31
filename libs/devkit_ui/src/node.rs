@@ -10,7 +10,8 @@ use devkit_gfx::{Color, FontChain, Image, Rect, TextOptions, TextRun};
 use idf::heap::Caps;
 
 use crate::component::ListId;
-use crate::element::{DragMap, Edit, InputMap};
+use crate::canvas::CanvasId;
+use crate::element::{DragMap, Edit, InputMap, SizeMap};
 use crate::erased::Erased;
 use crate::gesture::GestureMap;
 use crate::keyboard::{InputKind, Keyboard};
@@ -71,12 +72,18 @@ pub(crate) struct ListNode {
     pub(crate) stale: bool,
 }
 
+pub(crate) struct CanvasNode {
+    pub(crate) id: CanvasId,
+    pub(crate) reported: (i16, i16),
+}
+
 pub(crate) enum NodeContent {
     Box,
     Text(TextNode),
     Image { image: Image<'static>, tint: Color },
     Scroll(ScrollNode),
     List(ListNode),
+    Canvas(CanvasNode),
     Child(u16),
     Navigator(NavigatorNode),
 }
@@ -91,6 +98,7 @@ impl NodeContent {
                 | (Self::Image { .. }, C::Image { .. })
                 | (Self::Scroll(_), C::Scroll)
                 | (Self::List(_), C::List { .. })
+                | (Self::Canvas(_), C::Canvas(_))
         ) || matches!((self, other), (Self::Navigator(nav), C::Navigator { key, .. }) if nav.key == *key)
     }
 }
@@ -108,6 +116,7 @@ pub(crate) struct Node {
     pub(crate) tap: Option<Erased>,
     pub(crate) drag: Option<DragMap>,
     pub(crate) gestures: Option<GestureMap>,
+    pub(crate) size: Option<SizeMap>,
     pub(crate) input: Option<InputMap>,
     pub(crate) focusable: bool,
     pub(crate) keep_focus: bool,
@@ -148,6 +157,7 @@ impl Node {
             tap: None,
             drag: None,
             gestures: None,
+            size: None,
             input: None,
             focusable: false,
             keep_focus: false,

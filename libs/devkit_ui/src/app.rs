@@ -11,9 +11,9 @@ use core::marker::PhantomData;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use core::time::Duration;
 
-use bsp_rs::display::{Display, Rotation};
+use bsp_rs::display::{Display, PixelFormat, Rotation};
 use bsp_rs::touch::{MAX_POINTS, Point, Touch};
-use devkit_gfx::{DisplayList, GlyphCache};
+use devkit_gfx::{DisplayList, GlyphCache, ImageFormat};
 use idf::heap::Caps;
 use idf::log::error;
 use idf::sync::{Mutex, Receiver, Semaphore, Sender, channel};
@@ -310,6 +310,11 @@ impl<C: Screen> App<C> {
             tree: {
                 let mut tree = Tree::new(root, area, config.presenter.data_caps, config.theme);
                 tree.add_keyboard(config.keyboard);
+                tree.set_pixel_format(match display.pixel_format() {
+                    PixelFormat::Rgb888 => ImageFormat::Rgb888,
+                    PixelFormat::L8 => ImageFormat::L8,
+                    PixelFormat::Rgb565 => ImageFormat::Rgb565,
+                });
                 tree
             },
             presenter,
@@ -412,7 +417,14 @@ impl<C: Screen> App<C> {
             self.presenter.invalidate(rect);
         }
         let mut list = DisplayList::new_in(self.data_caps);
-        self.tree.paint(&mut self.effects, &mut list);
+        let regions = match self.presenter.regions() {
+            Ok(regions) => regions,
+            Err(err) => {
+                error!(TAG, "acquire: {err}");
+                return;
+            }
+        };
+        self.tree.paint(&mut self.effects, regions, &mut list);
         let painted = note(&mut self.timing.paint, updated);
         match self.presenter.render(&list, &mut self.cache) {
             Ok(stats) if stats.glyphs_missing > 0 => {
