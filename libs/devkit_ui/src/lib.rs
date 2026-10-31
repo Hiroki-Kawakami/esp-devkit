@@ -40,7 +40,7 @@ pub use devkit_gfx::{ImageFormat, Raster, RasterTarget, Rect};
 pub use element::{ChildElement, Children, Drag, Element, Ui};
 pub use external::{ExternalFrame, ExternalSurface, Policy};
 pub use gesture::{Direction as SwipeDirection, Gesture, Gestures, Phase};
-pub use nav::{Overlay, Root};
+pub use nav::{Overlay, Root, SplitRole};
 pub use rotation::{AutoRotation, Rotations};
 pub use presenter::{Config, PresentMode, Presenter, Stats, StripMemory, Strips};
 pub use style::{Align, Bars, Dimension, Direction, Insets, Justify, Role, ScreenStyle, Shadow, State, Style};

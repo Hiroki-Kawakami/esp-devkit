@@ -168,6 +168,27 @@ impl Tree {
                 }
                 list.pop_clip();
             }
+            NodeContent::Navigator(nav) if nav.split.is_some() => {
+                let side = nav.split.unwrap_or(0);
+                let main = nav.main();
+                let viewport = rect.intersect(&clip);
+                let right = Rect::new(rect.x + side, rect.y, rect.w - side, rect.h).intersect(&viewport);
+                list.push_clip(viewport);
+                if main != NONE {
+                    self.paint_node(main, x, y, viewport, down, effects, regions, list);
+                }
+                // Slides stay out of the main screen.
+                list.push_clip(right);
+                let mut child = node.first_child;
+                while child != NONE {
+                    if child != main {
+                        self.paint_node(child, x, y, right, down, effects, regions, list);
+                    }
+                    child = self.nodes[child as usize].next;
+                }
+                list.pop_clip();
+                list.pop_clip();
+            }
             _ if style.clip => {
                 let viewport = rect.intersect(&clip);
                 list.push_clip(viewport);

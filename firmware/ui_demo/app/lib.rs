@@ -248,7 +248,9 @@ fn run_demo(board: &Board, display: &'static Display, settings: &Settings) {
         ["key", "end"] => key(TextInput::End),
         ["keyboard", "connected"] => connect(true),
         ["keyboard", "removed"] => connect(false),
-        _ => Err("ui <tree|stats|tap <id>|invoke <id>|type <text>|key <name>|keyboard <connected|removed>>".to_string()),
+        ["card", "out"] => demo::set_card_present(false).then_some(None).ok_or_else(|| "queue".to_string()),
+        ["card", "in"] => demo::set_card_present(true).then_some(None).ok_or_else(|| "queue".to_string()),
+        _ => Err("ui <tree|stats|tap <id>|invoke <id>|type <text>|key <name>|keyboard <connected|removed>|card <in|out>>".to_string()),
     });
     let clock = thread::Builder::new().name("clock").stack_size(4096).spawn(move || {
         loop {

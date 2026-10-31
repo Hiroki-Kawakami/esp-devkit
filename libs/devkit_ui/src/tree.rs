@@ -258,7 +258,10 @@ impl Tree {
     }
 
     pub(crate) fn context(&self, slot: u16) -> BuildContext {
+        let (split_role, can_pop) = self.nav_state(slot);
         BuildContext {
+            split_role,
+            can_pop,
             theme: self.slots[usize::from(slot)].theme,
             insets: Insets { bottom: self.insets.bottom.max(self.keyboard_height), ..self.insets },
             area: self.area,
@@ -585,7 +588,10 @@ impl Tree {
                 }
                 list.id = *list_id;
             }
-            (NodeContent::Navigator(_), _) => return,
+            (NodeContent::Navigator(nav), Content::Navigator { split, .. }) => {
+                nav.wanted = *split;
+                return;
+            }
             (NodeContent::Child(slot), Content::Child(spec)) => {
                 let slot = *slot;
                 let index = usize::from(slot);
@@ -623,7 +629,11 @@ impl Tree {
             Content::Canvas(id) => NodeContent::Canvas(CanvasNode { id, reported: (0, 0) }),
             Content::External(surface) => NodeContent::External(surface.clone()),
             Content::Child(_) => NodeContent::Box,
-            Content::Navigator { key, .. } => NodeContent::Navigator(NavigatorNode { key, stack: Vec::new(), slide: None }),
+            Content::Navigator { key, split, .. } => {
+                let mut navigator = NavigatorNode::new(key);
+                navigator.wanted = split;
+                NodeContent::Navigator(navigator)
+            }
         };
         let id = self.alloc_node(Node::new(content, owner));
         self.layout_dirty = true;
@@ -643,7 +653,7 @@ impl Tree {
                     list.offset = offset;
                 }
             }
-            Content::Navigator { key, initial } => {
+            Content::Navigator { key, initial, .. } => {
                 self.navigators.push(id);
                 if !self.restore_navigator(id, key)
                     && let Some(spec) = initial
@@ -794,6 +804,10 @@ impl Tree {
         }
         while let Some(slot) = self.dirty.pop() {
             self.build_component(slot);
+        }
+        if self.sync_splits() {
+            self.update();
+            return;
         }
         if core::mem::take(&mut self.layout_dirty) {
             self.clear_measured_all();

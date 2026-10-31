@@ -15,7 +15,7 @@ use devkit_gfx::{Color, TextOptions, TextRun};
 use devkit_ui::widgets::{button, checkbox, icon_button, list_item, menu, menu_item, modal, slider, slider_value, switch, top_bar};
 use devkit_ui::keyboard::InputKind;
 use devkit_ui::widgets::{password_field, text_area, text_field};
-use devkit_ui::{Align, AutoRotation, Bars, Canvas, CanvasId, Child, Component, Cx, Element, ExternalSurface, Fonts, Gesture, Gestures, Icon, Icons, ListId, Overlay, Phase, Policy, Raster, RasterTarget, Rect, RenderMode, Root, Rotations, Screen, ScreenStyle, Strips, TextBuffer, TextInput, Theme, Ui};
+use devkit_ui::{Align, AutoRotation, Bars, Canvas, CanvasId, Child, Component, Cx, Element, ExternalSurface, Fonts, Gesture, Gestures, Handle, Icon, Icons, ListId, Overlay, Phase, Policy, Raster, RasterTarget, Rect, RenderMode, Root, Rotations, Screen, ScreenStyle, SplitRole, Strips, TextBuffer, TextInput, Theme, Ui};
 use idf::heap::Caps;
 use idf::sync::{LazyLock, Mutex, OnceLock};
 use idf::thread;
@@ -115,63 +115,70 @@ impl Component for StatusBar {
 /// storage list when wide.
 pub struct FileManager;
 
-#[derive(Clone, Copy)]
-pub enum ManagerMsg {
-    Open,
-}
-
-impl FileManager {
-    fn storages<'a>(&'a self, ui: &'a Ui<ManagerMsg>) -> Element<'a, ManagerMsg> {
-        let items: Vec<_> = STORAGES
-            .iter()
-            .enumerate()
-            .map(|(i, name)| list_item(ui, None, name, None, None, ManagerMsg::Open).id(STORAGE_IDS[i]))
-            .collect();
-        ui.column(items)
-    }
-}
-
 impl Component for FileManager {
-    type Msg = ManagerMsg;
+    type Msg = ();
 
-    fn update(&mut self, _msg: ManagerMsg, cx: &mut Cx<Self>) {
-        cx.nav_of::<Pane>().root();
-    }
+    fn update(&mut self, _: (), _: &mut Cx<Self>) {}
 
-    fn view<'a>(&'a self, ui: &'a Ui<ManagerMsg>) -> Element<'a, ManagerMsg> {
+    fn view<'a>(&'a self, ui: &'a Ui<()>) -> Element<'a, ()> {
         let (width, height) = ui.screen_size();
-        let c = &ui.theme().colors;
-        if width > height {
-            ui.row([
-                ui.column([top_bar(ui, None, "File Manager", ui.empty()), self.storages(ui)])
-                    .width(SIDEBAR_WIDTH)
-                    .padding_each(0, ui.insets().top, 0, 0)
-                    .background(c.background),
-                ui.navigator::<Pane, Browser>(()).grow(1).id("pane"),
-            ])
-        } else {
-            ui.column([ui.navigator::<Pane, Storages>(()).grow(1).id("pane")]).background(c.background)
-        }
+        let pane = ui.navigator::<Pane, Storages>(()).split(width > height, SIDEBAR_WIDTH).grow(1).id("pane");
+        ui.column([pane]).background(ui.theme().colors.background)
     }
 }
 
 impl Screen for FileManager {}
 
-/// The storage list as a page of its own, on an upright screen.
-pub struct Storages;
+const SD_CARD: usize = 2;
+
+static STORAGE_EVENTS: LazyLock<Mutex<Option<Handle<StorageMsg>>>> = LazyLock::new(|| Mutex::new(None));
+
+/// As a card slot's detect pin would report, from any task.
+pub fn set_card_present(present: bool) -> bool {
+    STORAGE_EVENTS.lock().as_ref().is_some_and(|handle| handle.post(StorageMsg::Card(present)))
+}
+
+#[derive(Clone, Copy)]
+pub enum StorageMsg {
+    Open(u8),
+    Card(bool),
+}
+
+/// The storage list, on the left of a wide screen.
+pub struct Storages {
+    selected: Option<usize>,
+    card: bool,
+}
 
 impl Component for Storages {
-    type Msg = ManagerMsg;
+    type Msg = StorageMsg;
 
-    fn update(&mut self, _msg: ManagerMsg, cx: &mut Cx<Self>) {
-        cx.nav().push(Browser::new());
+    fn update(&mut self, msg: StorageMsg, cx: &mut Cx<Self>) {
+        match msg {
+            StorageMsg::Open(index) => {
+                self.selected = Some(usize::from(index));
+                cx.nav().show(Browser::new());
+            }
+            StorageMsg::Card(present) => {
+                self.card = present;
+                if !present && self.selected == Some(SD_CARD) {
+                    self.selected = None;
+                    cx.nav().root();
+                }
+            }
+        }
+        cx.rebuild();
     }
 
-    fn view<'a>(&'a self, ui: &'a Ui<ManagerMsg>) -> Element<'a, ManagerMsg> {
+    fn view<'a>(&'a self, ui: &'a Ui<StorageMsg>) -> Element<'a, StorageMsg> {
+        let open = matches!(ui.split_role(), SplitRole::Main { detail: true });
         let items: Vec<_> = STORAGES
             .iter()
             .enumerate()
-            .map(|(i, name)| list_item(ui, None, name, None, None, ManagerMsg::Open).id(STORAGE_IDS[i]))
+            .filter(|(i, _)| *i != SD_CARD || self.card)
+            .map(|(i, name)| {
+                list_item(ui, None, name, None, None, StorageMsg::Open(i as u8)).selected(open && self.selected == Some(i)).id(STORAGE_IDS[i])
+            })
             .collect();
         ui.column([top_bar(ui, None, "File Manager", ui.empty()), ui.column(items)])
             .padding_each(0, ui.insets().top, 0, 0)
@@ -179,11 +186,15 @@ impl Component for Storages {
     }
 }
 
-impl Screen for Storages {}
+impl Screen for Storages {
+    fn on_enter(&mut self, cx: &mut Cx<Self>) {
+        *STORAGE_EVENTS.lock() = Some(cx.handle());
+    }
+}
 
 impl Child for Storages {
     fn create(_: &()) -> Self {
-        Self
+        Self { selected: None, card: true }
     }
 
     fn set_props(&mut self, _: &()) {}
@@ -248,8 +259,7 @@ impl Component for Browser {
 
     fn view<'a>(&'a self, ui: &'a Ui<Msg>) -> Element<'a, Msg> {
         let theme = ui.theme();
-        let (width, height) = ui.screen_size();
-        let back = (height > width).then_some(Msg::Back);
+        let back = ui.can_pop().then_some(Msg::Back);
         let more = icon_button(ui, ui.theme().icons.more, Msg::ToggleMenu).id("more");
         let popup = if self.menu {
             menu(ui, 124, [menu_item(ui, "Compact", Msg::ToggleMenu), menu_item(ui, "Settings", Msg::OpenSettings).id("open-settings"), menu_item(ui, "Gestures", Msg::OpenGestures).id("open-gestures"), menu_item(ui, "Canvas", Msg::OpenCanvas).id("open-canvas"), menu_item(ui, "Video", Msg::OpenVideo).id("open-video")], Msg::ToggleMenu)

@@ -15,6 +15,7 @@ use idf::heap::Caps;
 use crate::*;
 use crate::erased::Erased;
 use crate::external::ExternalSurface;
+use crate::nav::SplitRole;
 use crate::rotation::Rotations;
 use crate::gesture::{Gesture, Gestures};
 use crate::keyboard::InputKind;
@@ -1684,6 +1685,7 @@ impl Screen for Home {}
 enum LeafMsg {
     Open,
     Posted,
+    Back,
 }
 
 struct Leaf;
@@ -1694,6 +1696,7 @@ impl Component for Leaf {
     fn update(&mut self, msg: LeafMsg, cx: &mut Cx<Self>) {
         match msg {
             LeafMsg::Open => cx.nav().push(Leaf),
+            LeafMsg::Back => cx.nav().pop(),
             LeafMsg::Posted => {
                 LEAF_POSTS.fetch_add(1, Relaxed);
             }
@@ -1741,6 +1744,178 @@ fn a_handle_follows_its_component_and_nothing_else() {
     assert!(tree.find("home").is_some(), "a covered screen can move its navigator");
     tree.post(first_leaf, Erased::new(LeafMsg::Posted));
     assert_eq!(LEAF_POSTS.load(Relaxed), 1, "a closed screen gets nothing");
+}
+
+struct Panes;
+
+#[derive(Clone, Copy)]
+enum SplitMsg {
+    Open,
+    Back,
+    Deeper,
+    Cover,
+}
+
+struct Listing;
+
+impl Component for Listing {
+    type Msg = SplitMsg;
+
+    fn update(&mut self, _: SplitMsg, cx: &mut Cx<Self>) {
+        cx.nav().show(Sheet(0));
+    }
+
+    fn view<'a>(&'a self, ui: &'a Ui<SplitMsg>) -> Element<'a, SplitMsg> {
+        let role = match ui.split_role() {
+            SplitRole::None => "none",
+            SplitRole::Main { detail: false } => "main",
+            SplitRole::Main { detail: true } => "main-open",
+            SplitRole::Detail => "detail",
+        };
+        ui.text(chain(), role).id("listing").on_tap(SplitMsg::Open)
+    }
+}
+
+impl Screen for Listing {}
+
+impl Child for Listing {
+    fn create(_: &()) -> Self {
+        Self
+    }
+
+    fn set_props(&mut self, _: &()) {}
+}
+
+struct Sheet(u8);
+
+impl Component for Sheet {
+    type Msg = SplitMsg;
+
+    fn update(&mut self, msg: SplitMsg, cx: &mut Cx<Self>) {
+        match msg {
+            SplitMsg::Back => cx.nav().pop(),
+            SplitMsg::Deeper => cx.nav().push(Sheet(self.0 + 1)),
+            SplitMsg::Cover => cx.nav_of::<Root>().push(Leaf),
+            SplitMsg::Open => {}
+        }
+    }
+
+    fn view<'a>(&'a self, ui: &'a Ui<SplitMsg>) -> Element<'a, SplitMsg> {
+        let back = if ui.can_pop() { "back" } else { "stay" };
+        ui.column([
+            ui.text(chain(), back).id(["depth0", "depth1"][usize::from(self.0)]),
+            ui.column([]).size(50, 40).id(["deeper0", "deeper1"][usize::from(self.0)]).on_tap(SplitMsg::Deeper),
+            ui.column([]).size(50, 40).id(["back0", "back1"][usize::from(self.0)]).on_tap(SplitMsg::Back),
+            ui.column([]).size(50, 40).id("cover0").on_tap(SplitMsg::Cover),
+        ])
+    }
+}
+
+impl Screen for Sheet {}
+
+struct SplitHost {
+    wide: bool,
+    default: bool,
+}
+
+impl Component for SplitHost {
+    type Msg = bool;
+
+    fn update(&mut self, wide: bool, cx: &mut Cx<Self>) {
+        self.wide = wide;
+        cx.rebuild();
+    }
+
+    fn view<'a>(&'a self, ui: &'a Ui<bool>) -> Element<'a, bool> {
+        let nav = ui.navigator::<Panes, Listing>(()).split(self.wide, 100).grow(1);
+        ui.column([if self.default { nav.split_detail(|| Sheet(0)) } else { nav }])
+    }
+}
+
+impl Screen for SplitHost {}
+
+fn split_tree(default: bool) -> Tree {
+    let mut tree = Tree::new(SplitHost { wide: true, default }, SCREEN, Caps::INTERNAL, theme());
+    settle(&mut tree);
+    tree
+}
+
+fn turn(tree: &mut Tree, wide: bool) {
+    tree.post(tree.root_id, Erased::new(wide));
+    settle(tree);
+}
+
+fn go(tree: &mut Tree, id: &str) {
+    tap(tree, id);
+    settle(tree);
+}
+
+#[test]
+fn a_split_shows_both_ends_of_one_stack() {
+    let mut tree = split_tree(false);
+    assert_eq!(text_of(&tree, "listing"), "main");
+    assert_eq!(rect_of(&tree, "listing").w, 100);
+    assert!(tree.find("depth0").is_none(), "the right stays empty");
+
+    tap(&mut tree, "listing");
+    assert!(!tree.sliding(), "showing beside the main screen does not slide");
+    settle(&mut tree);
+    assert_eq!(text_of(&tree, "listing"), "main-open");
+    assert_eq!(rect_of(&tree, "depth0").x, 100);
+    assert_eq!(text_of(&tree, "depth0"), "stay", "the first on the right has no back");
+
+    turn(&mut tree, false);
+    assert!(tree.find("listing").is_none());
+    assert_eq!(rect_of(&tree, "depth0").x, 0);
+    assert_eq!(text_of(&tree, "depth0"), "back");
+
+    turn(&mut tree, true);
+    assert_eq!(text_of(&tree, "listing"), "main-open");
+    go(&mut tree, "back0");
+    assert_eq!(text_of(&tree, "listing"), "main");
+    assert!(tree.find("depth0").is_none());
+
+    turn(&mut tree, false);
+    assert_eq!(text_of(&tree, "listing"), "none");
+    assert_eq!(rect_of(&tree, "listing").x, 0);
+}
+
+#[test]
+fn a_default_detail_stays_out_of_the_stack_until_pushed_from() {
+    let mut tree = split_tree(true);
+    assert_eq!(text_of(&tree, "listing"), "main");
+    assert_eq!(text_of(&tree, "depth0"), "stay");
+
+    turn(&mut tree, false);
+    assert!(tree.find("depth0").is_none(), "one pane shows the main screen");
+    turn(&mut tree, true);
+    assert_eq!(text_of(&tree, "depth0"), "stay");
+
+    go(&mut tree, "deeper0");
+    assert_eq!(text_of(&tree, "depth1"), "back");
+    assert_eq!(text_of(&tree, "listing"), "main-open");
+    go(&mut tree, "back1");
+    assert_eq!(text_of(&tree, "depth0"), "stay", "promoted, it does not pop while split");
+    assert_eq!(text_of(&tree, "listing"), "main");
+
+    go(&mut tree, "deeper0");
+    turn(&mut tree, false);
+    go(&mut tree, "back1");
+    assert_eq!(text_of(&tree, "depth0"), "back", "one pane walks the whole stack");
+    go(&mut tree, "back0");
+    assert_eq!(text_of(&tree, "listing"), "none");
+}
+
+#[test]
+fn a_covered_split_comes_back_whole() {
+    let mut tree = split_tree(false);
+    go(&mut tree, "listing");
+    go(&mut tree, "cover0");
+    assert!(tree.find("listing").is_none());
+    tree.post(LEAF_ID.load(Relaxed), Erased::new(LeafMsg::Back));
+    settle(&mut tree);
+    assert_eq!(text_of(&tree, "listing"), "main-open");
+    assert_eq!(rect_of(&tree, "depth0").x, 100);
 }
 
 #[test]

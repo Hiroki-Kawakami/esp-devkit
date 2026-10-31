@@ -8,7 +8,7 @@ use alloc::vec::Vec;
 use core::any::TypeId;
 
 use crate::app::Link;
-use crate::component::{AnyHost, Hook, Requests};
+use crate::component::{AnyHost, Hook, Requests, Screen, screen_host};
 use crate::erased::Erased;
 use crate::node::{NONE, Node, NodeContent, NodeId};
 use crate::presenter::Strips;
@@ -45,16 +45,79 @@ pub(crate) struct Slide {
     pub(crate) forward: bool,
 }
 
+/// What a screen is to the split navigator around it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum SplitRole {
+    /// Not split, or not in a navigator.
+    #[default]
+    None,
+    /// The bottom of the stack, on the left. `detail` when something was opened
+    /// on the right, which a default detail screen is not.
+    Main { detail: bool },
+    /// On the right.
+    Detail,
+}
+
+/// Makes a default detail screen, without any state from the view.
+#[derive(Clone, Copy)]
+pub(crate) struct DetailMap {
+    pub(crate) function: *const (),
+    pub(crate) call: unsafe fn(*const ()) -> Box<dyn AnyHost>,
+}
+
+pub(crate) unsafe fn call_detail_map<S: Screen>(function: *const ()) -> Box<dyn AnyHost> {
+    let function: fn() -> S = unsafe { core::mem::transmute(function) };
+    screen_host(function())
+}
+
+/// What a view asks of a navigator.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct SplitSpec {
+    pub(crate) width: Option<i16>,
+    pub(crate) detail: Option<DetailMap>,
+}
+
 pub(crate) struct NavigatorNode {
     pub(crate) key: TypeId,
     pub(crate) stack: Vec<Entry>,
     pub(crate) slide: Option<Slide>,
+    /// Width of the main screen while split.
+    pub(crate) split: Option<i16>,
+    pub(crate) wanted: SplitSpec,
+    /// The default detail screen, outside the stack until something is pushed
+    /// from it, so a turn to one pane does not show it.
+    pub(crate) spare: NodeId,
+    /// The screen above the main one started as the default detail.
+    pub(crate) promoted: bool,
+}
+
+impl NavigatorNode {
+    pub(crate) fn new(key: TypeId) -> Self {
+        Self { key, stack: Vec::new(), slide: None, split: None, wanted: SplitSpec::default(), spare: NONE, promoted: false }
+    }
+
+    pub(crate) fn main(&self) -> NodeId {
+        self.stack.first().map_or(NONE, |e| e.node)
+    }
+
+    /// The screen a slide moves: the one on the right while split.
+    fn shown(&self) -> NodeId {
+        if self.split.is_some() && self.stack.len() == 1 {
+            return self.spare;
+        }
+        self.stack.last().map_or(NONE, |e| e.node)
+    }
+
+    fn opened(&self) -> bool {
+        self.stack.len() > 1 && !(self.promoted && self.stack.len() == 2)
+    }
 }
 
 pub(crate) enum Action {
     Push(Box<dyn AnyHost>),
     Pop,
     Replace(Box<dyn AnyHost>),
+    Show(Box<dyn AnyHost>),
     Root,
 }
 
@@ -158,9 +221,121 @@ impl Tree {
                 self.leave_top(nav);
                 self.show_top_replaced(nav, host);
             }
+            Action::Show(host) => self.show_screen(nav, host),
             Action::Root => self.pop_to_root(nav),
         }
         self.style_changed(nav);
+        self.refresh_shown(nav);
+    }
+
+    /// Their `ui.can_pop()` and `ui.split_role()` may have changed. A new screen
+    /// needs this too: it is built before it joins the stack.
+    fn refresh_shown(&mut self, nav: NodeId) {
+        let Some(navigator) = self.navigator(nav) else { return };
+        let (main, shown) = (navigator.main(), navigator.shown());
+        for node in [main, shown] {
+            if node != NONE
+                && let NodeContent::Child(slot) = self.nodes[node as usize].content
+            {
+                self.mark_slot_dirty(slot);
+            }
+        }
+    }
+
+    /// Where the screen of `slot` stands in its navigator: `(role, can pop)`.
+    pub(crate) fn nav_state(&self, slot: u16) -> (SplitRole, bool) {
+        let mut at = self.slots[usize::from(slot)].node;
+        while at != NONE {
+            let parent = self.nodes[at as usize].parent;
+            if parent == NONE {
+                break;
+            }
+            if let NodeContent::Navigator(nav) = &self.nodes[parent as usize].content {
+                if nav.split.is_none() {
+                    return (SplitRole::None, nav.stack.len() > 1);
+                }
+                if nav.main() == at {
+                    return (SplitRole::Main { detail: nav.opened() }, false);
+                }
+                return (SplitRole::Detail, nav.stack.len() > 2);
+            }
+            at = parent;
+        }
+        (SplitRole::None, false)
+    }
+
+    /// Applies what views asked of split navigators. `true` when screens came or
+    /// went, which their views must see.
+    pub(crate) fn sync_splits(&mut self) -> bool {
+        let mut changed = false;
+        for nav in self.navigators.clone() {
+            let NodeContent::Navigator(navigator) = &self.nodes[nav as usize].content else { continue };
+            let (width, was) = (navigator.wanted.width, navigator.split);
+            if width == was {
+                continue;
+            }
+            self.finish_slide(nav);
+            if let Some(navigator) = self.navigator(nav) {
+                navigator.split = width;
+            }
+            match (was, width) {
+                (None, Some(_)) => self.open_split(nav),
+                (Some(_), None) => self.close_split(nav),
+                _ => {}
+            }
+            self.layout_dirty = true;
+            self.refresh_shown(nav);
+            changed = true;
+        }
+        changed
+    }
+
+    fn open_split(&mut self, nav: NodeId) {
+        let Some(navigator) = self.navigator(nav) else { return };
+        if navigator.stack.len() == 1 {
+            self.show_spare(nav);
+            return;
+        }
+        let Some(first) = navigator.stack.first_mut() else { return };
+        let Some(host) = first.host.take() else { return };
+        let saved = core::mem::take(&mut first.saved);
+        let node = self.mount(nav, host, saved);
+        if let Some(first) = self.navigator(nav).and_then(|n| n.stack.first_mut()) {
+            first.node = node;
+        }
+        self.hook(node, Hook::Appear);
+    }
+
+    fn close_split(&mut self, nav: NodeId) {
+        self.drop_spare(nav);
+        let Some(navigator) = self.navigator(nav) else { return };
+        if navigator.stack.len() > 1 {
+            let main = navigator.main();
+            self.hook(main, Hook::Disappear);
+            self.retire(nav, main, false);
+        }
+    }
+
+    fn show_spare(&mut self, nav: NodeId) -> NodeId {
+        let Some(detail) = self.navigator(nav).and_then(|n| n.wanted.detail) else { return NONE };
+        let host = unsafe { (detail.call)(detail.function) };
+        let node = self.mount(nav, host, Saved::default());
+        if let Some(navigator) = self.navigator(nav) {
+            navigator.spare = node;
+        }
+        self.hook(node, Hook::Enter);
+        self.hook(node, Hook::Appear);
+        node
+    }
+
+    fn drop_spare(&mut self, nav: NodeId) {
+        let Some(navigator) = self.navigator(nav) else { return };
+        let spare = core::mem::replace(&mut navigator.spare, NONE);
+        if spare != NONE {
+            self.hook(spare, Hook::Disappear);
+            self.hook(spare, Hook::Exit);
+            self.unmount(nav, spare);
+        }
     }
 
     /// Runs `msg` on the component `id`, shown or covered. Covered, it has no
@@ -286,7 +461,8 @@ impl Tree {
         // Nested navigators' shown screens leave their nodes with this subtree.
         self.collect(node, &mut saved);
         for (_, stack) in &mut saved.navigators {
-            if let Some(entry) = stack.last_mut() {
+            // Both ends of a split stack are shown.
+            for entry in stack.iter_mut().filter(|e| e.node != NONE) {
                 entry.host = self.take_host(entry.node);
                 entry.node = NONE;
             }
@@ -336,7 +512,7 @@ impl Tree {
 
     pub(crate) fn finish_slide(&mut self, nav: NodeId) {
         let Some(slide) = self.navigator(nav).and_then(|n| n.slide.take()) else { return };
-        let top = self.top(nav);
+        let top = self.navigator(nav).map_or(NONE, |n| n.shown());
         if top != NONE {
             self.nodes[top as usize].translate = (0, 0);
         }
@@ -351,8 +527,9 @@ impl Tree {
     }
 
     fn step_slide(&mut self, nav: NodeId, dt_ms: u32) {
-        let top = self.top(nav);
-        let width = self.nodes[nav as usize].rect.w;
+        let top = self.navigator(nav).map_or(NONE, |n| n.shown());
+        let side = self.navigator(nav).and_then(|n| n.split).unwrap_or(0);
+        let width = self.nodes[nav as usize].rect.w - side;
         let Some(slide) = self.navigator(nav).and_then(|n| n.slide.as_mut()) else { return };
         slide.elapsed = (slide.elapsed + dt_ms).min(slide.duration);
         let (elapsed, duration, forward, leaving) = (slide.elapsed, slide.duration, slide.forward, slide.leaving);
@@ -382,7 +559,15 @@ impl Tree {
     }
 
     fn push_screen(&mut self, nav: NodeId, host: Box<dyn AnyHost>) {
-        let leaving = self.top(nav);
+        // Pushing from the default detail keeps it to come back to.
+        if let Some(navigator) = self.navigator(nav)
+            && navigator.spare != NONE
+        {
+            let node = core::mem::replace(&mut navigator.spare, NONE);
+            navigator.stack.push(Entry { host: None, node, saved: Saved::default() });
+            navigator.promoted = true;
+        }
+        let leaving = self.navigator(nav).map_or(NONE, |n| n.shown());
         self.hook(leaving, Hook::Disappear);
         let node = self.mount(nav, host, Saved::default());
         if let Some(navigator) = self.navigator(nav) {
@@ -399,20 +584,71 @@ impl Tree {
         if navigator.stack.len() < 2 && !empties {
             return;
         }
+        let split = navigator.split.is_some();
+        if split && !navigator.opened() {
+            return;
+        }
         let Some(entry) = navigator.stack.pop() else { return };
+        if navigator.stack.len() < 2 {
+            navigator.promoted = false;
+        }
+        let emptied = split && navigator.stack.len() == 1;
         let leaving = entry.node;
         self.hook(leaving, Hook::Disappear);
         self.hook(leaving, Hook::Exit);
-        if self.show_top(nav) == NONE {
+        let top = if emptied { self.show_spare(nav) } else { self.show_top(nav) };
+        if top == NONE {
             self.retire(nav, leaving, true);
             return;
         }
         // The leaving screen paints above the one coming back.
-        let top = self.top(nav);
         self.unlink(nav, top);
-        self.nodes[top as usize].next = leaving;
-        self.nodes[nav as usize].first_child = top;
+        self.link_before(nav, top, leaving);
         self.begin_slide(nav, leaving, true, false);
+    }
+
+    fn link_before(&mut self, parent: NodeId, node: NodeId, before: NodeId) {
+        self.nodes[node as usize].next = before;
+        if self.nodes[parent as usize].first_child == before {
+            self.nodes[parent as usize].first_child = node;
+            return;
+        }
+        let mut child = self.nodes[parent as usize].first_child;
+        while child != NONE && self.nodes[child as usize].next != before {
+            child = self.nodes[child as usize].next;
+        }
+        if child != NONE {
+            self.nodes[child as usize].next = node;
+        }
+    }
+
+    /// Replaces everything above the bottom of the stack with `host`.
+    fn show_screen(&mut self, nav: NodeId, host: Box<dyn AnyHost>) {
+        let link = self.link.clone();
+        let Some(navigator) = self.navigator(nav) else { return };
+        let (main, leaving, split) = (navigator.main(), navigator.shown(), navigator.split.is_some());
+        let dropped = leaving != main;
+        navigator.promoted = false;
+        navigator.spare = NONE;
+        if navigator.stack.len() > 1 {
+            drop_to_root(&mut navigator.stack, &link);
+        }
+        self.hook(leaving, Hook::Disappear);
+        if dropped {
+            self.hook(leaving, Hook::Exit);
+        }
+        let node = self.mount(nav, host, Saved::default());
+        if let Some(navigator) = self.navigator(nav) {
+            navigator.stack.push(Entry { host: None, node, saved: Saved::default() });
+        }
+        self.hook(node, Hook::Enter);
+        self.hook(node, Hook::Appear);
+        // Next to the main screen this changes what is shown, not where we are.
+        if !split {
+            self.begin_slide(nav, leaving, dropped, true);
+        } else if leaving != NONE {
+            self.retire(nav, leaving, true);
+        }
     }
 
     fn show_top(&mut self, nav: NodeId) -> NodeId {
@@ -456,12 +692,13 @@ impl Tree {
         }
         let shown = navigator.stack.len() - 1;
         navigator.stack.drain(1..shown);
+        navigator.promoted = false;
         self.pop_screen(nav);
     }
 
     /// Fills `area` with a navigator node owned by `owner`.
     pub(crate) fn new_navigator(&mut self, key: TypeId, owner: u16) -> NodeId {
-        let content = NodeContent::Navigator(NavigatorNode { key, stack: Vec::new(), slide: None });
+        let content = NodeContent::Navigator(NavigatorNode::new(key));
         let id = self.alloc_node(Node::new(content, owner));
         self.nodes[id as usize].style.clip = true;
         self.navigators.push(id);

@@ -91,6 +91,24 @@ app.run();
   `Overlay` above the chrome for modals. `cx.nav()` acts on the nearest one,
   `cx.nav_of::<K>()` on the nearest above, then inside, then anywhere. Moves
   slide inside the navigator's own area; full screens and panes work alike.
+- `.split(on, width)` shows a navigator in two panes: the bottom of the stack on
+  the left and the rest on the right. One stack serves both layouts, so a turn
+  loses nothing. The main screen opens things with `cx.nav().show(screen)`,
+  which replaces all above it.
+
+  ```rust
+  ui.navigator::<Pane, Storages>(()).split(width > height, SIDEBAR_WIDTH).grow(1)
+  ```
+
+- `.split_detail(|| Browser::new())` fills the right while nothing is open;
+  without it the right stays empty. The function takes no state. That screen is
+  outside the stack: one pane does not show it, and it is made anew when needed.
+  Pushing from it keeps it in the stack to come back to, which it cannot leave
+  while split.
+- `ui.can_pop()` says whether a back button means anything here: not on the first
+  screen on the right, which `cx.nav().root()` closes. `ui.split_role()` says
+  whether this screen is the main one, with something open on the right, or a
+  detail. `show` changes the right at once, without a slide.
 - A covered screen keeps its state and loses its nodes. List positions and
   nested navigators come back with it; state of its child components does not.
 - `App::chrome` adds a component above the screens that stays across navigation,

@@ -143,10 +143,14 @@ impl Tree {
                     self.arrange(child, content);
                 }
             }
-            NodeContent::Navigator(_) => {
+            NodeContent::Navigator(nav) => {
+                let side = nav.split.unwrap_or(0);
+                let main = if nav.split.is_some() { nav.main() } else { NONE };
+                let right = Rect::new(content.x + side, content.y, content.w - side, content.h);
                 let mut child = self.nodes[id as usize].first_child;
                 while child != NONE {
-                    self.arrange(child, content);
+                    let area = if child == main { Rect::new(content.x, content.y, side, content.h) } else { right };
+                    self.arrange(child, area);
                     child = self.nodes[child as usize].next;
                 }
             }

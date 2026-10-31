@@ -18,6 +18,7 @@ use crate::erased::Erased;
 use crate::style::{Align, Dimension, Direction, Inset, Insets, Justify, Role, ScreenStyle, Shadow, State, Style};
 use crate::canvas::CanvasId;
 use crate::external::ExternalSurface;
+use crate::nav::{DetailMap, SplitRole, SplitSpec, call_detail_map};
 use crate::gesture::{Gesture, GestureMap, Gestures, call_gesture_map};
 use crate::keyboard::{InputKind, Keyboard};
 use crate::text_buffer::TextInput;
@@ -74,7 +75,7 @@ pub(crate) enum Content<'a> {
     Canvas(CanvasId),
     External(&'a ExternalSurface),
     Child(&'a dyn ChildSpec),
-    Navigator { key: TypeId, initial: Option<&'a dyn ChildSpec> },
+    Navigator { key: TypeId, initial: Option<&'a dyn ChildSpec>, split: SplitSpec },
 }
 
 #[derive(Clone, Copy)]
@@ -222,6 +223,26 @@ impl<'a, M: Copy> Element<'a, M> {
     /// drawn at that size.
     pub fn on_size(mut self, on_size: fn(i16, i16) -> M) -> Self {
         self.size = Some(SizeMap { function: on_size as *const (), call: call_size_map::<M> });
+        self
+    }
+
+    /// Of a navigator: with `on`, shows the bottom of the stack `width` wide on
+    /// the left and the rest on the right; otherwise one pane. One stack serves
+    /// both, so turning loses nothing.
+    pub fn split(mut self, on: bool, width: i16) -> Self {
+        if let Content::Navigator { split, .. } = &mut self.content {
+            split.width = on.then_some(width);
+        }
+        self
+    }
+
+    /// Of a split navigator: makes what the right shows while nothing is open,
+    /// which is otherwise empty. Pushing from that screen keeps it to come back
+    /// to; left alone it is dropped with the split, and made anew next time.
+    pub fn split_detail<S: Screen>(mut self, make: fn() -> S) -> Self {
+        if let Content::Navigator { split, .. } = &mut self.content {
+            split.detail = Some(DetailMap { function: make as *const (), call: call_detail_map::<S> });
+        }
         self
     }
 
@@ -532,6 +553,8 @@ pub(crate) struct BuildContext {
     pub(crate) area: devkit_gfx::Rect,
     pub(crate) screen_style: ScreenStyle,
     pub(crate) format: ImageFormat,
+    pub(crate) split_role: SplitRole,
+    pub(crate) can_pop: bool,
 }
 
 /// Builds elements; everything it hands out lives for the rebuild.
@@ -551,6 +574,16 @@ impl<M: Copy> Ui<M> {
     }
 
     /// The space the chrome covers.
+    /// Whether this screen's navigator has somewhere to go back to from here.
+    /// Next to a main screen, the first screen on the right has not.
+    pub fn can_pop(&self) -> bool {
+        self.context.can_pop
+    }
+
+    pub fn split_role(&self) -> SplitRole {
+        self.context.split_role
+    }
+
     /// The format `Image::from_pixels` copies without conversion.
     pub fn pixel_format(&self) -> ImageFormat {
         self.context.format
@@ -661,7 +694,7 @@ impl<M: Copy> Ui<M> {
     pub fn navigator<'a, K: 'static, S: Child + Screen>(&'a self, props: S::Props) -> Element<'a, M> {
         let spec = self.bump().alloc(ScreenElement::<S> { props });
         let spec: &'a ScreenElement<S> = unsafe { &*spec };
-        Element::new(Content::Navigator { key: TypeId::of::<K>(), initial: Some(spec) }, &[]).clip()
+        Element::new(Content::Navigator { key: TypeId::of::<K>(), initial: Some(spec), split: SplitSpec::default() }, &[]).clip()
     }
 
     /// A child component, kept across rebuilds by position or key.

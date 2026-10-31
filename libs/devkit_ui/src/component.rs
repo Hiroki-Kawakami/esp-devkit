@@ -245,6 +245,12 @@ impl Nav<'_> {
         self.add(Action::Replace(screen_host(screen)));
     }
 
+    /// Replaces everything above the bottom of the stack, which is how a split
+    /// navigator's main screen opens something on the right.
+    pub fn show<S: Screen>(&mut self, screen: S) {
+        self.add(Action::Show(screen_host(screen)));
+    }
+
     /// Back to the bottom of the stack.
     pub fn root(&mut self) {
         self.add(Action::Root);
