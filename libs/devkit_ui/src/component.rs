@@ -3,8 +3,11 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
+use core::sync::atomic::{AtomicU32, Ordering};
+
 use devkit_gfx::Rect;
 
+use crate::app::{Handle, Link};
 use crate::canvas::{Canvas, CanvasId};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -135,12 +138,20 @@ pub struct Animation {
 /// What `Component::update` can ask for.
 pub struct Cx<C: Component> {
     pub(crate) requests: Requests,
+    id: u32,
+    link: Link,
     _component: PhantomData<fn(C)>,
 }
 
 impl<C: Component> Cx<C> {
-    pub(crate) fn new(replaced: Option<Strips>) -> Self {
-        Self { requests: Requests { replaced, ..Requests::default() }, _component: PhantomData }
+    pub(crate) fn new(replaced: Option<Strips>, id: u32, link: &Link) -> Self {
+        Self { requests: Requests { replaced, ..Requests::default() }, id, link: link.clone(), _component: PhantomData }
+    }
+
+    /// Reaches this component from any task, for as long as it lives, whether
+    /// a screen covers it or not.
+    pub fn handle(&self) -> Handle<C::Msg> {
+        Handle::new(self.link.clone(), self.id)
     }
 
     pub fn rebuild(&mut self) {
@@ -241,7 +252,7 @@ impl Nav<'_> {
 }
 
 pub(crate) fn screen_host<S: Screen>(screen: S) -> Box<dyn AnyHost> {
-    Box::new(ScreenHost { inner: Host { component: screen, props: None } })
+    Box::new(ScreenHost { inner: Host::new(screen, None) })
 }
 
 pub(crate) struct EventMap {
@@ -257,13 +268,14 @@ pub(crate) unsafe fn call_event_map<E: Copy, M: Copy>(function: *const (), event
 
 /// A component without its type.
 pub(crate) trait AnyHost {
-    fn dispatch(&mut self, msg: Erased, replaced: Option<Strips>) -> Requests;
+    fn id(&self) -> u32;
+    fn dispatch(&mut self, msg: Erased, replaced: Option<Strips>, link: &Link) -> Requests;
     fn build(&self, tree: &mut Tree, id: u16, node: NodeId);
     fn build_row(&self, tree: &mut Tree, id: u16, list: ListId, index: usize, row: NodeId);
     fn draw<'a>(&'a self, id: CanvasId, canvas: &mut Canvas<'a, '_>);
     fn as_any(&mut self) -> &mut dyn Any;
 
-    fn hook(&mut self, _hook: Hook) -> Requests {
+    fn hook(&mut self, _hook: Hook, _link: &Link) -> Requests {
         Requests::default()
     }
 
@@ -276,14 +288,27 @@ pub(crate) trait AnyHost {
     }
 }
 
+static NEXT_ID: AtomicU32 = AtomicU32::new(1);
+
 pub(crate) struct Host<C: Component> {
+    id: u32,
     pub(crate) component: C,
     pub(crate) props: Option<C::Props>,
 }
 
+impl<C: Component> Host<C> {
+    pub(crate) fn new(component: C, props: Option<C::Props>) -> Self {
+        Self { id: NEXT_ID.fetch_add(1, Ordering::Relaxed), component, props }
+    }
+}
+
 impl<C: Component> AnyHost for Host<C> {
-    fn dispatch(&mut self, msg: Erased, replaced: Option<Strips>) -> Requests {
-        let mut cx = Cx::<C>::new(replaced);
+    fn id(&self) -> u32 {
+        self.id
+    }
+
+    fn dispatch(&mut self, msg: Erased, replaced: Option<Strips>, link: &Link) -> Requests {
+        let mut cx = Cx::<C>::new(replaced, self.id, link);
         self.component.update(unsafe { msg.get::<C::Msg>() }, &mut cx);
         cx.requests
     }
@@ -314,8 +339,12 @@ pub(crate) struct ScreenHost<S: Screen> {
 }
 
 impl<S: Screen> AnyHost for ScreenHost<S> {
-    fn dispatch(&mut self, msg: Erased, replaced: Option<Strips>) -> Requests {
-        self.inner.dispatch(msg, replaced)
+    fn id(&self) -> u32 {
+        self.inner.id()
+    }
+
+    fn dispatch(&mut self, msg: Erased, replaced: Option<Strips>, link: &Link) -> Requests {
+        self.inner.dispatch(msg, replaced, link)
     }
 
     fn draw<'a>(&'a self, id: CanvasId, canvas: &mut Canvas<'a, '_>) {
@@ -334,8 +363,8 @@ impl<S: Screen> AnyHost for ScreenHost<S> {
         self
     }
 
-    fn hook(&mut self, hook: Hook) -> Requests {
-        let mut cx = Cx::<S>::new(None);
+    fn hook(&mut self, hook: Hook, link: &Link) -> Requests {
+        let mut cx = Cx::<S>::new(None, self.inner.id(), link);
         let screen = &mut self.inner.component;
         match hook {
             Hook::Enter => screen.on_enter(&mut cx),

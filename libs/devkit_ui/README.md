@@ -50,7 +50,9 @@ app.run();
 - `list` builds only the rows in view, through `Component::list_row`. Scrolling
   moves the rows without running `view`. A rebuild of the owner rebuilds them,
   unless `revision` is given and did not change.
-- `Handle::post` sends a message to the root component from any task.
+- `app.handle()` and `cx.handle()` give a `Handle`, whose `post` reaches that
+  component from any task. Its `update` runs even while a screen covers it, and
+  the next `view` shows the result; a message for a closed screen is dropped.
 
 ## Layout and state
 

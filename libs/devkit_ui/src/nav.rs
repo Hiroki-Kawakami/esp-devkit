@@ -7,8 +7,11 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::any::TypeId;
 
-use crate::component::{AnyHost, Hook};
+use crate::app::Link;
+use crate::component::{AnyHost, Hook, Requests};
+use crate::erased::Erased;
 use crate::node::{NONE, Node, NodeContent, NodeId};
+use crate::presenter::Strips;
 use crate::style::{Dimension, Style};
 use crate::theme::Transition;
 use crate::tree::Tree;
@@ -60,6 +63,39 @@ pub(crate) struct NavOp {
     pub(crate) action: Action,
 }
 
+/// Finds `id` in `stack` and in what its screens keep of the navigators inside
+/// them. Those have no nodes, so the only move left to them is back to the root.
+fn deliver(stack: &mut [Entry], id: u32, msg: Erased, replaced: &mut Option<Strips>, link: &Link) -> Option<Requests> {
+    for entry in stack {
+        if let Some(host) = &mut entry.host
+            && host.id() == id
+        {
+            return Some(host.dispatch(msg, replaced.take(), link));
+        }
+        for (key, nested) in &mut entry.saved.navigators {
+            if let Some(mut requests) = deliver(nested, id, msg, replaced, link) {
+                for op in core::mem::take(&mut requests.nav) {
+                    if matches!(op.action, Action::Root) && op.target.is_none_or(|target| target == *key) {
+                        drop_to_root(nested, link);
+                    } else {
+                        idf::log::error!(c"ui", "a navigator inside a covered screen can only go to its root");
+                    }
+                }
+                return Some(requests);
+            }
+        }
+    }
+    None
+}
+
+fn drop_to_root(stack: &mut Vec<Entry>, link: &Link) {
+    for mut entry in stack.drain(1..) {
+        if let Some(host) = &mut entry.host {
+            host.hook(Hook::Exit, link);
+        }
+    }
+}
+
 impl Tree {
     fn navigator(&mut self, id: NodeId) -> Option<&mut NavigatorNode> {
         match &mut self.nodes[id as usize].content {
@@ -105,7 +141,10 @@ impl Tree {
     }
 
     pub(crate) fn apply_nav(&mut self, from: u16, op: NavOp) {
-        let node = self.slots[usize::from(from)].node;
+        self.apply_nav_from(self.slots[usize::from(from)].node, op);
+    }
+
+    fn apply_nav_from(&mut self, node: NodeId, op: NavOp) {
         let popping = matches!(op.action, Action::Pop);
         let Some(nav) = self.resolve(node, op.target, popping) else {
             idf::log::error!(c"ui", "no navigator for this operation");
@@ -122,6 +161,40 @@ impl Tree {
             Action::Root => self.pop_to_root(nav),
         }
         self.style_changed(nav);
+    }
+
+    /// Runs `msg` on the component `id`, shown or covered. Covered, it has no
+    /// nodes to rebuild or animate: its next view shows what the message did.
+    pub(crate) fn post(&mut self, id: u32, msg: Erased) {
+        if let Some(slot) = self.slots.iter().position(|s| s.host.as_ref().is_some_and(|host| host.id() == id)) {
+            self.dispatch(slot as u16, msg);
+            return;
+        }
+        let mut replaced = self.parked_strips.take();
+        let link = self.link.clone();
+        for nav in self.navigators.clone() {
+            let Some(navigator) = self.navigator(nav) else { continue };
+            let Some(requests) = deliver(&mut navigator.stack, id, msg, &mut replaced, &link) else { continue };
+            self.parked_strips = replaced;
+            self.apply_covered(id, nav, requests);
+            return;
+        }
+        self.parked_strips = replaced;
+    }
+
+    fn apply_covered(&mut self, id: u32, nav: NodeId, requests: Requests) {
+        if let Some(theme) = requests.theme {
+            self.set_theme(theme);
+        }
+        if requests.render.is_some() {
+            idf::log::error!(c"ui", "a covered screen cannot change the render mode");
+        }
+        for op in requests.nav {
+            self.apply_nav_from(nav, op);
+        }
+        for msg in requests.sends {
+            self.post(id, msg);
+        }
     }
 
     fn hook(&mut self, node: NodeId, hook: Hook) {

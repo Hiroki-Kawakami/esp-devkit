@@ -5,12 +5,15 @@
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
+use core::sync::atomic::AtomicU32;
+use core::sync::atomic::Ordering::Relaxed;
 
 use devkit_gfx::format::{self, FontHeader, GlyphRecord};
 use devkit_gfx::{Color, Font, FontChain, Rect};
 use idf::heap::Caps;
 
 use crate::*;
+use crate::erased::Erased;
 use crate::external::ExternalSurface;
 use crate::rotation::Rotations;
 use crate::gesture::{Gesture, Gestures};
@@ -252,7 +255,7 @@ fn keys_keep_nodes_when_siblings_move() {
     let mut tree = Tree::new(Sample::new(), SCREEN, Caps::INTERNAL, theme());
     run(&mut tree);
     let (a, b) = (tree.find("a").unwrap(), tree.find("b").unwrap());
-    tree.post(0, crate::erased::Erased::new(Msg::Reorder));
+    tree.post(tree.root_id, crate::erased::Erased::new(Msg::Reorder));
     run(&mut tree);
     assert_eq!(tree.find("a"), Some(a));
     assert_eq!(tree.find("b"), Some(b));
@@ -263,16 +266,16 @@ fn keys_keep_nodes_when_siblings_move() {
 fn removed_nodes_damage_their_area_and_are_reused() {
     let mut tree = Tree::new(Sample::new(), SCREEN, Caps::INTERNAL, theme());
     run(&mut tree);
-    tree.post(0, crate::erased::Erased::new(Msg::Toggle));
+    tree.post(tree.root_id, crate::erased::Erased::new(Msg::Toggle));
     run(&mut tree);
     let panel = rect_of(&tree, "panel");
     assert_eq!(panel, Rect::new(290, 20, 100, 100));
     let nodes = tree.nodes.len();
-    tree.post(0, crate::erased::Erased::new(Msg::Toggle));
+    tree.post(tree.root_id, crate::erased::Erased::new(Msg::Toggle));
     let damage = run(&mut tree);
     assert!(damage.contains(&panel));
     assert!(tree.find("panel").is_none());
-    tree.post(0, crate::erased::Erased::new(Msg::Toggle));
+    tree.post(tree.root_id, crate::erased::Erased::new(Msg::Toggle));
     run(&mut tree);
     assert_eq!(tree.nodes.len(), nodes);
 }
@@ -359,7 +362,7 @@ fn a_new_string_of_the_same_box_skips_layout_and_a_revision_keeps_rows() {
     run(&mut tree);
     let built = rows.get();
     assert!(built > 0);
-    tree.post(0, crate::erased::Erased::new(Set(9)));
+    tree.post(tree.root_id, crate::erased::Erased::new(Set(9)));
     let damage = run(&mut tree);
     assert_eq!(rows.get(), built);
     assert!(damage.iter().all(|r| r.h <= 12), "{damage:?}");
@@ -1642,6 +1645,102 @@ fn turning_lays_out_again_and_drops_the_fingers() {
     tree.touch(&[], 10);
     run(&mut tree);
     assert_eq!(rect_of(&tree, "scope").h, 100, "the finger's tap is gone");
+}
+
+static HOME_POSTS: AtomicU32 = AtomicU32::new(0);
+static LEAF_POSTS: AtomicU32 = AtomicU32::new(0);
+static LEAF_ID: AtomicU32 = AtomicU32::new(0);
+
+#[derive(Clone, Copy)]
+enum HomeMsg {
+    Open,
+    Posted,
+    Close,
+}
+
+struct Home;
+
+impl Component for Home {
+    type Msg = HomeMsg;
+
+    fn update(&mut self, msg: HomeMsg, cx: &mut Cx<Self>) {
+        match msg {
+            HomeMsg::Open => cx.nav().push(Leaf),
+            HomeMsg::Posted => {
+                HOME_POSTS.fetch_add(1, Relaxed);
+            }
+            HomeMsg::Close => cx.nav().root(),
+        }
+    }
+
+    fn view<'a>(&'a self, ui: &'a Ui<HomeMsg>) -> Element<'a, HomeMsg> {
+        ui.column([]).size(100, 40).id("home").on_tap(HomeMsg::Open)
+    }
+}
+
+impl Screen for Home {}
+
+#[derive(Clone, Copy)]
+enum LeafMsg {
+    Open,
+    Posted,
+}
+
+struct Leaf;
+
+impl Component for Leaf {
+    type Msg = LeafMsg;
+
+    fn update(&mut self, msg: LeafMsg, cx: &mut Cx<Self>) {
+        match msg {
+            LeafMsg::Open => cx.nav().push(Leaf),
+            LeafMsg::Posted => {
+                LEAF_POSTS.fetch_add(1, Relaxed);
+            }
+        }
+    }
+
+    fn view<'a>(&'a self, ui: &'a Ui<LeafMsg>) -> Element<'a, LeafMsg> {
+        ui.column([]).size(100, 40).id("leaf").on_tap(LeafMsg::Open)
+    }
+}
+
+impl Screen for Leaf {
+    fn on_enter(&mut self, cx: &mut Cx<Self>) {
+        LEAF_ID.store(cx.handle().id(), Relaxed);
+    }
+}
+
+#[test]
+fn a_handle_follows_its_component_and_nothing_else() {
+    let mut tree = Tree::new(Home, SCREEN, Caps::INTERNAL, theme());
+    run(&mut tree);
+    let home = tree.root_id;
+    let posted = Erased::new(HomeMsg::Posted);
+
+    tree.post(home, posted);
+    assert_eq!(HOME_POSTS.load(Relaxed), 1);
+
+    tap(&mut tree, "home");
+    settle(&mut tree);
+    let first_leaf = LEAF_ID.load(Relaxed);
+    tree.post(home, posted);
+    assert_eq!(HOME_POSTS.load(Relaxed), 2, "reaches a covered screen");
+
+    tap(&mut tree, "leaf");
+    settle(&mut tree);
+    tree.post(home, posted);
+    assert_eq!(HOME_POSTS.load(Relaxed), 3, "and not whoever took its slot");
+    assert_eq!(LEAF_POSTS.load(Relaxed), 0);
+
+    tree.post(first_leaf, Erased::new(LeafMsg::Posted));
+    assert_eq!(LEAF_POSTS.load(Relaxed), 1);
+
+    tree.post(home, Erased::new(HomeMsg::Close));
+    settle(&mut tree);
+    assert!(tree.find("home").is_some(), "a covered screen can move its navigator");
+    tree.post(first_leaf, Erased::new(LeafMsg::Posted));
+    assert_eq!(LEAF_POSTS.load(Relaxed), 1, "a closed screen gets nothing");
 }
 
 #[test]

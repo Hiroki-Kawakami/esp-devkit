@@ -43,7 +43,7 @@ impl<C: Child, M: Copy + 'static> ChildSpec for ChildElement<C, M> {
     }
 
     fn create(&self) -> Box<dyn AnyHost> {
-        Box::new(Host { component: C::create(&self.props), props: Some(self.props) })
+        Box::new(Host::new(C::create(&self.props), Some(self.props)))
     }
 
     fn update(&self, host: &mut dyn AnyHost) -> bool {

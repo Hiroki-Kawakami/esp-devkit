@@ -16,7 +16,7 @@ use bsp_rs::touch::{MAX_POINTS, Point, Touch};
 use devkit_gfx::{DisplayList, GlyphCache, ImageFormat, Rect};
 use idf::heap::Caps;
 use idf::log::error;
-use idf::sync::{Mutex, Receiver, Semaphore, Sender, channel};
+use idf::sync::{Mutex, OnceLock, Receiver, Semaphore, Sender, channel};
 use idf::thread;
 use idf::time::Instant;
 
@@ -39,7 +39,6 @@ const CARET_WAIT: Duration = Duration::from_millis(250);
 const REPEAT_WAIT: Duration = Duration::from_millis(20);
 const HOLE_WAIT: Duration = Duration::from_millis(100);
 const TAP_HOLD: Duration = Duration::from_millis(40);
-const ROOT: u16 = 0;
 const DROP_LOG_EVERY: u32 = 256;
 
 pub struct AppConfig {
@@ -83,11 +82,14 @@ enum Event {
     SetKeyboardMode(KeyboardMode),
     SetStrips(Arc<StripSwap>),
     Touch([Point; MAX_POINTS], u8, u32),
-    Post(u16, Erased),
+    Post(u32, Erased),
     Ask(Arc<Exchange>),
 }
 
-struct Shared {
+/// Filled by `App::new`; handles can exist before that, for a first screen.
+pub(crate) type Link = Arc<OnceLock<Arc<Shared>>>;
+
+pub(crate) struct Shared {
     events: Sender<Event>,
     pending: AtomicU32,
     dropped: AtomicU32,
@@ -133,28 +135,41 @@ impl Shared {
 
 /// Posts messages to a component from any task.
 pub struct Handle<M> {
-    shared: Arc<Shared>,
-    slot: u16,
+    link: Link,
+    id: u32,
     _msg: PhantomData<fn(M)>,
 }
 
 impl<M> Clone for Handle<M> {
     fn clone(&self) -> Self {
-        Self { shared: self.shared.clone(), slot: self.slot, _msg: PhantomData }
+        Self { link: self.link.clone(), id: self.id, _msg: PhantomData }
+    }
+}
+
+impl<M> Handle<M> {
+    pub(crate) fn new(link: Link, id: u32) -> Self {
+        Self { link, id, _msg: PhantomData }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn id(&self) -> u32 {
+        self.id
     }
 }
 
 impl<M: Copy> Handle<M> {
-    /// `false` when the queue is full.
+    /// `false` when the queue is full, or before `App::new` has returned. A
+    /// message for a component that has gone is dropped.
     pub fn post(&self, msg: M) -> bool {
-        self.shared.send(Event::Post(self.slot, Erased::new(msg)))
+        self.link.get().is_some_and(|shared| shared.send(Event::Post(self.id, Erased::new(msg))))
     }
 
     /// `Presenter::set_strips` between frames. Blocks for the running frame, so
     /// it cannot be called from the UI task; on `Err` the strips come back.
     pub fn set_strips(&self, strips: Strips, lanes: usize) -> Result<Strips, Strips> {
+        let Some(shared) = self.link.get() else { return Err(strips) };
         let swap = Arc::new(StripSwap { strips: Mutex::new(Some(Ok(strips))), lanes, done: Semaphore::new(0, 1) });
-        while !self.shared.send(Event::SetStrips(swap.clone())) {
+        while !shared.send(Event::SetStrips(swap.clone())) {
             thread::sleep(FRAME);
         }
         swap.done.take();
@@ -335,7 +350,7 @@ impl<C: Screen> App<C> {
             })));
         }
         let area = presenter.area();
-        Ok(Self {
+        let app = Self {
             shared,
             receiver,
             tree: {
@@ -362,14 +377,16 @@ impl<C: Screen> App<C> {
             rotation: config.presenter.rotation,
             rotated: false,
             _root: PhantomData,
-        })
+        };
+        let _ = app.tree.link.set(app.shared.clone());
+        Ok(app)
     }
 
     /// Adds a component above the screens that stays across navigation, and
     /// the space it covers.
     pub fn chrome<B: Component>(&mut self, component: B, insets: Insets) -> Handle<B::Msg> {
         let slot = self.tree.add_chrome(component, insets);
-        Handle { shared: self.shared.clone(), slot, _msg: PhantomData }
+        Handle::new(self.tree.link.clone(), self.tree.host_id(slot))
     }
 
     /// `Presenter::set_strips` before `run`.
@@ -378,7 +395,7 @@ impl<C: Screen> App<C> {
     }
 
     pub fn handle(&self) -> Handle<C::Msg> {
-        Handle { shared: self.shared.clone(), slot: ROOT, _msg: PhantomData }
+        Handle::new(self.tree.link.clone(), self.tree.root_id)
     }
 
     pub fn input(&self) -> Input {
@@ -411,7 +428,7 @@ impl<C: Screen> App<C> {
                 }
                 self.tree.touch(&points[..usize::from(count)], sampled_ms);
             }
-            Event::Post(slot, msg) => self.tree.post(slot, msg),
+            Event::Post(id, msg) => self.tree.post(id, msg),
             Event::Ask(exchange) => {
                 self.tree.update();
                 let answer = match &exchange.question {

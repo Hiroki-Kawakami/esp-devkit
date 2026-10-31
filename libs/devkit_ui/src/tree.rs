@@ -7,6 +7,7 @@ use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::format;
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::any::TypeId;
 use core::cell::Cell;
@@ -16,7 +17,9 @@ use core::slice;
 
 use devkit_gfx::{ImageFormat, Rect};
 use idf::heap::Caps;
+use idf::sync::OnceLock;
 
+use crate::app::Link;
 use crate::bump::Bump;
 use crate::component::{Animation, AnyHost, EventMap, Hook, Host, Property, RenderRequest, Requests, Screen, screen_host};
 use crate::element::{BuildContext, Content, Drag, Element};
@@ -104,6 +107,8 @@ pub(crate) struct Tree {
     pub(crate) restoring: Vec<Saved>,
     pub(crate) theme: &'static Theme,
     pub(crate) screen_style: ScreenStyle,
+    pub(crate) link: Link,
+    pub(crate) root_id: u32,
     insets: Insets,
     pub(crate) render_request: Option<(u16, RenderRequest)>,
     pending_animations: Vec<(&'static str, Animation)>,
@@ -117,7 +122,7 @@ pub(crate) struct Tree {
     keyboard_mode: KeyboardMode,
     keyboard_connected: bool,
     animations: Vec<(NodeId, Animation, u32)>,
-    parked_strips: Option<Strips>,
+    pub(crate) parked_strips: Option<Strips>,
     bump: Box<Bump>,
     caps: Caps,
     depth: u32,
@@ -145,6 +150,8 @@ impl Tree {
             restoring: Vec::new(),
             theme,
             screen_style: ScreenStyle::default(),
+            link: Arc::new(OnceLock::new()),
+            root_id: 0,
             insets: Insets::default(),
             render_request: None,
             pending_animations: Vec::new(),
@@ -179,7 +186,9 @@ impl Tree {
         let nav = tree.new_navigator(TypeId::of::<Root>(), 0);
         tree.root_navigator = nav;
         tree.add_plane(nav);
-        tree.seed_navigator(nav, screen_host(root));
+        let root = screen_host(root);
+        tree.root_id = root.id();
+        tree.seed_navigator(nav, root);
         let overlay = tree.new_navigator(TypeId::of::<Overlay>(), 0);
         tree.add_plane(overlay);
         tree
@@ -211,7 +220,7 @@ impl Tree {
         let slot = self.alloc_slot();
         let node = self.alloc_node(Node::new(NodeContent::Child(slot), slot));
         let index = usize::from(slot);
-        self.slots[index].host = Some(Box::new(Host::<C> { component, props: None }));
+        self.slots[index].host = Some(Box::new(Host::<C>::new(component, None)));
         self.slots[index].node = node;
         self.slots[index].theme = self.theme;
         self.chrome.push(slot);
@@ -295,9 +304,13 @@ impl Tree {
     pub(crate) fn run_hook(&mut self, slot: u16, hook: Hook) {
         let index = usize::from(slot);
         let Some(mut host) = self.slots[index].host.take() else { return };
-        let requests = host.hook(hook);
+        let requests = host.hook(hook, &self.link);
         self.slots[index].host = Some(host);
         self.apply_requests(slot, requests);
+    }
+
+    pub(crate) fn host_id(&self, slot: u16) -> u32 {
+        self.slots[usize::from(slot)].host.as_ref().map_or(0, |host| host.id())
     }
 
     pub(crate) fn bump(&self) -> NonNull<Bump> {
@@ -731,11 +744,7 @@ impl Tree {
             }
         }
         if let Some(theme) = requests.theme {
-            self.theme = theme;
-            for s in &mut self.slots {
-                s.theme = theme;
-            }
-            self.mark_all_dirty();
+            self.set_theme(theme);
         }
         if let Some(render) = requests.render {
             self.render_request = Some((slot, render));
@@ -753,10 +762,18 @@ impl Tree {
         }
     }
 
-    fn dispatch(&mut self, slot: u16, msg: Erased) {
+    pub(crate) fn set_theme(&mut self, theme: &'static Theme) {
+        self.theme = theme;
+        for s in &mut self.slots {
+            s.theme = theme;
+        }
+        self.mark_all_dirty();
+    }
+
+    pub(crate) fn dispatch(&mut self, slot: u16, msg: Erased) {
         let index = usize::from(slot);
         let Some(mut host) = self.slots[index].host.take() else { return };
-        let requests = host.dispatch(msg, self.parked_strips.take());
+        let requests = host.dispatch(msg, self.parked_strips.take(), &self.link);
         self.slots[index].host = Some(host);
         self.apply_requests(slot, requests);
     }
@@ -767,10 +784,6 @@ impl Tree {
         if let Some(done) = done {
             self.queue.push_back((slot, done));
         }
-    }
-
-    pub(crate) fn post(&mut self, slot: u16, msg: Erased) {
-        self.queue.push_back((slot, msg));
     }
 
     /// Applies what happened since the last call, leaving the damage to take.
@@ -954,7 +967,7 @@ impl Tree {
         let slot = self.alloc_slot();
         let node = self.alloc_node(Node::new(NodeContent::Child(slot), slot));
         let index = usize::from(slot);
-        self.slots[index].host = Some(Box::new(Host::<KeyboardPanel> { component: KeyboardPanel::docked(), props: None }));
+        self.slots[index].host = Some(Box::new(Host::<KeyboardPanel>::new(KeyboardPanel::docked(), None)));
         self.slots[index].node = node;
         self.slots[index].theme = self.theme;
         self.keyboard_slot = Some(slot);
