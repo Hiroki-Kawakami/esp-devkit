@@ -16,6 +16,7 @@ use crate::bump::Bump;
 use crate::component::{AnyHost, Child, EventMap, Host, ListId, Screen, call_event_map, screen_host};
 use crate::erased::Erased;
 use crate::style::{Align, Dimension, Direction, Inset, Insets, Justify, Role, ScreenStyle, Shadow, State, Style};
+use crate::gesture::{Gesture, GestureMap, Gestures, call_gesture_map};
 use crate::keyboard::{InputKind, Keyboard};
 use crate::text_buffer::TextInput;
 use crate::theme::{Border, Icon, Theme, WidgetLook};
@@ -144,6 +145,7 @@ pub struct Element<'a, M: Copy> {
     pub(crate) role: Role,
     pub(crate) tap: Option<Erased>,
     pub(crate) drag: Option<DragMap>,
+    pub(crate) gestures: Option<GestureMap>,
     pub(crate) input: Option<InputMap>,
     pub(crate) focusable: bool,
     pub(crate) keep_focus: bool,
@@ -156,7 +158,7 @@ pub struct Element<'a, M: Copy> {
 
 impl<'a, M: Copy> Element<'a, M> {
     fn new(content: Content<'a>, children: &'a [Element<'a, M>]) -> Self {
-        Self { content, children, style: Style::default(), key: None, id: None, role: Role::None, tap: None, drag: None, input: None, focusable: false, keep_focus: false, keyboard: None, input_kind: InputKind::Text, repeat: false, state: State::empty(), _msg: PhantomData }
+        Self { content, children, style: Style::default(), key: None, id: None, role: Role::None, tap: None, drag: None, gestures: None, input: None, focusable: false, keep_focus: false, keyboard: None, input_kind: InputKind::Text, repeat: false, state: State::empty(), _msg: PhantomData }
     }
 
     pub const fn is_empty(&self) -> bool {
@@ -188,6 +190,15 @@ impl<'a, M: Copy> Element<'a, M> {
     /// Follows a contact from the press on, ahead of any scrolling around it.
     pub fn on_drag(mut self, on_drag: fn(Drag) -> M) -> Self {
         self.drag = Some(DragMap { function: on_drag as *const (), call: call_drag_map::<M> });
+        self
+    }
+
+    /// Recognizes gestures here and on what is inside, where nothing nearer
+    /// takes them. A pan is taken from a scrolling parent, the others leave it
+    /// one finger; with two on the node the fingers are this node's. With
+    /// `DOUBLE_TAP`, the node's own `on_tap` waits to see no second tap comes.
+    pub fn gestures(mut self, gestures: Gestures, on_gesture: fn(Gesture) -> M) -> Self {
+        self.gestures = Some(GestureMap { gestures, function: on_gesture as *const (), call: call_gesture_map::<M> });
         self
     }
 

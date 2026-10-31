@@ -638,6 +638,14 @@ app.run();
   moves the rows without running `view`. A rebuild of the owner rebuilds them,
   unless `revision` is given and did not change.
 - `pressed_background` changes without a rebuild.
+- `.gestures(Gestures::PINCH | Gestures::PAN, Msg::Gesture)` recognizes gestures
+  on a node and reports a `Gesture`; what they do to the view is the caller's.
+  `PRESS` reports `Down` and `Up` whatever else is recognized. With `DOUBLE_TAP`,
+  the node's own `on_tap` comes after the double tap window.
+- Both fingers of a `PINCH` or `ROTATE` start on the node. Inside a list one
+  finger scrolls; a second stops that and pinches. A `PAN` takes the finger from
+  a scrolling parent when it lands. Once a pinch ends, the finger left behind
+  does nothing until it lifts.
 - Each finger acts on its own, so separate lists scroll and flings run at the
   same time. A node belongs to the first finger on it; another finger landing
   on it does nothing until it lifts and lands again.

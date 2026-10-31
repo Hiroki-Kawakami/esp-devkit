@@ -432,7 +432,7 @@ impl<C: Screen> App<C> {
             self.shared.busy.store(!self.tree.idle(), Ordering::Release);
             // While animating the presenter paces frames; a timed wait here
             // would add at least two ticks to each.
-            let wait = if self.tree.repeating() {
+            let wait = if self.tree.timed() {
                 REPEAT_WAIT
             } else if self.tree.has_caret() {
                 CARET_WAIT

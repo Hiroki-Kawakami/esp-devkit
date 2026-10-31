@@ -12,6 +12,7 @@ use idf::heap::Caps;
 use crate::component::ListId;
 use crate::element::{DragMap, Edit, InputMap};
 use crate::erased::Erased;
+use crate::gesture::GestureMap;
 use crate::keyboard::{InputKind, Keyboard};
 use crate::nav::NavigatorNode;
 use crate::style::{Role, State, Style};
@@ -106,6 +107,7 @@ pub(crate) struct Node {
     pub(crate) owner: u16,
     pub(crate) tap: Option<Erased>,
     pub(crate) drag: Option<DragMap>,
+    pub(crate) gestures: Option<GestureMap>,
     pub(crate) input: Option<InputMap>,
     pub(crate) focusable: bool,
     pub(crate) keep_focus: bool,
@@ -145,6 +147,7 @@ impl Node {
             owner,
             tap: None,
             drag: None,
+            gestures: None,
             input: None,
             focusable: false,
             keep_focus: false,

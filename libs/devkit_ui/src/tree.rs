@@ -20,6 +20,7 @@ use idf::heap::Caps;
 use crate::bump::Bump;
 use crate::component::{Animation, AnyHost, EventMap, Hook, Host, Property, RenderRequest, Requests, Screen, screen_host};
 use crate::element::{BuildContext, Content, Drag, Element};
+use crate::gesture::{Gestures, Tracker};
 use crate::keyboard::{InputKind, KeyboardMode, KeyboardPanel};
 use crate::erased::Erased;
 use crate::nav::{NavigatorNode, Overlay, Root, Saved};
@@ -30,7 +31,7 @@ use crate::text_buffer::TextInput;
 use crate::theme::Theme;
 
 const OVERSCAN_ROWS: i32 = 1;
-const TAP_SLOP: i32 = 12;
+pub(crate) const TAP_SLOP: i32 = 12;
 const FLING_MIN: f32 = 0.05;
 /// Time constant of the speed average: older movement fades with this.
 const VELOCITY_TAU_MS: f32 = 40.0;
@@ -51,30 +52,37 @@ pub(crate) struct Slot {
 }
 
 #[derive(Clone, Copy)]
-struct Contact {
+pub(crate) struct Contact {
     /// The controller's id for this finger.
-    track: u8,
-    /// Landed on something another finger holds, and acts on nothing.
-    passive: bool,
+    pub(crate) track: u8,
+    /// Landed on something another finger holds or was taken by a gesture, and
+    /// acts on nothing.
+    pub(crate) passive: bool,
     start: (i16, i16),
-    last: (i16, i16),
+    pub(crate) last: (i16, i16),
     /// When the contact last moved; a sample at the same place is not news.
     last_ms: u32,
-    tap: NodeId,
-    scroller: NodeId,
+    pub(crate) tap: NodeId,
+    pub(crate) scroller: NodeId,
     drag: NodeId,
-    dragging: bool,
+    pub(crate) gesture: NodeId,
+    /// Nothing nearer to the finger takes a pan.
+    pub(crate) pan: bool,
+    pub(crate) dragging: bool,
     velocity: f32,
     held_ms: u32,
     repeated: bool,
 }
 
 #[derive(Clone, Copy)]
-struct Hit {
-    tap: NodeId,
+pub(crate) struct Hit {
+    pub(crate) tap: NodeId,
     scroller: NodeId,
     drag: NodeId,
+    gesture: NodeId,
 }
+
+const NO_HIT: Hit = Hit { tap: NONE, scroller: NONE, drag: NONE, gesture: NONE };
 
 /// Everything below the display: components, nodes, layout and gestures.
 pub(crate) struct Tree {
@@ -107,11 +115,12 @@ pub(crate) struct Tree {
     bump: Box<Bump>,
     caps: Caps,
     depth: u32,
-    queue: VecDeque<(u16, Erased)>,
+    pub(crate) queue: VecDeque<(u16, Erased)>,
     dirty: Vec<u16>,
     pub(crate) layout_dirty: bool,
     pub(crate) damage: Vec<Rect>,
-    contacts: Vec<Contact>,
+    pub(crate) contacts: Vec<Contact>,
+    pub(crate) trackers: Vec<Tracker>,
     flings: Vec<(NodeId, f32)>,
 }
 
@@ -152,6 +161,7 @@ impl Tree {
             layout_dirty: true,
             damage: Vec::new(),
             contacts: Vec::new(),
+            trackers: Vec::new(),
             flings: Vec::new(),
         };
         tree.root = tree.alloc_node(Node::new(NodeContent::Box, 0));
@@ -312,6 +322,7 @@ impl Tree {
             }
         }
         self.flings.retain(|f| f.0 != id);
+        self.forget_gestures(id);
         self.animations.retain(|a| a.0 != id);
         if self.focus == id {
             self.focus = NONE;
@@ -437,6 +448,7 @@ impl Tree {
         node.role = element.role;
         node.tap = element.tap;
         node.drag = element.drag;
+        node.gestures = element.gestures;
         node.input = element.input;
         node.focusable = element.focusable;
         node.keep_focus = element.keep_focus;
@@ -706,6 +718,7 @@ impl Tree {
 
     /// Applies what happened since the last call, leaving the damage to take.
     pub(crate) fn update(&mut self) {
+        self.flush_gestures();
         while let Some((slot, msg)) = self.queue.pop_front() {
             self.dispatch(slot, msg);
         }
@@ -950,6 +963,7 @@ impl Tree {
             && self.animations.is_empty()
             && !self.keyboard_changed
             && self.contacts.is_empty()
+            && self.trackers.is_empty()
             && self.damage.is_empty()
             && !self.layout_dirty
     }
@@ -958,8 +972,9 @@ impl Tree {
         !self.flings.is_empty() || self.sliding() || !self.animations.is_empty()
     }
 
-    pub(crate) fn repeating(&self) -> bool {
-        self.contacts.iter().any(|c| self.nodes.get(c.tap as usize).is_some_and(|n| n.repeat))
+    /// Something happens after a delay, without an event to wake for.
+    pub(crate) fn timed(&self) -> bool {
+        self.contacts.iter().any(|c| self.nodes.get(c.tap as usize).is_some_and(|n| n.repeat)) || self.gesture_timed()
     }
 
     fn scroll_by(&mut self, id: NodeId, delta: i32) -> bool {
@@ -993,7 +1008,7 @@ impl Tree {
             return None;
         }
         if inside && node.state.contains(State::DISABLED) {
-            return Some(Hit { tap: NONE, scroller: NONE, drag: NONE });
+            return Some(NO_HIT);
         }
         if matches!(&node.content, NodeContent::Navigator(nav) if nav.slide.is_some()) {
             return None;
@@ -1012,15 +1027,22 @@ impl Tree {
         if inside {
             let scrollable = matches!(node.content, NodeContent::Scroll(_) | NodeContent::List(_));
             if let Some(hit) = &mut found {
-                if hit.scroller == NONE && scrollable {
+                let panned = hit.gesture != NONE && self.gestures_of(hit.gesture).contains(Gestures::PAN);
+                if hit.scroller == NONE && scrollable && !panned {
                     hit.scroller = id;
                 }
             } else if node.drag.is_some() {
-                found = Some(Hit { tap: NONE, scroller: NONE, drag: id });
+                found = Some(Hit { drag: id, ..NO_HIT });
             } else if node.tap.is_some() || node.input.is_some() || node.focusable {
-                found = Some(Hit { tap: id, scroller: if scrollable { id } else { NONE }, drag: NONE });
+                found = Some(Hit { tap: id, scroller: if scrollable { id } else { NONE }, ..NO_HIT });
             } else if scrollable {
-                found = Some(Hit { tap: NONE, scroller: id, drag: NONE });
+                found = Some(Hit { scroller: id, ..NO_HIT });
+            }
+            if node.gestures.is_some() {
+                let hit = found.get_or_insert(NO_HIT);
+                if hit.gesture == NONE {
+                    hit.gesture = id;
+                }
             }
         }
         found
@@ -1036,7 +1058,7 @@ impl Tree {
         children.iter().rev().find_map(|&c| self.hit(c, dx, dy, x, y))
     }
 
-    fn set_pressed(&mut self, id: NodeId, pressed: bool) {
+    pub(crate) fn set_pressed(&mut self, id: NodeId, pressed: bool) {
         if id != NONE {
             let node = &mut self.nodes[id as usize];
             node.state.set(State::PRESSED, pressed);
@@ -1066,27 +1088,41 @@ impl Tree {
 
     fn press(&mut self, track: u8, p: (i16, i16), now_ms: u32) {
         let hit = self.hit(self.root, 0, 0, i32::from(p.0), i32::from(p.1));
-        let hit = hit.unwrap_or(Hit { tap: NONE, scroller: NONE, drag: NONE });
-        let held = |id: NodeId, of: fn(&Contact) -> NodeId| id != NONE && self.contacts.iter().any(|c| of(c) == id);
-        let passive = held(hit.scroller, |c| c.scroller) || held(hit.tap, |c| c.tap) || held(hit.drag, |c| c.drag);
-        let hit = if passive { Hit { tap: NONE, scroller: NONE, drag: NONE } } else { hit };
-        self.flings.retain(|f| f.0 != hit.scroller);
-        self.set_pressed(hit.tap, true);
-        self.send_drag(hit.drag, p, false);
-        self.contacts.push(Contact {
+        let hit = hit.unwrap_or(NO_HIT);
+        let mut gesture = hit.gesture;
+        let contact = Contact {
             track,
-            passive,
+            passive: false,
             start: p,
             last: p,
             last_ms: now_ms,
-            tap: hit.tap,
-            scroller: hit.scroller,
-            drag: hit.drag,
+            tap: NONE,
+            scroller: NONE,
+            drag: NONE,
+            gesture,
+            pan: hit.scroller == NONE && hit.drag == NONE,
             dragging: false,
             velocity: 0.0,
             held_ms: 0,
             repeated: false,
-        });
+        };
+        if gesture != NONE && self.join_gesture(gesture, track, p) {
+            self.contacts.push(Contact { passive: true, ..contact });
+            self.gesture_joined(gesture);
+            return;
+        }
+        if gesture != NONE && self.node_holds_fingers(gesture) {
+            gesture = NONE;
+        }
+        let held = |id: NodeId, of: fn(&Contact) -> NodeId| id != NONE && self.contacts.iter().any(|c| of(c) == id);
+        let passive = held(hit.scroller, |c| c.scroller) || held(hit.tap, |c| c.tap) || held(hit.drag, |c| c.drag);
+        let hit = if passive { NO_HIT } else { hit };
+        let gesture = if passive { NONE } else { gesture };
+        self.flings.retain(|f| f.0 != hit.scroller);
+        self.set_pressed(hit.tap, true);
+        self.send_drag(hit.drag, p, false);
+        self.gesture_pressed(gesture, track, p, now_ms);
+        self.contacts.push(Contact { passive, tap: hit.tap, scroller: hit.scroller, drag: hit.drag, gesture, ..contact });
     }
 
     fn contact_moved(&mut self, index: usize, p: (i16, i16), now_ms: u32) {
@@ -1112,16 +1148,19 @@ impl Tree {
         }
         contact.last = p;
         self.contacts[index] = contact;
+        self.gesture_moved(index);
     }
 
     fn release(&mut self, contact: Contact, now_ms: u32) {
         self.set_pressed(contact.tap, false);
         self.send_drag(contact.drag, contact.last, true);
+        let consumed = self.gesture_released(&contact, now_ms);
         if contact.dragging {
             let rest = now_ms.wrapping_sub(contact.last_ms);
             if rest < FLING_STALE_MS && contact.velocity.abs() > FLING_MIN && contact.scroller != NONE {
                 self.flings.push((contact.scroller, contact.velocity));
             }
+        } else if consumed {
         } else if contact.tap != NONE {
             self.finish_tap(contact.tap, contact.last, contact.repeated);
         } else if contact.drag == NONE && !contact.passive {
@@ -1129,7 +1168,7 @@ impl Tree {
         }
     }
 
-    fn finish_tap(&mut self, id: NodeId, point: (i16, i16), repeated: bool) {
+    pub(crate) fn finish_tap(&mut self, id: NodeId, point: (i16, i16), repeated: bool) {
         let node = &self.nodes[id as usize];
         let owner = node.owner;
         let tap = node.tap;
@@ -1203,6 +1242,7 @@ impl Tree {
         self.tick_slides(dt_ms);
         self.tick_animations(dt_ms);
         self.tick_repeat(dt_ms);
+        self.tick_gestures(dt_ms);
         self.tick_caret(dt_ms);
         let dt = (dt_ms as f32).min(MAX_FLING_STEP_MS);
         let mut i = 0;

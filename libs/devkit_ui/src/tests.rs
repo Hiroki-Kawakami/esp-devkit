@@ -11,6 +11,7 @@ use devkit_gfx::{Color, Font, FontChain, Rect};
 use idf::heap::Caps;
 
 use crate::*;
+use crate::gesture::{Gesture, Gestures};
 use crate::keyboard::InputKind;
 use crate::node::NodeContent;
 use crate::tree::Tree;
@@ -1092,7 +1093,7 @@ fn full_rows_end_at_the_panel_edge() {
     let y = keyboard.y + gap + 2 * (theme().keyboards.key_height + gap) + 10;
     tree.touch(&[(0, (keyboard.right() - gap - 1, y))], 0);
     tree.update();
-    assert!(tree.repeating(), "the last pixel of the row is the repeating key");
+    assert!(tree.timed(), "the last pixel of the row is the repeating key");
 }
 
 #[test]
@@ -1110,7 +1111,7 @@ fn a_held_key_repeats_and_its_release_adds_nothing() {
     let y = keyboard.y + k.gap + 2 * (k.key_height + k.gap) + 10;
     tree.touch(&[(0, (380, y))], 0);
     tree.update();
-    assert!(tree.repeating());
+    assert!(tree.timed());
     tree.tick(400);
     tree.update();
     tree.tick(60);
@@ -1236,6 +1237,225 @@ fn a_finger_on_a_held_key_does_not_end_the_input() {
     tree.touch(&[], 30);
     run(&mut tree);
     assert_eq!(text_of(&tree, "name"), "q");
+}
+
+#[derive(Clone, Copy)]
+enum PadMsg {
+    Gesture(Gesture),
+    Tap,
+}
+
+struct Pad {
+    gestures: Gestures,
+    log: alloc::string::String,
+}
+
+impl Component for Pad {
+    type Msg = PadMsg;
+
+    fn update(&mut self, msg: PadMsg, cx: &mut Cx<Self>) {
+        use core::fmt::Write;
+        let log = &mut self.log;
+        let _ = match msg {
+            PadMsg::Tap => write!(log, "tap "),
+            PadMsg::Gesture(Gesture::Down { .. }) => write!(log, "down "),
+            PadMsg::Gesture(Gesture::Up { .. }) => write!(log, "up "),
+            PadMsg::Gesture(Gesture::Pan { phase, dx, dy, .. }) => write!(log, "pan:{phase:?}:{dx},{dy} "),
+            PadMsg::Gesture(Gesture::Pinch { phase, scale, .. }) => write!(log, "pinch:{phase:?}:{scale:.1} "),
+            PadMsg::Gesture(Gesture::Rotate { phase, angle, .. }) => write!(log, "rotate:{phase:?}:{angle:.1} "),
+            PadMsg::Gesture(Gesture::DoubleTap { .. }) => write!(log, "double "),
+            PadMsg::Gesture(Gesture::LongPress { .. }) => write!(log, "long "),
+            PadMsg::Gesture(Gesture::Swipe { direction }) => write!(log, "swipe:{direction:?} "),
+        };
+        cx.rebuild();
+    }
+
+    fn view<'a>(&'a self, ui: &'a Ui<PadMsg>) -> Element<'a, PadMsg> {
+        ui.column([
+            ui.text(chain(), &self.log).height(20).id("log"),
+            ui.column([]).size(300, 300).id("pad").gestures(self.gestures, PadMsg::Gesture).on_tap(PadMsg::Tap),
+            ui.column([]).size(300, 100).id("elsewhere"),
+        ])
+    }
+}
+
+impl Screen for Pad {}
+
+fn pad(gestures: Gestures) -> Tree {
+    let mut tree = Tree::new(Pad { gestures, log: alloc::string::String::new() }, SCREEN, Caps::INTERNAL, theme());
+    run(&mut tree);
+    tree
+}
+
+fn log_of(tree: &mut Tree) -> alloc::string::String {
+    run(tree);
+    let mut log = text_of(tree, "log");
+    log.truncate(log.trim_end().len());
+    log
+}
+
+#[test]
+fn press_comes_around_an_immediate_tap() {
+    let mut tree = pad(Gestures::PRESS);
+    let r = rect_of(&tree, "pad");
+    tree.touch(&[(0, (r.x + 50, r.y + 50))], 0);
+    assert_eq!(log_of(&mut tree), "down");
+    tree.touch(&[], 50);
+    assert_eq!(log_of(&mut tree), "down up tap");
+}
+
+#[test]
+fn a_tap_waits_for_a_double_tap_while_press_does_not() {
+    let mut tree = pad(Gestures::PRESS | Gestures::DOUBLE_TAP);
+    let r = rect_of(&tree, "pad");
+    let p = (r.x + 50, r.y + 50);
+    tree.touch(&[(0, p)], 0);
+    tree.touch(&[], 50);
+    assert_eq!(log_of(&mut tree), "down up");
+    assert!(tree.timed());
+    tree.tick(299);
+    assert_eq!(log_of(&mut tree), "down up");
+    tree.tick(1);
+    assert_eq!(log_of(&mut tree), "down up tap");
+    assert!(tree.idle());
+
+    tree.touch(&[(0, p)], 1000);
+    tree.touch(&[], 1050);
+    tree.tick(100);
+    tree.touch(&[(0, p)], 1150);
+    tree.touch(&[], 1200);
+    assert_eq!(log_of(&mut tree), "down up tap down up down up double");
+    tree.tick(1000);
+    assert_eq!(log_of(&mut tree), "down up tap down up down up double");
+}
+
+#[test]
+fn a_far_second_tap_is_two_taps() {
+    let mut tree = pad(Gestures::DOUBLE_TAP);
+    let r = rect_of(&tree, "pad");
+    tree.touch(&[(0, (r.x + 10, r.y + 10))], 0);
+    tree.touch(&[], 50);
+    tree.touch(&[(0, (r.x + 200, r.y + 200))], 100);
+    tree.touch(&[], 150);
+    tree.tick(300);
+    assert_eq!(log_of(&mut tree), "tap tap");
+}
+
+#[test]
+fn a_pan_replaces_the_tap_and_reports_once_per_frame() {
+    let mut tree = pad(Gestures::PAN);
+    let r = rect_of(&tree, "pad");
+    let (x, y) = (r.x + 50, r.y + 50);
+    tree.touch(&[(0, (x, y))], 0);
+    tree.touch(&[(0, (x + 30, y))], 10);
+    tree.touch(&[(0, (x + 40, y + 5))], 20);
+    tree.touch(&[(0, (x + 50, y + 10))], 30);
+    assert_eq!(log_of(&mut tree), "pan:Began:30,0 pan:Changed:50,10");
+    tree.touch(&[], 40);
+    assert_eq!(log_of(&mut tree), "pan:Began:30,0 pan:Changed:50,10 pan:Ended:50,10");
+}
+
+#[test]
+fn two_fingers_on_a_node_pinch_and_rotate_until_one_lifts() {
+    let mut tree = pad(Gestures::PINCH | Gestures::ROTATE | Gestures::PAN);
+    let r = rect_of(&tree, "pad");
+    let (a, b) = ((r.x + 100, r.y + 100), (r.x + 200, r.y + 100));
+    tree.touch(&[(0, a)], 0);
+    tree.touch(&[(0, a), (1, b)], 10);
+    assert_eq!(log_of(&mut tree), "pinch:Began:1.0 rotate:Began:0.0");
+    tree.touch(&[(0, a), (1, (a.0, a.1 + 200))], 20);
+    assert_eq!(log_of(&mut tree), "pinch:Began:1.0 rotate:Began:0.0 pinch:Changed:2.0 rotate:Changed:1.6");
+    tree.touch(&[(1, (a.0, a.1 + 200))], 30);
+    tree.touch(&[(1, (a.0 + 80, a.1 + 200))], 40);
+    tree.touch(&[], 50);
+    let log = log_of(&mut tree);
+    assert!(log.ends_with("pinch:Ended:2.0 rotate:Ended:1.6"), "the finger left behind does not pan: {log}");
+}
+
+#[test]
+fn a_second_finger_outside_the_node_is_no_pinch() {
+    let mut tree = pad(Gestures::PINCH);
+    let r = rect_of(&tree, "pad");
+    let other = rect_of(&tree, "elsewhere");
+    tree.touch(&[(0, (r.x + 10, r.y + 10))], 0);
+    tree.touch(&[(0, (r.x + 10, r.y + 10)), (1, (other.x + 10, other.y + 10))], 10);
+    tree.touch(&[], 20);
+    assert_eq!(log_of(&mut tree), "tap");
+}
+
+#[test]
+fn a_long_press_takes_the_place_of_the_tap() {
+    let mut tree = pad(Gestures::LONG_PRESS);
+    let r = rect_of(&tree, "pad");
+    tree.touch(&[(0, (r.x + 10, r.y + 10))], 0);
+    assert!(tree.timed());
+    tree.tick(500);
+    assert_eq!(log_of(&mut tree), "long");
+    tree.touch(&[], 600);
+    assert_eq!(log_of(&mut tree), "long");
+}
+
+#[test]
+fn a_quick_stroke_is_a_swipe_and_a_slow_one_is_not() {
+    let mut tree = pad(Gestures::SWIPE);
+    let r = rect_of(&tree, "pad");
+    let (x, y) = (r.x + 200, r.y + 100);
+    tree.touch(&[(0, (x, y))], 0);
+    tree.touch(&[(0, (x - 100, y + 10))], 100);
+    tree.touch(&[], 150);
+    assert_eq!(log_of(&mut tree), "swipe:Left");
+    tree.touch(&[(0, (x, y))], 1000);
+    tree.touch(&[(0, (x - 100, y))], 1200);
+    tree.touch(&[], 1500);
+    assert_eq!(log_of(&mut tree), "swipe:Left");
+}
+
+struct Photos {
+    pinches: u32,
+}
+
+impl Component for Photos {
+    type Msg = Gesture;
+
+    fn update(&mut self, msg: Gesture, _: &mut Cx<Self>) {
+        if matches!(msg, Gesture::Pinch { .. }) {
+            self.pinches += 1;
+            PINCHES.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    fn view<'a>(&'a self, ui: &'a Ui<Gesture>) -> Element<'a, Gesture> {
+        ui.list(0, 20, 300).grow(1).id("photos")
+    }
+
+    fn list_row<'a>(&'a self, _: ListId, _: usize, ui: &'a Ui<Gesture>) -> Element<'a, Gesture> {
+        ui.column([]).height(300).gestures(Gestures::PINCH, |g| g)
+    }
+}
+
+impl Screen for Photos {}
+
+static PINCHES: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+#[test]
+fn one_finger_scrolls_past_a_pinch_and_a_second_stops_it() {
+    let mut tree = Tree::new(Photos { pinches: 0 }, SCREEN, Caps::INTERNAL, theme());
+    run(&mut tree);
+    let r = rect_of(&tree, "photos");
+    let x = r.x + 50;
+    tree.touch(&[(0, (x, r.y + 200))], 0);
+    tree.touch(&[(0, (x, r.y + 140))], 10);
+    tree.touch(&[(0, (x, r.y + 80))], 20);
+    assert_eq!(offset_of(&tree, "photos"), 120);
+    run(&mut tree);
+    assert_eq!(PINCHES.load(core::sync::atomic::Ordering::Relaxed), 0);
+    tree.touch(&[(0, (x, r.y + 80)), (1, (x + 40, r.y + 80))], 30);
+    tree.touch(&[(0, (x, r.y + 40)), (1, (x + 40, r.y + 80))], 40);
+    run(&mut tree);
+    assert_eq!(offset_of(&tree, "photos"), 120);
+    assert!(PINCHES.load(core::sync::atomic::Ordering::Relaxed) >= 1);
+    tree.touch(&[], 50);
+    assert!(!tree.animating());
 }
 
 #[test]

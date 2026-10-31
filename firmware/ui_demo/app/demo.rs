@@ -5,11 +5,12 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::fmt::Write;
 
 use devkit_ui::widgets::{button, checkbox, icon_button, list_item, menu, menu_item, modal, slider, slider_value, switch, top_bar};
 use devkit_ui::keyboard::InputKind;
 use devkit_ui::widgets::{password_field, text_area, text_field};
-use devkit_ui::{Align, Bars, Child, Component, Cx, Element, Fonts, Icon, Icons, ListId, Overlay, RenderMode, Root, Screen, ScreenStyle, Strips, TextBuffer, TextInput, Theme, Ui};
+use devkit_ui::{Align, Bars, Child, Component, Cx, Element, Fonts, Gesture, Gestures, Icon, Icons, ListId, Overlay, Phase, RenderMode, Root, Screen, ScreenStyle, Strips, TextBuffer, TextInput, Theme, Ui};
 use idf::heap::Caps;
 use idf::sync::{LazyLock, Mutex};
 
@@ -188,6 +189,7 @@ pub enum Msg {
     Back,
     ToggleMenu,
     OpenSettings,
+    OpenGestures,
 }
 
 pub struct Browser {
@@ -220,6 +222,10 @@ impl Component for Browser {
                 self.menu = false;
                 cx.nav_of::<Root>().push(Settings::new());
             }
+            Msg::OpenGestures => {
+                self.menu = false;
+                cx.nav_of::<Root>().push(GestureDemo::new());
+            }
         }
         cx.rebuild();
     }
@@ -230,7 +236,7 @@ impl Component for Browser {
         let back = (height > width).then_some(Msg::Back);
         let more = icon_button(ui, ui.theme().icons.more, Msg::ToggleMenu).id("more");
         let popup = if self.menu {
-            menu(ui, 124, [menu_item(ui, "Compact", Msg::ToggleMenu), menu_item(ui, "Settings", Msg::OpenSettings).id("open-settings")], Msg::ToggleMenu)
+            menu(ui, 124, [menu_item(ui, "Compact", Msg::ToggleMenu), menu_item(ui, "Settings", Msg::OpenSettings).id("open-settings"), menu_item(ui, "Gestures", Msg::OpenGestures).id("open-gestures")], Msg::ToggleMenu)
         } else {
             ui.empty()
         };
@@ -465,5 +471,89 @@ impl Screen for Settings {
         ScreenStyle { bars: if self.dark { Bars::Light } else { Bars::Dark } }
     }
 }
+
+const BOX_SIZE: i16 = 160;
+
+#[derive(Clone, Copy)]
+pub enum GestureMsg {
+    Back,
+    Tap,
+    Touch(Gesture),
+}
+
+pub struct GestureDemo {
+    label: String,
+    position: (i16, i16),
+    from: (i16, i16),
+    scale: f32,
+    base: f32,
+}
+
+impl GestureDemo {
+    fn new() -> Self {
+        Self { label: String::from("Touch the area"), position: (240, 300), from: (240, 300), scale: 1.0, base: 1.0 }
+    }
+}
+
+impl Component for GestureDemo {
+    type Msg = GestureMsg;
+
+    fn update(&mut self, msg: GestureMsg, cx: &mut Cx<Self>) {
+        self.label.clear();
+        let label = &mut self.label;
+        let _ = match msg {
+            GestureMsg::Back => {
+                cx.nav().pop();
+                return;
+            }
+            GestureMsg::Tap => write!(label, "tap"),
+            GestureMsg::Touch(Gesture::Down { x, y }) => write!(label, "down {x},{y}"),
+            GestureMsg::Touch(Gesture::Up { x, y }) => write!(label, "up {x},{y}"),
+            GestureMsg::Touch(Gesture::Pan { phase, dx, dy, .. }) => {
+                if phase == Phase::Began {
+                    self.from = self.position;
+                }
+                self.position = (self.from.0 + dx, self.from.1 + dy);
+                write!(label, "pan {phase:?} {dx},{dy}")
+            }
+            GestureMsg::Touch(Gesture::Pinch { phase, scale, .. }) => {
+                if phase == Phase::Began {
+                    self.base = self.scale;
+                }
+                self.scale = (self.base * scale).clamp(0.25, 4.0);
+                write!(label, "pinch {phase:?} {scale:.2}")
+            }
+            GestureMsg::Touch(Gesture::Rotate { phase, angle, .. }) => write!(label, "rotate {phase:?} {angle:.2}"),
+            GestureMsg::Touch(Gesture::DoubleTap { .. }) => {
+                self.scale = 1.0;
+                write!(label, "double tap")
+            }
+            GestureMsg::Touch(Gesture::LongPress { x, y }) => write!(label, "long press {x},{y}"),
+            GestureMsg::Touch(Gesture::Swipe { direction }) => write!(label, "swipe {direction:?}"),
+        };
+        cx.rebuild();
+    }
+
+    fn view<'a>(&'a self, ui: &'a Ui<GestureMsg>) -> Element<'a, GestureMsg> {
+        let theme = ui.theme();
+        let c = &theme.colors;
+        let side = (f32::from(BOX_SIZE) * self.scale) as i16;
+        let (x, y) = (self.position.0 - side / 2, self.position.1 - side / 2);
+        ui.column([
+            top_bar(ui, Some(GestureMsg::Back), "Gestures", ui.empty()),
+            ui.text(theme.fonts.body, &self.label).padding(theme.metrics.padding).id("gesture-label"),
+            ui.column([ui.column([]).size(side, side).radius(theme.metrics.radius).background(c.primary).absolute(Some(x), Some(y), None, None).id("gesture-box")])
+                .grow(1)
+                .clip()
+                .id("gesture-area")
+                .gestures(Gestures::all(), GestureMsg::Touch)
+                .on_tap(GestureMsg::Tap),
+        ])
+        .padding_each(0, ui.insets().top, 0, 0)
+        .background(c.surface)
+    }
+}
+
+impl Screen for GestureDemo {}
 
 pub const INSET_TOP: i16 = 52;
