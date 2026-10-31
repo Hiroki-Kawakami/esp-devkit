@@ -5,7 +5,6 @@ kind = "idf"
 
 [targets.simulator]
 kind = "sim"
-headless = true
 
 [targets.test]
 kind = "sim"
