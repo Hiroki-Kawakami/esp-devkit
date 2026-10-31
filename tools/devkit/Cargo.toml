@@ -5,6 +5,7 @@ edition = "2024"
 publish = false
 
 [dependencies]
+cpal = "0.18.2"
 eframe = "0.31"
 freetype-rs = "0.37"
 jpeg-encoder = "0.6"

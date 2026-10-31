@@ -125,7 +125,7 @@
           buildAndTestSubdir = "tools/devkit";
           cargoLock.lockFile = ./tools/devkit/Cargo.lock;
           nativeBuildInputs = [ pkgs.pkg-config ];
-          buildInputs = [ pkgs.freetype ];
+          buildInputs = [ pkgs.freetype ] ++ lib.optionals pkgs.stdenv.isLinux [ pkgs.alsa-lib ];
         };
       in {
         lib = { inherit mkFwImage; };

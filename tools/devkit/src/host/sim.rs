@@ -10,10 +10,11 @@ use std::io::{self, BufRead, BufReader, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::path::PathBuf;
 use std::process::{ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, Weak};
 use std::thread;
 
+use super::audio::{self, Player};
 use crate::protocol::{
     ENV_PSRAM_PATH, ENV_PSRAM_SIZE, ENV_SOCKET_FD, EXIT_RESTART, Event, MAX_TOUCH_POINTS, PixelFormat,
     RECORD_SIZE, TouchPoint, VERSION,
@@ -83,10 +84,14 @@ pub struct Device {
     generation: AtomicU64,
     contacts: Mutex<BTreeMap<u8, (u16, u16)>>,
     sink: Mutex<Option<super::Sink>>,
+    player: Mutex<Option<Player>>,
+    muted: AtomicBool,
+    silent: bool,
 }
 
 impl Device {
     pub fn new(fw: PathBuf, args: Vec<OsString>, env: Vec<(OsString, OsString)>, psram_size: usize) -> io::Result<Arc<Self>> {
+        let silent = env.iter().any(|(key, _)| key == "SIMULATOR_HEADLESS");
         Ok(Arc::new(Self {
             fw,
             args,
@@ -103,6 +108,9 @@ impl Device {
             generation: AtomicU64::new(0),
             contacts: Mutex::new(BTreeMap::new()),
             sink: Mutex::new(None),
+            player: Mutex::new(None),
+            muted: AtomicBool::new(true),
+            silent,
         }))
     }
 
@@ -202,12 +210,14 @@ impl Device {
     }
 
     fn close_run(&self) -> Option<Run> {
+        *self.player.lock().unwrap() = None;
+        self.muted.store(true, Ordering::Relaxed);
         let run = self.run.lock().unwrap().take()?;
         unsafe { libc::shutdown(run.sock, libc::SHUT_RDWR) };
         Some(run)
     }
 
-    fn receive(&self, fd: RawFd) {
+    fn receive(self: &Arc<Self>, fd: RawFd) {
         let mut record = [0u8; RECORD_SIZE];
         while read_record(fd, &mut record) {
             let mut state = self.state.lock().unwrap();
@@ -226,10 +236,49 @@ impl Device {
                     let end = name.iter().position(|&b| b == 0).unwrap_or(name.len());
                     state.name = Some(String::from_utf8_lossy(&name[..end]).into_owned());
                 }
-                Some(Event::Touch { .. }) | None => {}
+                Some(Event::AudioOpen { stream, offset, size, sample_rate, sample_bytes, channels }) => {
+                    let format = audio::Format { sample_rate, sample_bytes, channels };
+                    self.open_audio(stream, offset, size, format);
+                }
+                Some(Event::AudioWrite { stream, end }) => {
+                    if let Some(player) = self.player.lock().unwrap().as_ref().filter(|p| p.stream == stream) {
+                        player.write(end);
+                    }
+                }
+                Some(Event::AudioClose { stream }) => {
+                    let mut player = self.player.lock().unwrap();
+                    if player.as_ref().is_some_and(|p| p.stream == stream) {
+                        *player = None;
+                    }
+                }
+                Some(Event::AudioMute { mute }) => {
+                    self.muted.store(mute, Ordering::Relaxed);
+                    if let Some(player) = self.player.lock().unwrap().as_ref() {
+                        player.set_muted(mute);
+                    }
+                }
+                Some(Event::Touch { .. } | Event::AudioPlayed { .. }) | None => {}
             }
         }
         unsafe { libc::close(fd) };
+    }
+
+    fn open_audio(self: &Arc<Self>, stream: u32, offset: u64, size: u32, format: audio::Format) {
+        let (start, len) = (offset as usize, size as usize);
+        let valid = len > 0 && format.sample_rate > 0 && matches!(format.sample_bytes, 2 | 4) && matches!(format.channels, 1 | 2);
+        if !valid || start.checked_add(len).is_none_or(|end| end > self.psram.len) {
+            eprintln!("[devkit] bad audio stream from the firmware");
+            return;
+        }
+        let ring = audio::Ring { ptr: unsafe { self.psram.ptr.add(start) }, size: u64::from(size) };
+        let device: Weak<Self> = Arc::downgrade(self);
+        let report = move |bytes| {
+            if let Some(device) = device.upgrade() {
+                device.send(&Event::AudioPlayed { stream, bytes });
+            }
+        };
+        let muted = self.muted.load(Ordering::Relaxed);
+        *self.player.lock().unwrap() = Some(Player::start(stream, ring, format, muted, self.silent, report));
     }
 
     pub fn send(&self, event: &Event) {

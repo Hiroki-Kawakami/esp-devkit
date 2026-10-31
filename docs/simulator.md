@@ -12,6 +12,9 @@ replaced by an emulator without changing the host.
 - `--headless` opens no window; the host still supervises the firmware and
   serves clients.
 - `--psram-mb` sizes the PSRAM region (default 32).
+- Audio plays on the default output device, resampled to its rate. With
+  `--headless`, or when no device opens, the host keeps the same time without
+  sound, so firmware pacing does not change.
 - Firmware stdout and stderr, merged in order like a device console, go to the
   host's log: the terminal, the log pane and attached clients.
 
@@ -32,8 +35,8 @@ The host starts the firmware with:
   framebuffers land where the host can read them. Without the variables
   SPIRAM comes from the host heap.
 - `libs/bsp_rs/src/sim` owns the socket (`None` from `sim::host()` without a
-  host) and the simulated panel and touch. The firmware exits when the host
-  closes it.
+  host) and the simulated panel, touch and audio. The firmware exits when the
+  host closes it.
 - `esp_restart()` exits with status 75; the host starts the firmware again.
   Any other exit leaves it stopped until Reset or Power on.
 
@@ -49,9 +52,17 @@ compiled into the firmware and `tools/devkit`. Byte 0 is the tag, fields follow 
 | `Present` | firmware → host | offset into the PSRAM region, width, height, stride, pixel format |
 | `Brightness` | firmware → host | backlight 0..=100 |
 | `Touch` | host → firmware | every contact currently down, panel pixels |
+| `AudioOpen` | firmware → host | stream id, offset and size of a PCM ring in the PSRAM region, sample rate, sample bytes (2 or 4), channels |
+| `AudioWrite` | firmware → host | stream id, bytes written so far |
+| `AudioClose` | firmware → host | stream id |
+| `AudioMute` | firmware → host | play as silence, keeping time; outlives streams |
+| `AudioPlayed` | host → firmware | stream id, bytes played so far; the firmware's writes pace on it |
 
 The host reads the presented frame straight from the region each refresh, so a
-frame drawn while shown tears as it would on the panel.
+frame drawn while shown tears as it would on the panel. Audio works the same
+way: the host reads samples from the ring, and the firmware only announces how
+far it has written. The simulated audio has no hardware gain and no headphone
+jack, so `DspMode::Disable` has no volume there.
 
 ## Harness
 

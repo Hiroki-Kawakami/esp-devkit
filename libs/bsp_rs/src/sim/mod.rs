@@ -6,6 +6,7 @@
 // Shared with tools/devkit, which uses the parts this side does not.
 #[allow(dead_code)]
 pub(crate) mod protocol;
+pub(crate) mod audio;
 pub(crate) mod panel;
 pub(crate) mod touch;
 
@@ -27,6 +28,7 @@ mod ffi {
 const TAG: &CStr = c"sim";
 
 pub(crate) type TouchListener = Box<dyn Fn(&[TouchPoint]) + Send + Sync>;
+pub(crate) type AudioListener = Box<dyn Fn(u32, u64) + Send + Sync>;
 
 pub(crate) struct Host {
     fd: c_int,
@@ -37,6 +39,7 @@ pub(crate) struct Host {
 
 static HOST: OnceLock<Option<Host>> = OnceLock::new();
 static TOUCH: OnceLock<TouchListener> = OnceLock::new();
+static AUDIO: OnceLock<AudioListener> = OnceLock::new();
 
 /// `None` when the firmware does not run under the simulator host.
 pub(crate) fn host() -> Option<&'static Host> {
@@ -90,6 +93,14 @@ impl Host {
             warn!(TAG, "touch listener already set");
         }
     }
+
+    /// Runs on the receiver task with a stream and the bytes it has played.
+    /// Only the first listener is kept.
+    pub(crate) fn set_audio_listener(&self, listener: AudioListener) {
+        if AUDIO.set(listener).is_err() {
+            warn!(TAG, "audio listener already set");
+        }
+    }
 }
 
 // The host closing its end means it went away, so the firmware goes too.
@@ -108,6 +119,11 @@ fn receive(fd: c_int) {
             Some(Event::Touch { count, points }) => {
                 if let Some(listener) = TOUCH.get() {
                     listener(&points[..usize::from(count)]);
+                }
+            }
+            Some(Event::AudioPlayed { stream, bytes }) => {
+                if let Some(listener) = AUDIO.get() {
+                    listener(stream, bytes);
                 }
             }
             Some(_) => {}

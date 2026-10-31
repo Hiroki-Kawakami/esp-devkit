@@ -7,6 +7,7 @@
  * any number of clients (docs/devkit-cli.md).
  */
 
+pub mod audio;
 pub mod decode;
 pub mod serial;
 pub mod sim;

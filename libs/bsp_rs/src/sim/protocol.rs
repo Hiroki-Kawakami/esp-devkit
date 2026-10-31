@@ -6,7 +6,7 @@
  * this crate and tools/devkit. See docs/simulator.md.
  */
 
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 pub const RECORD_SIZE: usize = 64;
 pub const MAX_TOUCH_POINTS: usize = 10;
 pub const MAX_NAME: usize = 48;
@@ -58,6 +58,18 @@ pub enum Event {
     Brightness { level: u8 },
     /// Host to firmware: every contact currently down, panel pixels.
     Touch { count: u8, points: [TouchPoint; MAX_TOUCH_POINTS] },
+    /// Firmware to host: PCM stream `stream` starts in the ring at `offset`,
+    /// replacing any other. Interleaved little-endian signed samples of 2 or 4
+    /// bytes.
+    AudioOpen { stream: u32, offset: u64, size: u32, sample_rate: u32, sample_bytes: u8, channels: u8 },
+    /// Firmware to host: bytes written to the stream so far.
+    AudioWrite { stream: u32, end: u64 },
+    /// Firmware to host.
+    AudioClose { stream: u32 },
+    /// Firmware to host: the stream keeps playing, as silence. Outlives streams.
+    AudioMute { mute: bool },
+    /// Host to firmware: bytes of the stream played so far.
+    AudioPlayed { stream: u32, bytes: u64 },
 }
 
 const TAG_HELLO: u8 = 1;
@@ -65,6 +77,11 @@ const TAG_PRESENT: u8 = 2;
 const TAG_BRIGHTNESS: u8 = 3;
 const TAG_TOUCH: u8 = 4;
 const TAG_DEVICE: u8 = 5;
+const TAG_AUDIO_OPEN: u8 = 6;
+const TAG_AUDIO_WRITE: u8 = 7;
+const TAG_AUDIO_CLOSE: u8 = 8;
+const TAG_AUDIO_MUTE: u8 = 9;
+const TAG_AUDIO_PLAYED: u8 = 10;
 
 struct Writer {
     buf: [u8; RECORD_SIZE],
@@ -144,6 +161,23 @@ impl Event {
                 }
                 w.buf
             }
+            Self::AudioOpen { stream, offset, size, sample_rate, sample_bytes, channels } => {
+                Writer::new(TAG_AUDIO_OPEN)
+                    .put(&stream.to_le_bytes())
+                    .put(&offset.to_le_bytes())
+                    .put(&size.to_le_bytes())
+                    .put(&sample_rate.to_le_bytes())
+                    .put(&[sample_bytes, channels])
+                    .buf
+            }
+            Self::AudioWrite { stream, end } => {
+                Writer::new(TAG_AUDIO_WRITE).put(&stream.to_le_bytes()).put(&end.to_le_bytes()).buf
+            }
+            Self::AudioClose { stream } => Writer::new(TAG_AUDIO_CLOSE).put(&stream.to_le_bytes()).buf,
+            Self::AudioMute { mute } => Writer::new(TAG_AUDIO_MUTE).put(&[u8::from(mute)]).buf,
+            Self::AudioPlayed { stream, bytes } => {
+                Writer::new(TAG_AUDIO_PLAYED).put(&stream.to_le_bytes()).put(&bytes.to_le_bytes()).buf
+            }
         }
     }
 
@@ -173,6 +207,18 @@ impl Event {
                 }
                 Self::Touch { count, points }
             }
+            TAG_AUDIO_OPEN => Self::AudioOpen {
+                stream: r.u32(),
+                offset: r.u64(),
+                size: r.u32(),
+                sample_rate: r.u32(),
+                sample_bytes: r.u8(),
+                channels: r.u8(),
+            },
+            TAG_AUDIO_WRITE => Self::AudioWrite { stream: r.u32(), end: r.u64() },
+            TAG_AUDIO_CLOSE => Self::AudioClose { stream: r.u32() },
+            TAG_AUDIO_MUTE => Self::AudioMute { mute: r.u8() != 0 },
+            TAG_AUDIO_PLAYED => Self::AudioPlayed { stream: r.u32(), bytes: r.u64() },
             _ => return None,
         })
     }
@@ -193,6 +239,11 @@ mod tests {
             Event::Brightness { level: 100 },
             Event::device("M5Stack Tab5"),
             Event::Touch { count: 10, points },
+            Event::AudioOpen { stream: 7, offset: 0x1_0000_0000, size: 1024, sample_rate: 48_000, sample_bytes: 4, channels: 2 },
+            Event::AudioWrite { stream: 7, end: 0x1_0000_0001 },
+            Event::AudioClose { stream: 7 },
+            Event::AudioMute { mute: true },
+            Event::AudioPlayed { stream: 7, bytes: 0x1_0000_0002 },
         ] {
             assert_eq!(Event::decode(&e.encode()), Some(e));
         }

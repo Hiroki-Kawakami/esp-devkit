@@ -90,8 +90,9 @@ pub fn run() {
 }
 
 fn play_tone(audio: &'static Audio) {
-    if let Err(err) = audio.set_headphone_callback(Some(Box::new(|inserted| info!(TAG, "headphone: {inserted}")))) {
-        error!(TAG, "set_headphone_callback: {err}");
+    match audio.set_headphone_callback(Some(Box::new(|inserted| info!(TAG, "headphone: {inserted}")))) {
+        Err(err) if err != idf::Error::NOT_SUPPORTED => error!(TAG, "set_headphone_callback: {err}"),
+        _ => {}
     }
     if let Err(err) = audio.set_volume(TONE_VOLUME) {
         error!(TAG, "set_volume: {err}");
