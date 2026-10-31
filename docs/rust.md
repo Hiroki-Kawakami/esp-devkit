@@ -746,6 +746,43 @@ app.run();
 - Keeping a picture across frames is the app's: draw into its own memory through
   a `Surface`, in the format of `ui.pixel_format()`, and show it with
   `canvas.image` and `Image::from_pixels`.
+- `ui.external(&surface)` leaves a rectangle to a task of its own, for video and
+  other direct framebuffer writers. The UI never draws inside it. Its top and
+  bottom keep to the 16 row grid, so it can come out shorter than the node. One
+  can show at a time.
+
+  ```rust
+  let video = ExternalSurface::new()?;
+  video.set_policy(Policy::Clip);
+  video.set_on_refresh(move |area| decoder.redraw(area));
+
+  // On the writing task. `begin` does not wait.
+  if let Some(frame) = video.begin() {
+      unsafe { blitter.start(&frame.fb, frame.rotation, frame.area, pixels) }?;
+      // Wait for the copies, then:
+      frame.end();
+  }
+  ```
+
+  | `Policy` | Written to | UI over it | Presented by |
+  |---|---|---|---|
+  | `Clip`, nothing over it | the framebuffer on the panel | none | nobody |
+  | `Clip`, something over it | the back framebuffer | yes | `end` |
+  | `Stamp` | the back framebuffer | yes | `end` |
+  | `Exclusive` | the back framebuffer, whole panel | none, the UI stops | `end` |
+
+- A frame always covers the whole `area`, unless the writer tracks by
+  `frame.index` what each framebuffer already holds.
+- What lies over a surface is drawn into ARGB memory when it changes, and `end`
+  blends it with the 2D engine, so video does not wait for the UI.
+- `set_on_refresh` asks for `area` again on the UI task when what the surface
+  wrote is gone: the rectangle moved or grew, or UI opened, changed or closed
+  over it, or `Exclusive` began. Nothing waits for the answer. Playing is no
+  reason to drop a request, as the next frame may be long in coming; a frame
+  written first answers it. A writer that cannot draw its last frame again must
+  not have UI over it.
+- When the rectangle shrinks, the UI holds back until the frame being written
+  has ended, for 100 ms at most.
 - `Probe` serves test harnesses: `tree`, `tap` (through the touch path, refused
   when the node is covered), `invoke` (the handler directly), `idle` and `stats`.
 

@@ -5,15 +5,20 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
+use alloc::sync::Arc;
 use core::fmt::Write;
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::time::Duration;
 
+use bsp_rs::display::{self, Display, PixelFormat};
 use devkit_gfx::{Color, TextOptions, TextRun};
 use devkit_ui::widgets::{button, checkbox, icon_button, list_item, menu, menu_item, modal, slider, slider_value, switch, top_bar};
 use devkit_ui::keyboard::InputKind;
 use devkit_ui::widgets::{password_field, text_area, text_field};
-use devkit_ui::{Align, Bars, Canvas, CanvasId, Child, Component, Cx, Element, Fonts, Gesture, Gestures, Icon, Icons, ListId, Overlay, Phase, Raster, RasterTarget, Rect, RenderMode, Root, Screen, ScreenStyle, Strips, TextBuffer, TextInput, Theme, Ui};
+use devkit_ui::{Align, Bars, Canvas, CanvasId, Child, Component, Cx, Element, ExternalSurface, Fonts, Gesture, Gestures, Icon, Icons, ListId, Overlay, Phase, Policy, Raster, RasterTarget, Rect, RenderMode, Root, Screen, ScreenStyle, Strips, TextBuffer, TextInput, Theme, Ui};
 use idf::heap::Caps;
-use idf::sync::{LazyLock, Mutex};
+use idf::sync::{LazyLock, Mutex, OnceLock};
+use idf::thread;
 
 use crate::resources::icons;
 use crate::scene::{BODY, CAPTION, ICONS, SMALL_ICONS, TITLE};
@@ -192,6 +197,7 @@ pub enum Msg {
     OpenSettings,
     OpenGestures,
     OpenCanvas,
+    OpenVideo,
 }
 
 pub struct Browser {
@@ -224,6 +230,10 @@ impl Component for Browser {
                 self.menu = false;
                 cx.nav_of::<Root>().push(Settings::new());
             }
+            Msg::OpenVideo => {
+                self.menu = false;
+                cx.nav_of::<Root>().push(VideoDemo::new());
+            }
             Msg::OpenCanvas => {
                 self.menu = false;
                 cx.nav_of::<Root>().push(CanvasDemo::new());
@@ -242,7 +252,7 @@ impl Component for Browser {
         let back = (height > width).then_some(Msg::Back);
         let more = icon_button(ui, ui.theme().icons.more, Msg::ToggleMenu).id("more");
         let popup = if self.menu {
-            menu(ui, 124, [menu_item(ui, "Compact", Msg::ToggleMenu), menu_item(ui, "Settings", Msg::OpenSettings).id("open-settings"), menu_item(ui, "Gestures", Msg::OpenGestures).id("open-gestures"), menu_item(ui, "Canvas", Msg::OpenCanvas).id("open-canvas")], Msg::ToggleMenu)
+            menu(ui, 124, [menu_item(ui, "Compact", Msg::ToggleMenu), menu_item(ui, "Settings", Msg::OpenSettings).id("open-settings"), menu_item(ui, "Gestures", Msg::OpenGestures).id("open-gestures"), menu_item(ui, "Canvas", Msg::OpenCanvas).id("open-canvas"), menu_item(ui, "Video", Msg::OpenVideo).id("open-video")], Msg::ToggleMenu)
         } else {
             ui.empty()
         };
@@ -477,6 +487,167 @@ impl Screen for Settings {
         ScreenStyle { bars: if self.dark { Bars::Light } else { Bars::Dark } }
     }
 }
+
+static DISPLAY: OnceLock<&'static Display> = OnceLock::new();
+pub static VIDEO_FRAMES: AtomicU32 = AtomicU32::new(0);
+const BAND_ROWS: usize = 64;
+const BAR_WIDTH: usize = 90;
+const BARS: [[u8; 3]; 4] = [[0xE5, 0x39, 0x35], [0x43, 0xA0, 0x47], [0x1E, 0x88, 0xE5], [0xFD, 0xD8, 0x35]];
+
+pub fn set_display(display: &'static Display) {
+    let _ = DISPLAY.set(display);
+}
+
+#[derive(Default)]
+struct Playback {
+    stop: AtomicBool,
+    paused: AtomicBool,
+    refresh: AtomicBool,
+}
+
+fn write_row(row: &mut [u8], format: PixelFormat, shift: usize) {
+    let bytes = format.bytes();
+    for (x, pixel) in row.chunks_exact_mut(bytes).enumerate() {
+        let [r, g, b] = BARS[(x + shift) / BAR_WIDTH % BARS.len()];
+        if bytes == 2 {
+            let packed = u16::from(r >> 3) << 11 | u16::from(g >> 2) << 5 | u16::from(b >> 3);
+            pixel.copy_from_slice(&packed.to_le_bytes());
+        } else {
+            pixel.copy_from_slice(&[b, g, r]);
+        }
+    }
+}
+
+fn produce(display: &'static Display, video: ExternalSurface, playback: Arc<Playback>) {
+    let Ok(mut blitter) = display.blitter(1) else { return };
+    let size = display.size();
+    let mut storage = alloc::vec![0u8; usize::from(size.width.max(size.height)) * BAND_ROWS * 3 + 64];
+    let start = storage.as_ptr().align_offset(64);
+    let pixels = &mut storage[start..];
+    let mut shift = 0;
+    while !playback.stop.load(Ordering::Acquire) {
+        let paused = playback.paused.load(Ordering::Acquire);
+        if paused && !playback.refresh.swap(false, Ordering::AcqRel) {
+            thread::sleep(Duration::from_millis(5));
+            continue;
+        }
+        let Some(frame) = video.begin() else {
+            thread::sleep(Duration::from_millis(20));
+            continue;
+        };
+        let area = frame.area;
+        let format = frame.fb.format();
+        let stride = usize::from(area.width) * format.bytes();
+        let (first, rest) = pixels.split_at_mut(stride);
+        write_row(first, format, shift);
+        for row in rest[..stride * (BAND_ROWS - 1)].chunks_exact_mut(stride) {
+            row.copy_from_slice(first);
+        }
+        let mut y = 0;
+        while y < area.height {
+            let height = (area.height - y).min(BAND_ROWS as u16);
+            let band = display::Rect { x: area.x, y: area.y + y, width: area.width, height };
+            if let Err(err) = unsafe { blitter.start(&frame.fb, frame.rotation, band, pixels.as_ptr()) } {
+                idf::log::error!(c"ui_demo", "video: {err}");
+                break;
+            }
+            blitter.wait_timeout(Duration::from_secs(1));
+            y += height;
+        }
+        frame.end();
+        VIDEO_FRAMES.fetch_add(1, Ordering::Relaxed);
+        if !paused {
+            shift = (shift + 3) % (BAR_WIDTH * BARS.len());
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub enum VideoMsg {
+    Back,
+    Pause,
+    Menu,
+    Policy(Policy),
+}
+
+pub struct VideoDemo {
+    video: ExternalSurface,
+    playback: Arc<Playback>,
+    menu: bool,
+}
+
+impl VideoDemo {
+    fn new() -> Self {
+        let video = ExternalSurface::new().expect("surface");
+        let playback = Arc::new(Playback::default());
+        let refresh = playback.clone();
+        video.set_on_refresh(move |_| refresh.refresh.store(true, Ordering::Release));
+        if let Some(&display) = DISPLAY.get() {
+            let (video, playback) = (video.clone(), playback.clone());
+            let spawned = thread::Builder::new().name("video").stack_size(8192).priority(5).spawn(move || produce(display, video, playback));
+            if spawned.is_err() {
+                idf::log::error!(c"ui_demo", "video task");
+            }
+        }
+        Self { video, playback, menu: false }
+    }
+}
+
+impl Drop for VideoDemo {
+    fn drop(&mut self) {
+        self.playback.stop.store(true, Ordering::Release);
+    }
+}
+
+impl Component for VideoDemo {
+    type Msg = VideoMsg;
+
+    fn update(&mut self, msg: VideoMsg, cx: &mut Cx<Self>) {
+        match msg {
+            VideoMsg::Back => cx.nav().pop(),
+            VideoMsg::Pause => {
+                self.playback.paused.fetch_xor(true, Ordering::AcqRel);
+            }
+            VideoMsg::Menu => self.menu = !self.menu,
+            VideoMsg::Policy(policy) => self.video.set_policy(policy),
+        }
+        cx.rebuild();
+    }
+
+    fn view<'a>(&'a self, ui: &'a Ui<VideoMsg>) -> Element<'a, VideoMsg> {
+        let theme = ui.theme();
+        let look = theme.looks.button_secondary;
+        let menu = if self.menu {
+            ui.column([ui.text(theme.fonts.title, "Over the video").color(Color::rgb(255, 255, 255))])
+                .padding(theme.metrics.padding)
+                .radius(theme.metrics.radius)
+                .background(Color::rgba(0x20, 0x20, 0x28, 0xC0))
+                .absolute(Some(80), Some(400), Some(80), None)
+                .height(200)
+                .id("video-menu")
+        } else {
+            ui.empty()
+        };
+        ui.column([
+            top_bar(ui, Some(VideoMsg::Back), "Video", ui.empty()),
+            ui.external(&self.video).grow(1).id("video"),
+            ui.row([
+                button(ui, "Pause", look, VideoMsg::Pause).grow(1).id("video-pause"),
+                button(ui, "Menu", look, VideoMsg::Menu).grow(1).id("video-toggle"),
+                button(ui, "Clip", look, VideoMsg::Policy(Policy::Clip)).grow(1).id("video-clip"),
+                button(ui, "Stamp", look, VideoMsg::Policy(Policy::Stamp)).grow(1).id("video-stamp"),
+                button(ui, "Full", look, VideoMsg::Policy(Policy::Exclusive)).grow(1).id("video-full"),
+            ])
+            .padding(theme.metrics.padding)
+            .gap(theme.metrics.gap),
+            menu,
+        ])
+        .padding_each(0, ui.insets().top, 0, 0)
+        .background(theme.colors.surface)
+    }
+}
+
+impl Screen for VideoDemo {}
 
 const TERMINAL: CanvasId = 0;
 const WAVE: CanvasId = 1;

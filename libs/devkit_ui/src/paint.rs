@@ -134,6 +134,7 @@ impl Tree {
                 }
             }
             NodeContent::Image { image, tint } => list.image(cx as i16, cy as i16, *image, dim(*tint, opacity)),
+            NodeContent::External(_) => self.external_split.set(list.ops().len()),
             NodeContent::Canvas(canvas) => {
                 let viewport = rect.intersect(&clip);
                 let Some(host) = &self.slots[usize::from(node.owner)].host else { return };

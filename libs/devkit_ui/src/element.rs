@@ -17,6 +17,7 @@ use crate::component::{AnyHost, Child, EventMap, Host, ListId, Screen, call_even
 use crate::erased::Erased;
 use crate::style::{Align, Dimension, Direction, Inset, Insets, Justify, Role, ScreenStyle, Shadow, State, Style};
 use crate::canvas::CanvasId;
+use crate::external::ExternalSurface;
 use crate::gesture::{Gesture, GestureMap, Gestures, call_gesture_map};
 use crate::keyboard::{InputKind, Keyboard};
 use crate::text_buffer::TextInput;
@@ -71,6 +72,7 @@ pub(crate) enum Content<'a> {
     Scroll,
     List { id: ListId, count: usize, row_height: i16, revision: Option<u32> },
     Canvas(CanvasId),
+    External(&'a ExternalSurface),
     Child(&'a dyn ChildSpec),
     Navigator { key: TypeId, initial: Option<&'a dyn ChildSpec> },
 }
@@ -633,6 +635,13 @@ impl<M: Copy> Ui<M> {
     /// Pixels drawn by `Component::draw`. Takes the size the parent gives it.
     pub fn canvas<'a>(&'a self, id: CanvasId) -> Element<'a, M> {
         Element::new(Content::Canvas(id), &[])
+    }
+
+    /// A rectangle `surface` writes, inside the size the parent gives it: its
+    /// top and bottom keep to the 16 row grid damage is aligned to, so it can
+    /// end up to 15 rows shorter on each side. One at a time per app.
+    pub fn external<'a>(&'a self, surface: &'a ExternalSurface) -> Element<'a, M> {
+        Element::new(Content::External(surface), &[])
     }
 
     /// Scrolls one child vertically. Takes the size the parent gives it.

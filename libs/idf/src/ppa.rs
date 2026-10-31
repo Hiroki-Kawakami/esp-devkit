@@ -15,6 +15,7 @@ use crate::{Error, Result, sys};
 pub enum ColorMode {
     Rgb565,
     Rgb888,
+    Argb8888,
 }
 
 impl ColorMode {
@@ -22,6 +23,15 @@ impl ColorMode {
         match self {
             Self::Rgb565 => sys::ppa_srm_color_mode_t_PPA_SRM_COLOR_MODE_RGB565,
             Self::Rgb888 => sys::ppa_srm_color_mode_t_PPA_SRM_COLOR_MODE_RGB888,
+            Self::Argb8888 => sys::ppa_srm_color_mode_t_PPA_SRM_COLOR_MODE_ARGB8888,
+        }
+    }
+
+    fn blend(self) -> sys::ppa_blend_color_mode_t {
+        match self {
+            Self::Rgb565 => sys::ppa_blend_color_mode_t_PPA_BLEND_COLOR_MODE_RGB565,
+            Self::Rgb888 => sys::ppa_blend_color_mode_t_PPA_BLEND_COLOR_MODE_RGB888,
+            Self::Argb8888 => sys::ppa_blend_color_mode_t_PPA_BLEND_COLOR_MODE_ARGB8888,
         }
     }
 }
@@ -149,6 +159,82 @@ impl Srm {
             self.done.take();
             self.pending -= 1;
         }
+    }
+}
+
+/// An ARGB8888 picture laid over a block of a picture, in place. The picture's
+/// address and size must be cache-line aligned.
+pub struct BlendOp {
+    pub foreground: *const u8,
+    pub width: u32,
+    pub height: u32,
+    pub picture: *mut u8,
+    pub picture_size: u32,
+    pub picture_width: u32,
+    pub picture_height: u32,
+    pub x: u32,
+    pub y: u32,
+    pub format: ColorMode,
+}
+
+pub struct Blend {
+    client: sys::ppa_client_handle_t,
+    done: Semaphore,
+}
+
+unsafe impl Send for Blend {}
+
+impl Blend {
+    pub fn new() -> Result<Self> {
+        let done = Semaphore::try_new(0, 1)?;
+        let mut cfg: sys::ppa_client_config_t = unsafe { mem::zeroed() };
+        cfg.oper_type = sys::ppa_operation_t_PPA_OPERATION_BLEND;
+        cfg.max_pending_trans_num = 1;
+        let mut client = ptr::null_mut();
+        Error::check(unsafe { sys::ppa_register_client(&cfg, &mut client) })?;
+        let cbs = sys::ppa_event_callbacks_t { on_trans_done: Some(trans_done) };
+        if let Err(err) = Error::check(unsafe { sys::ppa_client_register_event_callbacks(client, &cbs) }) {
+            unsafe { sys::ppa_unregister_client(client) };
+            return Err(err);
+        }
+        Ok(Self { client, done })
+    }
+
+    /// Blocks until done, or for `timeout`, after which `false` leaves the
+    /// transaction running and the pixels in use.
+    pub unsafe fn run(&mut self, op: &BlendOp, timeout: Duration) -> Result<bool> {
+        let mut cfg: sys::ppa_blend_oper_config_t = unsafe { mem::zeroed() };
+        cfg.in_bg.buffer = op.picture.cast_const().cast();
+        cfg.in_bg.pic_w = op.picture_width;
+        cfg.in_bg.pic_h = op.picture_height;
+        cfg.in_bg.block_w = op.width;
+        cfg.in_bg.block_h = op.height;
+        cfg.in_bg.block_offset_x = op.x;
+        cfg.in_bg.block_offset_y = op.y;
+        cfg.in_bg.__bindgen_anon_1.blend_cm = op.format.blend();
+        cfg.in_fg.buffer = op.foreground.cast();
+        cfg.in_fg.pic_w = op.width;
+        cfg.in_fg.pic_h = op.height;
+        cfg.in_fg.block_w = op.width;
+        cfg.in_fg.block_h = op.height;
+        cfg.in_fg.__bindgen_anon_1.blend_cm = ColorMode::Argb8888.blend();
+        cfg.out.buffer = op.picture.cast();
+        cfg.out.buffer_size = op.picture_size;
+        cfg.out.pic_w = op.picture_width;
+        cfg.out.pic_h = op.picture_height;
+        cfg.out.block_offset_x = op.x;
+        cfg.out.block_offset_y = op.y;
+        cfg.out.__bindgen_anon_1.blend_cm = op.format.blend();
+        cfg.mode = sys::ppa_trans_mode_t_PPA_TRANS_MODE_NON_BLOCKING;
+        cfg.user_data = self.done.raw().cast();
+        Error::check(unsafe { sys::ppa_do_blend(self.client, &cfg) })?;
+        Ok(self.done.take_timeout(timeout))
+    }
+}
+
+impl Drop for Blend {
+    fn drop(&mut self) {
+        unsafe { sys::ppa_unregister_client(self.client) };
     }
 }
 

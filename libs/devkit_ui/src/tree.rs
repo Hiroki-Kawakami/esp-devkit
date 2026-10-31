@@ -21,11 +21,12 @@ use crate::bump::Bump;
 use crate::component::{Animation, AnyHost, EventMap, Hook, Host, Property, RenderRequest, Requests, Screen, screen_host};
 use crate::element::{BuildContext, Content, Drag, Element};
 use crate::gesture::{Gestures, Tracker};
+use crate::external::ExternalSurface;
 use crate::keyboard::{InputKind, KeyboardMode, KeyboardPanel};
 use crate::erased::Erased;
 use crate::nav::{NavigatorNode, Overlay, Root, Saved};
 use crate::node::{CanvasNode, ListNode, NONE, Node, NodeContent, NodeId, ScrollNode, TextNode};
-use crate::presenter::Strips;
+use crate::presenter::{ROW_GRID, Strips};
 use crate::style::{Dimension, Insets, Role, ScreenStyle, State};
 use crate::text_buffer::TextInput;
 use crate::theme::Theme;
@@ -93,6 +94,8 @@ pub(crate) struct Tree {
     pub(crate) slots: Vec<Slot>,
     lists: Vec<NodeId>,
     canvases: Vec<NodeId>,
+    external: NodeId,
+    pub(crate) external_split: Cell<usize>,
     pending_redraw: Vec<(&'static str, Option<Rect>)>,
     format: ImageFormat,
     pub(crate) navigators: Vec<NodeId>,
@@ -164,6 +167,8 @@ impl Tree {
             layout_dirty: true,
             damage: Vec::new(),
             canvases: Vec::new(),
+            external: NONE,
+            external_split: Cell::new(0),
             pending_redraw: Vec::new(),
             format: ImageFormat::Rgb565,
             contacts: Vec::new(),
@@ -309,6 +314,7 @@ impl Tree {
                 self.lists.retain(|l| *l != id);
             }
             NodeContent::Canvas(_) => self.canvases.retain(|c| *c != id),
+            NodeContent::External(_) if self.external == id => self.external = NONE,
             NodeContent::Navigator(_) => self.navigators.retain(|n| *n != id),
             NodeContent::Child(slot) => {
                 let slot = usize::from(*slot);
@@ -527,6 +533,11 @@ impl Tree {
                     self.layout_dirty = true;
                 }
             }
+            (NodeContent::External(surface), Content::External(new)) => {
+                if !surface.same(new) {
+                    *surface = (*new).clone();
+                }
+            }
             (NodeContent::Canvas(canvas), Content::Canvas(canvas_id)) => {
                 node.paint_dirty |= canvas.id != *canvas_id;
                 canvas.id = *canvas_id;
@@ -578,6 +589,7 @@ impl Tree {
                 NodeContent::List(ListNode { id, count, row_height, revision, offset: 0, rows: Vec::new_in(self.caps), stale: false })
             }
             Content::Canvas(id) => NodeContent::Canvas(CanvasNode { id, reported: (0, 0) }),
+            Content::External(surface) => NodeContent::External(surface.clone()),
             Content::Child(_) => NodeContent::Box,
             Content::Navigator { key, .. } => NodeContent::Navigator(NavigatorNode { key, stack: Vec::new(), slide: None }),
         };
@@ -586,6 +598,12 @@ impl Tree {
         self.apply_common(id, element);
         match element.content {
             Content::Canvas(_) => self.canvases.push(id),
+            Content::External(_) => {
+                if self.external != NONE {
+                    idf::log::error!(c"ui", "only one external surface can show at a time");
+                }
+                self.external = id;
+            }
             Content::List { id: list_id, .. } => {
                 self.lists.push(id);
                 let saved = self.restoring.last().and_then(|s| s.lists.iter().find(|l| l.0 == list_id));
@@ -823,6 +841,20 @@ impl Tree {
                 i += 1;
             }
         }
+    }
+
+    /// The shown surface and its rectangle, kept to the row grid.
+    pub(crate) fn external(&self) -> Option<(&ExternalSurface, Option<Rect>)> {
+        if self.external == NONE {
+            return None;
+        }
+        let node = &self.nodes[self.external as usize];
+        let NodeContent::External(surface) = &node.content else { return None };
+        let screen = node.screen.intersect(&self.area);
+        let top = (screen.y + ROW_GRID - 1).div_euclid(ROW_GRID) * ROW_GRID;
+        let bottom = screen.bottom().div_euclid(ROW_GRID) * ROW_GRID;
+        let rect = Rect::new(screen.x, top, screen.w, bottom - top);
+        Some((surface, (!rect.is_empty()).then_some(rect)))
     }
 
     fn report_sizes(&mut self) -> bool {

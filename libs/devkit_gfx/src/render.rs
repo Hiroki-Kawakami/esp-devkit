@@ -170,11 +170,32 @@ fn draw_text<P: Pixel>(s: &Surface, glyphs: &[PlacedGlyph], masks: &[*const u8],
 
 /// Paints `surface`'s area. Must lie within the regions given to `prepare`.
 pub fn draw<P: Pixel, A: Allocator, L: Allocator>(list: &DisplayList<'_, L>, prepared: &Prepared<A>, surface: &Surface) {
+    let start = start_op(list.ops(), &surface.area());
+    draw_ops::<P, A, L>(list, start, prepared, surface);
+}
+
+/// The same with only the operations from `first` on, in the clips open there.
+pub fn draw_from<P: Pixel, A: Allocator, L: Allocator>(list: &DisplayList<'_, L>, first: usize, prepared: &Prepared<A>, surface: &Surface) {
+    draw_ops::<P, A, L>(list, first, prepared, surface);
+}
+
+fn draw_ops<P: Pixel, A: Allocator, L: Allocator>(list: &DisplayList<'_, L>, first: usize, prepared: &Prepared<A>, surface: &Surface) {
     let ops = list.ops();
     let area = surface.area();
     let mut clips = [area; MAX_CLIPS + 1];
     let mut depth = 0;
-    for op in &ops[start_op(ops, &area)..] {
+    for (i, op) in ops.iter().enumerate() {
+        if i < first {
+            match *op {
+                Op::PushClip(rect) => {
+                    clips[depth + 1] = clips[depth].intersect(&rect);
+                    depth += 1;
+                }
+                Op::PopClip => depth -= 1,
+                _ => {}
+            }
+            continue;
+        }
         let clip = clips[depth];
         match *op {
             Op::PushClip(rect) => {

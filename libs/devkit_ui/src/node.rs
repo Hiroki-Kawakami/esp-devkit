@@ -11,6 +11,7 @@ use idf::heap::Caps;
 
 use crate::component::ListId;
 use crate::canvas::CanvasId;
+use crate::external::ExternalSurface;
 use crate::element::{DragMap, Edit, InputMap, SizeMap};
 use crate::erased::Erased;
 use crate::gesture::GestureMap;
@@ -84,6 +85,7 @@ pub(crate) enum NodeContent {
     Scroll(ScrollNode),
     List(ListNode),
     Canvas(CanvasNode),
+    External(ExternalSurface),
     Child(u16),
     Navigator(NavigatorNode),
 }
@@ -99,6 +101,7 @@ impl NodeContent {
                 | (Self::Scroll(_), C::Scroll)
                 | (Self::List(_), C::List { .. })
                 | (Self::Canvas(_), C::Canvas(_))
+                | (Self::External(_), C::External(_))
         ) || matches!((self, other), (Self::Navigator(nav), C::Navigator { key, .. }) if nav.key == *key)
     }
 }

@@ -53,7 +53,31 @@ impl Op<'_> {
     }
 }
 
-/// Drawing operations in painter order.
+/// The bounding box, within `rect`, of what `ops` from `first` on paints there.
+pub fn overlap(ops: &[Op<'_>], first: usize, rect: &Rect) -> Option<Rect> {
+    let mut clips = [Rect::new(i16::MIN / 2, i16::MIN / 2, i16::MAX, i16::MAX); MAX_CLIPS + 1];
+    let mut depth = 0;
+    let mut found: Option<Rect> = None;
+    for (i, op) in ops.iter().enumerate() {
+        match *op {
+            Op::PushClip(clip) => {
+                clips[depth + 1] = clips[depth].intersect(&clip);
+                depth += 1;
+            }
+            Op::PopClip => depth -= 1,
+            _ if i >= first => {
+                let part = op.bounds().intersect(&clips[depth]).intersect(rect);
+                if !part.is_empty() {
+                    found = Some(found.map_or(part, |f| f.union(&part)));
+                }
+            }
+            _ => {}
+        }
+    }
+    found
+}
+
+
 pub struct DisplayList<'a, A: Allocator = Global> {
     ops: Vec<Op<'a>, A>,
     text_ops: u32,

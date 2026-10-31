@@ -161,6 +161,7 @@ pub fn run() {
 }
 
 fn run_demo(board: &Board, display: &'static Display, settings: &Settings) {
+    demo::set_display(display);
     let mut config = AppConfig::new(&LIGHT);
     if settings.rotated {
         config.presenter.rotation = Rotation::R90;
@@ -212,6 +213,7 @@ fn run_demo(board: &Board, display: &'static Display, settings: &Settings) {
             return;
         }
     }
+    harness_rs::register("video", |_| Ok(Some(demo::VIDEO_FRAMES.load(Ordering::Relaxed).to_string())));
     harness_rs::register("ui", move |args| match args {
         ["tree"] => probe.tree().map(Some),
         ["stats"] => probe.stats().map(Some),

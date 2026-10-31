@@ -30,10 +30,10 @@ pub use format::ImageFormat;
 pub use geom::Rect;
 pub use glyph_cache::GlyphCache;
 pub use image::Image;
-pub use list::{DisplayList, Op};
-pub use pixel::{Bgr888, Pixel, Rgb565};
+pub use list::{DisplayList, Op, overlap};
+pub use pixel::{Argb8888, Bgr888, Pixel, Rgb565};
 pub use raster::{Raster, RasterTarget};
-pub use render::{Prepared, draw};
+pub use render::{Prepared, draw, draw_from};
 pub use surface::Surface;
 pub use text::{Align, FontChain, Overflow, PlacedGlyph, TextOptions, TextRun};
 

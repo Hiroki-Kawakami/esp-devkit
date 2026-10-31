@@ -50,6 +50,22 @@ impl Rect {
         Rect::new(x, y, self.right().min(other.right()) - x, self.bottom().min(other.bottom()) - y)
     }
 
+    /// What is left of `self` outside `hole`, as up to four rectangles.
+    pub fn subtract(&self, hole: &Rect) -> impl Iterator<Item = Rect> + use<> {
+        let cut = self.intersect(hole);
+        let pieces = if cut.is_empty() {
+            [*self, Rect::default(), Rect::default(), Rect::default()]
+        } else {
+            [
+                Rect::new(self.x, self.y, self.w, cut.y - self.y),
+                Rect::new(self.x, cut.y, cut.x - self.x, cut.h),
+                Rect::new(cut.right(), cut.y, self.right() - cut.right(), cut.h),
+                Rect::new(self.x, cut.bottom(), self.w, self.bottom() - cut.bottom()),
+            ]
+        };
+        pieces.into_iter().filter(|r| !r.is_empty())
+    }
+
     pub fn intersects(&self, other: &Rect) -> bool {
         !self.intersect(other).is_empty()
     }

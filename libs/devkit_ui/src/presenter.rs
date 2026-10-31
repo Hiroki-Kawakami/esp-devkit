@@ -15,12 +15,14 @@ use core::time::Duration;
 
 use bsp_rs::display::{self, Blitter, Display, FrameBuffer, PixelFormat, Rotation};
 use devkit::Lease;
-use devkit_gfx::{Bgr888, Damage, DisplayList, GlyphCache, Pixel, Prepared, Rect, Rgb565, Surface, draw};
+use devkit_gfx::{Argb8888, Bgr888, Damage, DisplayList, GlyphCache, Pixel, Prepared, Rect, Rgb565, Surface, draw, draw_from};
 use idf::heap::Caps;
 use idf::log::error;
 use idf::sync::Semaphore;
 use idf::time::Instant;
 use idf::{Error, Result, thread};
+
+use crate::external::{Buffers, NO_BACK, Overlay};
 
 const TAG: &CStr = c"presenter";
 
@@ -32,7 +34,7 @@ const LANE_STACK: usize = 8192;
 const STALL_TIMEOUT: Duration = Duration::from_secs(1);
 // The 2D engine's cost steps every 16 rows, and it hangs on short rotated
 // copies, so damage and strips stay on this grid.
-const ROW_GRID: i16 = 16;
+pub(crate) const ROW_GRID: i16 = 16;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PresentMode {
@@ -285,7 +287,9 @@ pub struct Presenter {
     lanes: usize,
     strips: Strips,
     buffer_bytes: usize,
-    latest: usize,
+    buffers: Buffers,
+    hole: Option<Rect>,
+    hold: bool,
     target: Option<usize>,
     fresh: bool,
 }
@@ -344,7 +348,13 @@ impl Presenter {
             lanes: config.lanes,
             strips,
             buffer_bytes,
-            latest: display.scanning().unwrap_or(0),
+            buffers: Buffers {
+                latest: Arc::new(AtomicUsize::new(display.scanning().unwrap_or(0))),
+                back: Arc::new(AtomicUsize::new(NO_BACK)),
+                count: 1,
+            },
+            hole: None,
+            hold: false,
             target: None,
             fresh: true,
         };
@@ -359,10 +369,49 @@ impl Presenter {
         self.target = None;
         self.fresh = true;
         if self.mode == PresentMode::InPlace {
-            self.latest %= self.frame_buffers();
-            self.display.present(self.latest)?;
+            let latest = self.latest() % self.frame_buffers();
+            self.buffers.latest.store(latest, Ordering::Release);
+            self.display.present(latest)?;
         }
         Ok(())
+    }
+
+    fn latest(&self) -> usize {
+        self.buffers.latest.load(Ordering::Acquire)
+    }
+
+    fn in_place(&self) -> bool {
+        (self.mode == PresentMode::InPlace || self.hole.is_some()) && !self.hold
+    }
+
+    /// What a surface needs to share the framebuffers with this presenter.
+    pub(crate) fn buffers(&self) -> Buffers {
+        Buffers { count: self.frame_buffers(), ..self.buffers.clone() }
+    }
+
+    /// Leaves `hole` undrawn. With `hold`, frames go to the back framebuffer and
+    /// the surface presents them; otherwise a hole draws in place. `true` when
+    /// the next frame goes elsewhere than `regions` said.
+    pub(crate) fn set_external(&mut self, hole: Option<Rect>, hold: bool) -> bool {
+        let moved = hold != self.hold || hole.is_some() != self.hole.is_some();
+        (self.hole, self.hold) = (hole, hold);
+        if moved || hold {
+            let target = self.target.take();
+            let _ = self.acquire();
+            return target != self.target;
+        }
+        false
+    }
+
+    /// While a surface presents: whether the framebuffer it takes next lacks
+    /// something the ones before it were given.
+    pub(crate) fn behind(&mut self) -> bool {
+        if !self.hold {
+            return false;
+        }
+        self.target = None;
+        let _ = self.acquire();
+        self.target.is_some_and(|target| !self.damage[target].is_empty())
     }
 
     fn frame_buffers(&self) -> usize {
@@ -424,7 +473,7 @@ impl Presenter {
     }
 
     fn wait_flip(&self) -> Result<()> {
-        while self.display.scanning().is_some_and(|i| i != self.latest) {
+        while self.display.scanning().is_some_and(|i| i != self.latest()) {
             self.display.wait_frame()?;
         }
         Ok(())
@@ -437,14 +486,17 @@ impl Presenter {
             return Ok(());
         }
         let count = self.frame_buffers();
-        let target = if self.mode == PresentMode::InPlace || count < 2 {
-            self.latest
+        let target = if self.in_place() || count < 2 {
+            self.latest()
+        } else if self.hold {
+            self.buffers().claim_back(self.display)
         } else if count == 2 {
             self.wait_flip()?;
-            (self.latest + 1) % count
+            (self.latest() + 1) % count
         } else {
-            let scanning = self.display.scanning().unwrap_or(self.latest);
-            (0..count).find(|&i| i != scanning && i != self.latest).unwrap_or((self.latest + 1) % count)
+            let latest = self.latest();
+            let scanning = self.display.scanning().unwrap_or(latest);
+            (0..count).find(|&i| i != scanning && i != latest).unwrap_or((latest + 1) % count)
         };
         self.target = Some(target);
         Ok(())
@@ -483,7 +535,8 @@ impl Presenter {
         job.rotation = self.rotation;
         job.buffers = self.strips.buffers(self.lanes).0;
         job.strips.clear();
-        for area in self.damage[target].regions() {
+        let hole = self.hole.unwrap_or_default();
+        for area in self.damage[target].regions().iter().flat_map(|r| r.subtract(&hole)) {
             let stride = area.w as usize * fb.format().bytes();
             let rows = (self.buffer_bytes / stride).min(i16::MAX as usize) as i16 / ROW_GRID * ROW_GRID;
             if rows == 0 {
@@ -513,16 +566,45 @@ impl Presenter {
         }
         let t2 = Instant::now();
 
-        if self.mode == PresentMode::Swap && self.frame_buffers() >= 2 {
+        if !self.in_place() && !self.hold && self.frame_buffers() >= 2 {
             self.wait_flip()?;
             self.display.present(target)?;
-            self.latest = target;
+            self.buffers.latest.store(target, Ordering::Release);
         }
         let t3 = Instant::now();
         stats.prepare_us = t1.duration_since(t0).as_micros() as u32;
         stats.draw_us = t2.duration_since(t1).as_micros() as u32;
         stats.flip_us = t3.duration_since(t2).as_micros() as u32;
         Ok(stats)
+    }
+
+    /// Draws what `list` paints from `first` on inside `rect` into a picture to
+    /// lay over a surface. Runs on this task; it is only redone when that UI
+    /// changes.
+    pub(crate) fn render_overlay<C: Allocator + Clone>(
+        &mut self,
+        list: &DisplayList<'_, Caps>,
+        first: usize,
+        rect: Rect,
+        cache: &mut GlyphCache<C>,
+    ) -> Result<Overlay> {
+        let bytes = rect.area() as usize * Argb8888::BYTES;
+        let memory = Strips::allocate((bytes + size_of::<Line>()) * STRIPS_PER_LANE, Caps::SPIRAM)?;
+        let [[drawn, turned], _] = memory.buffers(1).0;
+        let shared = &*self.shared;
+        let prepared = unsafe { &mut *shared.prepared.get() };
+        prepared.prepare(list, &[rect], cache);
+        let surface = unsafe { Surface::new(drawn, rect.w as usize * Argb8888::BYTES, rect) };
+        draw_from::<Argb8888, _, _>(list, first, prepared, &surface);
+        if self.rotation == Rotation::R0 {
+            return Ok(Overlay { _memory: memory, pixels: drawn, rect });
+        }
+        let mut blitter = self.display.blitter(1)?;
+        unsafe { blitter.start_argb(self.rotation, rect.w as u16, rect.h as u16, drawn, turned) }?;
+        if !blitter.wait_timeout(STALL_TIMEOUT) {
+            return Err(Error::TIMEOUT);
+        }
+        Ok(Overlay { _memory: memory, pixels: turned, rect })
     }
 
     /// Blocks until the last rendered frame is on the panel.

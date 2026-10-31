@@ -11,6 +11,7 @@ use devkit_gfx::{Color, Font, FontChain, Rect};
 use idf::heap::Caps;
 
 use crate::*;
+use crate::external::ExternalSurface;
 use crate::gesture::{Gesture, Gestures};
 use crate::keyboard::InputKind;
 use crate::node::NodeContent;
@@ -1564,6 +1565,52 @@ fn redrawing_a_part_damages_it_alone_without_a_view() {
     assert!(damage.contains(&Rect::new(r.x + 15, r.y + 25, 30, 4)), "{damage:?}");
     assert!(damage.iter().all(|d| d.h <= 10), "{damage:?}");
     assert_eq!(VIEWS.load(core::sync::atomic::Ordering::Relaxed), views);
+}
+
+struct Player {
+    video: ExternalSurface,
+    menu: bool,
+}
+
+impl Component for Player {
+    type Msg = ();
+
+    fn update(&mut self, _: (), cx: &mut Cx<Self>) {
+        self.menu = true;
+        cx.rebuild();
+    }
+
+    fn view<'a>(&'a self, ui: &'a Ui<()>) -> Element<'a, ()> {
+        let menu = if self.menu { ui.column([]).size(50, 20).background(Color::rgb(1, 2, 3)).absolute(Some(10), Some(40), None, None).id("menu") } else { ui.empty() };
+        ui.column([
+            ui.column([]).height(23).id("open").on_tap(()),
+            ui.external(&self.video).height(100).id("video"),
+            menu,
+        ])
+    }
+}
+
+impl Screen for Player {}
+
+fn overlap_of(tree: &Tree, hole: Rect) -> Option<Rect> {
+    let mut effects = crate::paint::Effects::new(Caps::INTERNAL);
+    let mut list = devkit_gfx::DisplayList::new_in(Caps::INTERNAL);
+    tree.paint(&mut effects, &[SCREEN], &mut list);
+    devkit_gfx::overlap(list.ops(), tree.external_split.get(), &hole)
+}
+
+#[test]
+fn a_surface_keeps_to_the_row_grid_and_sees_what_lies_over_it() {
+    let video = ExternalSurface::new().unwrap();
+    let mut tree = Tree::new(Player { video, menu: false }, SCREEN, Caps::INTERNAL, theme());
+    run(&mut tree);
+    let (_, hole) = tree.external().unwrap();
+    let hole = hole.unwrap();
+    assert_eq!((hole.y, hole.bottom()), (32, 112));
+    assert_eq!(overlap_of(&tree, hole), None);
+    tap(&mut tree, "open");
+    run(&mut tree);
+    assert_eq!(overlap_of(&tree, hole), Some(Rect::new(10, 40, 50, 20)));
 }
 
 #[test]

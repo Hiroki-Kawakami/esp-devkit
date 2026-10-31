@@ -191,3 +191,58 @@ impl Pixel for Bgr888 {
         }
     }
 }
+
+/// B, G, R, A in memory, not premultiplied, for pictures laid over others.
+#[derive(Clone, Copy)]
+pub struct Argb8888([u8; 4]);
+
+#[inline(always)]
+fn over(d: *mut u8, c: [u8; 4], alpha: u32) {
+    if alpha == 0 {
+        return;
+    }
+    let dst = unsafe { d.cast::<[u8; 4]>().read_unaligned() };
+    let under = u32::from(dst[3]) * (255 - alpha) / 255;
+    let total = alpha + under;
+    let mix = |i: usize| ((u32::from(c[i]) * alpha + u32::from(dst[i]) * under) / total) as u8;
+    unsafe { d.cast::<[u8; 4]>().write_unaligned([mix(0), mix(1), mix(2), total as u8]) };
+}
+
+impl Pixel for Argb8888 {
+    const BYTES: usize = 4;
+    const NATIVE: ImageFormat = ImageFormat::Argb8888;
+
+    #[inline]
+    fn pack(c: Color) -> Self {
+        Self([c.b, c.g, c.r, c.a])
+    }
+
+    #[inline]
+    unsafe fn fill(dst: *mut u8, n: usize, c: Self) {
+        for i in 0..n {
+            unsafe { dst.add(i * 4).cast::<[u8; 4]>().write_unaligned(c.0) };
+        }
+    }
+
+    #[inline]
+    unsafe fn blend(dst: *mut u8, n: usize, c: Self, alpha: u8) {
+        for i in 0..n {
+            over(unsafe { dst.add(i * 4) }, c.0, u32::from(alpha));
+        }
+    }
+
+    #[inline]
+    unsafe fn blend_mask(dst: *mut u8, mask: *const u8, n: usize, c: Self) {
+        for i in 0..n {
+            over(unsafe { dst.add(i * 4) }, c.0, u32::from(unsafe { *mask.add(i) }));
+        }
+    }
+
+    #[inline]
+    unsafe fn blend_mask_alpha(dst: *mut u8, mask: *const u8, n: usize, c: Self, alpha: u8) {
+        for i in 0..n {
+            let a = u32::from(mul8(unsafe { *mask.add(i) }, alpha));
+            over(unsafe { dst.add(i * 4) }, c.0, a);
+        }
+    }
+}

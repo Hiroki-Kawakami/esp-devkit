@@ -357,6 +357,60 @@ fn text_wraps_at_spaces_and_wide_characters() {
     assert_eq!(run.glyphs()[3].x, 0);
 }
 
+#[test]
+fn subtracting_leaves_what_is_around_a_hole() {
+    let area = Rect::new(0, 0, 100, 100);
+    let pieces: Vec<Rect> = area.subtract(&Rect::new(10, 20, 30, 40)).collect();
+    assert_eq!(pieces, [Rect::new(0, 0, 100, 20), Rect::new(0, 20, 10, 40), Rect::new(40, 20, 60, 40), Rect::new(0, 60, 100, 40)]);
+    assert_eq!(area.subtract(&Rect::new(200, 0, 10, 10)).collect::<Vec<_>>(), [area]);
+    assert_eq!(area.subtract(&Rect::default()).collect::<Vec<_>>(), [area]);
+    assert_eq!(area.subtract(&area).count(), 0);
+}
+
+#[test]
+fn argb_keeps_transparency_and_blends_straight_alpha() {
+    let mut pixels = [0u8; 8];
+    let surface = unsafe { Surface::new(pixels.as_mut_ptr(), 8, Rect::new(0, 0, 2, 1)) };
+    let mut list = DisplayList::new();
+    list.fill(Rect::new(0, 0, 1, 1), Color::rgba(255, 0, 0, 128));
+    list.fill(Rect::new(0, 0, 1, 1), Color::rgba(255, 0, 0, 128));
+    draw::<Argb8888, _, _>(&list, &Prepared::new(), &surface);
+    assert_eq!(&pixels[4..], [0, 0, 0, 0], "untouched stays clear");
+    assert_eq!(pixels[2], 255, "red does not darken over clear");
+    assert!((190..=194).contains(&pixels[3]), "{}", pixels[3]);
+}
+
+#[test]
+fn overlap_sees_only_what_paints_inside_after_the_mark() {
+    let mut list = DisplayList::new();
+    let hole = Rect::new(100, 100, 100, 100);
+    list.fill(Rect::new(0, 0, 400, 400), Color::rgb(1, 1, 1));
+    let first = list.ops().len();
+    assert_eq!(overlap(list.ops(), first, &hole), None);
+    list.push_clip(Rect::new(0, 0, 50, 50));
+    list.fill(Rect::new(0, 0, 400, 400), Color::rgb(1, 1, 1));
+    list.pop_clip();
+    assert_eq!(overlap(list.ops(), first, &hole), None, "clipped away");
+    list.fill(Rect::new(150, 150, 400, 10), Color::rgb(1, 1, 1));
+    assert_eq!(overlap(list.ops(), first, &hole), Some(Rect::new(150, 150, 50, 10)));
+}
+
+#[test]
+fn drawing_from_a_mark_keeps_the_clips_open_there() {
+    let mut pixels = [0u8; 4 * 16];
+    let surface = unsafe { Surface::new(pixels.as_mut_ptr(), 16, Rect::new(0, 0, 4, 4)) };
+    let mut list = DisplayList::new();
+    list.push_clip(Rect::new(0, 0, 2, 4));
+    list.fill(Rect::new(0, 0, 4, 1), Color::rgb(255, 0, 0));
+    let first = list.ops().len();
+    list.fill(Rect::new(0, 1, 4, 1), Color::rgb(0, 255, 0));
+    list.pop_clip();
+    draw_from::<Argb8888, _, _>(&list, first, &Prepared::new(), &surface);
+    assert_eq!(pixels[3], 0, "before the mark");
+    assert_eq!(pixels[16 + 3], 255);
+    assert_eq!(pixels[16 + 8 + 3], 0, "clipped");
+}
+
 struct Stripes;
 
 impl Raster for Stripes {

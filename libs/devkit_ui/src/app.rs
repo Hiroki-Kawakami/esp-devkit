@@ -13,7 +13,7 @@ use core::time::Duration;
 
 use bsp_rs::display::{Display, PixelFormat, Rotation};
 use bsp_rs::touch::{MAX_POINTS, Point, Touch};
-use devkit_gfx::{DisplayList, GlyphCache, ImageFormat};
+use devkit_gfx::{DisplayList, GlyphCache, ImageFormat, Rect};
 use idf::heap::Caps;
 use idf::log::error;
 use idf::sync::{Mutex, Receiver, Semaphore, Sender, channel};
@@ -22,9 +22,10 @@ use idf::time::Instant;
 
 use crate::component::{Component, Screen};
 use crate::erased::Erased;
+use crate::external::{ExternalSurface, Policy};
 use crate::keyboard::KeyboardMode;
 use crate::paint::Effects;
-use crate::presenter::{Config, Presenter, Strips};
+use crate::presenter::{Config, Presenter, ROW_GRID, Strips};
 use crate::style::Insets;
 use crate::text_buffer::TextInput;
 use crate::theme::Theme;
@@ -36,6 +37,7 @@ const FRAME: Duration = Duration::from_millis(16);
 const IDLE_WAIT: Duration = Duration::from_secs(3600);
 const CARET_WAIT: Duration = Duration::from_millis(250);
 const REPEAT_WAIT: Duration = Duration::from_millis(20);
+const HOLE_WAIT: Duration = Duration::from_millis(100);
 const TAP_HOLD: Duration = Duration::from_millis(40);
 const ROOT: u16 = 0;
 const DROP_LOG_EVERY: u32 = 256;
@@ -74,6 +76,7 @@ struct StripSwap {
 }
 
 enum Event {
+    Wake,
     Input(TextInput),
     KeyboardConnected(bool),
     SetKeyboardMode(KeyboardMode),
@@ -255,6 +258,13 @@ impl Timing {
     }
 }
 
+/// Keeps a picture to whole 16 row blocks, which a rotated copy needs.
+fn grid_rows(rect: Rect) -> Rect {
+    let top = rect.y.div_euclid(ROW_GRID) * ROW_GRID;
+    let bottom = (rect.bottom() + ROW_GRID - 1).div_euclid(ROW_GRID) * ROW_GRID;
+    Rect::new(rect.x, top, rect.w, bottom - top)
+}
+
 fn note(stage: &mut (u32, u32), from: Instant) -> Instant {
     let now = Instant::now();
     let micros = now.duration_since(from).as_micros() as u32;
@@ -272,6 +282,11 @@ pub struct App<C: Screen> {
     effects: Effects,
     data_caps: Caps,
     timing: Timing,
+    surface: Option<ExternalSurface>,
+    hole: Option<Rect>,
+    overlay: Option<Rect>,
+    exclusive: bool,
+    waiting: Option<Instant>,
     _root: PhantomData<fn(C)>,
 }
 
@@ -322,6 +337,11 @@ impl<C: Screen> App<C> {
             effects: Effects::new(config.presenter.data_caps),
             data_caps: config.presenter.data_caps,
             timing: Timing::default(),
+            surface: None,
+            hole: None,
+            overlay: None,
+            exclusive: false,
+            waiting: None,
             _root: PhantomData,
         })
     }
@@ -352,6 +372,7 @@ impl<C: Screen> App<C> {
 
     fn handle_event(&mut self, event: Event) {
         match event {
+            Event::Wake => {}
             Event::Input(input) => self.tree.input(input),
             Event::KeyboardConnected(connected) => self.tree.set_keyboard_connected(connected),
             Event::SetKeyboardMode(mode) => self.tree.set_keyboard_mode(mode),
@@ -401,6 +422,52 @@ impl<C: Screen> App<C> {
         self.tree.render_done(slot, request.reply, given_up);
     }
 
+    fn attach_surface(&mut self) -> Option<(ExternalSurface, Option<Rect>)> {
+        let shown = self.tree.external().map(|(surface, hole)| (surface.clone(), hole));
+        let attached = self.surface.as_ref();
+        if attached.is_none_or(|a| shown.as_ref().is_none_or(|s| !s.0.same(a))) {
+            if let Some(old) = self.surface.take() {
+                old.detach();
+                self.presenter.set_external(None, false);
+                (self.hole, self.overlay) = (None, None);
+            }
+            if let Some((surface, _)) = &shown {
+                let shared = self.shared.clone();
+                let wake = Arc::new(move || {
+                    shared.send(Event::Wake);
+                });
+                surface.attach(self.shared.display, self.shared.rotation, self.presenter.buffers(), wake);
+                self.surface = shown.as_ref().map(|s| s.0.clone());
+            }
+        }
+        shown
+    }
+
+    /// `true` when the frame must wait: a surface still writing where the UI
+    /// would draw next would paint over it.
+    fn move_hole(&mut self, surface: &ExternalSurface, hole: Option<Rect>) -> bool {
+        if hole == self.hole {
+            self.waiting = None;
+            return false;
+        }
+        surface.set_rect(hole);
+        let old = self.hole.unwrap_or_default();
+        let vacated = hole.is_none_or(|new| old.subtract(&new).next().is_some()) && !old.is_empty();
+        if vacated && surface.writing_outdated() {
+            let since = *self.waiting.get_or_insert_with(Instant::now);
+            if since.elapsed() < HOLE_WAIT {
+                return true;
+            }
+            error!(TAG, "a surface kept writing where its rectangle was");
+        }
+        self.waiting = None;
+        if let Some(new) = hole {
+            new.subtract(&old).for_each(|exposed| surface.request_refresh(exposed));
+        }
+        self.hole = hole;
+        false
+    }
+
     fn frame(&mut self) {
         let start = Instant::now();
         self.tree.update();
@@ -408,13 +475,40 @@ impl<C: Screen> App<C> {
         let mut update = (0, 0);
         let updated = note(&mut update, start);
         let damage = self.tree.take_damage();
-        if damage.is_empty() && !self.presenter.has_new_damage() {
+        let shown = self.attach_surface();
+        let mut waited = self.waiting.is_some();
+        if let Some((surface, hole)) = &shown {
+            if surface.policy() == Policy::Exclusive {
+                let whole = Some(self.presenter.area());
+                self.presenter.set_external(whole, true);
+                surface.set_rect(whole);
+                self.hole = whole;
+                if !core::mem::replace(&mut self.exclusive, true) {
+                    surface.request_refresh(self.presenter.area());
+                }
+                for rect in damage {
+                    self.presenter.invalidate(rect);
+                }
+                return;
+            }
+            if core::mem::take(&mut self.exclusive) {
+                self.presenter.invalidate_all();
+                waited = true;
+            }
+            if self.move_hole(surface, *hole) {
+                for rect in damage {
+                    self.presenter.invalidate(rect);
+                }
+                return;
+            }
+        }
+        if damage.is_empty() && !self.presenter.has_new_damage() && !waited && !self.presenter.behind() {
             return;
         }
         self.timing.frames += 1;
         self.timing.update = (update.0, self.timing.update.1.max(update.0));
-        for rect in damage {
-            self.presenter.invalidate(rect);
+        for rect in &damage {
+            self.presenter.invalidate(*rect);
         }
         let mut list = DisplayList::new_in(self.data_caps);
         let regions = match self.presenter.regions() {
@@ -425,6 +519,23 @@ impl<C: Screen> App<C> {
             }
         };
         self.tree.paint(&mut self.effects, regions, &mut list);
+        let mut overlap = None;
+        if let Some((surface, hole)) = &shown {
+            overlap = hole.and_then(|h| devkit_gfx::overlap(list.ops(), self.tree.external_split.get(), &h).map(|o| grid_rows(o).intersect(&h)));
+            let composite = (surface.policy() == Policy::Stamp || overlap.is_some()) && self.presenter.buffers().count >= 2;
+            surface.set_composite(composite);
+            if self.presenter.set_external(*hole, composite) {
+                list.clear();
+                if let Ok(regions) = self.presenter.regions() {
+                    self.tree.paint(&mut self.effects, regions, &mut list);
+                }
+            }
+            if composite {
+                if let Some(hole) = hole {
+                    surface.request_refresh(*hole);
+                }
+            }
+        }
         let painted = note(&mut self.timing.paint, updated);
         match self.presenter.render(&list, &mut self.cache) {
             Ok(stats) if stats.glyphs_missing > 0 => {
@@ -434,6 +545,22 @@ impl<C: Screen> App<C> {
             Err(err) => error!(TAG, "render: {err}"),
         }
         note(&mut self.timing.render, painted);
+        if let Some((surface, _)) = &shown {
+            let changed = overlap != self.overlay || overlap.is_some_and(|o| damage.iter().any(|d| d.intersects(&o)));
+            if changed {
+                match overlap {
+                    Some(rect) => match self.presenter.render_overlay(&list, self.tree.external_split.get(), rect, &mut self.cache) {
+                        Ok(overlay) => surface.set_overlay(Some(Arc::new(overlay))),
+                        Err(err) => error!(TAG, "overlay: {err}"),
+                    },
+                    None => surface.set_overlay(None),
+                }
+                if let Some(area) = overlap.or(self.overlay) {
+                    surface.request_refresh(area);
+                }
+                self.overlay = overlap;
+            }
+        }
     }
 
     /// Runs on the calling task, which then owns the UI.
@@ -444,7 +571,7 @@ impl<C: Screen> App<C> {
             self.shared.busy.store(!self.tree.idle(), Ordering::Release);
             // While animating the presenter paces frames; a timed wait here
             // would add at least two ticks to each.
-            let wait = if self.tree.timed() {
+            let wait = if self.tree.timed() || self.waiting.is_some() {
                 REPEAT_WAIT
             } else if self.tree.has_caret() {
                 CARET_WAIT

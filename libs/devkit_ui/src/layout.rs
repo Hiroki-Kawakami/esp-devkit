@@ -71,7 +71,7 @@ impl Tree {
         let (w, h) = match &self.nodes[id as usize].content {
             NodeContent::Text(_) => self.measure_text(id, content_w),
             NodeContent::Image { image, .. } => (image.width() as i16, image.height() as i16),
-            NodeContent::Scroll(_) | NodeContent::List(_) | NodeContent::Canvas(_) | NodeContent::Navigator(_) => (content_w.min(0), content_h.min(0)),
+            NodeContent::Scroll(_) | NodeContent::List(_) | NodeContent::Canvas(_) | NodeContent::External(_) | NodeContent::Navigator(_) => (content_w.min(0), content_h.min(0)),
             NodeContent::Child(_) => {
                 let child = self.nodes[id as usize].first_child;
                 if child == NONE { (0, 0) } else { self.measure(child, content_w, content_h) }
@@ -170,7 +170,7 @@ impl Tree {
             NodeContent::Text(_) => {
                 let _ = self.measure_text(id, content.w);
             }
-            NodeContent::Image { .. } | NodeContent::Canvas(_) => {}
+            NodeContent::Image { .. } | NodeContent::Canvas(_) | NodeContent::External(_) => {}
         }
         self.arrange_absolute(id, rect);
     }
