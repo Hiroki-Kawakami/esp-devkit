@@ -12,6 +12,9 @@ replaced by an emulator without changing the host.
 - `--headless` opens no window; the host still supervises the firmware and
   serves clients.
 - `--psram-mb` sizes the PSRAM region (default 32).
+- The window's Rotation turns the simulated device clockwise: the IMU reports
+  that resting pose, so orientation tracking follows it. `--headless` stays
+  upright; the `imu` script command overrides it.
 - Audio plays on the default output device, resampled to its rate. With
   `--headless`, or when no device opens, the host keeps the same time without
   sound, so firmware pacing does not change.
@@ -57,6 +60,7 @@ compiled into the firmware and `tools/devkit`. Byte 0 is the tag, fields follow 
 | `AudioClose` | firmware → host | stream id |
 | `AudioMute` | firmware → host | play as silence, keeping time; outlives streams |
 | `AudioPlayed` | host → firmware | stream id, bytes played so far; the firmware's writes pace on it |
+| `Imu` | host → firmware | accel and gyro in panel axes; sent at `Hello` and when the window's rotation changes |
 
 The host reads the presented frame straight from the region each refresh, so a
 frame drawn while shown tears as it would on the panel. Audio works the same

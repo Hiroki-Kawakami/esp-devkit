@@ -6,7 +6,7 @@
  * this crate and tools/devkit. See docs/simulator.md.
  */
 
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 pub const RECORD_SIZE: usize = 64;
 pub const MAX_TOUCH_POINTS: usize = 10;
 pub const MAX_NAME: usize = 48;
@@ -45,7 +45,7 @@ pub struct TouchPoint {
     pub id: u8,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Event {
     /// Firmware to host, once at start.
     Hello { version: u32 },
@@ -70,6 +70,8 @@ pub enum Event {
     AudioMute { mute: bool },
     /// Host to firmware: bytes of the stream played so far.
     AudioPlayed { stream: u32, bytes: u64 },
+    /// Host to firmware: what the IMU reads from now on, in panel axes.
+    Imu { accel: [f32; 3], gyro: [f32; 3] },
 }
 
 const TAG_HELLO: u8 = 1;
@@ -82,6 +84,7 @@ const TAG_AUDIO_WRITE: u8 = 7;
 const TAG_AUDIO_CLOSE: u8 = 8;
 const TAG_AUDIO_MUTE: u8 = 9;
 const TAG_AUDIO_PLAYED: u8 = 10;
+const TAG_IMU: u8 = 11;
 
 struct Writer {
     buf: [u8; RECORD_SIZE],
@@ -129,6 +132,10 @@ impl Reader<'_> {
 
     fn u64(&mut self) -> u64 {
         u64::from_le_bytes(self.take())
+    }
+
+    fn vec3(&mut self) -> [f32; 3] {
+        [(); 3].map(|_| f32::from_le_bytes(self.take()))
     }
 }
 
@@ -178,6 +185,13 @@ impl Event {
             Self::AudioPlayed { stream, bytes } => {
                 Writer::new(TAG_AUDIO_PLAYED).put(&stream.to_le_bytes()).put(&bytes.to_le_bytes()).buf
             }
+            Self::Imu { accel, gyro } => {
+                let mut w = Writer::new(TAG_IMU);
+                for v in accel.iter().chain(&gyro) {
+                    w.put(&v.to_le_bytes());
+                }
+                w.buf
+            }
         }
     }
 
@@ -219,6 +233,7 @@ impl Event {
             TAG_AUDIO_CLOSE => Self::AudioClose { stream: r.u32() },
             TAG_AUDIO_MUTE => Self::AudioMute { mute: r.u8() != 0 },
             TAG_AUDIO_PLAYED => Self::AudioPlayed { stream: r.u32(), bytes: r.u64() },
+            TAG_IMU => Self::Imu { accel: r.vec3(), gyro: r.vec3() },
             _ => return None,
         })
     }
@@ -244,6 +259,7 @@ mod tests {
             Event::AudioClose { stream: 7 },
             Event::AudioMute { mute: true },
             Event::AudioPlayed { stream: 7, bytes: 0x1_0000_0002 },
+            Event::Imu { accel: [0.0, -1.0, 0.0], gyro: [1.5, -2.5, 3.5] },
         ] {
             assert_eq!(Event::decode(&e.encode()), Some(e));
         }

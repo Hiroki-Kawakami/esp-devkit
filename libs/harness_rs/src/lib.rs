@@ -21,6 +21,7 @@ use core::ffi::{CStr, c_int};
 
 use bsp_rs::Board;
 use bsp_rs::display::{Display, PixelFormat};
+use bsp_rs::imu::{Imu, Vec3};
 use bsp_rs::touch::{Point, Touch};
 use idf::log::error;
 use idf::sync::{LazyLock, Mutex};
@@ -58,7 +59,7 @@ pub fn set_idle(idle: impl Fn() -> bool + Send + Sync + 'static) {
 
 /// Starts answering on the console.
 pub fn start(board: &Board) -> idf::Result<()> {
-    let harness = Harness { display: board.display, touch: board.touch, contacts: BTreeMap::new() };
+    let harness = Harness { display: board.display, imu: board.imu, touch: board.touch, contacts: BTreeMap::new() };
     Builder::new().name("harness").stack_size(STACK_SIZE).priority(PRIORITY).spawn(move || harness.run())?;
     Ok(())
 }
@@ -75,6 +76,7 @@ fn reply(text: &str) {
 
 struct Harness {
     display: Option<&'static Display>,
+    imu: Option<&'static Imu>,
     touch: Option<&'static Touch>,
     contacts: BTreeMap<u8, (u16, u16)>,
 }
@@ -119,6 +121,7 @@ impl Harness {
             "info" => self.info(),
             "down" | "move" => self.contact(rest),
             "up" => self.release(rest),
+            "imu" => self.imu(rest),
             "idle" => {
                 let idle = IDLE.lock().clone();
                 Ok(Some(if idle.is_none_or(|f| f()) { "1" } else { "0" }.to_string()))
@@ -152,7 +155,8 @@ impl Harness {
             PixelFormat::Rgb888 => "rgb888",
         };
         let touch = u8::from(self.touch.is_some());
-        Ok(Some(format!("{} {} {format} {touch} 0 1 0", size.width, size.height)))
+        let imu = u8::from(self.imu.is_some());
+        Ok(Some(format!("{} {} {format} {touch} 0 1 {imu}", size.width, size.height)))
     }
 
     fn contact(&mut self, args: &[&str]) -> Result<Option<String>, String> {
@@ -174,6 +178,25 @@ impl Harness {
         let touch = self.touch.ok_or("no touch")?;
         let points: Vec<Point> = self.contacts.iter().map(|(&id, &(x, y))| Point { x, y, id }).collect();
         touch.inject(&points);
+        Ok(None)
+    }
+
+    fn imu(&self, args: &[&str]) -> Result<Option<String>, String> {
+        const USAGE: &str = "imu: need ax ay az [gx gy gz] | release";
+        let imu = self.imu.ok_or("no imu")?;
+        if args == ["release"] {
+            imu.inject(None);
+            return Ok(None);
+        }
+        let mut values = [0.0f32; 6];
+        if !matches!(args.len(), 3 | 6) {
+            return Err(USAGE.into());
+        }
+        for (value, arg) in values.iter_mut().zip(args) {
+            *value = arg.parse().map_err(|_| USAGE)?;
+        }
+        let [ax, ay, az, gx, gy, gz] = values;
+        imu.inject(Some((Vec3 { x: ax, y: ay, z: az }, Vec3 { x: gx, y: gy, z: gz })));
         Ok(None)
     }
 

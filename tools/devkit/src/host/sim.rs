@@ -10,7 +10,7 @@ use std::io::{self, BufRead, BufReader, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::path::PathBuf;
 use std::process::{ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::thread;
 
@@ -19,6 +19,9 @@ use crate::protocol::{
     ENV_PSRAM_PATH, ENV_PSRAM_SIZE, ENV_SOCKET_FD, EXIT_RESTART, Event, MAX_TOUCH_POINTS, PixelFormat,
     RECORD_SIZE, TouchPoint, VERSION,
 };
+
+// Gravity on the panel axes at each quarter turn clockwise, +1 g pointing up.
+const REST_ACCEL: [[f32; 3]; 4] = [[0.0, -1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Status {
@@ -87,6 +90,7 @@ pub struct Device {
     player: Mutex<Option<Player>>,
     muted: AtomicBool,
     silent: bool,
+    rotation: AtomicU8,
 }
 
 impl Device {
@@ -111,6 +115,7 @@ impl Device {
             player: Mutex::new(None),
             muted: AtomicBool::new(true),
             silent,
+            rotation: AtomicU8::new(0),
         }))
     }
 
@@ -227,6 +232,9 @@ impl Device {
                         eprintln!("[devkit] firmware speaks protocol {version}, host {VERSION}");
                     }
                     state.ready = true;
+                    drop(state);
+                    self.send_pose();
+                    continue;
                 }
                 Some(Event::Present { offset, width, height, stride, format }) => {
                     state.present = Some(Present { offset, width, height, stride, format })
@@ -257,7 +265,7 @@ impl Device {
                         player.set_muted(mute);
                     }
                 }
-                Some(Event::Touch { .. } | Event::AudioPlayed { .. }) | None => {}
+                Some(Event::Touch { .. } | Event::AudioPlayed { .. } | Event::Imu { .. }) | None => {}
             }
         }
         unsafe { libc::close(fd) };
@@ -307,6 +315,18 @@ impl Device {
         let count = contacts.len().min(MAX_TOUCH_POINTS) as u8;
         drop(contacts);
         self.send(&Event::Touch { count, points });
+    }
+
+    /// Turns the simulated device clockwise by `rotation` quarter turns.
+    pub fn set_rotation(&self, rotation: u8) {
+        if self.rotation.swap(rotation, Ordering::Relaxed) != rotation {
+            self.send_pose();
+        }
+    }
+
+    fn send_pose(&self) {
+        let accel = REST_ACCEL[usize::from(self.rotation.load(Ordering::Relaxed) % 4)];
+        self.send(&Event::Imu { accel, gyro: [0.0; 3] });
     }
 
     pub fn status(&self) -> Status {

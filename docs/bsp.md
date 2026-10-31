@@ -43,3 +43,20 @@ let board = bsp_rs::init(&bsp_rs::Config::default())?;
 waiting on the dispatch task, `set_event_cb` delivers each sample on that task,
 and `wait_interrupt` blocks until the controller signals. `inject` delivers
 points as if the controller had reported them, without waking `wait_interrupt`.
+
+## IMU
+
+`board.imu` is shared the same way, in panel axes: +X right, +Y down, +Z into
+the screen.
+
+- `read` returns the newest `Sample`: accel in g, +1 pointing up at rest, and
+  gyro in dps. Its timestamp stays put until the chip has new data.
+- `configure` takes a `Request`, where `None` keeps a value, and returns what the
+  chip settled on, rounded up to what it supports.
+- `set_orientation_enabled(true)` tracks the pose on the dispatch task every
+  100 ms. A pose must hold for 300 ms before it counts, and free fall or a shock
+  keeps the last one. `orientation()` is `None` until there is one.
+- `Orientation::Rotated(r)` is the `Rotation` that shows the picture upright,
+  ready for `Blitter::start`. `set_orientation_cb` delivers each new pose on the
+  dispatch task.
+- `inject` replaces the sensor, in panel axes, until `None`.

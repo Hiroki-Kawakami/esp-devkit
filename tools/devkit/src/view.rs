@@ -164,6 +164,7 @@ impl App {
                 ui.selectable_value(&mut self.rotation, q as u8, name);
             }
         });
+        self.device.set_rotation(self.rotation);
         ui.add_space(12.0);
 
         section(ui, "Log");

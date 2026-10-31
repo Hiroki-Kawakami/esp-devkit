@@ -7,6 +7,7 @@
 #[allow(dead_code)]
 pub(crate) mod protocol;
 pub(crate) mod audio;
+pub(crate) mod imu;
 pub(crate) mod panel;
 pub(crate) mod touch;
 
@@ -29,6 +30,7 @@ const TAG: &CStr = c"sim";
 
 pub(crate) type TouchListener = Box<dyn Fn(&[TouchPoint]) + Send + Sync>;
 pub(crate) type AudioListener = Box<dyn Fn(u32, u64) + Send + Sync>;
+pub(crate) type ImuListener = Box<dyn Fn([f32; 3], [f32; 3]) + Send + Sync>;
 
 pub(crate) struct Host {
     fd: c_int,
@@ -40,6 +42,7 @@ pub(crate) struct Host {
 static HOST: OnceLock<Option<Host>> = OnceLock::new();
 static TOUCH: OnceLock<TouchListener> = OnceLock::new();
 static AUDIO: OnceLock<AudioListener> = OnceLock::new();
+static IMU: OnceLock<ImuListener> = OnceLock::new();
 
 /// `None` when the firmware does not run under the simulator host.
 pub(crate) fn host() -> Option<&'static Host> {
@@ -101,6 +104,13 @@ impl Host {
             warn!(TAG, "audio listener already set");
         }
     }
+
+    /// Runs on the receiver task. Only the first listener is kept.
+    pub(crate) fn set_imu_listener(&self, listener: ImuListener) {
+        if IMU.set(listener).is_err() {
+            warn!(TAG, "imu listener already set");
+        }
+    }
 }
 
 // The host closing its end means it went away, so the firmware goes too.
@@ -124,6 +134,11 @@ fn receive(fd: c_int) {
             Some(Event::AudioPlayed { stream, bytes }) => {
                 if let Some(listener) = AUDIO.get() {
                     listener(stream, bytes);
+                }
+            }
+            Some(Event::Imu { accel, gyro }) => {
+                if let Some(listener) = IMU.get() {
+                    listener(accel, gyro);
                 }
             }
             Some(_) => {}

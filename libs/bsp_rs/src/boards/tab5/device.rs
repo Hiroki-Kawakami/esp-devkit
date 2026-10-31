@@ -13,12 +13,14 @@ use idf::{Error, Result, gpio, thread};
 use super::audio::AudioDriver;
 use super::{PANEL_SIZE, TAG, resolve_fb_num, resolve_pixel_format};
 use crate::audio::{self, Audio};
+use crate::devices::bmi270::{self, Bmi270};
 use crate::devices::gt911::{self, Gt911};
 use crate::devices::st712x_touch::{self, St712xTouch};
 use crate::devices::{ili9881c, st7121, st7123};
 use crate::devices::pi4io::{Pi4io, PinConfig};
 use crate::display;
 use crate::driver::mipi_dsi::MipiDsi;
+use crate::imu::{self, AxisMap, Imu};
 use crate::touch::{self, Touch};
 use crate::{Board, Config};
 
@@ -32,6 +34,8 @@ const PI4IOE1_LCD_RST: u8 = 4;
 const PI4IOE1_TP_RST: u8 = 5;
 
 const TOUCH_PIN_INT: i32 = 23;
+
+const IMU_AXIS_MAP: AxisMap = AxisMap { x: -1, y: -2, z: 3 };
 
 const LCD_PIN_BL: i32 = 22;
 // The backlight boost driver holds a fixed current floor while enabled;
@@ -71,7 +75,8 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
     let display = panel_init(config, bus)?;
     let touch = touch_init(bus, &display);
     let audio = audio_init(config, bus, pi4ioe1);
-    Ok(Board { audio, display: Some(DISPLAY.get_or_init(|| display::Display(display))), touch })
+    let imu = imu_init(bus);
+    Ok(Board { audio, display: Some(DISPLAY.get_or_init(|| display::Display(display))), imu, touch })
 }
 
 // PI4IOE1 owns LCD_RST + TP_RST + SPK_EN + the headphone-detect input; PI4IOE2
@@ -200,6 +205,14 @@ fn audio_init(
     AudioDriver::new(bus, io)
         .and_then(|driver| audio::start(driver, &config.audio))
         .inspect_err(|err| warn!(TAG, "audio unavailable: {err}"))
+        .ok()
+}
+
+// Non-fatal: the board comes up without orientation tracking.
+fn imu_init(bus: &'static MasterBus) -> Option<&'static Imu> {
+    Bmi270::new(bus, bmi270::ADDR, bmi270::DEFAULT_HZ)
+        .and_then(|chip| imu::start(chip, IMU_AXIS_MAP))
+        .inspect_err(|err| warn!(TAG, "imu unavailable: {err}"))
         .ok()
 }
 

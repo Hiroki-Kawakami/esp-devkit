@@ -83,6 +83,10 @@ pub fn run() {
     if let Some(audio) = board.audio {
         play_tone(audio);
     }
+    if let Some(imu) = board.imu {
+        imu.set_orientation_cb(Some(Box::new(|pose| info!(TAG, "orientation: {pose:?}"))));
+        imu.set_orientation_enabled(true);
+    }
     match board.touch {
         Some(touch) => log_touches(touch),
         None => cycle(display),

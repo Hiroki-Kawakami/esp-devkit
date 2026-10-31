@@ -21,6 +21,8 @@ mod devices;
 pub mod dispatch;
 pub mod display;
 mod driver;
+#[cfg_attr(not(target_os = "none"), allow(dead_code))]
+pub mod imu;
 #[cfg(not(target_os = "none"))]
 mod sim;
 #[cfg_attr(not(target_os = "none"), allow(dead_code))]
@@ -35,6 +37,7 @@ pub use absent::Absent;
 pub struct Board {
     pub audio: Option<&'static audio::Audio>,
     pub display: Option<&'static display::Display>,
+    pub imu: Option<&'static imu::Imu>,
     pub touch: Option<&'static touch::Touch>,
 }
 

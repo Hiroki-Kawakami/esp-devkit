@@ -3,6 +3,10 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
+#[cfg(CONFIG_BSP_RS_DEVICE_BMI270)]
+pub(crate) mod bmi270;
+#[cfg(CONFIG_BSP_RS_DEVICE_BMI270)]
+mod bmi270_config;
 #[cfg(CONFIG_BSP_RS_DEVICE_ES8388)]
 pub(crate) mod es8388;
 #[cfg(CONFIG_BSP_RS_DEVICE_GT911)]
