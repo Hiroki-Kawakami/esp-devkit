@@ -34,6 +34,7 @@ const FRAME: Duration = Duration::from_millis(16);
 const IDLE_WAIT: Duration = Duration::from_secs(3600);
 const TAP_HOLD: Duration = Duration::from_millis(40);
 const ROOT: u16 = 0;
+const DROP_LOG_EVERY: u32 = 256;
 
 pub struct AppConfig {
     pub theme: &'static Theme,
@@ -77,6 +78,7 @@ enum Event {
 struct Shared {
     events: Sender<Event>,
     pending: AtomicU32,
+    dropped: AtomicU32,
     busy: AtomicBool,
     display: &'static Display,
     rotation: Rotation,
@@ -249,6 +251,7 @@ impl<C: Screen> App<C> {
         let shared = Arc::new(Shared {
             events,
             pending: AtomicU32::new(0),
+            dropped: AtomicU32::new(0),
             busy: AtomicBool::new(true),
             display,
             rotation: config.presenter.rotation,
@@ -260,7 +263,10 @@ impl<C: Screen> App<C> {
                 let first = points.iter().min_by_key(|p| p.id).map(|p| (p.x, p.y));
                 let now = Instant::now().since_boot().as_millis() as u32;
                 if !shared.send(Event::Touch(first, now)) {
-                    error!(TAG, "input queue full");
+                    let dropped = shared.dropped.fetch_add(1, Ordering::Relaxed);
+                    if dropped % DROP_LOG_EVERY == 0 {
+                        error!(TAG, "input queue full, {} samples dropped", dropped + 1);
+                    }
                 }
             })));
         }

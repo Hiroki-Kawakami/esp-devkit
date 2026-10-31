@@ -183,6 +183,7 @@ struct Shared {
     start: [Semaphore; MAX_LANES],
     done: Semaphore,
     next: AtomicUsize,
+    frame: AtomicU32,
     raster_us: [AtomicU32; MAX_LANES],
     stall_us: [AtomicU32; MAX_LANES],
     job: UnsafeCell<Job>,
@@ -197,6 +198,7 @@ struct Lane {
     blitter: Blitter,
     turn: usize,
     last: Rect,
+    before: Rect,
     raster: u32,
     stall: u32,
 }
@@ -215,7 +217,7 @@ impl Lane {
                 _ => self.strips::<Rgb565>(&shared, job, list, prepared),
             }
             while self.blitter.pending() > 0 {
-                self.wait_blit();
+                self.wait_blit(&shared, job);
             }
             shared.raster_us[self.id].store(self.raster, Ordering::Relaxed);
             shared.stall_us[self.id].store(self.stall, Ordering::Relaxed);
@@ -223,10 +225,21 @@ impl Lane {
         }
     }
 
-    fn wait_blit(&mut self) {
+    fn wait_blit(&mut self, shared: &Shared, job: &Job) {
         let t = Instant::now();
         while !self.blitter.wait_timeout(STALL_TIMEOUT) {
-            error!(TAG, "lane {}: blit stalled, last {:?}", self.id, self.last);
+            error!(
+                TAG,
+                "lane {}: blit stalled, last {:?}, before {:?}, pending {}, strip {}/{}, frame {}, {:?}",
+                self.id,
+                self.last,
+                self.before,
+                self.blitter.pending(),
+                shared.next.load(Ordering::Relaxed),
+                job.strips.len(),
+                shared.frame.load(Ordering::Relaxed),
+                job.rotation,
+            );
         }
         self.stall += t.elapsed().as_micros() as u32;
     }
@@ -237,11 +250,12 @@ impl Lane {
             let index = shared.next.fetch_add(1, Ordering::Relaxed);
             let Some(strip) = job.strips.get(index) else { return };
             if self.blitter.pending() == STRIPS_PER_LANE as u32 {
-                self.wait_blit();
+                self.wait_blit(shared, job);
             }
             let t = Instant::now();
             let buffer = job.buffers[self.id][self.turn];
             self.turn = (self.turn + 1) % STRIPS_PER_LANE;
+            self.before = self.last;
             self.last = *strip;
             let surface = unsafe { Surface::new(buffer, strip.w as usize * P::BYTES, *strip) };
             draw::<P, _, _>(list, prepared, &surface);
@@ -286,6 +300,7 @@ impl Presenter {
             start: [Semaphore::try_new(0, 1)?, Semaphore::try_new(0, 1)?],
             done: Semaphore::try_new(0, MAX_LANES as u32)?,
             next: AtomicUsize::new(0),
+            frame: AtomicU32::new(0),
             raster_us: [AtomicU32::new(0), AtomicU32::new(0)],
             stall_us: [AtomicU32::new(0), AtomicU32::new(0)],
             job: UnsafeCell::new(Job {
@@ -303,6 +318,7 @@ impl Presenter {
                 blitter: display.blitter(STRIPS_PER_LANE as u32)?,
                 turn: 0,
                 last: Rect::default(),
+                before: Rect::default(),
                 raster: 0,
                 stall: 0,
             };
@@ -475,6 +491,7 @@ impl Presenter {
         }
         stats.strips = job.strips.len() as u32;
         shared.next.store(0, Ordering::Relaxed);
+        shared.frame.fetch_add(1, Ordering::Relaxed);
         // A lane on this task's core preempts it, so that lane starts last.
         for start in shared.start[..self.lanes].iter().rev() {
             start.give();
