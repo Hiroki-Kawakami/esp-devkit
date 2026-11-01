@@ -9,6 +9,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::ffi::CStr;
 use core::marker::PhantomData;
+use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use core::time::Duration;
 
@@ -310,8 +311,7 @@ fn note(stage: &mut (u32, u32), from: Instant) -> Instant {
     now
 }
 
-/// Runs a component tree on the display.
-pub struct App<C: Screen> {
+pub struct AppState<C: Screen> {
     shared: Arc<Shared>,
     receiver: Receiver<Event>,
     tree: Tree,
@@ -333,8 +333,38 @@ pub struct App<C: Screen> {
     _root: PhantomData<fn(C)>,
 }
 
+/// Runs a component tree on the display. It lives on the heap: `run` keeps it
+/// for good, under every frame on the stack of the same task.
+pub struct App<C: Screen>(Box<AppState<C>>);
+
+impl<C: Screen> Deref for App<C> {
+    type Target = AppState<C>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<C: Screen> DerefMut for App<C> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
 impl<C: Screen> App<C> {
-    pub fn new(display: &'static Display, touch: Option<&'static Touch>, root: C, mut config: AppConfig) -> idf::Result<Self> {
+    // Not inlined, so what building it passes through leaves the caller's stack.
+    #[inline(never)]
+    pub fn new(display: &'static Display, touch: Option<&'static Touch>, root: C, config: AppConfig) -> idf::Result<Self> {
+        Ok(Self(Box::new(AppState::new(display, touch, root, config)?)))
+    }
+
+    pub fn run(mut self) -> ! {
+        self.0.run()
+    }
+}
+
+impl<C: Screen> AppState<C> {
+    fn new(display: &'static Display, touch: Option<&'static Touch>, root: C, mut config: AppConfig) -> idf::Result<Self> {
         let store = Store::new(config.nvs_namespace);
         let mut init = PluginInit { store: &store, rotation: config.presenter.rotation, color_mode: ColorMode::Light };
         for plugin in &mut config.plugins {
@@ -672,7 +702,7 @@ impl<C: Screen> App<C> {
     }
 
     /// Runs on the calling task, which then owns the UI.
-    pub fn run(mut self) -> ! {
+    fn run(&mut self) -> ! {
         let mut last = Instant::now();
         loop {
             self.frame();
