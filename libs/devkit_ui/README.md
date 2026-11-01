@@ -146,6 +146,27 @@ app.run();
 - `cx.set_theme` changes the theme, `Screen::theme` replaces it for a screen.
 
 - `devkit_ui::widgets` are functions over the theme. State stays with the caller.
+- `.part` changes pieces of one widget where it is used, on any element holding
+  them, and does nothing when the widget has none:
+
+  ```rust
+  slider(ui, value, on_drag).part(Part::Thumb, |thumb| thumb.background(RED))
+  ```
+
+  | widget | parts |
+  |---|---|
+  | `slider` | `Track`, `Fill`, `Thumb` |
+  | `switch` | `Track`, `Thumb` |
+  | `checkbox` | `Mark` |
+  | `list_item` | `Leading`, `Title`, `Meta`, `Trailing` |
+  | `top_bar` | `Back`, `Title` |
+  | `segmented` | `Item` |
+  | `menu` | `Panel` |
+  | `modal` | `Panel`, `Scrim` |
+
+  It reaches every match below the element, and not into child components. A
+  look wins over `.background` on the same node, so a piece with a look takes
+  `.look`.
 - `table` lays out a scrolling form: `table_section` is a rounded panel of rows and
   `table_header` the title above one. `table_row` holds any children, and
   `table_label`, `table_value` and `table_chevron` are the usual ones. Unlike

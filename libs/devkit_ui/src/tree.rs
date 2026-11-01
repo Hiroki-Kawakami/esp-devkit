@@ -619,8 +619,8 @@ impl Tree {
             }
             _ => {}
         }
-        if !element.children.is_empty() || self.nodes[id as usize].first_child != NONE {
-            self.reconcile_children(owner, id, element.children);
+        if !element.children().is_empty() || self.nodes[id as usize].first_child != NONE {
+            self.reconcile_children(owner, id, element.children());
         }
     }
 
@@ -685,8 +685,8 @@ impl Tree {
             }
             _ => {}
         }
-        if !element.children.is_empty() {
-            self.reconcile_children(owner, id, element.children);
+        if !element.children().is_empty() {
+            self.reconcile_children(owner, id, element.children());
         }
         id
     }

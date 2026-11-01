@@ -1076,6 +1076,48 @@ fn a_drag_follows_the_contact_without_a_tap_slop() {
     tree.update();
 }
 
+struct Parts;
+
+impl Screen for Parts {}
+
+impl Component for Parts {
+    type Msg = ();
+
+    fn update(&mut self, _: (), _: &mut Cx<Self>) {}
+
+    fn view<'a>(&'a self, ui: &'a Ui<()>) -> Element<'a, ()> {
+        ui.column([
+            widgets::slider(ui, 0, |_| ()).part(Part::Thumb, |thumb| thumb.background(RED).id("thumb")).part(Part::Fill, |fill| fill.id("fill")),
+            widgets::switch(ui, false, ()).part(Part::Track, |track| track.background(RED).id("track")),
+            widgets::list_item(ui, None, "Title", None, None, ()).part(Part::Meta, |meta| meta.id("no-meta")).part(Part::Title, |title| title.color(RED).id("title")),
+            widgets::segmented(ui, &[("A", ()), ("B", ())], 0).part(Part::Item, |item| item.background(WHITE)).id("segments"),
+            ui.row([widgets::slider(ui, 0, |_| ()).width(200)]).part(Part::Thumb, |thumb| thumb.id("nested-thumb")),
+        ])
+    }
+}
+
+#[test]
+fn a_part_reaches_the_pieces_of_a_widget_inside_it() {
+    let mut tree = Tree::new(Parts, SCREEN, Caps::INTERNAL, theme());
+    settle(&mut tree);
+    let background = |id: &str| tree.nodes[tree.find(id).unwrap() as usize].style.background;
+    assert_eq!(background("thumb"), Some(RED));
+    assert!(background("fill").is_some(), "the rest of the widget stays");
+    assert_eq!(background("track"), Some(RED), "the root can be a part");
+    assert!(tree.find("title").is_some());
+    assert!(tree.find("no-meta").is_none(), "an absent part does nothing");
+    assert!(tree.find("nested-thumb").is_some());
+
+    let mut item = tree.nodes[tree.find("segments").unwrap() as usize].first_child;
+    let mut items = 0;
+    while item != NONE {
+        assert_eq!(tree.nodes[item as usize].style.background, Some(WHITE));
+        item = tree.nodes[item as usize].next;
+        items += 1;
+    }
+    assert_eq!(items, 2, "every item is the part");
+}
+
 #[test]
 fn an_animation_moves_a_node_without_a_rebuild() {
     let sample = Sample::new();

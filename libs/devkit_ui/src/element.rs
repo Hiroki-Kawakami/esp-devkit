@@ -15,7 +15,7 @@ use devkit_gfx::{Align as TextAlign, Color, FontChain, Image, ImageFormat, Overf
 use crate::bump::Bump;
 use crate::component::{AnyHost, Child, EventMap, Host, ListId, Screen, call_event_map, screen_host};
 use crate::erased::Erased;
-use crate::style::{Align, Dimension, Direction, Inset, Insets, Justify, Role, ScreenStyle, Shadow, State, Style};
+use crate::style::{Align, Dimension, Direction, Inset, Insets, Justify, Part, Role, ScreenStyle, Shadow, State, Style};
 use crate::canvas::CanvasId;
 use crate::external::ExternalSurface;
 use crate::nav::{DetailMap, SplitRole, SplitSpec, call_detail_map};
@@ -176,10 +176,11 @@ impl<S: Child + Screen> ChildSpec for ScreenElement<S> {
 #[derive(Clone, Copy)]
 pub struct Element<'a, M: Copy> {
     pub(crate) content: Content<'a>,
-    pub(crate) children: &'a [Element<'a, M>],
+    children: NonNull<[Element<'a, M>]>,
     pub(crate) style: Style,
     pub(crate) key: Option<u32>,
     pub(crate) id: Option<&'static str>,
+    part: Option<Part>,
     pub(crate) role: Role,
     pub(crate) tap: Option<Erased>,
     pub(crate) drag: Option<DragMap>,
@@ -198,12 +199,16 @@ pub struct Element<'a, M: Copy> {
 }
 
 impl<'a, M: Copy> Element<'a, M> {
-    fn new(content: Content<'a>, children: &'a [Element<'a, M>]) -> Self {
-        Self { content, children, style: Style::default(), key: None, id: None, role: Role::None, tap: None, drag: None, tap_at: None, on_scroll: None, gestures: None, size: None, input: None, focusable: false, keep_focus: false, keyboard: None, input_kind: InputKind::Text, repeat: false, state: State::empty(), _msg: PhantomData }
+    fn new(content: Content<'a>, children: &'a mut [Element<'a, M>]) -> Self {
+        Self { content, children: NonNull::from(children), style: Style::default(), key: None, id: None, part: None, role: Role::None, tap: None, drag: None, tap_at: None, on_scroll: None, gestures: None, size: None, input: None, focusable: false, keep_focus: false, keyboard: None, input_kind: InputKind::Text, repeat: false, state: State::empty(), _msg: PhantomData }
     }
 
     pub const fn is_empty(&self) -> bool {
         matches!(self.content, Content::Empty)
+    }
+
+    pub(crate) fn children(&self) -> &'a [Element<'a, M>] {
+        unsafe { self.children.as_ref() }
     }
 
     /// Matches this node across rebuilds when siblings move.
@@ -216,6 +221,27 @@ impl<'a, M: Copy> Element<'a, M> {
     pub fn id(mut self, id: &'static str) -> Self {
         self.id = Some(id);
         self
+    }
+
+    pub(crate) fn part_of(mut self, part: Part) -> Self {
+        self.part = Some(part);
+        self
+    }
+
+    /// Changes each `part` of this widget. Not the inside of child components.
+    /// Copies of an element share its children, so all of them see the change.
+    pub fn part(mut self, part: Part, style: impl Fn(Self) -> Self) -> Self {
+        self.style_part(part, &style);
+        self
+    }
+
+    fn style_part(&mut self, part: Part, style: &impl Fn(Self) -> Self) {
+        if self.part == Some(part) {
+            *self = style(*self);
+        }
+        for child in unsafe { self.children.as_mut() } {
+            child.style_part(part, style);
+        }
     }
 
     pub fn role(mut self, role: Role) -> Self {
@@ -576,17 +602,17 @@ impl<'a, M: Copy> Element<'a, M> {
 
 /// Children of a container, moved into the rebuild's memory.
 pub trait Children<'a, M: Copy> {
-    fn place(self, ui: &'a Ui<M>) -> &'a [Element<'a, M>];
+    fn place(self, ui: &'a Ui<M>) -> &'a mut [Element<'a, M>];
 }
 
 impl<'a, M: Copy, const N: usize> Children<'a, M> for [Element<'a, M>; N] {
-    fn place(self, ui: &'a Ui<M>) -> &'a [Element<'a, M>] {
+    fn place(self, ui: &'a Ui<M>) -> &'a mut [Element<'a, M>] {
         ui.place_slice(&self)
     }
 }
 
 impl<'a, M: Copy> Children<'a, M> for Vec<Element<'a, M>> {
-    fn place(self, ui: &'a Ui<M>) -> &'a [Element<'a, M>] {
+    fn place(self, ui: &'a Ui<M>) -> &'a mut [Element<'a, M>] {
         ui.place_slice(&self)
     }
 }
@@ -668,16 +694,16 @@ impl<M: Copy> Ui<M> {
         unsafe { self.bump.as_ref() }
     }
 
-    fn place_slice<'a>(&'a self, items: &[Element<'a, M>]) -> &'a [Element<'a, M>] {
+    fn place_slice<'a>(&'a self, items: &[Element<'a, M>]) -> &'a mut [Element<'a, M>] {
         let p = self.bump().alloc_slice::<Element<'a, M>>(items.len(), |p| unsafe {
             ptr::copy_nonoverlapping(items.as_ptr(), p, items.len());
         });
-        unsafe { core::slice::from_raw_parts(p, items.len()) }
+        unsafe { core::slice::from_raw_parts_mut(p, items.len()) }
     }
 
     /// Nothing, for a conditional child.
     pub fn empty<'a>(&'a self) -> Element<'a, M> {
-        Element::new(Content::Empty, &[])
+        Element::new(Content::Empty, &mut [])
     }
 
     fn container<'a>(&'a self, direction: Direction, children: impl Children<'a, M>) -> Element<'a, M> {
@@ -700,7 +726,7 @@ impl<M: Copy> Ui<M> {
 
     pub fn text<'a>(&'a self, font: &'static FontChain, text: &'a str) -> Element<'a, M> {
         let options = TextOptions::default();
-        let mut element = Element::new(Content::Text { font, text, color: None, options, edit: None }, &[]);
+        let mut element = Element::new(Content::Text { font, text, color: None, options, edit: None }, &mut []);
         element.role = Role::Text;
         element.style.shrink = 1;
         element
@@ -723,19 +749,19 @@ impl<M: Copy> Ui<M> {
     }
 
     pub fn image<'a>(&'a self, image: Image<'static>) -> Element<'a, M> {
-        Element::new(Content::Image { image, tint: Color::rgb(0, 0, 0) }, &[])
+        Element::new(Content::Image { image, tint: Color::rgb(0, 0, 0) }, &mut [])
     }
 
     /// Pixels drawn by `Component::draw`. Takes the size the parent gives it.
     pub fn canvas<'a>(&'a self, id: CanvasId) -> Element<'a, M> {
-        Element::new(Content::Canvas(id), &[])
+        Element::new(Content::Canvas(id), &mut [])
     }
 
     /// A rectangle `surface` writes, inside the size the parent gives it: its
     /// top and bottom keep to the 16 row grid damage is aligned to, so it can
     /// end up to 15 rows shorter on each side. One at a time per app.
     pub fn external<'a>(&'a self, surface: &'a ExternalSurface) -> Element<'a, M> {
-        Element::new(Content::External(surface), &[])
+        Element::new(Content::External(surface), &mut [])
     }
 
     /// Scrolls one child vertically. Takes the size the parent gives it.
@@ -745,7 +771,7 @@ impl<M: Copy> Ui<M> {
 
     /// Rows come from `Component::list_row`; only visible ones exist.
     pub fn list<'a>(&'a self, id: ListId, count: usize, row_height: i16) -> Element<'a, M> {
-        let mut element = Element::new(Content::List { id, count, row_height, revision: None }, &[]);
+        let mut element = Element::new(Content::List { id, count, row_height, revision: None }, &mut []);
         element.role = Role::List;
         element
     }
@@ -755,7 +781,7 @@ impl<M: Copy> Ui<M> {
     pub fn navigator<'a, K: 'static, S: Child + Screen>(&'a self, props: S::Props) -> Element<'a, M> {
         let spec = self.bump().alloc(ScreenElement::<S> { props });
         let spec: &'a ScreenElement<S> = unsafe { &*spec };
-        Element::new(Content::Navigator { key: TypeId::of::<K>(), initial: Some(spec), split: SplitSpec::default() }, &[]).clip()
+        Element::new(Content::Navigator { key: TypeId::of::<K>(), initial: Some(spec), split: SplitSpec::default() }, &mut []).clip()
     }
 
     /// A child component, kept across rebuilds by position or key.
@@ -780,6 +806,6 @@ impl<M: Copy> Ui<M> {
     {
         let spec = self.bump().alloc(ChildElement::<C, M> { props, on_event });
         let spec: &'a ChildElement<C, M> = unsafe { &*spec };
-        Element::new(Content::Child(spec), &[])
+        Element::new(Content::Child(spec), &mut [])
     }
 }

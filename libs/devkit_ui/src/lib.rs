@@ -45,6 +45,6 @@ pub use nav::{Overlay, Root, SplitRole};
 pub use rotation::{AutoRotation, Rotations};
 pub use plugin::{Plugin, PluginContext, PluginInit, SavedColorMode, Store, UiEvent};
 pub use presenter::{Config, PresentMode, Presenter, Stats, StripMemory, Strips};
-pub use style::{Align, Bars, Dimension, Direction, Insets, Justify, Role, ScreenStyle, Shadow, State, Style};
+pub use style::{Align, Bars, Dimension, Direction, Insets, Justify, Part, Role, ScreenStyle, Shadow, State, Style};
 pub use text_buffer::{TextBuffer, TextInput};
 pub use theme::{Border, ButtonTheme, CheckboxTheme, ColorMode, ColorRole, DropdownMenuTheme, DropdownTheme, Fonts, Icon, IconButtonTheme, Icons, KeyboardTheme, Keyboards, ListItemTheme, Look, LookBorder, MenuItemTheme, MenuTheme, ModalTheme, Motion, Palette, SegmentedTheme, SliderTheme, SwitchTheme, TableHeaderTheme, TableRowTheme, TableSectionTheme, TableTheme, TextFieldTheme, Theme, ThemeAssets, ToastTheme, TopBarTheme, Transition, UnitTheme, WidgetLook, WidgetStyle, Widgets};

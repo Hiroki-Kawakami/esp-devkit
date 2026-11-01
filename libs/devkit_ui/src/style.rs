@@ -44,6 +44,23 @@ pub enum Justify {
     SpaceBetween,
 }
 
+/// A piece of a widget, for `Element::part`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Part {
+    Back,
+    Fill,
+    Item,
+    Leading,
+    Mark,
+    Meta,
+    Panel,
+    Scrim,
+    Thumb,
+    Title,
+    Track,
+    Trailing,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Role {
     #[default]

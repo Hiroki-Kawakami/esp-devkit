@@ -16,7 +16,7 @@ use crate::component::{Component, Cx};
 use crate::element::{Children, Drag, Element, Ui};
 use crate::keyboard::{Keyboard, KeyboardPanel, KeyboardProps};
 use crate::text_buffer::{TextBuffer, TextInput};
-use crate::style::{Align, Justify, Role, Shadow};
+use crate::style::{Align, Justify, Part, Role, Shadow};
 pub use crate::theme::DEFAULT;
 use crate::theme::{Icon, WidgetLook};
 
@@ -50,10 +50,10 @@ pub fn icon_button<'a, M: Copy>(ui: &'a Ui<M>, icon: Icon, on_tap: M) -> Element
 
 pub fn list_item<'a, M: Copy>(ui: &'a Ui<M>, leading: Option<Icon>, title: &'a str, meta: Option<&'a str>, trailing: Option<Icon>, on_tap: M) -> Element<'a, M> {
     let t = &ui.theme().widgets.list_item;
-    let lead = leading.map_or(ui.empty(), |icon| ui.icon(icon).color(ui.color(t.leading_color)));
-    let tail = trailing.map_or(ui.empty(), |icon| ui.icon(icon).color(ui.color(t.trailing_color)));
-    let detail = meta.map_or(ui.empty(), |text| ui.text(t.meta_font, text).color(ui.color(t.meta_color)));
-    ui.row([lead, ui.column([ui.text(t.title_font, title).ellipsis(), detail]).gap(t.text_gap).grow(1), tail])
+    let lead = leading.map_or(ui.empty(), |icon| ui.icon(icon).color(ui.color(t.leading_color)).part_of(Part::Leading));
+    let tail = trailing.map_or(ui.empty(), |icon| ui.icon(icon).color(ui.color(t.trailing_color)).part_of(Part::Trailing));
+    let detail = meta.map_or(ui.empty(), |text| ui.text(t.meta_font, text).color(ui.color(t.meta_color)).part_of(Part::Meta));
+    ui.row([lead, ui.column([ui.text(t.title_font, title).ellipsis().part_of(Part::Title), detail]).gap(t.text_gap).grow(1), tail])
         .look(t.look)
         .height(t.height)
         .padding_x(t.padding_x)
@@ -68,7 +68,7 @@ pub fn list_item<'a, M: Copy>(ui: &'a Ui<M>, leading: Option<Icon>, title: &'a s
 pub fn top_bar<'a, M: Copy + 'static>(ui: &'a Ui<M>, back: Option<M>, title: &'a str, actions: Element<'a, M>) -> Element<'a, M> {
     let theme = ui.theme();
     let t = &theme.widgets.top_bar;
-    let label = ui.text(t.font, title).ellipsis();
+    let label = ui.text(t.font, title).ellipsis().part_of(Part::Title);
     let lead = match back {
         Some(msg) => {
             let left = (t.back_height - theme.icons.back.font.px() as i16) / 2;
@@ -84,7 +84,8 @@ pub fn top_bar<'a, M: Copy + 'static>(ui: &'a Ui<M>, back: Option<M>, title: &'a
                 .align(Align::Center)
                 .role(Role::Button)
                 .on_tap(msg)
-                .id("back");
+                .id("back")
+                .part_of(Part::Back);
             ui.row([button]).grow(1)
         }
         None => label.padding_x(theme.widgets.unit.padding - t.padding_x).grow(1),
@@ -101,7 +102,8 @@ pub fn switch<'a, M: Copy>(ui: &'a Ui<M>, on: bool, on_tap: M) -> Element<'a, M>
     let t = &ui.theme().widgets.switch;
     let inset = (t.height - t.thumb) / 2;
     let x = if on { t.width - t.thumb - inset } else { inset };
-    ui.column([ui.column([]).size(t.thumb, t.thumb).radius((t.thumb / 2) as u8).background(ui.color(t.thumb_color)).absolute(Some(x), Some(inset), None, None)])
+    ui.column([ui.column([]).size(t.thumb, t.thumb).radius((t.thumb / 2) as u8).background(ui.color(t.thumb_color)).absolute(Some(x), Some(inset), None, None).part_of(Part::Thumb)])
+        .part_of(Part::Track)
         .size(t.width, t.height)
         .radius((t.height / 2) as u8)
         .background(ui.color(if on { t.on_color } else { t.off_color }))
@@ -113,7 +115,7 @@ pub fn switch<'a, M: Copy>(ui: &'a Ui<M>, on: bool, on_tap: M) -> Element<'a, M>
 pub fn checkbox<'a, M: Copy>(ui: &'a Ui<M>, checked: bool, on_tap: M) -> Element<'a, M> {
     let t = &ui.theme().widgets.checkbox;
     let mark_size = t.size - t.mark_inset * 2;
-    let mark = if checked { ui.column([]).size(mark_size, mark_size).radius(t.mark_radius).background(ui.color(t.mark_color)).absolute(Some(t.mark_inset), Some(t.mark_inset), None, None) } else { ui.empty() };
+    let mark = if checked { ui.column([]).size(mark_size, mark_size).radius(t.mark_radius).background(ui.color(t.mark_color)).absolute(Some(t.mark_inset), Some(t.mark_inset), None, None).part_of(Part::Mark) } else { ui.empty() };
     ui.column([mark]).size(t.size, t.size).radius(t.radius).background(ui.color(if checked { t.on_color } else { t.off_color })).checked(checked).role(Role::Button).on_tap(on_tap)
 }
 
@@ -128,10 +130,10 @@ pub fn slider<'a, M: Copy>(ui: &'a Ui<M>, value: u8, on_drag: fn(Drag) -> M) -> 
     let t = &ui.theme().widgets.slider;
     let top = (t.height - t.track) / 2;
     let radius = (t.track / 2) as u8;
-    let thumb = ui.column([]).size(t.thumb, t.thumb).radius((t.thumb / 2) as u8).background(ui.color(t.thumb_color)).absolute(None, Some((t.track - t.thumb) / 2), Some(-t.thumb / 2), None);
+    let thumb = ui.column([]).size(t.thumb, t.thumb).radius((t.thumb / 2) as u8).background(ui.color(t.thumb_color)).absolute(None, Some((t.track - t.thumb) / 2), Some(-t.thumb / 2), None).part_of(Part::Thumb);
     ui.column([ui.column([
-        ui.column([]).height(t.track).radius(radius).background(ui.color(t.track_color)).absolute(Some(0), Some(top), Some(0), None),
-        ui.column([thumb]).width_fraction(u16::from(value), VALUE_RANGE).min_width(t.track).height(t.track).radius(radius).background(ui.color(t.active_color)).absolute(Some(0), Some(top), None, None),
+        ui.column([]).height(t.track).radius(radius).background(ui.color(t.track_color)).absolute(Some(0), Some(top), Some(0), None).part_of(Part::Track),
+        ui.column([thumb]).width_fraction(u16::from(value), VALUE_RANGE).min_width(t.track).height(t.track).radius(radius).background(ui.color(t.active_color)).absolute(Some(0), Some(top), None, None).part_of(Part::Fill),
     ])
     .height(t.height)])
     .padding_x(t.thumb / 2)
@@ -155,6 +157,7 @@ pub fn segmented<'a, M: Copy>(ui: &'a Ui<M>, options: &[(&'a str, M)], selected:
                 .selected(i == selected)
                 .role(Role::Button)
                 .on_tap(on_tap)
+                .part_of(Part::Item)
         })
         .collect();
     ui.row(segments).padding(t.inset).radius(t.radius).background(ui.color(t.background))
@@ -277,7 +280,7 @@ pub fn menu<'a, M: Copy>(ui: &'a Ui<M>, top: i16, items: impl Children<'a, M>, o
     let shadow = Shadow { y: t.shadow_y, blur: t.shadow_blur, color: ui.color(t.shadow_color) };
     ui.column([
         ui.column([]).absolute(Some(0), Some(0), Some(0), Some(0)).id("menu-backdrop").on_tap(on_close),
-        ui.column(items).width(t.width).padding_y(t.padding_y).radius(t.radius).background(ui.color(t.background)).shadow(shadow).absolute(None, Some(top), Some(t.right), None),
+        ui.column(items).width(t.width).padding_y(t.padding_y).radius(t.radius).background(ui.color(t.background)).shadow(shadow).absolute(None, Some(top), Some(t.right), None).part_of(Part::Panel),
     ])
     .absolute(Some(0), Some(0), Some(0), Some(0))
 }
@@ -288,8 +291,8 @@ pub fn modal<'a, M: Copy>(ui: &'a Ui<M>, content: Element<'a, M>, on_close: M) -
     let (width, height) = ui.screen_size();
     let left = (width - t.width) / 2;
     ui.column([
-        ui.column([]).absolute(Some(0), Some(0), Some(0), Some(0)).background(ui.color(t.scrim)).id("modal-scrim").on_tap(on_close),
-        ui.column([content]).width(t.width).padding(t.padding).radius(t.radius).background(ui.color(t.background)).absolute(Some(left), Some(height / 3), None, None),
+        ui.column([]).absolute(Some(0), Some(0), Some(0), Some(0)).background(ui.color(t.scrim)).id("modal-scrim").on_tap(on_close).part_of(Part::Scrim),
+        ui.column([content]).width(t.width).padding(t.padding).radius(t.radius).background(ui.color(t.background)).absolute(Some(left), Some(height / 3), None, None).part_of(Part::Panel),
     ])
     .absolute(Some(0), Some(0), Some(0), Some(0))
 }
