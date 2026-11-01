@@ -8,6 +8,7 @@
 
 extern crate alloc;
 
+mod animate;
 mod app;
 mod bump;
 mod canvas;
@@ -45,6 +46,6 @@ pub use nav::{Overlay, Root, SplitRole};
 pub use rotation::{AutoRotation, Rotations};
 pub use plugin::{Plugin, PluginContext, PluginInit, SavedColorMode, Store, UiEvent};
 pub use presenter::{Config, PresentMode, Presenter, Stats, StripMemory, Strips};
-pub use style::{Align, Bars, Dimension, Direction, Insets, Justify, Part, Prop, Role, ScreenStyle, Shadow, State, StateStyle, Style};
+pub use style::{Align, Animated, Bars, Dimension, Direction, Insets, Justify, Part, Prop, Role, ScreenStyle, Shadow, State, StateStyle, Style};
 pub use text_buffer::{TextBuffer, TextInput};
 pub use theme::{ButtonTheme, CheckboxTheme, ColorMode, ColorRole, DropdownMenuTheme, DropdownTheme, Fonts, Icon, IconButtonTheme, Icons, KeyboardTheme, Keyboards, ListItemTheme, ListTheme, MenuItemTheme, MenuTheme, ModalTheme, Motion, Palette, SegmentedTheme, SliderTheme, SwitchTheme, TableHeaderTheme, TableRowTheme, TableSectionTheme, TableTheme, TextFieldTheme, Theme, ThemeAssets, ThemeBehavior, ToastTheme, TopBarTheme, Transition, UnitTheme, Widgets};

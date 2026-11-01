@@ -357,6 +357,11 @@ static THEME: Theme = Theme::new(&resources::TOUCH, &widgets::DEFAULT);
   `disabled` and `checked` exist, and `selected|pressed` takes both. `extends` is a
   style or a list of them to start from.
 
+  `animate` eases changes on the way to that style, as `["color|position", 150]`
+  with `color`, `opacity` and `position` to choose from and the milliseconds.
+  `[]` eases nothing. It can be a reference, so one value in `vars` turns a whole
+  theme's motion off.
+
   ```json
   {
     "vars": { "dimmed": { "opacity": 102 } },

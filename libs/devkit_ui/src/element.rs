@@ -16,7 +16,7 @@ use devkit_gfx::{Align as TextAlign, Color, FontChain, Image, ImageFormat, Overf
 use crate::bump::Bump;
 use crate::component::{AnyHost, Child, EventMap, Host, ListId, Screen, call_event_map, screen_host};
 use crate::erased::Erased;
-use crate::style::{Align, Direction, Inset, Insets, Justify, Part, Prop, Role, ScreenStyle, Shadow, State, StateStyle, Style};
+use crate::style::{Align, Animated, Direction, Inset, Insets, Justify, Part, Prop, Role, ScreenStyle, Shadow, State, StateStyle, Style};
 use crate::canvas::CanvasId;
 use crate::external::ExternalSurface;
 use crate::nav::{DetailMap, SplitRole, SplitSpec, call_detail_map};
@@ -595,6 +595,11 @@ impl<'a, M: Copy> Element<'a, M> {
 
     pub fn opacity(self, opacity: u8) -> Self {
         self.prop(Prop::Opacity(opacity))
+    }
+
+    /// Eases what `animated` names when the style changes to this one.
+    pub fn animate(self, animated: Animated, ms: u16) -> Self {
+        self.prop(Prop::Animate(animated, ms))
     }
 
     /// Clips what is inside, to the `radius` too. The inside of a scroller or

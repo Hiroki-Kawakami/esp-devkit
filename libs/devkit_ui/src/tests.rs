@@ -1132,6 +1132,151 @@ fn an_animation_moves_a_node_without_a_rebuild() {
     assert_eq!(views.get(), before);
 }
 
+static EASED_TRACK: StateStyle = StateStyle {
+    font: None,
+    base: &[Prop::Width(64), Prop::Height(32), Prop::Background(ColorRole::Fixed(RED)), Prop::Animate(Animated::COLOR, 100)],
+    states: &[
+        (State::CHECKED, &[Prop::Background(ColorRole::Fixed(BLUE))]),
+        (State::PRESSED, &[Prop::Background(ColorRole::Fixed(WHITE)), Prop::Animate(Animated::empty(), 0)]),
+    ],
+};
+static EASED_THUMB: StateStyle = StateStyle { base: &[Prop::Width(24), Prop::Height(24), Prop::Animate(Animated::POSITION, 100)], ..StateStyle::EMPTY };
+static FADING: StateStyle = StateStyle {
+    font: None,
+    base: &[Prop::Width(24), Prop::Height(24), Prop::Animate(Animated::OPACITY, 100)],
+    states: &[(State::CHECKED, &[Prop::Opacity(0)])],
+};
+
+struct Toggled {
+    on: bool,
+    views: &'static core::cell::Cell<u32>,
+}
+
+impl Screen for Toggled {}
+
+impl Component for Toggled {
+    type Msg = ();
+
+    fn update(&mut self, _: (), cx: &mut Cx<Self>) {
+        self.on = !self.on;
+        cx.rebuild();
+    }
+
+    fn view<'a>(&'a self, ui: &'a Ui<()>) -> Element<'a, ()> {
+        self.views.set(self.views.get() + 1);
+        let thumb = ui.column([]).style(&EASED_THUMB).id("thumb");
+        let track = ui.row([thumb]).style(&EASED_TRACK).justify(if self.on { Justify::End } else { Justify::Start }).checked(self.on).id("track").on_tap(());
+        ui.column([track, ui.column([]).style(&FADING).checked(self.on).id("fading")])
+    }
+}
+
+fn toggled() -> (Tree, &'static core::cell::Cell<u32>) {
+    let views: &'static core::cell::Cell<u32> = Box::leak(Box::new(core::cell::Cell::new(0)));
+    let mut tree = Tree::new(Toggled { on: false, views }, SCREEN, Caps::INTERNAL, theme());
+    run(&mut tree);
+    (tree, views)
+}
+
+fn fill_of(tree: &Tree, name: &str) -> Option<Color> {
+    let node = &tree.nodes[tree.find(name).unwrap() as usize];
+    let palette = tree.theme.palette(tree.color_mode);
+    crate::animate::faded(node.fades.as_ref().and_then(|f| f.background.as_ref()), node.style.background.map(|role| palette.color(role)))
+}
+
+#[test]
+fn a_style_eases_position_and_color_without_a_view_or_layout() {
+    let (mut tree, views) = toggled();
+    let (track, thumb) = (tree.find("track").unwrap(), tree.find("thumb").unwrap());
+    assert_eq!(rect_of(&tree, "thumb").x, 0, "nothing eases into the first layout");
+    assert!(!tree.animating());
+    tree.post(tree.root_id, Erased::new(()));
+    let before = rect_of(&tree, "thumb");
+    run(&mut tree);
+    assert_eq!(rect_of(&tree, "thumb"), before, "it starts from where it showed");
+    assert_eq!(tree.nodes[thumb as usize].rect.x, 40);
+    assert_eq!(fill_of(&tree, "track"), Some(RED));
+    assert!(tree.animating());
+    let built = views.get();
+    tree.tick(50);
+    let damage = run(&mut tree);
+    let middle = rect_of(&tree, "thumb").x;
+    assert!((1..40).contains(&middle), "{middle}");
+    let mixed = fill_of(&tree, "track").unwrap();
+    assert!(mixed.r > 0 && mixed.r < 255 && mixed.b > 0 && mixed.b < 255, "{mixed:?}");
+    assert!(damage.contains(&tree.nodes[track as usize].screen));
+    tree.tick(50);
+    run(&mut tree);
+    assert_eq!(rect_of(&tree, "thumb").x, 40);
+    assert_eq!(fill_of(&tree, "track"), Some(BLUE));
+    assert!(!tree.animating());
+    assert!(tree.nodes[track as usize].fades.is_none());
+    assert_eq!(views.get(), built);
+}
+
+#[test]
+fn turning_back_midway_starts_from_what_shows() {
+    let (mut tree, _) = toggled();
+    tree.post(tree.root_id, Erased::new(()));
+    run(&mut tree);
+    tree.tick(30);
+    run(&mut tree);
+    let (x, color) = (rect_of(&tree, "thumb").x, fill_of(&tree, "track"));
+    assert!(x > 0);
+    tree.post(tree.root_id, Erased::new(()));
+    run(&mut tree);
+    assert_eq!(rect_of(&tree, "thumb").x, x);
+    assert_eq!(fill_of(&tree, "track"), color);
+    tree.tick(100);
+    run(&mut tree);
+    assert_eq!(rect_of(&tree, "thumb").x, 0);
+    assert_eq!(fill_of(&tree, "track"), Some(RED));
+}
+
+#[test]
+fn a_fade_started_by_a_touch_does_not_count_the_idle_time_before_it() {
+    let (mut tree, _) = toggled();
+    let point = tree.tap_point("track").unwrap();
+    tree.touch(&[(0, point)], 0);
+    run(&mut tree);
+    assert_eq!(fill_of(&tree, "track"), Some(WHITE), "pressing eases nothing in this style");
+    assert!(!tree.animating());
+    tree.touch(&[], 10);
+    tree.tick(3_600_000);
+    run(&mut tree);
+    assert_eq!(fill_of(&tree, "track"), Some(WHITE));
+    assert!(tree.animating());
+    tree.tick(100);
+    run(&mut tree);
+    assert_eq!(fill_of(&tree, "track"), Some(BLUE));
+}
+
+#[test]
+fn opacity_eases_to_the_style_and_leaves_nothing_behind() {
+    let (mut tree, _) = toggled();
+    let id = tree.find("fading").unwrap();
+    tree.post(tree.root_id, Erased::new(()));
+    run(&mut tree);
+    tree.tick(50);
+    run(&mut tree);
+    let shown = tree.nodes[id as usize].fades.as_ref().and_then(|f| f.opacity).map(|fade| fade.opacity(0)).unwrap();
+    assert!((1..255).contains(&shown), "{shown}");
+    tree.tick(50);
+    run(&mut tree);
+    assert!(tree.nodes[id as usize].fades.is_none());
+    assert_eq!(tree.nodes[id as usize].opacity, None);
+    assert_eq!(tree.nodes[id as usize].style.opacity, Some(0));
+}
+
+#[test]
+fn a_new_screen_size_does_not_ease() {
+    let (mut tree, _) = toggled();
+    let thumb = tree.find("thumb").unwrap();
+    tree.nodes[thumb as usize].rect.x = 10;
+    tree.set_area(Rect::new(0, 0, 600, 400));
+    run(&mut tree);
+    assert!(!tree.animating());
+}
+
 fn layout_tree(build: for<'a> fn(&'a Ui<()>, &'static FontChain) -> Element<'a, ()>) -> Tree {
     struct View(for<'a> fn(&'a Ui<()>, &'static FontChain) -> Element<'a, ()>, &'static FontChain);
     impl Component for View {

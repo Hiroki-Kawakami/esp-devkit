@@ -101,6 +101,18 @@ devkit::bitflags! {
     }
 }
 
+devkit::bitflags! {
+    /// What a style eases to when it changes. `COLOR` is the background, the
+    /// foreground and the border; `POSITION` is where layout puts the node in
+    /// its parent.
+    #[derive(Default)]
+    pub struct Animated: u8 {
+        const COLOR = 1 << 0;
+        const OPACITY = 1 << 1;
+        const POSITION = 1 << 2;
+    }
+}
+
 /// Reaches `blur` px around the box, moved down by `y`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Shadow {
@@ -159,6 +171,8 @@ pub enum Prop {
     Shadow(i8, u8, ColorRole),
     Opacity(u8),
     Clip(bool),
+    /// The style changing to this one eases `Animated` over the milliseconds.
+    Animate(Animated, u16),
 }
 
 /// A style to share: values for every node using it, and what each state
@@ -220,6 +234,8 @@ pub struct Style {
     pub(crate) shadow: Option<Shadow>,
     pub(crate) opacity: Option<u8>,
     pub(crate) clip: bool,
+    pub(crate) animated: Animated,
+    pub(crate) animate_ms: u16,
 }
 
 impl Style {
@@ -263,6 +279,7 @@ impl Style {
             Prop::Shadow(y, blur, color) => self.shadow = Some(Shadow { y, blur, color }),
             Prop::Opacity(opacity) => self.opacity = Some(opacity),
             Prop::Clip(clip) => self.clip = clip,
+            Prop::Animate(animated, ms) => (self.animated, self.animate_ms) = (animated, ms),
         }
     }
 
@@ -284,6 +301,10 @@ impl Style {
             applied = true;
             from = u16::from(weight) + 1;
         }
+    }
+
+    pub(crate) fn eases(&self, animated: Animated) -> bool {
+        self.animate_ms > 0 && self.animated.contains(animated)
     }
 
     pub(crate) fn layout_eq(&self, other: &Style) -> bool {

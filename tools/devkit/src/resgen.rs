@@ -84,6 +84,7 @@ const THEME_COLORS: [&str; 14] = [
     "surface", "background", "on_surface", "muted", "primary", "on_primary", "primary_pressed", "destructive",
     "on_destructive", "divider", "pressed", "selected", "scrim", "shadow",
 ];
+const THEME_ANIMATED: [&str; 3] = ["color", "opacity", "position"];
 const THEME_STATES: [&str; 6] = ["pressed", "hovered", "focused", "selected", "disabled", "checked"];
 const DEFAULT_ICON_SIZE: u16 = 40;
 
@@ -323,6 +324,10 @@ impl Resolver<'_> {
             if matches!(key.as_str(), "font" | "states") {
                 continue;
             }
+            if key == "animate" {
+                props.push(self.animate(path, value)?);
+                continue;
+            }
             let values: Vec<&Value> = match value {
                 Value::Array(list) => list.iter().collect(),
                 one => vec![one],
@@ -337,6 +342,36 @@ impl Resolver<'_> {
             props.push(format!("devkit_ui::Prop::{}({})", type_name(key), arguments.join(", ")));
         }
         Ok(format!("&[{}]", props.join(", ")))
+    }
+
+    /// `["color|position", 150]`, or `[]` for nothing, directly or through a
+    /// reference.
+    fn animate(&mut self, path: &str, value: &Value) -> Result<String, String> {
+        let followed = match value {
+            Value::String(text) => {
+                self.enter(path, text)?;
+                let target = self.find(path, text);
+                self.following.pop();
+                target?
+            }
+            other => other.clone(),
+        };
+        let arguments = match followed.as_array().map(Vec::as_slice) {
+            Some([]) => "devkit_ui::Animated::empty(), 0".to_string(),
+            Some([Value::String(names), ms]) => {
+                let mut bits = Vec::new();
+                for name in names.split('|') {
+                    if !THEME_ANIMATED.contains(&name) {
+                        return Err(self.error(path, format!("animate: no {name}")));
+                    }
+                    bits.push(format!("devkit_ui::Animated::{}.bits()", name.to_uppercase()));
+                }
+                let Token::Number(ms) = self.value(path, ms)? else { return Err(self.error(path, "animate: milliseconds are not a number")) };
+                format!("devkit_ui::Animated::from_bits_retain({}), {ms}", bits.join(" | "))
+            }
+            _ => return Err(self.error(path, "animate takes [names, milliseconds] or []")),
+        };
+        Ok(format!("devkit_ui::Prop::Animate({arguments})"))
     }
 }
 

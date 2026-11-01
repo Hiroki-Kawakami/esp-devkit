@@ -89,6 +89,8 @@
     }
   },
   "vars": {
+    "toggle_color": ["color", 150],
+    "toggle_position": ["position", 150],
     "text_secondary": "color.muted",
     "label_font": "font.caption",
     "pressed": {
@@ -283,6 +285,7 @@
         "radius": 18,
         "padding_x": 4,
         "background": "color.divider",
+        "animate": "vars.toggle_color",
         "states": {
           "checked": {
             "background": "color.primary"
@@ -293,7 +296,8 @@
         "width": 28,
         "height": 28,
         "radius": 14,
-        "background": "color.surface"
+        "background": "color.surface",
+        "animate": "vars.toggle_position"
       }
     },
     "checkbox": {

@@ -726,9 +726,11 @@ impl<C: Screen> AppState<C> {
                 error!(TAG, "acquire: {err}");
             }
             self.drain();
-            let now = Instant::now();
-            self.tree.tick(now.duration_since(last).as_millis() as u32);
-            last = now;
+            // The rest of a millisecond stays in `last`: frames shorter than one
+            // would otherwise never add up, and what moves by itself would stop.
+            let elapsed = last.elapsed().as_millis() as u32;
+            self.tree.tick(elapsed);
+            last += Duration::from_millis(u64::from(elapsed));
         }
     }
 }

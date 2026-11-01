@@ -19,6 +19,7 @@ use devkit_gfx::{ImageFormat, Rect};
 use idf::heap::Caps;
 use idf::sync::OnceLock;
 
+use crate::animate::ease_out;
 use crate::app::Link;
 use crate::bump::Bump;
 use crate::component::{Animation, AnyHost, EventMap, Hook, Host, Property, RenderRequest, Requests, Screen, screen_host};
@@ -124,6 +125,12 @@ pub(crate) struct Tree {
     keyboard_mode: KeyboardMode,
     keyboard_connected: bool,
     animations: Vec<(NodeId, Animation, u32)>,
+    pub(crate) fading: Vec<NodeId>,
+    /// Held back until `update`: the `tick` after an input counts the idle
+    /// time before it, which would finish them at once.
+    pub(crate) starting: Vec<NodeId>,
+    /// The next layout is a new screen size, and nothing eases into it.
+    resized: bool,
     pub(crate) parked_strips: Option<Strips>,
     bump: Box<Bump>,
     pub(crate) caps: Caps,
@@ -175,6 +182,9 @@ impl Tree {
             keyboard_mode: KeyboardMode::Auto,
             keyboard_connected: false,
             animations: Vec::new(),
+            fading: Vec::new(),
+            starting: Vec::new(),
+            resized: false,
             parked_strips: None,
             bump: Box::new(Bump::new(caps)),
             caps,
@@ -303,6 +313,7 @@ impl Tree {
         self.close_popups();
         self.area = area;
         self.layout_dirty = true;
+        self.resized = true;
         self.keyboard_changed = true;
         self.mark_all_dirty();
     }
@@ -395,6 +406,7 @@ impl Tree {
         self.flings.retain(|f| f.0 != id);
         self.forget_gestures(id);
         self.animations.retain(|a| a.0 != id);
+        self.forget_fades(id);
         if self.focus == id {
             self.focus = NONE;
             self.keyboard_changed = true;
@@ -507,7 +519,10 @@ impl Tree {
         }
     }
 
+    // Out of line: reconciling recurses, and two `Style`s would stay on the stack
+    // at every level of a tree.
     /// Makes `node.style` what `base` comes to in the node's state.
+    #[inline(never)]
     fn restyle(&mut self, id: NodeId, base: Style) {
         let node = &mut self.nodes[id as usize];
         let mut style = base;
@@ -515,16 +530,20 @@ impl Tree {
         if !node.style.layout_eq(&style) {
             self.layout_dirty = true;
         }
-        if node.style != style {
+        let changed = node.style != style;
+        if changed {
             node.paint_dirty = true;
             if node.style.shadow != style.shadow {
                 self.damage.push(node.screen.expand(shadow_extent(&node.style)));
             }
         }
-        node.style = style;
+        let old = core::mem::replace(&mut node.style, style);
         match &mut node.base {
             Some(kept) if selected => **kept = base,
             _ => node.base = selected.then(|| Box::new_in(base, self.caps)),
+        }
+        if changed {
+            self.ease_style(id, &old);
         }
     }
 
@@ -920,6 +939,7 @@ impl Tree {
             self.clear_measured_all();
             let area = self.area;
             self.arrange(self.root, area);
+            self.resized = false;
         }
         for i in 0..self.lists.len() {
             self.sync_list(self.lists[i]);
@@ -945,6 +965,7 @@ impl Tree {
             self.start_animations();
             self.sync_screen(self.root, 0, 0, self.area, false);
         }
+        self.fading.append(&mut self.starting);
     }
 
     #[cfg(test)]
@@ -955,21 +976,37 @@ impl Tree {
     fn start_animations(&mut self) {
         for (name, animation) in core::mem::take(&mut self.pending_animations) {
             match self.find(name) {
-                Some(id) => {
-                    self.animations.retain(|a| a.0 != id || a.1.property != animation.property);
-                    self.animations.push((id, animation, 0));
-                    self.apply_animation(id, &animation, 0);
-                }
+                Some(id) => self.start_animation(id, animation),
                 None => idf::log::error!(c"ui", "animate: no node {name}"),
+            }
+        }
+    }
+
+    fn start_animation(&mut self, id: NodeId, animation: Animation) {
+        self.animations.retain(|a| a.0 != id || a.1.property != animation.property);
+        self.animations.push((id, animation, 0));
+        self.apply_animation(id, &animation, 0);
+    }
+
+    /// Keeps the node where it shows, and lets it go to its new place. A node
+    /// with no old place appears there.
+    pub(crate) fn ease_position(&mut self, id: NodeId, old: Rect, new: Rect) {
+        if old.is_empty() || self.resized {
+            return;
+        }
+        let node = &self.nodes[id as usize];
+        let (shift, duration_ms) = (node.translate, node.style.animate_ms);
+        for (property, moved, shift) in [(Property::TranslateX, old.x - new.x, shift.0), (Property::TranslateY, old.y - new.y, shift.1)] {
+            if moved != 0 {
+                self.start_animation(id, Animation { property, from: moved + shift, to: 0, duration_ms });
             }
         }
     }
 
     fn apply_animation(&mut self, id: NodeId, animation: &Animation, elapsed: u32) {
         let t = elapsed as f32 / f32::from(animation.duration_ms.max(1));
-        let eased = 1.0 - (1.0 - t) * (1.0 - t) * (1.0 - t);
         let range = f32::from(animation.to) - f32::from(animation.from);
-        let value = animation.from + (range * eased) as i16;
+        let value = animation.from + (range * ease_out(t)) as i16;
         let node = &mut self.nodes[id as usize];
         match animation.property {
             Property::TranslateX => node.translate.0 = value,
@@ -1203,6 +1240,7 @@ impl Tree {
             && self.flings.is_empty()
             && !self.sliding()
             && self.animations.is_empty()
+            && self.fading.is_empty()
             && !self.keyboard_changed
             && self.contacts.is_empty()
             && self.trackers.is_empty()
@@ -1212,7 +1250,7 @@ impl Tree {
     }
 
     pub(crate) fn animating(&self) -> bool {
-        !self.flings.is_empty() || self.sliding() || !self.animations.is_empty()
+        !self.flings.is_empty() || self.sliding() || !self.animations.is_empty() || !self.fading.is_empty()
     }
 
     /// Something happens after a delay, without an event to wake for.
@@ -1521,6 +1559,7 @@ impl Tree {
     pub(crate) fn tick(&mut self, dt_ms: u32) {
         self.tick_slides(dt_ms);
         self.tick_animations(dt_ms);
+        self.tick_fades(dt_ms);
         self.tick_repeat(dt_ms);
         self.tick_gestures(dt_ms);
         self.tick_caret(dt_ms);

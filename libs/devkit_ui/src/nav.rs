@@ -13,6 +13,7 @@ use crate::erased::Erased;
 use crate::node::{NONE, Node, NodeContent, NodeId};
 use crate::presenter::Strips;
 use crate::style::{Dimension, Style};
+use crate::animate::ease_out;
 use crate::theme::{Theme, Transition};
 use crate::tree::Tree;
 
@@ -574,8 +575,7 @@ impl Tree {
         slide.elapsed = (slide.elapsed + dt_ms).min(slide.duration);
         let (elapsed, duration, forward, leaving) = (slide.elapsed, slide.duration, slide.forward, slide.leaving);
         let t = elapsed as f32 / duration as f32;
-        let eased = 1.0 - (1.0 - t) * (1.0 - t) * (1.0 - t);
-        let shift = (f32::from(width) * eased) as i16;
+        let shift = (f32::from(width) * ease_out(t)) as i16;
         let (entering, departing) = if forward { (width - shift, -shift / 3) } else { (-(width - shift) / 3, shift) };
         self.nodes[top as usize].translate = (entering, 0);
         self.nodes[leaving as usize].translate = (departing, 0);

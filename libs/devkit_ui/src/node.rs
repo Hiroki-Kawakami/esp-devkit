@@ -10,6 +10,7 @@ use core::cell::Cell;
 use devkit_gfx::{Color, FontChain, Image, Rect, TextOptions, TextRun};
 use idf::heap::Caps;
 
+use crate::animate::Fades;
 use crate::component::ListId;
 use crate::canvas::CanvasId;
 use crate::external::ExternalSurface;
@@ -146,6 +147,7 @@ pub(crate) struct Node {
     pub(crate) translate: (i16, i16),
     /// An animated opacity, over the style's.
     pub(crate) opacity: Option<u8>,
+    pub(crate) fades: Option<Box<Fades, Caps>>,
     /// Relative to the parent's origin.
     pub(crate) rect: Rect,
     /// Where it was last painted.
@@ -194,6 +196,7 @@ impl Node {
             repeat: false,
             translate: (0, 0),
             opacity: None,
+            fades: None,
             rect: Rect::default(),
             screen: Rect::default(),
             paint_dirty: true,

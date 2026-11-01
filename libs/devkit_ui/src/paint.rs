@@ -8,6 +8,7 @@ use alloc::vec::Vec;
 use devkit_gfx::{Color, CornerMask, DisplayList, Rect, ShadowMask};
 use idf::heap::Caps;
 
+use crate::animate::faded;
 use crate::canvas::Canvas;
 use crate::node::{NONE, NodeContent, NodeId};
 use crate::style::Shadow;
@@ -78,16 +79,19 @@ impl Tree {
         let rect = Rect::new(sx, sy, node.rect.w, node.rect.h);
         let style = &node.style;
         let palette = self.slots[usize::from(node.owner)].theme.palette(self.color_mode);
-        let own = node.opacity.or(style.opacity);
+        let fades = node.fades.as_deref();
+        let styled = fades.and_then(|f| f.opacity.as_ref()).map(|fade| fade.opacity(style.opacity.unwrap_or(255))).or(style.opacity);
+        let own = node.opacity.or(styled);
         let opacity = own.map_or(inherited.opacity, |o| Color::rgba(0, 0, 0, inherited.opacity).with_opacity(o).a);
-        let down = Inherited { opacity, foreground: style.foreground.map(|role| palette.color(role)).or(inherited.foreground) };
+        let foreground = faded(fades.and_then(|f| f.foreground.as_ref()), style.foreground.map(|role| palette.color(role)));
+        let down = Inherited { opacity, foreground: foreground.or(inherited.foreground) };
 
         if let Some(Shadow { y: down, blur, color }) = style.shadow {
             let mask = effects.shadow(blur, style.radius);
             list.shadow(rect.offset(0, i16::from(down)), mask, dim(palette.color(color), opacity));
         }
-        if let Some(role) = style.background {
-            let color = dim(palette.color(role), opacity);
+        if let Some(fill) = faded(fades.and_then(|f| f.background.as_ref()), style.background.map(|role| palette.color(role))) {
+            let color = dim(fill, opacity);
             if style.radius > 0 {
                 list.round_rect(rect, effects.corner(style.radius), color);
             } else {
@@ -95,7 +99,8 @@ impl Tree {
             }
         }
         let width = style.border_width;
-        let border = style.border_color.filter(|_| width > 0).map(|role| ((style.radius > 0).then(|| effects.ring(style.radius, width)), i16::from(width), dim(palette.color(role), opacity)));
+        let outline = faded(fades.and_then(|f| f.border.as_ref()), style.border_color.map(|role| palette.color(role)));
+        let border = outline.filter(|_| width > 0).map(|color| ((style.radius > 0).then(|| effects.ring(style.radius, width)), i16::from(width), dim(color, opacity)));
         let round_clip = style.clip && style.radius > 0 && rect.w.min(rect.h) >= i16::from(style.radius) * 2 && matches!(node.content, NodeContent::Box | NodeContent::Child(_));
         if !round_clip && let Some((ring, width, color)) = border {
             list.border(rect, ring, width, color);

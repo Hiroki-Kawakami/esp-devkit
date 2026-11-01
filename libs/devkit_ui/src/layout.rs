@@ -6,7 +6,7 @@
 use devkit_gfx::{Align as TextAlign, Rect};
 
 use crate::node::{NONE, NodeContent, NodeId};
-use crate::style::{Align, Dimension, Direction, Justify, Style};
+use crate::style::{Align, Animated, Dimension, Direction, Justify, Style};
 use crate::tree::Tree;
 
 /// No limit on an axis.
@@ -131,8 +131,11 @@ impl Tree {
 
     /// Gives `id` its rectangle, relative to the parent's content.
     pub(crate) fn arrange(&mut self, id: NodeId, rect: Rect) {
-        self.nodes[id as usize].rect = rect;
+        let old = core::mem::replace(&mut self.nodes[id as usize].rect, rect);
         let style = self.nodes[id as usize].style;
+        if style.eases(Animated::POSITION) {
+            self.ease_position(id, old, rect);
+        }
         let [left, top, right, bottom] = style.padding;
         let content = Rect::new(left, top, inner(rect.w, left, right), inner(rect.h, top, bottom));
         match &self.nodes[id as usize].content {

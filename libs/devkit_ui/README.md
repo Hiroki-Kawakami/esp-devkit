@@ -197,6 +197,11 @@ app.run();
   `list`, every row exists.
 - `cx.animate(id, animation)` moves a node's offset or opacity, without running a
   view or layout.
+- A style with `animate` eases to its new values by itself, from what shows at
+  that moment and without running a view or layout: `Animated::COLOR`, `OPACITY`
+  and `POSITION`, the last being where layout puts the node in its parent. The
+  value of the state being entered counts, so `pressed` can go at once and
+  fade back. Size does not ease, nor does a node appearing or going away.
 
 ## Rotation
 

@@ -29,6 +29,20 @@ impl Color {
     pub const fn with_opacity(self, opacity: u8) -> Self {
         Self { a: mul8(self.a, opacity), ..self }
     }
+
+    /// `amount` of the way to `other`, 255 being all of it.
+    pub const fn mix(self, other: Self, amount: u8) -> Self {
+        Self {
+            r: lerp8(self.r, other.r, amount),
+            g: lerp8(self.g, other.g, amount),
+            b: lerp8(self.b, other.b, amount),
+            a: lerp8(self.a, other.a, amount),
+        }
+    }
+}
+
+const fn lerp8(a: u8, b: u8, amount: u8) -> u8 {
+    (a as i32 + (b as i32 - a as i32) * amount as i32 / 255) as u8
 }
 
 pub(crate) const fn mul8(a: u8, b: u8) -> u8 {
