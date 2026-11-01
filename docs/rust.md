@@ -627,6 +627,9 @@ let cfg = CONFIG.get_or_try_init(load_config)?;
 - `idf::freertos::Mutex<T>` is a FreeRTOS mutex, for a lock that needs
   priority inheritance. `lock()` returns the guard directly; the guard is not
   `Send`, as the task that took the mutex must give it.
+- `idf::freertos::Timer` is a one-shot FreeRTOS software timer:
+  `Timer::one_shot(name, period, callback)`, and `reset` starts its period
+  over. The callback runs on the timer task.
 - `Semaphore::new(initial, max)`: a counting semaphore; `new(0, 1)` is a
   binary one. `give()` returns `false` at `max`.
 - `channel::<T>(capacity)`: a bounded FreeRTOS queue; values are moved in and

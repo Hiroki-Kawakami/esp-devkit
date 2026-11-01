@@ -104,12 +104,13 @@ function(resgen_rust_resources)
         message(FATAL_ERROR "resgen: invalid definition ${definition}")
     endif()
     include("${R_OUT}/entries.cmake")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${RESGEN_THEME_FILES})
 
     set(outputs "${R_OUT}/resources.rs")
     add_custom_command(
         OUTPUT "${R_OUT}/resources.rs"
         COMMAND "${DEVKIT_PROGRAM}" resgen index "${definition}" "${fonts}" "${R_OUT}"
-        DEPENDS "${definition}" "${DEVKIT_PROGRAM}"
+        DEPENDS "${definition}" "${DEVKIT_PROGRAM}" ${RESGEN_THEME_FILES}
         COMMENT "resgen: resources.rs"
         VERBATIM)
     foreach(entry ${RESGEN_ENTRIES})

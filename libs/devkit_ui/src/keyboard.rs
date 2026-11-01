@@ -362,7 +362,7 @@ impl Component for KeyboardPanel {
                 ui.row(items).gap(k.gap).height(k.key_height)
             })
             .collect();
-        let panel = ui.column(rows).gap(k.gap).padding(k.gap).background(theme.colors.background).keep_focus().on_tap(KeyboardMsg::Panel).id("keyboard");
+        let panel = ui.column(rows).gap(k.gap).padding(k.gap).background(ui.colors().background).keep_focus().on_tap(KeyboardMsg::Panel).id("keyboard");
         match self.width {
             Some(width) => panel.width(width),
             None => panel.absolute(Some(0), None, Some(0), Some(0)),
@@ -387,7 +387,7 @@ fn key_element<'a>(ui: &'a Ui<KeyboardMsg>, key: &Key, row: u8, column: u8, widt
     if matches!(key.action, KeyAction::None) {
         return ui.column([]).width(width);
     }
-    let font = key.font.unwrap_or(k.font);
+    let font = key.font.or(k.font).unwrap_or(theme.fonts.body);
     let label = match key.label {
         KeyLabel::None => ui.empty(),
         KeyLabel::Text(text) => ui.text(font, text).ellipsis(),

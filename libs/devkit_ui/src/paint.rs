@@ -78,7 +78,8 @@ impl Tree {
         let (sx, sy) = (x as i16, y as i16);
         let rect = Rect::new(sx, sy, node.rect.w, node.rect.h);
         let style = &node.style;
-        let look = style.look.map_or(Look::NONE, |l| l.resolve(node.state));
+        let palette = self.slots[usize::from(node.owner)].theme.palette(self.color_mode);
+        let look = style.look.map_or(Look::NONE, |l| l.resolve(node.state)).colored(palette);
         let own = node.opacity.or(look.opacity).or(style.opacity);
         let opacity = own.map_or(inherited.opacity, |o| Color::rgba(0, 0, 0, inherited.opacity).with_opacity(o).a);
         let down = Inherited { opacity, foreground: look.foreground.or(inherited.foreground) };
@@ -110,8 +111,7 @@ impl Tree {
         let (cx, cy) = (x + i32::from(left), y + i32::from(top));
         match &node.content {
             NodeContent::Text(text) => {
-                let theme = self.slots[usize::from(node.owner)].theme;
-                let color = dim(text.color.or(down.foreground).unwrap_or(theme.colors.on_surface), opacity);
+                let color = dim(text.color.or(down.foreground).unwrap_or(palette.on_surface), opacity);
                 if let Some(edit) = &text.edit {
                     let content = Rect::new(cx as i16, cy as i16, rect.w - left - right, rect.h - top - bottom);
                     let scroll = text.scroll(content.w);
@@ -122,11 +122,11 @@ impl Tree {
                     if let Some((from, to)) = edit.underline {
                         let (a, b) = (at(from), at(to));
                         let underline = Rect::new(cx as i16 - scroll + a.0, cy as i16 + a.1 + line - 2, b.0 - a.0, 2);
-                        list.fill(underline, dim(theme.colors.primary, opacity));
+                        list.fill(underline, dim(palette.primary, opacity));
                     }
                     if self.caret_visible(id) {
                         let (x, y) = at(edit.cursor);
-                        list.fill(Rect::new(cx as i16 - scroll + x, cy as i16 + y, 2, line), dim(theme.colors.primary, opacity));
+                        list.fill(Rect::new(cx as i16 - scroll + x, cy as i16 + y, 2, line), dim(palette.primary, opacity));
                     }
                     list.pop_clip();
                 } else {
@@ -144,6 +144,7 @@ impl Tree {
                     effects,
                     regions,
                     theme: self.slots[usize::from(node.owner)].theme,
+                    colors: *palette,
                     origin: (cx as i16, cy as i16),
                     size: (rect.w - left - right, rect.h - top - bottom),
                     opacity,

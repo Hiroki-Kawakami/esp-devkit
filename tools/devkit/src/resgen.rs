@@ -34,9 +34,64 @@ struct Definition {
     font: BTreeMap<String, FontEntry>,
     #[serde(default)]
     image: BTreeMap<String, ImageEntry>,
+    #[serde(default)]
+    theme: BTreeMap<String, ThemeEntry>,
 }
 
-#[derive(Deserialize)]
+/// `fonts` names entries of `font`, several making a chain; a bundled base also
+/// defines them, in its own `font`. `icons` maps a name of `Icons` to an SVG.
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct ThemeEntry {
+    base: Option<String>,
+    #[serde(default)]
+    fonts: BTreeMap<String, FontChoice>,
+    #[serde(default)]
+    icons: IconMap,
+    #[serde(default)]
+    icon_size: BTreeMap<String, u16>,
+    #[serde(default)]
+    colors: BTreeMap<String, BTreeMap<String, String>>,
+    #[serde(default)]
+    metrics: BTreeMap<String, i32>,
+    #[serde(default)]
+    font: BTreeMap<String, FontEntry>,
+}
+
+#[derive(Deserialize, Clone)]
+#[serde(untagged)]
+enum FontChoice {
+    One(String),
+    Chain(Vec<String>),
+}
+
+impl FontChoice {
+    fn names(&self) -> Vec<String> {
+        match self {
+            Self::One(name) => vec![name.clone()],
+            Self::Chain(names) => names.clone(),
+        }
+    }
+}
+
+const THEME_DIR: &str = "themes";
+const THEME_FONTS: [&str; 3] = ["title", "body", "caption"];
+const THEME_ICONS: [&str; 8] = ["back", "more", "close", "check", "chevron", "shift", "backspace", "enter"];
+const THEME_COLORS: [&str; 12] = [
+    "surface", "background", "on_surface", "muted", "primary", "on_primary", "primary_pressed", "divider",
+    "pressed", "selected", "scrim", "shadow",
+];
+const THEME_METRICS: [(&str, &str); 6] = [
+    ("bar_height", "i16"),
+    ("row_height", "i16"),
+    ("touch_size", "i16"),
+    ("padding", "i16"),
+    ("gap", "i16"),
+    ("radius", "u8"),
+];
+const DEFAULT_ICON_SIZE: u16 = 40;
+
+#[derive(Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 struct FontEntry {
     size: u16,
@@ -72,17 +127,32 @@ struct ImageEntry {
     height: Option<u32>,
 }
 
+/// A theme after merging its base, ready for code generation.
+struct Theme {
+    fonts: BTreeMap<String, Vec<String>>,
+    /// Each name of `Icons`, with the font it went to and its own symbol.
+    icons: BTreeMap<String, (String, String)>,
+    light: BTreeMap<String, String>,
+    dark: Option<BTreeMap<String, String>>,
+    metrics: BTreeMap<String, i32>,
+}
+
 struct Context {
     definition: Definition,
     base: PathBuf,
     fonts_dir: PathBuf,
     icons: BTreeMap<String, u32>,
+    themes: BTreeMap<String, Theme>,
+    /// Definitions of bundled themes, which the build depends on.
+    theme_files: Vec<PathBuf>,
 }
 
 impl Context {
     fn load(path: &Path, fonts_dir: &Path) -> Result<Self, String> {
         let text = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let definition: Definition = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+        let mut definition: Definition = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+        let base = path.parent().unwrap_or(Path::new(".")).to_path_buf();
+        let (themes, theme_files) = merge_themes(&mut definition, &base, fonts_dir)?;
         for name in definition.font.keys().chain(definition.image.keys()) {
             if !is_ident(name) {
                 return Err(format!("{name}: not an identifier"));
@@ -112,8 +182,7 @@ impl Context {
         if ICON_FIRST + icons.len() as u32 > ICON_LAST + 1 {
             return Err("too many icons".into());
         }
-        let base = path.parent().unwrap_or(Path::new(".")).to_path_buf();
-        Ok(Self { definition, base, fonts_dir: fonts_dir.to_path_buf(), icons })
+        Ok(Self { definition, base, fonts_dir: fonts_dir.to_path_buf(), icons, themes, theme_files })
     }
 
     /// `@name` is a file bundled with resgen, with its extension left out.
@@ -126,6 +195,7 @@ impl Context {
 
     fn inputs(&self, name: &str) -> Vec<PathBuf> {
         if let Some(font) = self.definition.font.get(name) {
+            // Theme icons are absolute already, and join leaves them so.
             let mut files: Vec<PathBuf> = font.icon.iter().flatten().map(|(_, f)| self.base.join(f)).collect();
             files.extend(font.font.iter().map(|f| self.file(f, "ttf")));
             files.extend(font.glyph_file.iter().map(|f| self.file(f, "txt")));
@@ -137,6 +207,182 @@ impl Context {
     fn names(&self) -> impl Iterator<Item = &String> {
         self.definition.font.keys().chain(self.definition.image.keys())
     }
+}
+
+/// Puts each theme's fonts and icons into the definition, under names of its
+/// own, leaving out what the app's theme replaces.
+fn merge_themes(definition: &mut Definition, base: &Path, fonts_dir: &Path) -> Result<(BTreeMap<String, Theme>, Vec<PathBuf>), String> {
+    let mut themes = BTreeMap::new();
+    let mut files = Vec::new();
+    for (name, entry) in std::mem::take(&mut definition.theme) {
+        if !is_ident(&name) {
+            return Err(format!("theme {name}: not an identifier"));
+        }
+        let lower = name.to_lowercase();
+        let mut merged = ThemeEntry::default();
+        let mut bundled = PathBuf::new();
+        if let Some(reference) = &entry.base {
+            let bundle = reference.strip_prefix('@').ok_or_else(|| format!("theme.{name}.base: must start with @"))?;
+            bundled = fonts_dir.parent().unwrap_or(fonts_dir).join(THEME_DIR);
+            let path = bundled.join(format!("{bundle}.json"));
+            let text = fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+            merged = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+            files.push(path);
+        }
+        for file in merged.icons.values_mut() {
+            *file = bundled.join(&*file).to_string_lossy().into_owned();
+        }
+        for (icon, file) in entry.icons {
+            merged.icons.insert(icon, base.join(file).to_string_lossy().into_owned());
+        }
+        merged.icon_size.extend(entry.icon_size);
+        merged.fonts.extend(entry.fonts);
+        for (mode, colors) in entry.colors {
+            merged.colors.entry(mode).or_default().extend(colors);
+        }
+        merged.metrics.extend(entry.metrics);
+        if !entry.font.is_empty() {
+            return Err(format!("theme.{name}.font: fonts go in the top level 'font'"));
+        }
+
+        let mut fonts = BTreeMap::new();
+        for slot in THEME_FONTS {
+            let choice = merged.fonts.get(slot).ok_or_else(|| format!("theme.{name}.fonts.{slot}: missing"))?;
+            let mut chain = Vec::new();
+            for font in choice.names() {
+                if let Some(bundled_font) = merged.font.get(&font) {
+                    let own = format!("{lower}_{font}");
+                    definition.font.insert(own.clone(), bundled_font.clone());
+                    chain.push(own);
+                } else if definition.font.contains_key(&font) {
+                    chain.push(font);
+                } else {
+                    return Err(format!("theme.{name}.fonts.{slot}: no font {font}"));
+                }
+            }
+            fonts.insert(slot.to_string(), chain);
+        }
+
+        let mut sets: BTreeMap<u16, IconMap> = BTreeMap::new();
+        let mut icons = BTreeMap::new();
+        for icon in THEME_ICONS {
+            let file = merged.icons.get(icon).ok_or_else(|| format!("theme.{name}.icons.{icon}: missing"))?;
+            let size = merged.icon_size.get(icon).copied().unwrap_or(DEFAULT_ICON_SIZE);
+            let symbol = format!("{lower}_{icon}");
+            sets.entry(size).or_default().insert(symbol.clone(), file.clone());
+            icons.insert(icon.to_string(), (format!("{lower}_icons_{size}"), symbol));
+        }
+        for (size, set) in sets {
+            files.extend(set.values().map(PathBuf::from));
+            let font = FontEntry {
+                size,
+                bpp: default_bpp(),
+                icon: Some(set),
+                font: None,
+                glyph: Vec::new(),
+                glyph_file: None,
+                variation: BTreeMap::new(),
+                compress: default_compress(),
+            };
+            definition.font.insert(format!("{lower}_icons_{size}"), font);
+        }
+
+        let light = merged.colors.remove("light").ok_or_else(|| format!("theme.{name}.colors.light: missing"))?;
+        let dark = merged.colors.remove("dark");
+        if let Some(mode) = merged.colors.keys().next() {
+            return Err(format!("theme.{name}.colors.{mode}: only light and dark exist"));
+        }
+        check_palette(&name, &light)?;
+        if let Some(dark) = &dark {
+            check_palette(&name, dark)?;
+        }
+        for (metric, _) in THEME_METRICS {
+            if !merged.metrics.contains_key(metric) {
+                return Err(format!("theme.{name}.metrics.{metric}: missing"));
+            }
+        }
+        themes.insert(name, Theme { fonts, icons, light, dark, metrics: merged.metrics });
+    }
+    Ok((themes, files))
+}
+
+fn check_palette(theme: &str, colors: &BTreeMap<String, String>) -> Result<(), String> {
+    for color in THEME_COLORS {
+        let value = colors.get(color).ok_or_else(|| format!("theme.{theme}.colors.{color}: missing"))?;
+        parse_color(value).ok_or_else(|| format!("theme.{theme}.colors.{color}: {value} is not #rrggbb or #rrggbbaa"))?;
+    }
+    Ok(())
+}
+
+fn parse_color(text: &str) -> Option<[u8; 4]> {
+    let digits = text.strip_prefix('#')?;
+    let byte = |at: usize| u8::from_str_radix(digits.get(at..at + 2)?, 16).ok();
+    match digits.len() {
+        6 => Some([byte(0)?, byte(2)?, byte(4)?, 255]),
+        8 => Some([byte(0)?, byte(2)?, byte(4)?, byte(6)?]),
+        _ => None,
+    }
+}
+
+fn palette_code(colors: &BTreeMap<String, String>) -> String {
+    let fields: Vec<String> = THEME_COLORS
+        .iter()
+        .map(|color| {
+            let [r, g, b, a] = parse_color(&colors[*color]).unwrap_or([0; 4]);
+            format!("{color}: devkit_gfx::Color::rgba({r}, {g}, {b}, {a})")
+        })
+        .collect();
+    format!("devkit_ui::Palette {{ {} }}", fields.join(", "))
+}
+
+fn theme_code(context: &Context, name: &str, theme: &Theme) -> String {
+    let symbol = name.to_uppercase();
+    let chains: Vec<(String, String)> = THEME_FONTS
+        .iter()
+        .map(|slot| {
+            let fonts: Vec<String> = theme.fonts[*slot].iter().map(|f| format!("&{}", f.to_uppercase())).collect();
+            (format!("{symbol}_{}_CHAIN", slot.to_uppercase()), fonts.join(", "))
+        })
+        .collect();
+    let mut text = String::new();
+    for (chain, fonts) in &chains {
+        text += &format!("static {chain}: devkit_gfx::FontChain = devkit_gfx::FontChain::new(&[{fonts}]);\n");
+    }
+    let mut sets: Vec<&String> = theme.icons.values().map(|(font, _)| font).collect();
+    sets.sort();
+    sets.dedup();
+    for set in sets {
+        text += &format!(
+            "static {}_CHAIN: devkit_gfx::FontChain = devkit_gfx::FontChain::new(&[&{}]);\n",
+            set.to_uppercase(),
+            set.to_uppercase()
+        );
+    }
+    let metrics: Vec<String> =
+        THEME_METRICS.iter().map(|(metric, _)| format!("{metric}: {}", theme.metrics[*metric])).collect();
+    let icons: Vec<String> = THEME_ICONS
+        .iter()
+        .map(|icon| {
+            let (font, glyph) = &theme.icons[*icon];
+            let codepoint = context.icons[glyph];
+            format!("{icon}: devkit_ui::Icon {{ font: &{}_CHAIN, glyph: '\\u{{{codepoint:x}}}' }}", font.to_uppercase())
+        })
+        .collect();
+    let dark = theme.dark.as_ref().map_or("None".to_string(), |d| format!("Some({})", palette_code(d)));
+    text += &format!(
+        "pub static {symbol}: devkit_ui::ThemeAssets = devkit_ui::ThemeAssets {{\n    \
+         light: {},\n    dark: {dark},\n    \
+         metrics: devkit_ui::Metrics {{ {} }},\n    \
+         fonts: devkit_ui::Fonts {{ title: &{}, body: &{}, caption: &{} }},\n    \
+         icons: devkit_ui::Icons {{ {} }},\n}};\n\n",
+        palette_code(&theme.light),
+        metrics.join(", "),
+        chains[0].0,
+        chains[1].0,
+        chains[2].0,
+        icons.join(", "),
+    );
+    text
 }
 
 fn is_ident(name: &str) -> bool {
@@ -171,6 +417,8 @@ pub fn command(args: &[String]) -> Result<(), String> {
 fn write_inputs(context: &Context, out: &Path) -> Result<(), String> {
     let names: Vec<&str> = context.names().map(String::as_str).collect();
     let mut text = format!("set(RESGEN_ENTRIES {})\n", names.join(" "));
+    let themes: Vec<String> = context.theme_files.iter().map(|p| format!("\"{}\"", p.display())).collect();
+    text += &format!("set(RESGEN_THEME_FILES {})\n", themes.join(" "));
     for name in names {
         let inputs: Vec<String> =
             context.inputs(name).iter().map(|p| format!("\"{}\"", p.display())).collect();
@@ -196,6 +444,9 @@ fn write_index(context: &Context, out: &Path) -> Result<(), String> {
              ResourceData(*include_bytes!(\"{path}\"));\n\
              pub static {symbol}: {ty} = {parse}(&{symbol}_DATA.0);\n\n"
         );
+    }
+    for (name, theme) in &context.themes {
+        text += &theme_code(context, name, theme);
     }
     text += "pub mod icons {\n";
     for (icon, codepoint) in &context.icons {

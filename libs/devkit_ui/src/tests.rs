@@ -69,7 +69,23 @@ fn theme() -> &'static Theme {
     let chain = chain();
     let icon = Icon { font: chain, glyph: 'A' };
     let icons = Icons { back: icon, more: icon, close: icon, check: icon, chevron: icon, shift: icon, backspace: icon, enter: icon };
-    Box::leak(Box::new(Theme::light(Fonts { title: chain, body: chain, caption: chain }, icons)))
+    let colors = Palette {
+        surface: Color::rgb(255, 255, 255),
+        background: Color::rgb(233, 234, 236),
+        on_surface: Color::rgb(29, 33, 38),
+        muted: Color::rgb(120, 144, 156),
+        primary: Color::rgb(33, 150, 243),
+        on_primary: Color::rgb(255, 255, 255),
+        primary_pressed: Color::rgb(25, 118, 210),
+        divider: Color::rgb(217, 221, 224),
+        pressed: Color::rgb(223, 227, 230),
+        selected: Color::rgb(227, 242, 253),
+        scrim: Color::rgba(0, 0, 0, 128),
+        shadow: Color::rgba(17, 20, 24, 56),
+    };
+    let metrics = Metrics { bar_height: 80, row_height: 80, touch_size: 64, padding: 24, gap: 12, radius: 14 };
+    let assets = ThemeAssets { light: colors, dark: None, metrics, fonts: Fonts { title: chain, body: chain, caption: chain }, icons };
+    Box::leak(Box::new(Theme::new(&assets, &widgets::DEFAULT)))
 }
 
 fn run(tree: &mut Tree) -> Vec<Rect> {
@@ -90,8 +106,8 @@ fn tap(tree: &mut Tree, id: &str) {
 }
 
 static PRESS_LOOK: WidgetLook = WidgetLook {
-    base: Look::background(RED),
-    states: &[(State::PRESSED, Look::background(WHITE)), (State::DISABLED, Look::opacity(100))],
+    base: Look::background(ColorRole::Fixed(RED)),
+    states: &[(State::PRESSED, Look::background(ColorRole::Fixed(WHITE))), (State::DISABLED, Look::opacity(100))],
 };
 
 #[derive(Clone, Copy)]
@@ -831,13 +847,13 @@ fn disabled_nodes_take_no_input_and_block_what_is_below() {
 #[test]
 fn looks_stack_by_state_and_foreground_reaches_text() {
     static LOOK: WidgetLook = WidgetLook {
-        base: Look::fill(RED, WHITE),
-        states: &[(State::SELECTED, Look::background(WHITE)), (State::PRESSED, Look { foreground: Some(RED), ..Look::NONE })],
+        base: Look::fill(ColorRole::Fixed(RED), ColorRole::Fixed(WHITE)),
+        states: &[(State::SELECTED, Look::background(ColorRole::Fixed(WHITE))), (State::PRESSED, Look { foreground: Some(ColorRole::Fixed(RED)), ..Look::NONE })],
     };
-    assert_eq!(LOOK.resolve(State::empty()).background, Some(RED));
-    assert_eq!(LOOK.resolve(State::SELECTED).background, Some(WHITE));
+    assert_eq!(LOOK.resolve(State::empty()).background, Some(ColorRole::Fixed(RED)));
+    assert_eq!(LOOK.resolve(State::SELECTED).background, Some(ColorRole::Fixed(WHITE)));
     let both = LOOK.resolve(State::SELECTED | State::PRESSED);
-    assert_eq!((both.background, both.foreground), (Some(WHITE), Some(RED)));
+    assert_eq!((both.background, both.foreground), (Some(ColorRole::Fixed(WHITE)), Some(ColorRole::Fixed(RED))));
 }
 
 #[test]
@@ -1916,6 +1932,20 @@ fn a_covered_split_comes_back_whole() {
     settle(&mut tree);
     assert_eq!(text_of(&tree, "listing"), "main-open");
     assert_eq!(rect_of(&tree, "depth0").x, 100);
+}
+
+#[test]
+fn a_color_mode_swaps_the_palette_under_the_same_looks() {
+    let mut colors = theme().light;
+    colors.surface = Color::rgb(1, 2, 3);
+    let assets = ThemeAssets { dark: Some(colors), ..ThemeAssets { light: theme().light, dark: None, metrics: theme().metrics, fonts: theme().fonts, icons: theme().icons } };
+    let dark: &'static Theme = Box::leak(Box::new(Theme::new(&assets, &widgets::DEFAULT)));
+    assert_eq!(dark.palette(ColorMode::Light).surface, theme().light.surface);
+    assert_eq!(dark.palette(ColorMode::Dark).surface, Color::rgb(1, 2, 3));
+    assert_eq!(theme().palette(ColorMode::Dark).surface, theme().light.surface, "no dark colors stays light");
+
+    let look = dark.looks.row.base;
+    assert_eq!(look.colored(dark.palette(ColorMode::Dark)).background, Some(Color::rgb(1, 2, 3)));
 }
 
 #[test]

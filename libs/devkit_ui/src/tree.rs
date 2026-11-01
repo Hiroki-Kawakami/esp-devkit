@@ -32,7 +32,7 @@ use crate::node::{CanvasNode, ListNode, NONE, Node, NodeContent, NodeId, ScrollN
 use crate::presenter::{ROW_GRID, Strips};
 use crate::style::{Dimension, Insets, Role, ScreenStyle, State};
 use crate::text_buffer::TextInput;
-use crate::theme::Theme;
+use crate::theme::{ColorMode, Theme};
 
 const OVERSCAN_ROWS: i32 = 1;
 pub(crate) const TAP_SLOP: i32 = 12;
@@ -107,6 +107,7 @@ pub(crate) struct Tree {
     pub(crate) restoring: Vec<Saved>,
     pub(crate) theme: &'static Theme,
     pub(crate) screen_style: ScreenStyle,
+    pub(crate) color_mode: ColorMode,
     pub(crate) link: Link,
     pub(crate) root_id: u32,
     insets: Insets,
@@ -150,6 +151,7 @@ impl Tree {
             restoring: Vec::new(),
             theme,
             screen_style: ScreenStyle::default(),
+            color_mode: ColorMode::Light,
             link: Arc::new(OnceLock::new()),
             root_id: 0,
             insets: Insets::default(),
@@ -259,10 +261,13 @@ impl Tree {
 
     pub(crate) fn context(&self, slot: u16) -> BuildContext {
         let (split_role, can_pop) = self.nav_state(slot);
+        let theme = self.slots[usize::from(slot)].theme;
         BuildContext {
             split_role,
             can_pop,
-            theme: self.slots[usize::from(slot)].theme,
+            colors: *theme.palette(self.color_mode),
+            color_mode: self.color_mode,
+            theme,
             insets: Insets { bottom: self.insets.bottom.max(self.keyboard_height), ..self.insets },
             area: self.area,
             screen_style: self.screen_style,
@@ -770,6 +775,11 @@ impl Tree {
         for op in requests.nav {
             self.apply_nav(slot, op);
         }
+    }
+
+    pub(crate) fn set_color_mode(&mut self, mode: ColorMode) {
+        self.color_mode = mode;
+        self.mark_all_dirty();
     }
 
     pub(crate) fn set_theme(&mut self, theme: &'static Theme) {

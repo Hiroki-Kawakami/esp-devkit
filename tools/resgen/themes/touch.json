@@ -1,0 +1,93 @@
+{
+  "font": {
+    "title": {
+      "size": 28,
+      "font": "@montserrat",
+      "variation": {
+        "wght": 400
+      },
+      "glyph": [
+        " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~…›"
+      ]
+    },
+    "body": {
+      "size": 24,
+      "font": "@montserrat",
+      "variation": {
+        "wght": 400
+      },
+      "glyph": [
+        " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~…›"
+      ]
+    },
+    "caption": {
+      "size": 20,
+      "font": "@montserrat",
+      "variation": {
+        "wght": 400
+      },
+      "glyph": [
+        " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~…›"
+      ]
+    }
+  },
+  "fonts": {
+    "title": "title",
+    "body": "body",
+    "caption": "caption"
+  },
+  "icons": {
+    "back": "tabler/chevron-left.svg",
+    "more": "tabler/dots.svg",
+    "close": "tabler/x.svg",
+    "check": "tabler/check.svg",
+    "chevron": "tabler/chevron-right.svg",
+    "shift": "tabler/arrow-big-up.svg",
+    "backspace": "tabler/backspace.svg",
+    "enter": "tabler/corner-down-left.svg"
+  },
+  "icon_size": {
+    "chevron": 28,
+    "shift": 28,
+    "backspace": 28,
+    "enter": 28
+  },
+  "colors": {
+    "light": {
+      "surface": "#ffffff",
+      "background": "#e9eaec",
+      "on_surface": "#1d2126",
+      "muted": "#78909c",
+      "primary": "#2196f3",
+      "on_primary": "#ffffff",
+      "primary_pressed": "#1976d2",
+      "divider": "#d9dde0",
+      "pressed": "#dfe3e6",
+      "selected": "#e3f2fd",
+      "scrim": "#00000080",
+      "shadow": "#11141838"
+    },
+    "dark": {
+      "surface": "#1b1e22",
+      "background": "#101214",
+      "on_surface": "#e8eaed",
+      "muted": "#90a4ae",
+      "primary": "#2196f3",
+      "on_primary": "#ffffff",
+      "primary_pressed": "#1976d2",
+      "divider": "#33383e",
+      "pressed": "#2a2f35",
+      "selected": "#1e3a52",
+      "scrim": "#000000a0",
+      "shadow": "#00000060"
+    }
+  },
+  "metrics": {
+    "bar_height": 80,
+    "row_height": 80,
+    "touch_size": 64,
+    "padding": 24,
+    "gap": 12,
+    "radius": 14
+  }
+}

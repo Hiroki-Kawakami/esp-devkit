@@ -6,6 +6,7 @@
 use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::ffi::CStr;
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
@@ -24,11 +25,12 @@ use crate::component::{Component, Screen};
 use crate::erased::Erased;
 use crate::external::{ExternalSurface, Policy};
 use crate::keyboard::KeyboardMode;
+use crate::plugin::{Plugin, PluginContext, PluginInit, Store, UiEvent};
 use crate::paint::Effects;
 use crate::presenter::{Config, Presenter, ROW_GRID, Strips};
 use crate::style::Insets;
 use crate::text_buffer::TextInput;
-use crate::theme::Theme;
+use crate::theme::{ColorMode, Theme};
 use crate::tree::Tree;
 
 const TAG: &CStr = c"ui";
@@ -47,11 +49,14 @@ pub struct AppConfig {
     pub glyph_cache_bytes: usize,
     pub glyph_cache_caps: Caps,
     pub keyboard: KeyboardMode,
+    pub plugins: Vec<Box<dyn Plugin>>,
+    /// Where `Store` keeps its keys.
+    pub nvs_namespace: &'static CStr,
 }
 
 impl AppConfig {
     pub fn new(theme: &'static Theme) -> Self {
-        Self { theme, presenter: Config::default(), glyph_cache_bytes: 128 * 1024, glyph_cache_caps: Caps::SPIRAM, keyboard: KeyboardMode::Auto }
+        Self { theme, presenter: Config::default(), glyph_cache_bytes: 128 * 1024, glyph_cache_caps: Caps::SPIRAM, keyboard: KeyboardMode::Auto, plugins: Vec::new(), nvs_namespace: c"devkit_ui" }
     }
 }
 
@@ -77,6 +82,7 @@ struct StripSwap {
 enum Event {
     Wake,
     SetRotation(Rotation),
+    SetColorMode(ColorMode),
     Input(TextInput),
     KeyboardConnected(bool),
     SetKeyboardMode(KeyboardMode),
@@ -201,6 +207,11 @@ impl Input {
         self.shared.send(Event::SetRotation(rotation))
     }
 
+    /// A theme without dark colors stays light.
+    pub fn set_color_mode(&self, mode: ColorMode) -> bool {
+        self.shared.send(Event::SetColorMode(mode))
+    }
+
     pub fn set_keyboard_mode(&self, mode: KeyboardMode) -> bool {
         self.shared.send(Event::SetKeyboardMode(mode))
     }
@@ -318,11 +329,20 @@ pub struct App<C: Screen> {
     requested: Rotation,
     rotation: Rotation,
     rotated: bool,
+    plugins: Vec<Box<dyn Plugin>>,
+    context: PluginContext,
     _root: PhantomData<fn(C)>,
 }
 
 impl<C: Screen> App<C> {
-    pub fn new(display: &'static Display, touch: Option<&'static Touch>, root: C, config: &AppConfig) -> idf::Result<Self> {
+    pub fn new(display: &'static Display, touch: Option<&'static Touch>, root: C, mut config: AppConfig) -> idf::Result<Self> {
+        let store = Store::new(config.nvs_namespace);
+        let mut init = PluginInit { store: &store, rotation: config.presenter.rotation, color_mode: ColorMode::Light };
+        for plugin in &mut config.plugins {
+            plugin.init(&mut init);
+        }
+        let (rotation, color_mode) = (init.rotation, init.color_mode);
+        config.presenter.rotation = rotation;
         let presenter = Presenter::new(display, &config.presenter)?;
         let (events, receiver) = channel(QUEUE_DEPTH);
         let shared = Arc::new(Shared {
@@ -350,12 +370,14 @@ impl<C: Screen> App<C> {
             })));
         }
         let area = presenter.area();
-        let app = Self {
+        let context = PluginContext { store, input: Input { shared: shared.clone() } };
+        let mut app = Self {
             shared,
             receiver,
             tree: {
                 let mut tree = Tree::new(root, area, config.presenter.data_caps, config.theme);
                 tree.add_keyboard(config.keyboard);
+                tree.color_mode = color_mode;
                 tree.set_pixel_format(match display.pixel_format() {
                     PixelFormat::Rgb888 => ImageFormat::Rgb888,
                     PixelFormat::L8 => ImageFormat::L8,
@@ -373,13 +395,24 @@ impl<C: Screen> App<C> {
             overlay: None,
             exclusive: false,
             waiting: None,
-            requested: config.presenter.rotation,
-            rotation: config.presenter.rotation,
+            requested: rotation,
+            rotation,
             rotated: false,
+            plugins: config.plugins,
+            context,
             _root: PhantomData,
         };
         let _ = app.tree.link.set(app.shared.clone());
+        for plugin in &mut app.plugins {
+            plugin.start(&app.context);
+        }
         Ok(app)
+    }
+
+    fn notify(&mut self, event: UiEvent) {
+        for plugin in &mut self.plugins {
+            plugin.on_event(event, &self.context);
+        }
     }
 
     /// Adds a component above the screens that stays across navigation, and
@@ -410,6 +443,13 @@ impl<C: Screen> App<C> {
         match event {
             Event::Wake => {}
             Event::SetRotation(rotation) => self.requested = rotation,
+            Event::SetColorMode(mode) => {
+                if mode != self.tree.color_mode {
+                    self.tree.set_color_mode(mode);
+                    self.presenter.invalidate_all();
+                    self.notify(UiEvent::ColorMode(mode));
+                }
+            }
             Event::Input(input) => self.tree.input(input),
             Event::KeyboardConnected(connected) => self.tree.set_keyboard_connected(connected),
             Event::SetKeyboardMode(mode) => self.tree.set_keyboard_mode(mode),
@@ -479,6 +519,7 @@ impl<C: Screen> App<C> {
         self.tree.set_area(self.presenter.area());
         self.rotated = true;
         self.overlay = None;
+        self.notify(UiEvent::Rotated(next));
         if let Some(surface) = &self.surface {
             surface.set_rotation(next);
             surface.set_overlay(None);

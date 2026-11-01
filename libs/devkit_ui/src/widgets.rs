@@ -10,6 +10,7 @@ use crate::element::{Children, Drag, Element, Ui};
 use crate::keyboard::{Keyboard, KeyboardPanel, KeyboardProps};
 use crate::text_buffer::{TextBuffer, TextInput};
 use crate::style::{Align, Justify, Role};
+pub use crate::theme::DEFAULT;
 use crate::theme::{Icon, WidgetLook};
 
 const SWITCH_WIDTH: i16 = 64;
@@ -51,7 +52,7 @@ pub fn icon_button<'a, M: Copy>(ui: &'a Ui<M>, icon: Icon, on_tap: M) -> Element
 
 pub fn list_item<'a, M: Copy>(ui: &'a Ui<M>, leading: Option<Icon>, title: &'a str, meta: Option<&'a str>, trailing: Option<Icon>, on_tap: M) -> Element<'a, M> {
     let theme = ui.theme();
-    let (c, m) = (&theme.colors, &theme.metrics);
+    let (c, m) = (ui.colors(), &theme.metrics);
     let lead = leading.map_or(ui.empty(), |icon| ui.icon(icon).color(c.muted));
     let tail = trailing.map_or(ui.empty(), |icon| ui.icon(icon).color(c.divider));
     let detail = meta.map_or(ui.empty(), |text| ui.text(theme.fonts.caption, text).color(c.muted));
@@ -79,7 +80,7 @@ pub fn top_bar<'a, M: Copy + 'static>(ui: &'a Ui<M>, back: Option<M>, title: &'a
 }
 
 pub fn switch<'a, M: Copy>(ui: &'a Ui<M>, on: bool, on_tap: M) -> Element<'a, M> {
-    let c = &ui.theme().colors;
+    let c = ui.colors();
     let inset = (SWITCH_HEIGHT - SWITCH_THUMB) / 2;
     let x = if on { SWITCH_WIDTH - SWITCH_THUMB - inset } else { inset };
     ui.column([ui.column([]).size(SWITCH_THUMB, SWITCH_THUMB).radius((SWITCH_THUMB / 2) as u8).background(c.surface).absolute(Some(x), Some(inset), None, None)])
@@ -92,7 +93,7 @@ pub fn switch<'a, M: Copy>(ui: &'a Ui<M>, on: bool, on_tap: M) -> Element<'a, M>
 }
 
 pub fn checkbox<'a, M: Copy>(ui: &'a Ui<M>, checked: bool, on_tap: M) -> Element<'a, M> {
-    let c = &ui.theme().colors;
+    let c = ui.colors();
     let mark = if checked { ui.column([]).size(CHECK_SIZE - 12, CHECK_SIZE - 12).radius(4).background(c.on_primary).absolute(Some(6), Some(6), None, None) } else { ui.empty() };
     ui.column([mark]).size(CHECK_SIZE, CHECK_SIZE).radius(6).background(if checked { c.primary } else { c.divider }).checked(checked).role(Role::Button).on_tap(on_tap)
 }
@@ -105,7 +106,7 @@ pub fn slider_value(drag: Drag) -> u8 {
 
 /// `value` is 0..=255. Takes the width it is given.
 pub fn slider<'a, M: Copy>(ui: &'a Ui<M>, value: u8, on_drag: fn(Drag) -> M) -> Element<'a, M> {
-    let c = &ui.theme().colors;
+    let c = ui.colors();
     let top = (SLIDER_HEIGHT - SLIDER_TRACK) / 2;
     let radius = (SLIDER_TRACK / 2) as u8;
     ui.column([
@@ -132,7 +133,7 @@ pub fn menu<'a, M: Copy>(ui: &'a Ui<M>, top: i16, items: impl Children<'a, M>, o
     let theme = ui.theme();
     ui.column([
         ui.column([]).absolute(Some(0), Some(0), Some(0), Some(0)).id("menu-backdrop").on_tap(on_close),
-        ui.column(items).width(MENU_WIDTH).padding_y(theme.metrics.gap).radius(20).background(theme.colors.surface).shadow(theme.menu_shadow()).absolute(None, Some(top), Some(16), None),
+        ui.column(items).width(MENU_WIDTH).padding_y(theme.metrics.gap).radius(20).background(ui.colors().surface).shadow(ui.colors().menu_shadow()).absolute(None, Some(top), Some(16), None),
     ])
     .absolute(Some(0), Some(0), Some(0), Some(0))
 }
@@ -143,26 +144,26 @@ pub fn modal<'a, M: Copy>(ui: &'a Ui<M>, content: Element<'a, M>, on_close: M) -
     let (width, height) = ui.screen_size();
     let left = (width - MODAL_WIDTH) / 2;
     ui.column([
-        ui.column([]).absolute(Some(0), Some(0), Some(0), Some(0)).background(theme.colors.scrim).id("modal-scrim").on_tap(on_close),
-        ui.column([content]).width(MODAL_WIDTH).padding(theme.metrics.padding).radius(20).background(theme.colors.surface).absolute(Some(left), Some(height / 3), None, None),
+        ui.column([]).absolute(Some(0), Some(0), Some(0), Some(0)).background(ui.colors().scrim).id("modal-scrim").on_tap(on_close),
+        ui.column([content]).width(MODAL_WIDTH).padding(theme.metrics.padding).radius(20).background(ui.colors().surface).absolute(Some(left), Some(height / 3), None, None),
     ])
     .absolute(Some(0), Some(0), Some(0), Some(0))
 }
 
 pub fn toast<'a, M: Copy>(ui: &'a Ui<M>, text: &'a str) -> Element<'a, M> {
     let theme = ui.theme();
-    ui.row([ui.text(theme.fonts.caption, text).color(theme.colors.surface)])
+    ui.row([ui.text(theme.fonts.caption, text).color(ui.colors().surface)])
         .padding_x(theme.metrics.padding)
         .padding_y(theme.metrics.gap)
         .radius(theme.metrics.radius)
-        .background(theme.colors.on_surface)
+        .background(ui.colors().on_surface)
         .absolute(None, None, Some(theme.metrics.padding), Some(theme.metrics.padding))
 }
 
 fn editable<'a, M: Copy>(ui: &'a Ui<M>, text: &'a str, cursor: usize, underline: Option<(usize, usize)>, on_input: fn(TextInput) -> M) -> Element<'a, M> {
     let theme = ui.theme();
     let element = ui.text(theme.fonts.body, text).edit(cursor, underline);
-    let element = if text.is_empty() { element.color(theme.colors.muted) } else { element };
+    let element = if text.is_empty() { element.color(ui.colors().muted) } else { element };
     element
         .look(theme.looks.text_field)
         .radius(theme.metrics.radius)

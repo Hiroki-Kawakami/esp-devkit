@@ -22,7 +22,7 @@ use crate::nav::{DetailMap, SplitRole, SplitSpec, call_detail_map};
 use crate::gesture::{Gesture, GestureMap, Gestures, call_gesture_map};
 use crate::keyboard::{InputKind, Keyboard};
 use crate::text_buffer::TextInput;
-use crate::theme::{Border, Icon, Theme, WidgetLook};
+use crate::theme::{Border, ColorMode, Icon, Palette, Theme, WidgetLook};
 
 /// Creates or updates a child component during reconciliation.
 pub(crate) trait ChildSpec {
@@ -555,6 +555,8 @@ pub(crate) struct BuildContext {
     pub(crate) format: ImageFormat,
     pub(crate) split_role: SplitRole,
     pub(crate) can_pop: bool,
+    pub(crate) colors: Palette,
+    pub(crate) color_mode: ColorMode,
 }
 
 /// Builds elements; everything it hands out lives for the rebuild.
@@ -574,6 +576,15 @@ impl<M: Copy> Ui<M> {
     }
 
     /// The space the chrome covers.
+    pub fn color_mode(&self) -> ColorMode {
+        self.context.color_mode
+    }
+
+    /// The theme's colors in the color mode set.
+    pub fn colors(&self) -> Palette {
+        self.context.colors
+    }
+
     /// Whether this screen's navigator has somewhere to go back to from here.
     /// Next to a main screen, the first screen on the right has not.
     pub fn can_pop(&self) -> bool {

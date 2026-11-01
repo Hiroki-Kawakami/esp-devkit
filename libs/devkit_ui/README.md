@@ -115,8 +115,23 @@ app.run();
   with the `Insets` it covers. Screens read them with `ui.insets()` and can avoid
   them or draw beneath. `ScreenStyle` tells the chrome what the top root screen
   wants. `Handle`s from `App::chrome` post to that component.
-- `Theme` holds colors, metrics, fonts and motion, read with `ui.theme()`.
-  `Screen::theme` replaces it for a screen, `cx.set_theme` for everything.
+- A `Theme` joins two halves. `ThemeAssets` is what resgen generates from a
+  definition: colors, metrics, fonts and icons, so a theme replaces any of them
+  without the rest of it reaching the firmware. `WidgetStyle` is code:
+  `keyboards`, `motion` and `looks`, with `widgets::DEFAULT` as it comes.
+
+  ```rust
+  static THEME: Theme = Theme::new(&resources::TOUCH, &widgets::DEFAULT);
+
+  static STYLE: WidgetStyle = WidgetStyle { motion: STILL, ..widgets::DEFAULT };
+  ```
+
+- `Look`s name colors by `ColorRole`, or `ColorRole::Fixed`, so they work with any
+  palette. `Input::set_color_mode` swaps the palette and repaints; a theme without
+  dark colors stays light. `ui.colors()` gives the palette in use and
+  `ui.color_mode()` the mode. `SavedColorMode` keeps it across restarts.
+- `cx.set_theme` changes the theme, `Screen::theme` replaces it for a screen.
+
 - `devkit_ui::widgets` are functions over the theme. State stays with the caller.
 - `cx.animate(id, animation)` moves a node's offset or opacity, without running a
   view or layout.
@@ -132,22 +147,17 @@ let input = app.input();
 input.set_rotation(Rotation::R90);
 ```
 
-`AutoRotation` does the usual thing on top of that: it follows the IMU, and keeps
-the turn and a lock in NVS.
+`AutoRotation` does the usual thing on top of that, as a plugin: it follows the
+IMU, and keeps the turn and a lock in the store.
 
 ```rust
-let rotation = AutoRotation::new(board.imu)?;
-config.apply(&rotation);
-let app = App::new(display, board.touch, root, &config)?;
-rotation.start(&app)?;
+let rotation = AutoRotation::new(board.imu);
+config.plugins.push(Box::new(rotation.clone()));
 
 // In a settings screen.
 rotation.set_locked(true);
 ```
 
-- `AutoRotation::with_namespace` picks the NVS namespace, `devkit_ui` by default.
-  The keys are `rotation` and `locked`. A new turn is saved once it has held for
-  5 seconds, a lock at once.
 - It takes the IMU's pose callback. `imu.read` and `imu.orientation` stay
   available; an app that wants the poses itself leaves this type out and calls
   `Input::set_rotation` from its own callback.
@@ -160,6 +170,27 @@ rotation.set_locked(true);
   `frame.rotation` and `frame.area` new from the next frame.
 - A strip buffer must hold 16 rows of the longer side; otherwise the turn is
   refused and logged.
+
+## Plugins
+
+`AppConfig::plugins` adds behaviour the app does not otherwise see. `init` runs
+before anything is drawn and sets how the UI starts, `start` once the app exists,
+and `on_event` on the UI task when the UI turns or changes color mode.
+
+```rust
+config.plugins.push(Box::new(SavedColorMode::new()));
+```
+
+- A type with more to offer stays with the app as a clone of a shared handle, as
+  `AutoRotation` does.
+- `Store` keeps small settings in the NVS namespace of `AppConfig::nvs_namespace`,
+  `devkit_ui` by default, opened on first use. Keys in use are `rotation`,
+  `locked` and `color_mode`.
+- `set_u8` returns at once, and the values go to flash 5 seconds after the last
+  change, from the FreeRTOS timer task. Flash stops both cores, and a change
+  still waiting is lost if the power goes. The save takes about 1 KB of that
+  task's stack.
+- `on_event` blocks the UI, so what takes long goes elsewhere.
 
 ## Text input
 

@@ -4,28 +4,18 @@
  */
 
 use alloc::boxed::Box;
-use alloc::string::ToString;
 use alloc::sync::Arc;
 use core::ffi::CStr;
-use core::time::Duration;
 
 use bsp_rs::display::Rotation;
 use bsp_rs::imu::{Imu, Orientation};
-use idf::log::error;
-use idf::nvs::{self, Nvs};
-use idf::sync::{Mutex, Semaphore};
-use idf::{Result, thread};
+use idf::sync::Mutex;
 
-use crate::app::{App, AppConfig, Input};
-use crate::component::Screen;
+use crate::app::Input;
+use crate::plugin::{Plugin, PluginContext, PluginInit, Store};
 
-const TAG: &CStr = c"rotation";
-const DEFAULT_NAMESPACE: &CStr = c"devkit_ui";
 const KEY_ROTATION: &CStr = c"rotation";
 const KEY_LOCKED: &CStr = c"locked";
-const SAVE_DELAY: Duration = Duration::from_secs(5);
-const SAVER_STACK: usize = 4096;
-const SAVER_PRIORITY: u32 = 2;
 
 devkit::bitflags! {
     /// The turns a screen can be shown at. `R0` to `R270` are the panel's own,
@@ -96,39 +86,24 @@ fn from_code(code: u8) -> Rotation {
 struct State {
     rotation: Rotation,
     locked: bool,
-    input: Option<Input>,
-    changes: u32,
+    context: Option<(Store, Input)>,
 }
 
 struct Inner {
     imu: Option<&'static Imu>,
-    nvs: Mutex<Nvs>,
     state: Mutex<State>,
-    save: Semaphore,
 }
 
-/// Follows the IMU and remembers the turn and the lock in NVS. The whole of it
-/// is `Input::set_rotation`; an app wanting something else calls that itself.
+/// Follows the IMU and remembers the turn and a lock, as a `Plugin`. The whole
+/// of it is `Input::set_rotation`; an app wanting something else calls that
+/// itself.
 #[derive(Clone)]
 pub struct AutoRotation(Arc<Inner>);
 
 impl AutoRotation {
-    pub fn new(imu: Option<&'static Imu>) -> Result<Self> {
-        Self::with_namespace(imu, DEFAULT_NAMESPACE)
-    }
-
-    /// Keeps the keys `rotation` and `locked` in `namespace`, of 15 bytes at most.
-    pub fn with_namespace(imu: Option<&'static Imu>, namespace: &CStr) -> Result<Self> {
-        nvs::init()?;
-        let nvs = Nvs::open(namespace)?;
-        let rotation = nvs.get_u8(KEY_ROTATION)?.map_or(Rotation::R0, from_code);
-        let locked = nvs.get_u8(KEY_LOCKED)? == Some(1);
-        Ok(Self(Arc::new(Inner {
-            imu,
-            nvs: Mutex::try_new(nvs)?,
-            state: Mutex::try_new(State { rotation, locked, input: None, changes: 0 })?,
-            save: Semaphore::try_new(0, 1)?,
-        })))
+    pub fn new(imu: Option<&'static Imu>) -> Self {
+        let state = State { rotation: Rotation::R0, locked: false, context: None };
+        Self(Arc::new(Inner { imu, state: Mutex::new(state) }))
     }
 
     /// The turn it remembers and has asked for.
@@ -140,31 +115,38 @@ impl AutoRotation {
         self.0.state.lock().locked
     }
 
+    /// While locked the turn stays as it is and the IMU rests.
+    pub fn set_locked(&self, locked: bool) {
+        let mut state = self.0.state.lock();
+        state.locked = locked;
+        if let Some((store, _)) = &state.context {
+            store.set_u8(KEY_LOCKED, u8::from(locked));
+        }
+        drop(state);
+        if let Some(imu) = self.0.imu {
+            imu.set_orientation_enabled(!locked);
+        }
+    }
+}
+
+impl Plugin for AutoRotation {
+    fn init(&mut self, init: &mut PluginInit<'_>) {
+        let saved = init.store().get_u8(KEY_ROTATION);
+        let mut state = self.0.state.lock();
+        state.rotation = saved.map_or(init.rotation, from_code);
+        state.locked = init.store().get_u8(KEY_LOCKED) == Some(1);
+        init.set_rotation(state.rotation);
+    }
+
     /// Takes the IMU's pose callback: an app that also wants poses calls
     /// `Input::set_rotation` from its own instead of using this type.
-    pub fn start<C: Screen>(&self, app: &App<C>) -> Result<()> {
-        self.0.state.lock().input = Some(app.input());
-        let saver = self.0.clone();
-        thread::Builder::new()
-            .name("rotation")
-            .stack_size(SAVER_STACK)
-            .priority(SAVER_PRIORITY)
-            .spawn(move || saver.save_when_settled())?;
+    fn start(&mut self, context: &PluginContext) {
+        self.0.state.lock().context = Some((context.store().clone(), context.input().clone()));
         if let Some(imu) = self.0.imu {
             let inner = self.0.clone();
             imu.set_orientation_cb(Some(Box::new(move |pose| inner.pose(pose))));
             imu.set_orientation_enabled(!self.locked());
         }
-        Ok(())
-    }
-
-    /// While locked the turn stays as it is and the IMU rests.
-    pub fn set_locked(&self, locked: bool) {
-        self.0.state.lock().locked = locked;
-        if let Some(imu) = self.0.imu {
-            imu.set_orientation_enabled(!locked);
-        }
-        self.0.save_now();
     }
 }
 
@@ -176,44 +158,9 @@ impl Inner {
             return;
         }
         state.rotation = rotation;
-        state.changes = state.changes.wrapping_add(1);
-        if let Some(input) = &state.input {
+        if let Some((store, input)) = &state.context {
             input.set_rotation(rotation);
+            store.set_u8(KEY_ROTATION, code(rotation));
         }
-        drop(state);
-        self.save.give();
-    }
-
-    fn save_when_settled(&self) {
-        loop {
-            self.save.take();
-            loop {
-                let changes = self.state.lock().changes;
-                thread::sleep(SAVE_DELAY);
-                if self.state.lock().changes == changes {
-                    break;
-                }
-            }
-            self.save_now();
-        }
-    }
-
-    fn save_now(&self) {
-        let (rotation, locked) = {
-            let state = self.state.lock();
-            (state.rotation, state.locked)
-        };
-        let mut nvs = self.nvs.lock();
-        let saved = nvs.set_u8(KEY_ROTATION, code(rotation)).and_then(|()| nvs.set_u8(KEY_LOCKED, u8::from(locked))).and_then(|()| nvs.commit());
-        if let Err(err) = saved {
-            error!(TAG, "save: {}", err.to_string());
-        }
-    }
-}
-
-impl AppConfig {
-    /// Starts at the turn `rotation` remembers.
-    pub fn apply(&mut self, rotation: &AutoRotation) {
-        self.presenter.rotation = rotation.rotation();
     }
 }

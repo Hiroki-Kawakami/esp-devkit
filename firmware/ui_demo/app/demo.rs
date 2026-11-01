@@ -12,16 +12,16 @@ use core::time::Duration;
 
 use bsp_rs::display::{self, Display, PixelFormat};
 use devkit_gfx::{Color, TextOptions, TextRun};
-use devkit_ui::widgets::{button, checkbox, icon_button, list_item, menu, menu_item, modal, slider, slider_value, switch, top_bar};
+use devkit_ui::widgets::{self, button, checkbox, icon_button, list_item, menu, menu_item, modal, slider, slider_value, switch, top_bar};
 use devkit_ui::keyboard::InputKind;
 use devkit_ui::widgets::{password_field, text_area, text_field};
-use devkit_ui::{Align, AutoRotation, Bars, Canvas, CanvasId, Child, Component, Cx, Element, ExternalSurface, Fonts, Gesture, Gestures, Handle, Icon, Icons, ListId, Overlay, Phase, Policy, Raster, RasterTarget, Rect, RenderMode, Root, Rotations, Screen, ScreenStyle, SplitRole, Strips, TextBuffer, TextInput, Theme, Ui};
+use devkit_ui::{Align, AutoRotation, Bars, Canvas, CanvasId, Child, ColorMode, Component, Cx, Element, ExternalSurface, Gesture, Gestures, Handle, Icon, Input, ListId, Overlay, Phase, Policy, Raster, RasterTarget, Rect, RenderMode, Root, Rotations, Screen, ScreenStyle, SplitRole, Strips, TextBuffer, TextInput, Theme, Ui};
 use idf::heap::Caps;
 use idf::sync::{LazyLock, Mutex, OnceLock};
 use idf::thread;
 
-use crate::resources::icons;
-use crate::scene::{BODY, CAPTION, ICONS, SMALL_ICONS, TITLE};
+use crate::resources::{TOUCH, icons};
+use crate::scene::{BODY, CAPTION, ICONS, SMALL_ICONS};
 
 const FILES: ListId = 0;
 const FILE_COUNT: usize = 500;
@@ -29,25 +29,13 @@ const ROW_IDS: [&str; 8] = ["row0", "row1", "row2", "row3", "row4", "row5", "row
 const SIDEBAR_WIDTH: i16 = 400;
 const VIDEO_STRIP_BYTES: usize = 2 * 64 * 1024;
 
-const FONTS: Fonts = Fonts { title: &TITLE, body: &BODY, caption: &CAPTION };
 const fn icon(glyph: char) -> Icon {
     Icon { font: &ICONS, glyph }
 }
 const fn small_icon(glyph: char) -> Icon {
     Icon { font: &SMALL_ICONS, glyph }
 }
-const THEME_ICONS: Icons = Icons {
-    back: icon(icons::BACK),
-    more: icon(icons::MORE),
-    close: icon(icons::CLOSE),
-    check: icon(icons::CHECK),
-    chevron: small_icon(icons::CHEVRON_RIGHT),
-    shift: small_icon(icons::SHIFT),
-    backspace: small_icon(icons::BACKSPACE),
-    enter: small_icon(icons::ENTER),
-};
-pub static LIGHT: Theme = Theme::light(FONTS, THEME_ICONS);
-pub static DARK: Theme = Theme::dark(FONTS, THEME_ICONS);
+pub static THEME: Theme = Theme::new(&TOUCH, &widgets::DEFAULT);
 
 /// The strip memory not in use.
 pub static SPARE_STRIPS: LazyLock<Mutex<Option<Strips>>> = LazyLock::new(|| Mutex::new(None));
@@ -96,7 +84,7 @@ impl Component for StatusBar {
         if ui.screen_style().bars == Bars::Hidden {
             return ui.empty();
         }
-        let color = ui.theme().colors.on_surface;
+        let color = ui.colors().on_surface;
         let time = ui.format(format_args!("{:02}:{:02}:{:02}", self.seconds / 3600, self.seconds / 60 % 60, self.seconds % 60));
         ui.row([
             ui.text(&CAPTION, time).color(color).id("clock").grow(1),
@@ -123,7 +111,7 @@ impl Component for FileManager {
     fn view<'a>(&'a self, ui: &'a Ui<()>) -> Element<'a, ()> {
         let (width, height) = ui.screen_size();
         let pane = ui.navigator::<Pane, Storages>(()).split(width > height, SIDEBAR_WIDTH).grow(1).id("pane");
-        ui.column([pane]).background(ui.theme().colors.background)
+        ui.column([pane]).background(ui.colors().background)
     }
 }
 
@@ -182,7 +170,7 @@ impl Component for Storages {
             .collect();
         ui.column([top_bar(ui, None, "File Manager", ui.empty()), ui.column(items)])
             .padding_each(0, ui.insets().top, 0, 0)
-            .background(ui.theme().colors.background)
+            .background(ui.colors().background)
     }
 }
 
@@ -269,15 +257,15 @@ impl Component for Browser {
         ui.column([
             top_bar(ui, back, "Download", more),
             ui.text(theme.fonts.caption, "Internal Storage › Download")
-                .color(theme.colors.muted)
+                .color(ui.colors().muted)
                 .height(48)
                 .padding_each(24, 13, 24, 0)
-                .border_top(theme.colors.divider),
-            ui.list(FILES, self.names.len(), theme.metrics.row_height).revision(self.revision).id("files").grow(1).background(theme.colors.surface),
+                .border_top(ui.colors().divider),
+            ui.list(FILES, self.names.len(), theme.metrics.row_height).revision(self.revision).id("files").grow(1).background(ui.colors().surface),
             popup,
         ])
         .padding_each(0, ui.insets().top, 0, 0)
-        .background(theme.colors.surface)
+        .background(ui.colors().surface)
     }
 
     fn list_row<'a>(&'a self, _list: ListId, index: usize, ui: &'a Ui<Msg>) -> Element<'a, Msg> {
@@ -356,7 +344,7 @@ impl Component for Detail {
 
     fn view<'a>(&'a self, ui: &'a Ui<DetailMsg>) -> Element<'a, DetailMsg> {
         let theme = ui.theme();
-        let (c, m) = (&theme.colors, &theme.metrics);
+        let (c, m) = (ui.colors(), &theme.metrics);
         ui.column([
             top_bar(ui, Some(DetailMsg::Back), &self.name, ui.empty()),
             ui.column([
@@ -401,8 +389,8 @@ impl Component for Confirm {
         let theme = ui.theme();
         let content = ui
             .column([
-                ui.text(theme.fonts.title, "Delete this file?").color(theme.colors.on_surface),
-                ui.text(theme.fonts.body, "This cannot be undone.").color(theme.colors.muted),
+                ui.text(theme.fonts.title, "Delete this file?").color(ui.colors().on_surface),
+                ui.text(theme.fonts.body, "This cannot be undone.").color(ui.colors().muted),
                 button(ui, "Cancel", theme.looks.button_secondary, ConfirmMsg::Close).id("cancel"),
             ])
             .gap(theme.metrics.padding);
@@ -415,7 +403,7 @@ impl Screen for Confirm {}
 #[derive(Clone, Copy)]
 pub enum SettingsMsg {
     Back,
-    Dark,
+    Dark(bool),
     RotationLock,
     Name(TextInput),
     Pin(TextInput),
@@ -424,7 +412,6 @@ pub enum SettingsMsg {
 }
 
 pub struct Settings {
-    dark: bool,
     name: TextBuffer,
     pin: TextBuffer,
     password: TextBuffer,
@@ -433,7 +420,7 @@ pub struct Settings {
 
 impl Settings {
     fn new() -> Self {
-        Self { dark: false, name: TextBuffer::new(), pin: TextBuffer::new(), password: TextBuffer::new(), note: TextBuffer::new() }
+        Self { name: TextBuffer::new(), pin: TextBuffer::new(), password: TextBuffer::new(), note: TextBuffer::new() }
     }
 }
 
@@ -451,9 +438,10 @@ impl Component for Settings {
     fn update(&mut self, msg: SettingsMsg, cx: &mut Cx<Self>) {
         match msg {
             SettingsMsg::Back => cx.nav().pop(),
-            SettingsMsg::Dark => {
-                self.dark = !self.dark;
-                cx.set_theme(if self.dark { &DARK } else { &LIGHT });
+            SettingsMsg::Dark(dark) => {
+                if let Some(input) = INPUT.get() {
+                    input.set_color_mode(if dark { ColorMode::Dark } else { ColorMode::Light });
+                }
             }
             SettingsMsg::RotationLock => {
                 if let Some(rotation) = ROTATION.get() {
@@ -476,10 +464,10 @@ impl Component for Settings {
 
     fn view<'a>(&'a self, ui: &'a Ui<SettingsMsg>) -> Element<'a, SettingsMsg> {
         let theme = ui.theme();
-        let (c, m) = (&theme.colors, &theme.metrics);
+        let (c, m) = (ui.colors(), &theme.metrics);
         ui.column([
             top_bar(ui, Some(SettingsMsg::Back), "Settings", ui.empty()),
-            ui.row([ui.text(theme.fonts.body, "Dark mode").color(c.on_surface).grow(1), switch(ui, self.dark, SettingsMsg::Dark).id("dark")])
+            ui.row([ui.text(theme.fonts.body, "Dark mode").color(c.on_surface).grow(1), switch(ui, ui.color_mode() == ColorMode::Dark, SettingsMsg::Dark(ui.color_mode() != ColorMode::Dark)).id("dark")])
                 .padding_x(m.padding)
                 .height(m.row_height)
                 .align(Align::Center)
@@ -506,11 +494,7 @@ impl Component for Settings {
     }
 }
 
-impl Screen for Settings {
-    fn style(&self) -> ScreenStyle {
-        ScreenStyle { bars: if self.dark { Bars::Light } else { Bars::Dark }, ..ScreenStyle::default() }
-    }
-}
+impl Screen for Settings {}
 
 static DISPLAY: OnceLock<&'static Display> = OnceLock::new();
 pub static VIDEO_FRAMES: AtomicU32 = AtomicU32::new(0);
@@ -519,6 +503,11 @@ const BAR_WIDTH: usize = 90;
 const BARS: [[u8; 3]; 4] = [[0xE5, 0x39, 0x35], [0x43, 0xA0, 0x47], [0x1E, 0x88, 0xE5], [0xFD, 0xD8, 0x35]];
 
 static ROTATION: OnceLock<AutoRotation> = OnceLock::new();
+static INPUT: OnceLock<Input> = OnceLock::new();
+
+pub fn set_input(input: Input) {
+    let _ = INPUT.set(input);
+}
 
 pub fn set_rotation(rotation: AutoRotation) {
     let _ = ROTATION.set(rotation);
@@ -673,7 +662,7 @@ impl Component for VideoDemo {
             menu,
         ])
         .padding_each(0, ui.insets().top, 0, 0)
-        .background(theme.colors.surface)
+        .background(ui.colors().surface)
     }
 }
 
@@ -805,12 +794,12 @@ impl Component for CanvasDemo {
             ui.canvas(WAVE).height(160).id("wave").on_size(|_, height| CanvasMsg::WaveSized(height)).gestures(Gestures::PAN, CanvasMsg::Scrub),
         ])
         .padding_each(0, ui.insets().top, 0, ui.insets().bottom)
-        .background(theme.colors.surface)
+        .background(ui.colors().surface)
     }
 
     fn draw<'a>(&'a self, id: CanvasId, canvas: &mut Canvas<'a, '_>) {
         let (width, height) = canvas.size();
-        let colors = canvas.theme().colors;
+        let colors = canvas.colors();
         if id == WAVE {
             canvas.fill(Rect::new(0, 0, width, height), colors.background);
             canvas.raster(Rect::new(0, 0, width, height), &self.wave);
@@ -892,7 +881,7 @@ impl Component for GestureDemo {
 
     fn view<'a>(&'a self, ui: &'a Ui<GestureMsg>) -> Element<'a, GestureMsg> {
         let theme = ui.theme();
-        let c = &theme.colors;
+        let c = ui.colors();
         let side = (f32::from(BOX_SIZE) * self.scale) as i16;
         let (x, y) = (self.position.0 - side / 2, self.position.1 - side / 2);
         ui.column([

@@ -3,7 +3,9 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
+use alloc::boxed::Box;
 use core::cell::UnsafeCell;
+use core::ffi::{CStr, c_void};
 use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
 use core::ptr;
@@ -11,7 +13,7 @@ use core::time::Duration;
 
 use crate::sync::Queue;
 use crate::thread::{MAX_DELAY, ticks};
-use crate::{Result, sys};
+use crate::{Error, Result, sys};
 
 const QUEUE_TYPE_MUTEX: u8 = 1;
 
@@ -100,6 +102,59 @@ impl<T: ?Sized> DerefMut for MutexGuard<'_, T> {
 impl<T: ?Sized> Drop for MutexGuard<'_, T> {
     fn drop(&mut self) {
         self.mutex.queue.send(ptr::null(), 0);
+    }
+}
+
+type Callback = Box<dyn FnMut() + Send>;
+
+// `xTimerReset` is a macro over this, which bindgen does not see.
+#[cfg(target_os = "none")]
+const COMMAND_RESET: sys::BaseType_t = 2;
+
+#[cfg(target_os = "none")]
+unsafe extern "C" {
+    fn xTimerGenericCommand(
+        timer: sys::TimerHandle_t,
+        command: sys::BaseType_t,
+        value: sys::TickType_t,
+        woken: *mut sys::BaseType_t,
+        wait: sys::TickType_t,
+    ) -> sys::BaseType_t;
+}
+
+/// A one-shot FreeRTOS software timer. The callback runs on the timer task,
+/// whose stack is `CONFIG_FREERTOS_TIMER_TASK_STACK_DEPTH`.
+pub struct Timer {
+    handle: sys::TimerHandle_t,
+    _callback: Box<Callback>,
+}
+
+unsafe impl Send for Timer {}
+unsafe impl Sync for Timer {}
+
+unsafe extern "C" fn fired(timer: sys::TimerHandle_t) {
+    let callback = unsafe { sys::pvTimerGetTimerID(timer) }.cast::<Callback>();
+    unsafe { (*callback)() };
+}
+
+impl Timer {
+    pub fn one_shot(name: &'static CStr, period: Duration, callback: impl FnMut() + Send + 'static) -> Result<Self> {
+        let mut callback: Box<Callback> = Box::new(Box::new(callback));
+        let id = ptr::from_mut(&mut *callback).cast::<c_void>();
+        let handle = unsafe { sys::xTimerCreate(name.as_ptr(), ticks(period), 0, id, Some(fired)) };
+        if handle.is_null() {
+            return Err(Error::NO_MEM);
+        }
+        Ok(Self { handle, _callback: callback })
+    }
+
+    /// Starts it, or starts its period over. Does not wait for the timer task.
+    pub fn reset(&self) -> Result<()> {
+        #[cfg(target_os = "none")]
+        let sent = unsafe { xTimerGenericCommand(self.handle, COMMAND_RESET, sys::xTaskGetTickCount(), ptr::null_mut(), 0) };
+        #[cfg(not(target_os = "none"))]
+        let sent = unsafe { sys::xTimerReset(self.handle, 0) };
+        if sent == 0 { Err(Error::TIMEOUT) } else { Ok(()) }
     }
 }
 

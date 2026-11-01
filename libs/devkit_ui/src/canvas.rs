@@ -9,7 +9,7 @@ use devkit_gfx::{Color, DisplayList, Image, Raster, Rect, TextRun};
 use idf::heap::Caps;
 
 use crate::paint::{Effects, dim};
-use crate::theme::Theme;
+use crate::theme::{Palette, Theme};
 
 /// Which `Ui::canvas` of a component is being drawn.
 pub type CanvasId = u16;
@@ -20,6 +20,7 @@ pub struct Canvas<'a, 'f> {
     pub(crate) effects: &'f mut Effects,
     pub(crate) regions: &'f [Rect],
     pub(crate) theme: &'static Theme,
+    pub(crate) colors: Palette,
     pub(crate) origin: (i16, i16),
     pub(crate) size: (i16, i16),
     pub(crate) opacity: u8,
@@ -33,6 +34,10 @@ impl<'a> Canvas<'a, '_> {
 
     pub fn theme(&self) -> &'static Theme {
         self.theme
+    }
+
+    pub fn colors(&self) -> Palette {
+        self.colors
     }
 
     fn place(&self, rect: Rect) -> Rect {

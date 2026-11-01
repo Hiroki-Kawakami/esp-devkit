@@ -291,6 +291,42 @@ The definition is the same JSON with these differences:
 Images take PNG files only, in `RGB565`, `RGB888`, `ARGB8888`, `A8` or `L8`.
 Icons get code points in name order from U+E000.
 
+### Themes
+
+A `theme` entry generates a `devkit_ui::ThemeAssets`, under its name in
+`resources.rs`. Only the Rust output has themes.
+
+```json
+{
+  "theme": {
+    "TOUCH": {
+      "base": "@touch",
+      "fonts": { "body": ["body_24", "jp_24"] },
+      "icons": { "back": "icons/my-back.svg" },
+      "colors": { "light": { "primary": "#2196f3" }, "dark": { "primary": "#64b5f6" } },
+      "metrics": { "radius": 16 }
+    }
+  }
+}
+```
+
+```rust
+static THEME: Theme = Theme::new(&resources::TOUCH, &widgets::DEFAULT);
+```
+
+- `base` is a theme bundled in `tools/resgen/themes`, with its icons relative to
+  that directory, so themes can share them: `tabler` holds the Tabler icons. What
+  the entry sets replaces it, key by key; without a base every key is required.
+- `fonts` sets `title`, `body` and `caption`, each a font of the definition or a
+  list making a chain. Fonts of the base go in only if the theme still uses them.
+- `icons` maps the names of `Icons` to SVG files, and `icon_size` their sizes in
+  pixels, 40 by default. Icons of one size share a font, and a replaced file is
+  left out.
+- `colors` has `light` and optionally `dark`, each the names of `Palette` as
+  `#rrggbb` or `#rrggbbaa`.
+- `metrics` has the names of `Metrics`.
+- A theme can be generated for each entry, to switch between them.
+
 ### Binary format
 
 All values are little endian; `libs/devkit_gfx/src/format.rs` is the definition,
