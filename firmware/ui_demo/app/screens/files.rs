@@ -175,11 +175,11 @@ impl Component for Browser {
         ui.column([
             top_bar(ui, back, "Download", more),
             ui.text(theme.fonts.caption, "Internal Storage › Download")
-                .color(ui.colors().muted)
+                .foreground(ui.colors().muted)
                 .height(48)
                 .padding_each(24, 13, 24, 0)
                 .border_top(ui.colors().divider),
-            ui.list(FILES, self.names.len(), theme.widgets.list_item.height).revision(self.revision).id("files").grow(1).background(ui.colors().surface),
+            ui.list(FILES, self.names.len(), theme.widgets.list.row_height).revision(self.revision).id("files").grow(1).background(ui.colors().surface),
             popup,
         ])
         .padding_each(0, ui.insets().top, 0, 0)
@@ -266,17 +266,17 @@ impl Component for Detail {
         ui.column([
             top_bar(ui, Some(DetailMsg::Back), &self.name, ui.empty()),
             ui.column([
-                ui.row([ui.text(theme.fonts.body, "Keep").color(c.on_surface).grow(1), switch(ui, self.keep, DetailMsg::Keep).id("keep")]).align(Align::Center),
-                ui.row([ui.text(theme.fonts.body, "Starred").color(c.on_surface).grow(1), checkbox(ui, self.star, DetailMsg::Star).id("star")]).align(Align::Center),
-                ui.row([ui.text(theme.fonts.body, "Video mode").color(c.on_surface).grow(1), switch(ui, self.video, DetailMsg::Video).id("video")]).align(Align::Center),
-                ui.text(theme.fonts.caption, ui.format(format_args!("Volume {}", self.volume))).color(c.muted),
+                ui.row([ui.text(theme.fonts.body, "Keep").foreground(c.on_surface).grow(1), switch(ui, self.keep, DetailMsg::Keep).id("keep")]).align(Align::Center),
+                ui.row([ui.text(theme.fonts.body, "Starred").foreground(c.on_surface).grow(1), checkbox(ui, self.star, DetailMsg::Star).id("star")]).align(Align::Center),
+                ui.row([ui.text(theme.fonts.body, "Video mode").foreground(c.on_surface).grow(1), switch(ui, self.video, DetailMsg::Video).id("video")]).align(Align::Center),
+                ui.text(theme.fonts.caption, ui.format(format_args!("Volume {}", self.volume))).foreground(c.muted),
                 slider(ui, self.volume, |d| DetailMsg::Volume(slider_value(d))).id("volume"),
                 ui.row([
                     button(ui, "Rename", theme.widgets.button.secondary, DetailMsg::Back).grow(1).disabled(!self.keep).id("rename"),
                     button(ui, "Delete", theme.widgets.button.primary, DetailMsg::Ask).grow(1).id("delete"),
                 ])
                 .gap(m.gap),
-                ui.text(theme.fonts.caption, "This note is long enough to wrap, and what follows it moves down with its height.").color(c.muted).wrap().id("note"),
+                ui.text(theme.fonts.caption, "This note is long enough to wrap, and what follows it moves down with its height.").foreground(c.muted).wrap().id("note"),
             ])
             .padding(m.padding)
             .gap(m.padding)
@@ -307,8 +307,8 @@ impl Component for Confirm {
         let theme = ui.theme();
         let content = ui
             .column([
-                ui.text(theme.fonts.title, "Delete this file?").color(ui.colors().on_surface),
-                ui.text(theme.fonts.body, "This cannot be undone.").color(ui.colors().muted),
+                ui.text(theme.fonts.title, "Delete this file?").foreground(ui.colors().on_surface),
+                ui.text(theme.fonts.body, "This cannot be undone.").foreground(ui.colors().muted),
                 button(ui, "Cancel", theme.widgets.button.secondary, ConfirmMsg::Close).id("cancel"),
             ])
             .gap(theme.widgets.unit.padding);

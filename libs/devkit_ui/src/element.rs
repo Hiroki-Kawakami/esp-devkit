@@ -15,14 +15,14 @@ use devkit_gfx::{Align as TextAlign, Color, FontChain, Image, ImageFormat, Overf
 use crate::bump::Bump;
 use crate::component::{AnyHost, Child, EventMap, Host, ListId, Screen, call_event_map, screen_host};
 use crate::erased::Erased;
-use crate::style::{Align, Dimension, Direction, Inset, Insets, Justify, Part, Role, ScreenStyle, Shadow, State, Style};
+use crate::style::{Align, Direction, Inset, Insets, Justify, Part, Prop, Role, ScreenStyle, Shadow, State, StateStyle, Style};
 use crate::canvas::CanvasId;
 use crate::external::ExternalSurface;
 use crate::nav::{DetailMap, SplitRole, SplitSpec, call_detail_map};
 use crate::gesture::{Gesture, GestureMap, Gestures, call_gesture_map};
 use crate::keyboard::{InputKind, Keyboard};
 use crate::text_buffer::TextInput;
-use crate::theme::{Border, ColorMode, ColorRole, Icon, Palette, Theme, WidgetLook};
+use crate::theme::{ColorMode, ColorRole, Icon, Palette, Theme};
 
 /// Creates or updates a child component during reconciliation.
 pub(crate) trait ChildSpec {
@@ -67,8 +67,7 @@ impl<C: Child, M: Copy + 'static> ChildSpec for ChildElement<C, M> {
 pub(crate) enum Content<'a> {
     Empty,
     Box,
-    /// Without a color, the foreground of the nearest look, or the theme's.
-    Text { font: &'static FontChain, text: &'a str, color: Option<Color>, options: TextOptions, edit: Option<Edit> },
+    Text { font: &'static FontChain, text: &'a str, options: TextOptions, edit: Option<Edit> },
     Image { image: Image<'static>, tint: Color },
     Scroll,
     List { id: ListId, count: usize, row_height: i16, revision: Option<u32> },
@@ -175,9 +174,13 @@ impl<S: Child + Screen> ChildSpec for ScreenElement<S> {
 /// A description of a node, valid during one rebuild.
 #[derive(Clone, Copy)]
 pub struct Element<'a, M: Copy> {
+    bump: NonNull<Bump>,
     pub(crate) content: Content<'a>,
     children: NonNull<[Element<'a, M>]>,
     pub(crate) style: Style,
+    pub(crate) when: &'a [(State, Prop)],
+    pub(crate) inherit: State,
+    pub(crate) state_source: bool,
     pub(crate) key: Option<u32>,
     pub(crate) id: Option<&'static str>,
     part: Option<Part>,
@@ -199,8 +202,8 @@ pub struct Element<'a, M: Copy> {
 }
 
 impl<'a, M: Copy> Element<'a, M> {
-    fn new(content: Content<'a>, children: &'a mut [Element<'a, M>]) -> Self {
-        Self { content, children: NonNull::from(children), style: Style::default(), key: None, id: None, part: None, role: Role::None, tap: None, drag: None, tap_at: None, on_scroll: None, gestures: None, size: None, input: None, focusable: false, keep_focus: false, keyboard: None, input_kind: InputKind::Text, repeat: false, state: State::empty(), _msg: PhantomData }
+    fn new(bump: NonNull<Bump>, content: Content<'a>, children: &'a mut [Element<'a, M>]) -> Self {
+        Self { bump, content, children: NonNull::from(children), style: Style::default(), when: &[], inherit: State::empty(), state_source: false, key: None, id: None, part: None, role: Role::None, tap: None, drag: None, tap_at: None, on_scroll: None, gestures: None, size: None, input: None, focusable: false, keep_focus: false, keyboard: None, input_kind: InputKind::Text, repeat: false, state: State::empty(), _msg: PhantomData }
     }
 
     pub const fn is_empty(&self) -> bool {
@@ -242,6 +245,52 @@ impl<'a, M: Copy> Element<'a, M> {
         for child in unsafe { self.children.as_mut() } {
             child.style_part(part, style);
         }
+    }
+
+    fn prop(mut self, prop: Prop) -> Self {
+        self.style.apply(prop);
+        self
+    }
+
+    /// Puts `style`'s base values on this node and shares its states. Set after
+    /// it, values replace them; a second style adds its base and replaces states.
+    pub fn style(mut self, style: &'static StateStyle) -> Self {
+        for prop in style.base {
+            self.style.apply(*prop);
+        }
+        self.style.states = Some(style);
+        match style.font {
+            Some(font) => self.font(font),
+            None => self,
+        }
+    }
+
+    /// Changes `props` while all of `state` holds, over the shared style's same
+    /// state.
+    pub fn when(mut self, state: State, props: &[Prop]) -> Self {
+        let old = self.when;
+        let count = old.len() + props.len();
+        let p = unsafe { self.bump.as_ref() }.alloc_slice::<(State, Prop)>(count, |p| unsafe {
+            ptr::copy_nonoverlapping(old.as_ptr(), p, old.len());
+            for (i, prop) in props.iter().enumerate() {
+                p.add(old.len() + i).write((state, *prop));
+            }
+        });
+        self.when = unsafe { core::slice::from_raw_parts(p, count) };
+        self
+    }
+
+    /// Lets nodes inside take states from this one, up to the next such node.
+    pub fn state_source(mut self) -> Self {
+        self.state_source = true;
+        self
+    }
+
+    /// Takes these states from the nearest `state_source` around this node in
+    /// the same component.
+    pub fn inherit_state(mut self, state: State) -> Self {
+        self.inherit = state;
+        self
     }
 
     pub fn role(mut self, role: Role) -> Self {
@@ -371,14 +420,12 @@ impl<'a, M: Copy> Element<'a, M> {
         element
     }
 
-    pub fn width(mut self, px: i16) -> Self {
-        self.style.width = Dimension::Px(px);
-        self
+    pub fn width(self, px: i16) -> Self {
+        self.prop(Prop::Width(px))
     }
 
-    pub fn height(mut self, px: i16) -> Self {
-        self.style.height = Dimension::Px(px);
-        self
+    pub fn height(self, px: i16) -> Self {
+        self.prop(Prop::Height(px))
     }
 
     pub fn size(self, width: i16, height: i16) -> Self {
@@ -386,103 +433,82 @@ impl<'a, M: Copy> Element<'a, M> {
     }
 
     /// A share of what the parent offers: `numerator / denominator`.
-    pub fn width_fraction(mut self, numerator: u16, denominator: u16) -> Self {
-        self.style.width = Dimension::Fraction(numerator, denominator.max(1));
-        self
+    pub fn width_fraction(self, numerator: u16, denominator: u16) -> Self {
+        self.prop(Prop::WidthFraction(numerator, denominator))
     }
 
-    pub fn height_fraction(mut self, numerator: u16, denominator: u16) -> Self {
-        self.style.height = Dimension::Fraction(numerator, denominator.max(1));
-        self
+    pub fn height_fraction(self, numerator: u16, denominator: u16) -> Self {
+        self.prop(Prop::HeightFraction(numerator, denominator))
     }
 
-    pub fn max_width(mut self, px: i16) -> Self {
-        self.style.max_width = px;
-        self
+    pub fn max_width(self, px: i16) -> Self {
+        self.prop(Prop::MaxWidth(px))
     }
 
-    pub fn max_height(mut self, px: i16) -> Self {
-        self.style.max_height = px;
-        self
+    pub fn max_height(self, px: i16) -> Self {
+        self.prop(Prop::MaxHeight(px))
     }
 
     /// Takes this share of what siblings overflow the main axis by, and is
     /// measured again for the size left. Text has 1, other nodes 0.
-    pub fn shrink(mut self, weight: u8) -> Self {
-        self.style.shrink = weight;
-        self
+    pub fn shrink(self, weight: u8) -> Self {
+        self.prop(Prop::Shrink(weight))
     }
 
-    pub fn min_width(mut self, px: i16) -> Self {
-        self.style.min_width = px;
-        self
+    pub fn min_width(self, px: i16) -> Self {
+        self.prop(Prop::MinWidth(px))
     }
 
-    pub fn min_height(mut self, px: i16) -> Self {
-        self.style.min_height = px;
-        self
+    pub fn min_height(self, px: i16) -> Self {
+        self.prop(Prop::MinHeight(px))
     }
 
     /// Shares the free space of the main axis by this weight.
-    pub fn grow(mut self, weight: u8) -> Self {
-        self.style.grow = weight;
-        self
+    pub fn grow(self, weight: u8) -> Self {
+        self.prop(Prop::Grow(weight))
     }
 
     /// Height from the width, `width`:`height`.
-    pub fn aspect_ratio(mut self, width: u8, height: u8) -> Self {
-        self.style.aspect = Some((width, height));
-        self
+    pub fn aspect_ratio(self, width: u8, height: u8) -> Self {
+        self.prop(Prop::Aspect(width, height))
     }
 
     pub fn padding(self, px: i16) -> Self {
-        self.padding_x(px).padding_y(px)
+        self.prop(Prop::Padding(px))
     }
 
-    pub fn padding_x(mut self, px: i16) -> Self {
-        self.style.padding[0] = px;
-        self.style.padding[2] = px;
-        self
+    pub fn padding_x(self, px: i16) -> Self {
+        self.prop(Prop::PaddingX(px))
     }
 
-    pub fn padding_y(mut self, px: i16) -> Self {
-        self.style.padding[1] = px;
-        self.style.padding[3] = px;
-        self
+    pub fn padding_y(self, px: i16) -> Self {
+        self.prop(Prop::PaddingY(px))
     }
 
     /// Left, top, right, bottom.
-    pub fn padding_each(mut self, left: i16, top: i16, right: i16, bottom: i16) -> Self {
-        self.style.padding = [left, top, right, bottom];
-        self
+    pub fn padding_each(self, left: i16, top: i16, right: i16, bottom: i16) -> Self {
+        self.prop(Prop::PaddingEach(left, top, right, bottom))
     }
 
-    pub fn gap(mut self, px: i16) -> Self {
-        self.style.gap_x = px;
-        self.style.gap_y = px;
-        self
+    pub fn gap(self, px: i16) -> Self {
+        self.prop(Prop::Gap(px))
     }
 
-    pub fn gap_xy(mut self, x: i16, y: i16) -> Self {
-        self.style.gap_x = x;
-        self.style.gap_y = y;
-        self
+    pub fn gap_xy(self, x: i16, y: i16) -> Self {
+        self.prop(Prop::GapX(x)).prop(Prop::GapY(y))
     }
 
     /// Children on the cross axis.
-    pub fn align(mut self, align: Align) -> Self {
-        self.style.align = align;
-        self
+    pub fn align(self, align: Align) -> Self {
+        self.prop(Prop::Align(align))
     }
 
-    pub fn align_self(mut self, align: Align) -> Self {
-        self.style.align_self = Some(align);
-        self
+    pub fn align_self(self, align: Align) -> Self {
+        self.prop(Prop::AlignSelf(align))
     }
 
-    pub fn justify(mut self, justify: Justify) -> Self {
-        self.style.justify = justify;
-        self
+    pub fn justify(self, justify: Justify) -> Self {
+        self.prop(Prop::Justify(justify))
     }
 
     /// Takes the node out of the flow, placed by distances from the parent.
@@ -491,15 +517,14 @@ impl<'a, M: Copy> Element<'a, M> {
         self
     }
 
-    pub fn background(mut self, color: Color) -> Self {
-        self.style.background = Some(color);
-        self
+    pub fn background(self, color: impl Into<ColorRole>) -> Self {
+        self.prop(Prop::Background(color.into()))
     }
 
-    /// Appearance by state.
-    pub fn look(mut self, look: &'static WidgetLook) -> Self {
-        self.style.look = Some(look);
-        self
+    /// The color of text and icons here and inside, where they set none of
+    /// their own.
+    pub fn foreground(self, color: impl Into<ColorRole>) -> Self {
+        self.prop(Prop::Foreground(color.into()))
     }
 
     /// Takes no input, and looks it.
@@ -518,25 +543,21 @@ impl<'a, M: Copy> Element<'a, M> {
         self
     }
 
-    pub fn radius(mut self, px: u8) -> Self {
-        self.style.radius = px;
-        self
+    pub fn radius(self, px: u8) -> Self {
+        self.prop(Prop::Radius(px))
     }
 
     /// An outline inside the box, following its radius.
-    pub fn border(mut self, color: Color, width: u8) -> Self {
-        self.style.border = Some(Border { color, width });
-        self
+    pub fn border(self, color: impl Into<ColorRole>, width: u8) -> Self {
+        self.prop(Prop::Border(color.into(), width))
     }
 
-    pub fn border_top(mut self, color: Color) -> Self {
-        self.style.border_top = Some(color);
-        self
+    pub fn border_top(self, color: impl Into<ColorRole>) -> Self {
+        self.prop(Prop::BorderTop(color.into()))
     }
 
-    pub fn border_bottom(mut self, color: Color) -> Self {
-        self.style.border_bottom = Some(color);
-        self
+    pub fn border_bottom(self, color: impl Into<ColorRole>) -> Self {
+        self.prop(Prop::BorderBottom(color.into()))
     }
 
     pub fn shadow(mut self, shadow: Shadow) -> Self {
@@ -544,16 +565,14 @@ impl<'a, M: Copy> Element<'a, M> {
         self
     }
 
-    pub fn opacity(mut self, opacity: u8) -> Self {
-        self.style.opacity = Some(opacity);
-        self
+    pub fn opacity(self, opacity: u8) -> Self {
+        self.prop(Prop::Opacity(opacity))
     }
 
     /// Clips what is inside, to the `radius` too. The inside of a scroller or
     /// a surface shown by the display stays square.
-    pub fn clip(mut self) -> Self {
-        self.style.clip = true;
-        self
+    pub fn clip(self) -> Self {
+        self.prop(Prop::Clip(true))
     }
 
     /// Rows are built again only when this changes, instead of on every
@@ -565,11 +584,18 @@ impl<'a, M: Copy> Element<'a, M> {
         self
     }
 
-    pub fn color(mut self, color: Color) -> Self {
-        if let Content::Text { color: c, .. } = &mut self.content {
-            *c = Some(color);
+    pub fn font(mut self, font: &'static FontChain) -> Self {
+        if let Content::Text { font: f, .. } = &mut self.content {
+            *f = font;
         }
         self
+    }
+
+    pub(crate) fn font_px(&self) -> i16 {
+        match self.content {
+            Content::Text { font, .. } => font.px() as i16,
+            _ => 0,
+        }
     }
 
     fn with_options(mut self, f: impl FnOnce(&mut TextOptions)) -> Self {
@@ -703,11 +729,11 @@ impl<M: Copy> Ui<M> {
 
     /// Nothing, for a conditional child.
     pub fn empty<'a>(&'a self) -> Element<'a, M> {
-        Element::new(Content::Empty, &mut [])
+        Element::new(self.bump, Content::Empty, &mut [])
     }
 
     fn container<'a>(&'a self, direction: Direction, children: impl Children<'a, M>) -> Element<'a, M> {
-        let mut element = Element::new(Content::Box, children.place(self));
+        let mut element = Element::new(self.bump, Content::Box, children.place(self));
         element.style.direction = direction;
         element
     }
@@ -726,7 +752,7 @@ impl<M: Copy> Ui<M> {
 
     pub fn text<'a>(&'a self, font: &'static FontChain, text: &'a str) -> Element<'a, M> {
         let options = TextOptions::default();
-        let mut element = Element::new(Content::Text { font, text, color: None, options, edit: None }, &mut []);
+        let mut element = Element::new(self.bump, Content::Text { font, text, options, edit: None }, &mut []);
         element.role = Role::Text;
         element.style.shrink = 1;
         element
@@ -749,29 +775,29 @@ impl<M: Copy> Ui<M> {
     }
 
     pub fn image<'a>(&'a self, image: Image<'static>) -> Element<'a, M> {
-        Element::new(Content::Image { image, tint: Color::rgb(0, 0, 0) }, &mut [])
+        Element::new(self.bump, Content::Image { image, tint: Color::rgb(0, 0, 0) }, &mut [])
     }
 
     /// Pixels drawn by `Component::draw`. Takes the size the parent gives it.
     pub fn canvas<'a>(&'a self, id: CanvasId) -> Element<'a, M> {
-        Element::new(Content::Canvas(id), &mut [])
+        Element::new(self.bump, Content::Canvas(id), &mut [])
     }
 
     /// A rectangle `surface` writes, inside the size the parent gives it: its
     /// top and bottom keep to the 16 row grid damage is aligned to, so it can
     /// end up to 15 rows shorter on each side. One at a time per app.
     pub fn external<'a>(&'a self, surface: &'a ExternalSurface) -> Element<'a, M> {
-        Element::new(Content::External(surface), &mut [])
+        Element::new(self.bump, Content::External(surface), &mut [])
     }
 
     /// Scrolls one child vertically. Takes the size the parent gives it.
     pub fn scroll<'a>(&'a self, child: Element<'a, M>) -> Element<'a, M> {
-        Element::new(Content::Scroll, self.place_slice(&[child]))
+        Element::new(self.bump, Content::Scroll, self.place_slice(&[child]))
     }
 
     /// Rows come from `Component::list_row`; only visible ones exist.
     pub fn list<'a>(&'a self, id: ListId, count: usize, row_height: i16) -> Element<'a, M> {
-        let mut element = Element::new(Content::List { id, count, row_height, revision: None }, &mut []);
+        let mut element = Element::new(self.bump, Content::List { id, count, row_height, revision: None }, &mut []);
         element.role = Role::List;
         element
     }
@@ -781,7 +807,7 @@ impl<M: Copy> Ui<M> {
     pub fn navigator<'a, K: 'static, S: Child + Screen>(&'a self, props: S::Props) -> Element<'a, M> {
         let spec = self.bump().alloc(ScreenElement::<S> { props });
         let spec: &'a ScreenElement<S> = unsafe { &*spec };
-        Element::new(Content::Navigator { key: TypeId::of::<K>(), initial: Some(spec), split: SplitSpec::default() }, &mut []).clip()
+        Element::new(self.bump, Content::Navigator { key: TypeId::of::<K>(), initial: Some(spec), split: SplitSpec::default() }, &mut []).clip()
     }
 
     /// A child component, kept across rebuilds by position or key.
@@ -806,6 +832,6 @@ impl<M: Copy> Ui<M> {
     {
         let spec = self.bump().alloc(ChildElement::<C, M> { props, on_event });
         let spec: &'a ChildElement<C, M> = unsafe { &*spec };
-        Element::new(Content::Child(spec), &mut [])
+        Element::new(self.bump, Content::Child(spec), &mut [])
     }
 }

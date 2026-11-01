@@ -404,7 +404,7 @@ impl Tree {
     fn mount_themed(&mut self, nav: NodeId, host: Box<dyn AnyHost>, saved: Saved, inherited: &'static Theme) -> NodeId {
         let theme = host.theme();
         let slot = self.alloc_slot();
-        let node = self.alloc_node(Node::new(NodeContent::Child(slot), slot));
+        let node = self.alloc_node(Node::new(NodeContent::Child(slot), slot, self.caps));
         self.nodes[node as usize].style = Self::fill_style();
         self.nodes[node as usize].parent = nav;
         let slot_index = usize::from(slot);
@@ -739,7 +739,7 @@ impl Tree {
     /// Fills `area` with a navigator node owned by `owner`.
     pub(crate) fn new_navigator(&mut self, key: TypeId, owner: u16) -> NodeId {
         let content = NodeContent::Navigator(NavigatorNode::new(key));
-        let id = self.alloc_node(Node::new(content, owner));
+        let id = self.alloc_node(Node::new(content, owner, self.caps));
         self.nodes[id as usize].style.clip = true;
         self.navigators.push(id);
         id

@@ -3,6 +3,7 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
+use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::cell::Cell;
 
@@ -17,7 +18,7 @@ use crate::erased::Erased;
 use crate::gesture::GestureMap;
 use crate::keyboard::{InputKind, Keyboard};
 use crate::nav::NavigatorNode;
-use crate::style::{Role, State, Style};
+use crate::style::{Prop, Role, State, Style};
 
 const CARET_WIDTH: i16 = 2;
 
@@ -27,7 +28,6 @@ pub(crate) const NONE: NodeId = u32::MAX;
 pub(crate) struct TextNode {
     pub(crate) font: &'static FontChain,
     pub(crate) string: Vec<u8, Caps>,
-    pub(crate) color: Option<Color>,
     pub(crate) options: TextOptions,
     pub(crate) run: TextRun<Caps>,
     /// The width `run` was laid out for; `None` until it is.
@@ -118,7 +118,11 @@ impl NodeContent {
 
 pub(crate) struct Node {
     pub(crate) content: NodeContent,
+    /// With what its state selects applied.
     pub(crate) style: Style,
+    /// `style` before that, while it differs.
+    pub(crate) base: Option<Box<Style, Caps>>,
+    pub(crate) when: Vec<(State, Prop), Caps>,
     pub(crate) parent: NodeId,
     pub(crate) first_child: NodeId,
     pub(crate) next: NodeId,
@@ -148,6 +152,11 @@ pub(crate) struct Node {
     pub(crate) screen: Rect,
     pub(crate) paint_dirty: bool,
     pub(crate) state: State,
+    /// The states set on this node, and those taken from its `state_source`.
+    pub(crate) own_state: State,
+    pub(crate) source_state: State,
+    pub(crate) inherit: State,
+    pub(crate) state_source: bool,
     /// The main-axis size the parent's flow gave it, and whether that differs
     /// from what it asked for.
     pub(crate) flow_size: i16,
@@ -158,10 +167,12 @@ pub(crate) struct Node {
 }
 
 impl Node {
-    pub(crate) fn new(content: NodeContent, owner: u16) -> Self {
+    pub(crate) fn new(content: NodeContent, owner: u16, caps: Caps) -> Self {
         Self {
             content,
             style: Style::default(),
+            base: None,
+            when: Vec::new_in(caps),
             parent: NONE,
             first_child: NONE,
             next: NONE,
@@ -187,6 +198,10 @@ impl Node {
             screen: Rect::default(),
             paint_dirty: true,
             state: State::empty(),
+            own_state: State::empty(),
+            source_state: State::empty(),
+            inherit: State::empty(),
+            state_source: false,
             flow_size: 0,
             flow_resized: false,
             scrolled: false,

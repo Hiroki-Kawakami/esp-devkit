@@ -16,20 +16,18 @@ use crate::component::{Component, Cx};
 use crate::element::{Children, Drag, Element, Ui};
 use crate::keyboard::{Keyboard, KeyboardPanel, KeyboardProps};
 use crate::text_buffer::{TextBuffer, TextInput};
-use crate::style::{Align, Justify, Part, Role, Shadow};
+use crate::style::{Align, Justify, Part, Role, State, StateStyle};
 pub use crate::theme::DEFAULT;
-use crate::theme::{Icon, WidgetLook};
+use crate::theme::Icon;
 
 const VALUE_RANGE: u16 = 255;
+const PART_STATES: State = State::from_bits_retain(State::PRESSED.bits() | State::CHECKED.bits() | State::DISABLED.bits());
 
-/// `look` is usually `ui.theme().widgets.button.primary` or `.secondary`.
-pub fn button<'a, M: Copy>(ui: &'a Ui<M>, label: &'a str, look: &'static WidgetLook, on_tap: M) -> Element<'a, M> {
-    let t = &ui.theme().widgets.button;
-    ui.row([ui.text(t.font, label)])
-        .look(look)
-        .height(t.height)
-        .padding_x(t.padding_x)
-        .radius(t.radius)
+/// `style` is usually a field of `ui.theme().widgets.button`.
+pub fn button<'a, M: Copy>(ui: &'a Ui<M>, label: &'a str, style: &'static StateStyle, on_tap: M) -> Element<'a, M> {
+    let theme = ui.theme();
+    ui.row([ui.text(theme.fonts.body, label).style(theme.widgets.button.label)])
+        .style(style)
         .align(Align::Center)
         .justify(Justify::Center)
         .role(Role::Button)
@@ -37,11 +35,8 @@ pub fn button<'a, M: Copy>(ui: &'a Ui<M>, label: &'a str, look: &'static WidgetL
 }
 
 pub fn icon_button<'a, M: Copy>(ui: &'a Ui<M>, icon: Icon, on_tap: M) -> Element<'a, M> {
-    let t = &ui.theme().widgets.icon_button;
     ui.row([ui.icon(icon)])
-        .look(t.look)
-        .size(t.size, t.size)
-        .radius(t.radius)
+        .style(ui.theme().widgets.icon_button.root)
         .align(Align::Center)
         .justify(Justify::Center)
         .role(Role::Button)
@@ -49,17 +44,14 @@ pub fn icon_button<'a, M: Copy>(ui: &'a Ui<M>, icon: Icon, on_tap: M) -> Element
 }
 
 pub fn list_item<'a, M: Copy>(ui: &'a Ui<M>, leading: Option<Icon>, title: &'a str, meta: Option<&'a str>, trailing: Option<Icon>, on_tap: M) -> Element<'a, M> {
-    let t = &ui.theme().widgets.list_item;
-    let lead = leading.map_or(ui.empty(), |icon| ui.icon(icon).color(ui.color(t.leading_color)).part_of(Part::Leading));
-    let tail = trailing.map_or(ui.empty(), |icon| ui.icon(icon).color(ui.color(t.trailing_color)).part_of(Part::Trailing));
-    let detail = meta.map_or(ui.empty(), |text| ui.text(t.meta_font, text).color(ui.color(t.meta_color)).part_of(Part::Meta));
-    ui.row([lead, ui.column([ui.text(t.title_font, title).ellipsis().part_of(Part::Title), detail]).gap(t.text_gap).grow(1), tail])
-        .look(t.look)
-        .height(t.height)
-        .padding_x(t.padding_x)
-        .gap(t.gap)
+    let theme = ui.theme();
+    let t = &theme.widgets.list_item;
+    let lead = leading.map_or(ui.empty(), |icon| ui.icon(icon).style(t.leading).part_of(Part::Leading));
+    let tail = trailing.map_or(ui.empty(), |icon| ui.icon(icon).style(t.trailing).part_of(Part::Trailing));
+    let detail = meta.map_or(ui.empty(), |text| ui.text(theme.fonts.caption, text).style(t.meta).part_of(Part::Meta));
+    ui.row([lead, ui.column([ui.text(theme.fonts.body, title).style(t.title).ellipsis().part_of(Part::Title), detail]).style(t.text).grow(1), tail])
+        .style(t.root)
         .align(Align::Center)
-        .border_bottom(ui.color(t.divider_color))
         .role(Role::Button)
         .on_tap(on_tap)
 }
@@ -68,19 +60,16 @@ pub fn list_item<'a, M: Copy>(ui: &'a Ui<M>, leading: Option<Icon>, title: &'a s
 pub fn top_bar<'a, M: Copy + 'static>(ui: &'a Ui<M>, back: Option<M>, title: &'a str, actions: Element<'a, M>) -> Element<'a, M> {
     let theme = ui.theme();
     let t = &theme.widgets.top_bar;
-    let label = ui.text(t.font, title).ellipsis().part_of(Part::Title);
+    let label = ui.text(theme.fonts.title, title).style(t.title).ellipsis().part_of(Part::Title);
     let lead = match back {
         Some(msg) => {
             let left = (t.back_height - theme.icons.back.font.px() as i16) / 2;
-            let right = (t.back_height - t.font.px() as i16) / 2;
+            let right = (t.back_height - label.font_px()) / 2;
             let button = ui
                 .row([ui.icon(theme.icons.back).shrink(0), label])
-                .look(t.back_look)
-                .height(t.back_height)
+                .style(t.back)
                 .padding_each(left, 0, right, 0)
                 .shrink(1)
-                .radius(t.back_radius)
-                .gap(t.gap)
                 .align(Align::Center)
                 .role(Role::Button)
                 .on_tap(msg)
@@ -90,33 +79,26 @@ pub fn top_bar<'a, M: Copy + 'static>(ui: &'a Ui<M>, back: Option<M>, title: &'a
         }
         None => label.padding_x(theme.widgets.unit.padding - t.padding_x).grow(1),
     };
-    ui.row([lead, actions])
-        .height(t.height)
-        .padding_x(t.padding_x)
-        .gap(t.gap)
-        .align(Align::Center)
-        .role(Role::Header)
+    ui.row([lead, actions]).style(t.root).align(Align::Center).role(Role::Header)
 }
 
 pub fn switch<'a, M: Copy>(ui: &'a Ui<M>, on: bool, on_tap: M) -> Element<'a, M> {
     let t = &ui.theme().widgets.switch;
-    let inset = (t.height - t.thumb) / 2;
-    let x = if on { t.width - t.thumb - inset } else { inset };
-    ui.column([ui.column([]).size(t.thumb, t.thumb).radius((t.thumb / 2) as u8).background(ui.color(t.thumb_color)).absolute(Some(x), Some(inset), None, None).part_of(Part::Thumb)])
-        .part_of(Part::Track)
-        .size(t.width, t.height)
-        .radius((t.height / 2) as u8)
-        .background(ui.color(if on { t.on_color } else { t.off_color }))
+    ui.row([ui.column([]).style(t.thumb).inherit_state(PART_STATES).part_of(Part::Thumb)])
+        .style(t.root)
+        .align(Align::Center)
+        .justify(if on { Justify::End } else { Justify::Start })
         .checked(on)
+        .state_source()
+        .part_of(Part::Track)
         .role(Role::Button)
         .on_tap(on_tap)
 }
 
 pub fn checkbox<'a, M: Copy>(ui: &'a Ui<M>, checked: bool, on_tap: M) -> Element<'a, M> {
     let t = &ui.theme().widgets.checkbox;
-    let mark_size = t.size - t.mark_inset * 2;
-    let mark = if checked { ui.column([]).size(mark_size, mark_size).radius(t.mark_radius).background(ui.color(t.mark_color)).absolute(Some(t.mark_inset), Some(t.mark_inset), None, None).part_of(Part::Mark) } else { ui.empty() };
-    ui.column([mark]).size(t.size, t.size).radius(t.radius).background(ui.color(if checked { t.on_color } else { t.off_color })).checked(checked).role(Role::Button).on_tap(on_tap)
+    let mark = if checked { ui.column([]).style(t.mark).inherit_state(PART_STATES).part_of(Part::Mark) } else { ui.empty() };
+    ui.row([mark]).style(t.root).align(Align::Center).justify(Justify::Center).checked(checked).state_source().role(Role::Button).on_tap(on_tap)
 }
 
 /// Where a drag lands on a slider, 0..=255.
@@ -128,30 +110,24 @@ pub fn slider_value(drag: Drag) -> u8 {
 /// `value` is 0..=255. Takes the width it is given.
 pub fn slider<'a, M: Copy>(ui: &'a Ui<M>, value: u8, on_drag: fn(Drag) -> M) -> Element<'a, M> {
     let t = &ui.theme().widgets.slider;
-    let top = (t.height - t.track) / 2;
-    let radius = (t.track / 2) as u8;
-    let thumb = ui.column([]).size(t.thumb, t.thumb).radius((t.thumb / 2) as u8).background(ui.color(t.thumb_color)).absolute(None, Some((t.track - t.thumb) / 2), Some(-t.thumb / 2), None).part_of(Part::Thumb);
-    ui.column([ui.column([
-        ui.column([]).height(t.track).radius(radius).background(ui.color(t.track_color)).absolute(Some(0), Some(top), Some(0), None).part_of(Part::Track),
-        ui.column([thumb]).width_fraction(u16::from(value), VALUE_RANGE).min_width(t.track).height(t.track).radius(radius).background(ui.color(t.active_color)).absolute(Some(0), Some(top), None, None).part_of(Part::Fill),
-    ])
-    .height(t.height)])
-    .padding_x(t.thumb / 2)
-    .on_drag(on_drag)
+    let thumb = ui.column([]).style(t.thumb).inherit_state(PART_STATES).part_of(Part::Thumb);
+    // No width, so the thumb stays centered on the end of the fill at any size.
+    let end = ui.column([thumb]).width(0).align(Align::Center).justify(Justify::Center).absolute(None, Some(0), Some(0), Some(0));
+    let fill = ui.column([end]).style(t.fill).width_fraction(u16::from(value), VALUE_RANGE).absolute(Some(0), Some(0), None, Some(0)).inherit_state(PART_STATES).part_of(Part::Fill);
+    let track = ui.column([fill]).style(t.track).inherit_state(PART_STATES).part_of(Part::Track);
+    ui.column([track]).style(t.root).justify(Justify::Center).state_source().on_drag(on_drag)
 }
 
 /// One choice out of `options`, which pair a label with what tapping it sends.
 pub fn segmented<'a, M: Copy>(ui: &'a Ui<M>, options: &[(&'a str, M)], selected: usize) -> Element<'a, M> {
-    let t = &ui.theme().widgets.segmented;
+    let theme = ui.theme();
+    let t = &theme.widgets.segmented;
     let segments: Vec<_> = options
         .iter()
         .enumerate()
         .map(|(i, &(label, on_tap))| {
-            ui.row([ui.text(t.font, label)])
-                .look(t.look)
-                .height(t.height - t.inset * 2)
-                .padding_x(t.item_padding_x)
-                .radius(t.item_radius)
+            ui.row([ui.text(theme.fonts.caption, label).style(t.label).part_of(Part::Label)])
+                .style(t.item)
                 .align(Align::Center)
                 .justify(Justify::Center)
                 .selected(i == selected)
@@ -160,19 +136,19 @@ pub fn segmented<'a, M: Copy>(ui: &'a Ui<M>, options: &[(&'a str, M)], selected:
                 .part_of(Part::Item)
         })
         .collect();
-    ui.row(segments).padding(t.inset).radius(t.radius).background(ui.color(t.background))
+    ui.row(segments).style(t.root)
 }
 
-fn dropdown_row<'a, M: Copy>(ui: &'a Ui<M>, label: &'a str, trailing: Element<'a, M>) -> Element<'a, M> {
-    let t = &ui.theme().widgets.dropdown;
-    ui.row([ui.text(t.font, label).ellipsis().grow(1), trailing]).height(t.height).padding_x(t.padding_x).gap(t.gap).align(Align::Center).role(Role::Button)
+fn dropdown_row<'a, M: Copy>(ui: &'a Ui<M>, label: &'a str, style: &'static StateStyle, trailing: Element<'a, M>) -> Element<'a, M> {
+    let theme = ui.theme();
+    ui.row([ui.text(theme.fonts.caption, label).style(theme.widgets.dropdown.label).ellipsis().grow(1), trailing]).style(style).align(Align::Center).role(Role::Button)
 }
 
 /// Shows `label`; `on_open` says where it is, for a `DropdownMenu`.
 pub fn dropdown<'a, M: Copy>(ui: &'a Ui<M>, label: &'a str, on_open: fn(Rect) -> M) -> Element<'a, M> {
     let theme = ui.theme();
     let t = &theme.widgets.dropdown;
-    dropdown_row(ui, label, ui.icon(theme.icons.expand).color(ui.color(t.icon_color)).shrink(0)).look(t.look).width(t.width).radius(t.radius).on_tap_at(on_open)
+    dropdown_row(ui, label, t.root, ui.icon(theme.icons.expand).style(t.icon).shrink(0)).on_tap_at(on_open)
 }
 
 /// A popup touching `anchor`: under it, or above it where it would not fit.
@@ -208,10 +184,10 @@ impl<M: Copy + 'static> Component for DropdownMenu<M> {
         let anchor = self.anchor;
         let height = self.options.len() as i16 * widgets.dropdown.height;
         let top = if anchor.bottom() + height > ui.screen_size().1 { anchor.y - height } else { anchor.bottom() };
-        let rows: Vec<_> = self.options.iter().enumerate().map(|(i, label)| dropdown_row(ui, label, ui.empty()).look(t.item_look).selected(i == self.selected).on_tap(Some(i))).collect();
+        let rows: Vec<_> = self.options.iter().enumerate().map(|(i, label)| dropdown_row(ui, label, t.item, ui.empty()).selected(i == self.selected).on_tap(Some(i))).collect();
         ui.column([
             ui.column([]).absolute(Some(0), Some(0), Some(0), Some(0)).id("menu-backdrop").on_tap(None),
-            ui.column(rows).width(anchor.w).look(t.look).radius(t.radius).clip().absolute(Some(anchor.x), Some(top), None, None).id("dropdown-menu"),
+            ui.column(rows).style(t.root).width(anchor.w).clip().absolute(Some(anchor.x), Some(top), None, None).id("dropdown-menu"),
         ])
     }
 }
@@ -224,8 +200,8 @@ pub fn table<'a, M: Copy>(ui: &'a Ui<M>, children: impl Children<'a, M>) -> Elem
 
 /// The title above a `table_section`.
 pub fn table_header<'a, M: Copy>(ui: &'a Ui<M>, title: &'a str) -> Element<'a, M> {
-    let t = &ui.theme().widgets.table_header;
-    ui.text(t.font, title).color(ui.color(t.color)).padding_each(t.indent, t.top, t.indent, t.bottom)
+    let theme = ui.theme();
+    ui.text(theme.fonts.caption, title).style(theme.widgets.table_header.root)
 }
 
 /// Rows in one rounded panel, with a divider between them.
@@ -234,41 +210,40 @@ pub fn table_section<'a, M: Copy>(ui: &'a Ui<M>, rows: impl IntoIterator<Item = 
     let mut children = Vec::new();
     for (i, row) in rows.into_iter().enumerate() {
         if i > 0 {
-            children.push(ui.column([ui.column([]).height(1).background(ui.color(t.divider_color))]).padding_x(t.divider_inset));
+            children.push(ui.column([ui.column([]).style(t.line)]).style(t.divider));
         }
         children.push(row);
     }
-    ui.column(children).radius(t.radius).background(ui.color(t.background)).clip()
+    ui.column(children).style(t.root).clip()
 }
 
 /// A row of `children`, as tall as they need above a minimum. Shows presses
 /// once it has `on_tap`.
 pub fn table_row<'a, M: Copy>(ui: &'a Ui<M>, children: impl Children<'a, M>) -> Element<'a, M> {
-    let t = &ui.theme().widgets.table_row;
-    ui.row(children).look(t.look).min_height(t.min_height).padding_x(t.padding_x).gap(t.gap).align(Align::Center)
+    ui.row(children).style(ui.theme().widgets.table_row.root).align(Align::Center)
 }
 
 /// Text taking the room left in a `table_row`, which pushes what follows to the end.
 pub fn table_label<'a, M: Copy>(ui: &'a Ui<M>, text: &'a str) -> Element<'a, M> {
-    ui.text(ui.theme().widgets.table_row.label_font, text).ellipsis().grow(1)
+    let theme = ui.theme();
+    ui.text(theme.fonts.body, text).style(theme.widgets.table_row.label).ellipsis().grow(1)
 }
 
 pub fn table_value<'a, M: Copy>(ui: &'a Ui<M>, text: &'a str) -> Element<'a, M> {
-    let t = &ui.theme().widgets.table_row;
-    ui.text(t.value_font, text).color(ui.color(t.value_color))
+    let theme = ui.theme();
+    ui.text(theme.fonts.body, text).style(theme.widgets.table_row.value)
 }
 
 pub fn table_chevron<'a, M: Copy>(ui: &'a Ui<M>) -> Element<'a, M> {
     let theme = ui.theme();
-    ui.icon(theme.icons.chevron).color(ui.color(theme.widgets.table_row.chevron_color)).shrink(0)
+    ui.icon(theme.icons.chevron).style(theme.widgets.table_row.chevron).shrink(0)
 }
 
 pub fn menu_item<'a, M: Copy>(ui: &'a Ui<M>, label: &'a str, on_tap: M) -> Element<'a, M> {
-    let t = &ui.theme().widgets.menu_item;
-    ui.row([ui.text(t.font, label).grow(1)])
-        .look(t.look)
-        .height(t.height)
-        .padding_x(t.padding_x)
+    let theme = ui.theme();
+    let t = &theme.widgets.menu_item;
+    ui.row([ui.text(theme.fonts.body, label).style(t.label).grow(1)])
+        .style(t.root)
         .align(Align::Center)
         .role(Role::Button)
         .on_tap(on_tap)
@@ -276,11 +251,9 @@ pub fn menu_item<'a, M: Copy>(ui: &'a Ui<M>, label: &'a str, on_tap: M) -> Eleme
 
 /// A panel near the top right, closing on a tap outside.
 pub fn menu<'a, M: Copy>(ui: &'a Ui<M>, top: i16, items: impl Children<'a, M>, on_close: M) -> Element<'a, M> {
-    let t = &ui.theme().widgets.menu;
-    let shadow = Shadow { y: t.shadow_y, blur: t.shadow_blur, color: ui.color(t.shadow_color) };
     ui.column([
         ui.column([]).absolute(Some(0), Some(0), Some(0), Some(0)).id("menu-backdrop").on_tap(on_close),
-        ui.column(items).width(t.width).padding_y(t.padding_y).radius(t.radius).background(ui.color(t.background)).shadow(shadow).absolute(None, Some(top), Some(t.right), None).part_of(Part::Panel),
+        ui.column(items).absolute(None, Some(top), None, None).style(ui.theme().widgets.menu.panel).part_of(Part::Panel),
     ])
     .absolute(Some(0), Some(0), Some(0), Some(0))
 }
@@ -291,33 +264,24 @@ pub fn modal<'a, M: Copy>(ui: &'a Ui<M>, content: Element<'a, M>, on_close: M) -
     let (width, height) = ui.screen_size();
     let left = (width - t.width) / 2;
     ui.column([
-        ui.column([]).absolute(Some(0), Some(0), Some(0), Some(0)).background(ui.color(t.scrim)).id("modal-scrim").on_tap(on_close).part_of(Part::Scrim),
-        ui.column([content]).width(t.width).padding(t.padding).radius(t.radius).background(ui.color(t.background)).absolute(Some(left), Some(height / 3), None, None).part_of(Part::Panel),
+        ui.column([]).style(t.scrim).absolute(Some(0), Some(0), Some(0), Some(0)).id("modal-scrim").on_tap(on_close).part_of(Part::Scrim),
+        ui.column([content]).style(t.panel).width(t.width).absolute(Some(left), Some(height / 3), None, None).part_of(Part::Panel),
     ])
     .absolute(Some(0), Some(0), Some(0), Some(0))
 }
 
 pub fn toast<'a, M: Copy>(ui: &'a Ui<M>, text: &'a str) -> Element<'a, M> {
-    let t = &ui.theme().widgets.toast;
-    ui.row([ui.text(t.font, text).color(ui.color(t.foreground))])
-        .padding_x(t.padding_x)
-        .padding_y(t.padding_y)
-        .radius(t.radius)
-        .background(ui.color(t.background))
-        .absolute(None, None, Some(t.margin), Some(t.margin))
+    let theme = ui.theme();
+    let t = &theme.widgets.toast;
+    ui.row([ui.text(theme.fonts.caption, text).style(t.label)]).style(t.root)
 }
 
 fn editable<'a, M: Copy>(ui: &'a Ui<M>, text: &'a str, cursor: usize, underline: Option<(usize, usize)>, on_input: fn(TextInput) -> M) -> Element<'a, M> {
-    let t = &ui.theme().widgets.text_field;
-    let element = ui.text(t.font, text).edit(cursor, underline);
-    let element = if text.is_empty() { element.color(ui.color(t.placeholder_color)) } else { element };
-    element
-        .look(t.look)
-        .radius(t.radius)
-        .padding_x(t.padding_x)
-        .padding_y(t.padding_y)
-        .role(Role::TextField)
-        .on_input(on_input)
+    let theme = ui.theme();
+    let t = &theme.widgets.text_field;
+    let element = ui.text(theme.fonts.body, text).edit(cursor, underline).style(t.root);
+    let element = if text.is_empty() { element.foreground(t.placeholder_color) } else { element };
+    element.role(Role::TextField).on_input(on_input)
 }
 
 /// One line of text. `buffer` belongs to the caller, which applies what

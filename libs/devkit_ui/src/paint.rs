@@ -11,7 +11,6 @@ use idf::heap::Caps;
 use crate::canvas::Canvas;
 use crate::node::{NONE, NodeContent, NodeId};
 use crate::style::Shadow;
-use crate::theme::{Border, Look};
 use crate::tree::Tree;
 
 /// Corner and shadow masks by size; a UI has a handful of each.
@@ -79,33 +78,33 @@ impl Tree {
         let rect = Rect::new(sx, sy, node.rect.w, node.rect.h);
         let style = &node.style;
         let palette = self.slots[usize::from(node.owner)].theme.palette(self.color_mode);
-        let look = style.look.map_or(Look::NONE, |l| l.resolve(node.state)).colored(palette);
-        let own = node.opacity.or(look.opacity).or(style.opacity);
+        let own = node.opacity.or(style.opacity);
         let opacity = own.map_or(inherited.opacity, |o| Color::rgba(0, 0, 0, inherited.opacity).with_opacity(o).a);
-        let down = Inherited { opacity, foreground: look.foreground.or(inherited.foreground) };
+        let down = Inherited { opacity, foreground: style.foreground.map(|role| palette.color(role)).or(inherited.foreground) };
 
         if let Some(Shadow { y: down, blur, color }) = style.shadow {
             let mask = effects.shadow(blur, style.radius);
-            list.shadow(rect.offset(0, i16::from(down)), mask, dim(color, opacity));
+            list.shadow(rect.offset(0, i16::from(down)), mask, dim(palette.color(color), opacity));
         }
-        if let Some(color) = look.background.or(style.background) {
-            let color = dim(color, opacity);
+        if let Some(role) = style.background {
+            let color = dim(palette.color(role), opacity);
             if style.radius > 0 {
                 list.round_rect(rect, effects.corner(style.radius), color);
             } else {
                 list.fill(rect, color);
             }
         }
-        let border = look.border.or(style.border).map(|Border { color, width }| ((style.radius > 0).then(|| effects.ring(style.radius, width)), i16::from(width), dim(color, opacity)));
+        let width = style.border_width;
+        let border = style.border_color.filter(|_| width > 0).map(|role| ((style.radius > 0).then(|| effects.ring(style.radius, width)), i16::from(width), dim(palette.color(role), opacity)));
         let round_clip = style.clip && style.radius > 0 && rect.w.min(rect.h) >= i16::from(style.radius) * 2 && matches!(node.content, NodeContent::Box | NodeContent::Child(_));
         if !round_clip && let Some((ring, width, color)) = border {
             list.border(rect, ring, width, color);
         }
-        if let Some(color) = style.border_top {
-            list.fill(Rect::new(sx, sy, rect.w, 1), dim(color, opacity));
+        if let Some(role) = style.border_top {
+            list.fill(Rect::new(sx, sy, rect.w, 1), dim(palette.color(role), opacity));
         }
-        if let Some(color) = style.border_bottom {
-            list.fill(Rect::new(sx, rect.bottom() - 1, rect.w, 1), dim(color, opacity));
+        if let Some(role) = style.border_bottom {
+            list.fill(Rect::new(sx, rect.bottom() - 1, rect.w, 1), dim(palette.color(role), opacity));
         }
         if style.scroll_border.is_some_and(|name| self.scrolled_away(node.owner, name)) {
             list.fill(Rect::new(sx, rect.bottom() - 1, rect.w, 1), dim(palette.divider, opacity));
@@ -115,7 +114,7 @@ impl Tree {
         let (cx, cy) = (x + i32::from(left), y + i32::from(top));
         match &node.content {
             NodeContent::Text(text) => {
-                let color = dim(text.color.or(down.foreground).unwrap_or(palette.on_surface), opacity);
+                let color = dim(down.foreground.unwrap_or(palette.on_surface), opacity);
                 if let Some(edit) = &text.edit {
                     let content = Rect::new(cx as i16, cy as i16, rect.w - left - right, rect.h - top - bottom);
                     let scroll = text.scroll(content.w);

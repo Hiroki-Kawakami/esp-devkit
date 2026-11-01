@@ -30,7 +30,7 @@ use crate::erased::Erased;
 use crate::nav::{NavigatorNode, Overlay, Root, Saved};
 use crate::node::{CanvasNode, ListNode, NONE, Node, NodeContent, NodeId, ScrollNode, TextNode};
 use crate::presenter::{ROW_GRID, Strips};
-use crate::style::{Dimension, Insets, Role, ScreenStyle, State};
+use crate::style::{Dimension, Insets, Role, ScreenStyle, State, Style};
 use crate::text_buffer::TextInput;
 use crate::theme::{ColorMode, Theme};
 
@@ -126,15 +126,21 @@ pub(crate) struct Tree {
     animations: Vec<(NodeId, Animation, u32)>,
     pub(crate) parked_strips: Option<Strips>,
     bump: Box<Bump>,
-    caps: Caps,
+    pub(crate) caps: Caps,
     depth: u32,
     pub(crate) queue: VecDeque<(u16, Erased)>,
     dirty: Vec<u16>,
     pub(crate) layout_dirty: bool,
+    /// The state of the nearest `state_source` around what is being reconciled.
+    source: State,
     pub(crate) damage: Vec<Rect>,
     pub(crate) contacts: Vec<Contact>,
     pub(crate) trackers: Vec<Tracker>,
     flings: Vec<(NodeId, f32)>,
+}
+
+fn shadow_extent(style: &Style) -> i16 {
+    style.shadow.map_or(0, |s| i16::from(s.blur) + i16::from(s.y.unsigned_abs()))
 }
 
 impl Tree {
@@ -176,6 +182,7 @@ impl Tree {
             queue: VecDeque::new(),
             dirty: Vec::new(),
             layout_dirty: true,
+            source: State::empty(),
             damage: Vec::new(),
             canvases: Vec::new(),
             external: NONE,
@@ -186,7 +193,7 @@ impl Tree {
             trackers: Vec::new(),
             flings: Vec::new(),
         };
-        tree.root = tree.alloc_node(Node::new(NodeContent::Box, 0));
+        tree.root = tree.alloc_node(Node::new(NodeContent::Box, 0, tree.caps));
         let nav = tree.new_navigator(TypeId::of::<Root>(), 0);
         tree.root_navigator = nav;
         tree.add_plane(nav);
@@ -195,7 +202,7 @@ impl Tree {
         tree.seed_navigator(nav, root);
         let overlay = tree.new_navigator(TypeId::of::<Overlay>(), 0);
         tree.add_plane(overlay);
-        tree.popups = tree.alloc_node(Node::new(NodeContent::Box, 0));
+        tree.popups = tree.alloc_node(Node::new(NodeContent::Box, 0, tree.caps));
         tree.add_plane(tree.popups);
         tree
     }
@@ -224,7 +231,7 @@ impl Tree {
     /// the space it covers. Must come before the first update.
     pub(crate) fn add_chrome<C: crate::component::Component>(&mut self, component: C, insets: Insets) -> u16 {
         let slot = self.alloc_slot();
-        let node = self.alloc_node(Node::new(NodeContent::Child(slot), slot));
+        let node = self.alloc_node(Node::new(NodeContent::Child(slot), slot, self.caps));
         let index = usize::from(slot);
         self.slots[index].host = Some(Box::new(Host::<C>::new(component, None)));
         self.slots[index].node = node;
@@ -285,6 +292,7 @@ impl Tree {
         for index in 0..self.contacts.len() {
             let contact = self.contacts[index];
             self.set_pressed(contact.tap, false);
+            self.set_pressed(contact.drag, false);
             self.send_drag(contact.drag, contact.last, true);
             let contact = &mut self.contacts[index];
             (contact.tap, contact.scroller, contact.drag, contact.gesture) = (NONE, NONE, NONE, NONE);
@@ -398,7 +406,9 @@ impl Tree {
         let node = self.slots[index].node;
         let Some(host) = self.slots[index].host.take() else { return };
         self.depth += 1;
+        let source = core::mem::take(&mut self.source);
         host.build(self, slot, node);
+        self.source = source;
         self.depth -= 1;
         self.slots[index].host = Some(host);
         self.dirty.retain(|d| *d != slot);
@@ -497,15 +507,78 @@ impl Tree {
         }
     }
 
-    fn apply_common<M: Copy>(&mut self, id: NodeId, element: &Element<'_, M>) {
+    /// Makes `node.style` what `base` comes to in the node's state.
+    fn restyle(&mut self, id: NodeId, base: Style) {
         let node = &mut self.nodes[id as usize];
-        if !node.style.layout_eq(&element.style) {
+        let mut style = base;
+        let selected = style.resolve(node.state, &node.when);
+        if !node.style.layout_eq(&style) {
             self.layout_dirty = true;
         }
-        if node.style != element.style {
+        if node.style != style {
             node.paint_dirty = true;
+            if node.style.shadow != style.shadow {
+                self.damage.push(node.screen.expand(shadow_extent(&node.style)));
+            }
         }
-        node.style = element.style;
+        node.style = style;
+        match &mut node.base {
+            Some(kept) if selected => **kept = base,
+            _ => node.base = selected.then(|| Box::new_in(base, self.caps)),
+        }
+    }
+
+    /// Brings a node's state and style up to date with `own_state` and
+    /// `source_state`, and passes the state on.
+    fn update_state(&mut self, id: NodeId) {
+        let node = &mut self.nodes[id as usize];
+        let state = node.own_state | node.source_state;
+        if state == node.state {
+            return;
+        }
+        node.state = state;
+        let base = node.base.as_deref().copied().unwrap_or(node.style);
+        let source = node.state_source;
+        self.restyle(id, base);
+        if source {
+            self.pass_state(id, state);
+        }
+    }
+
+    fn pass_state(&mut self, id: NodeId, state: State) {
+        let owner = self.nodes[id as usize].owner;
+        let mut child = self.nodes[id as usize].first_child;
+        while child != NONE {
+            let node = &mut self.nodes[child as usize];
+            let (next, source) = (node.next, node.state_source);
+            if node.owner == owner {
+                node.source_state = state & node.inherit;
+                self.update_state(child);
+                if !source {
+                    self.pass_state(child, state);
+                }
+            }
+            child = next;
+        }
+    }
+
+    fn set_state(&mut self, id: NodeId, state: State, on: bool) {
+        self.nodes[id as usize].own_state.set(state, on);
+        self.update_state(id);
+    }
+
+    fn reconcile_inside<M: Copy>(&mut self, owner: u16, id: NodeId, element: &Element<'_, M>) {
+        let saved = self.source;
+        if element.state_source {
+            self.source = self.nodes[id as usize].state;
+        }
+        self.reconcile_children(owner, id, element.children());
+        self.source = saved;
+    }
+
+    fn apply_common<M: Copy>(&mut self, id: NodeId, element: &Element<'_, M>) {
+        let source = self.source;
+        let node = &mut self.nodes[id as usize];
         node.key = element.key;
         node.id = element.id;
         node.role = element.role;
@@ -521,12 +594,16 @@ impl Tree {
         node.keyboard = element.keyboard;
         node.input_kind = element.input_kind;
         node.repeat = element.repeat;
-        let kept = node.state & (State::PRESSED | State::HOVERED | State::FOCUSED);
-        let state = kept | element.state;
-        if state != node.state {
-            node.state = state;
-            node.paint_dirty = true;
+        node.own_state = (node.own_state & (State::PRESSED | State::HOVERED | State::FOCUSED)) | element.state;
+        node.source_state = source & element.inherit;
+        node.state = node.own_state | node.source_state;
+        node.inherit = element.inherit;
+        node.state_source = element.state_source;
+        if node.when.as_slice() != element.when {
+            node.when.clear();
+            node.when.extend_from_slice(element.when);
         }
+        self.restyle(id, element.style);
     }
 
     fn update_node<M: Copy>(&mut self, owner: u16, id: NodeId, element: &Element<'_, M>) {
@@ -534,7 +611,7 @@ impl Tree {
         self.nodes[id as usize].owner = owner;
         let node = &mut self.nodes[id as usize];
         match (&mut node.content, &element.content) {
-            (NodeContent::Text(text), Content::Text { font, text: string, color, options, edit }) => {
+            (NodeContent::Text(text), Content::Text { font, text: string, options, edit }) => {
                 if text.edit != *edit {
                     text.edit = *edit;
                     node.paint_dirty = true;
@@ -546,7 +623,6 @@ impl Tree {
                 if text.string != string.as_bytes() || !core::ptr::eq(text.font, *font) || !same_options {
                     text.string.clear();
                     text.string.extend_from_slice(string.as_bytes());
-                    text.color = *color;
                     node.paint_dirty = true;
                     let same_font = core::ptr::eq(text.font, *font) && same_options;
                     let size = (text.run.width(), text.run.height());
@@ -563,9 +639,6 @@ impl Tree {
                         text.laid_out = None;
                         self.layout_dirty = true;
                     }
-                } else if text.color != *color {
-                    text.color = *color;
-                    node.paint_dirty = true;
                 }
             }
             (NodeContent::Image { image, tint }, Content::Image { image: new, tint: new_tint }) => {
@@ -620,18 +693,18 @@ impl Tree {
             _ => {}
         }
         if !element.children().is_empty() || self.nodes[id as usize].first_child != NONE {
-            self.reconcile_children(owner, id, element.children());
+            self.reconcile_inside(owner, id, element);
         }
     }
 
     fn create_node<M: Copy>(&mut self, owner: u16, element: &Element<'_, M>) -> NodeId {
         let content = match element.content {
             Content::Empty | Content::Box => NodeContent::Box,
-            Content::Text { font, text, color, options, edit } => {
+            Content::Text { font, text, options, edit } => {
                 let run = devkit_gfx::TextRun::new_in(self.caps);
                 let mut string = Vec::with_capacity_in(text.len(), self.caps);
                 string.extend_from_slice(text.as_bytes());
-                NodeContent::Text(TextNode { font, string, color, options, run, laid_out: None, edit, scroll: Cell::new(0) })
+                NodeContent::Text(TextNode { font, string, options, run, laid_out: None, edit, scroll: Cell::new(0) })
             }
             Content::Image { image, tint } => NodeContent::Image { image, tint },
             Content::Scroll => NodeContent::Scroll(ScrollNode { offset: 0, content: 0 }),
@@ -647,7 +720,7 @@ impl Tree {
                 NodeContent::Navigator(navigator)
             }
         };
-        let id = self.alloc_node(Node::new(content, owner));
+        let id = self.alloc_node(Node::new(content, owner, self.caps));
         self.layout_dirty = true;
         self.apply_common(id, element);
         match element.content {
@@ -686,7 +759,7 @@ impl Tree {
             _ => {}
         }
         if !element.children().is_empty() {
-            self.reconcile_children(owner, id, element.children());
+            self.reconcile_inside(owner, id, element);
         }
         id
     }
@@ -717,7 +790,7 @@ impl Tree {
             let row = match found {
                 Ok(at) => rows[at].1,
                 Err(at) => {
-                    let row = self.alloc_node(Node::new(NodeContent::Box, owner));
+                    let row = self.alloc_node(Node::new(NodeContent::Box, owner, self.caps));
                     self.nodes[row as usize].parent = id;
                     rows.insert(at, (index as u32, row));
                     row
@@ -975,15 +1048,13 @@ impl Tree {
             return;
         }
         if self.focus != NONE {
-            let node = &mut self.nodes[self.focus as usize];
-            node.state.remove(State::FOCUSED);
-            node.paint_dirty = true;
+            self.set_state(self.focus, State::FOCUSED, false);
+            self.nodes[self.focus as usize].paint_dirty = true;
         }
         self.focus = id;
         if id != NONE {
-            let node = &mut self.nodes[id as usize];
-            node.state.insert(State::FOCUSED);
-            node.paint_dirty = true;
+            self.set_state(id, State::FOCUSED, true);
+            self.nodes[id as usize].paint_dirty = true;
         }
         self.caret_on = true;
         self.caret_ms = 0;
@@ -1005,7 +1076,7 @@ impl Tree {
     /// Adds the docked on-screen keyboard, under only the popups.
     pub(crate) fn add_keyboard(&mut self, mode: KeyboardMode) {
         let slot = self.alloc_slot();
-        let node = self.alloc_node(Node::new(NodeContent::Child(slot), slot));
+        let node = self.alloc_node(Node::new(NodeContent::Child(slot), slot, self.caps));
         let index = usize::from(slot);
         self.slots[index].host = Some(Box::new(Host::<KeyboardPanel>::new(KeyboardPanel::docked(), None)));
         self.slots[index].node = node;
@@ -1076,7 +1147,7 @@ impl Tree {
         let quiet = quiet || core::mem::take(&mut node.scrolled);
         let moved = node.screen != screen;
         if !quiet && (moved || node.paint_dirty) {
-            let extent = node.style.shadow.map_or(0, |s| i16::from(s.blur) + i16::from(s.y.unsigned_abs()));
+            let extent = shadow_extent(&node.style);
             let old = node.screen.expand(extent);
             let new = screen.expand(extent);
             self.damage.push(old);
@@ -1254,9 +1325,7 @@ impl Tree {
 
     pub(crate) fn set_pressed(&mut self, id: NodeId, pressed: bool) {
         if id != NONE {
-            let node = &mut self.nodes[id as usize];
-            node.state.set(State::PRESSED, pressed);
-            node.paint_dirty |= node.style.look.is_some();
+            self.set_state(id, State::PRESSED, pressed);
         }
     }
 
@@ -1314,6 +1383,7 @@ impl Tree {
         let gesture = if passive { NONE } else { gesture };
         self.flings.retain(|f| f.0 != hit.scroller);
         self.set_pressed(hit.tap, true);
+        self.set_pressed(hit.drag, true);
         self.send_drag(hit.drag, p, false);
         self.gesture_pressed(gesture, track, p, now_ms);
         self.contacts.push(Contact { passive, tap: hit.tap, scroller: hit.scroller, drag: hit.drag, gesture, ..contact });
@@ -1347,6 +1417,7 @@ impl Tree {
 
     fn release(&mut self, contact: Contact, now_ms: u32) {
         self.set_pressed(contact.tap, false);
+        self.set_pressed(contact.drag, false);
         self.send_drag(contact.drag, contact.last, true);
         let consumed = self.gesture_released(&contact, now_ms);
         if contact.dragging {
@@ -1462,7 +1533,7 @@ impl Tree {
 
     pub(crate) fn walk(&self, id: NodeId, f: &mut impl FnMut(NodeId, &Node)) {
         let node = &self.nodes[id as usize];
-        if node.screen.is_empty() && !matches!(node.content, NodeContent::Child(_)) {
+        if node.screen == Rect::default() && !matches!(node.content, NodeContent::Child(_)) {
             return;
         }
         f(id, node);

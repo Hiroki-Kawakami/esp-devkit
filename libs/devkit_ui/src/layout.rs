@@ -318,7 +318,8 @@ impl Tree {
         let (main, cross) = if vertical { (content.h, content.w) } else { (content.w, content.h) };
         let gap = if vertical { style.gap_y } else { style.gap_x };
         let (solved_w, solved_h) = self.solve_axis(id, style, main, cross, vertical);
-        let leftover = (main - if vertical { solved_h } else { solved_w }).max(0);
+        let room = main - if vertical { solved_h } else { solved_w };
+        let leftover = room.max(0);
         let mut count = 0;
         let mut child = self.first_flow(id);
         while child != NONE {
@@ -327,7 +328,7 @@ impl Tree {
         }
         let (mut position, spacing) = match style.justify {
             Justify::Start => (0, 0),
-            Justify::Center => (leftover / 2, 0),
+            Justify::Center => (room / 2, 0),
             Justify::End => (leftover, 0),
             Justify::SpaceBetween if count > 1 => (0, leftover / (count - 1)),
             Justify::SpaceBetween => (0, 0),

@@ -39,10 +39,10 @@ impl Component for StatusBar {
         let color = ui.colors().on_surface;
         let time = ui.format(format_args!("{:02}:{:02}:{:02}", self.seconds / 3600, self.seconds / 60 % 60, self.seconds % 60));
         ui.row([
-            ui.text(&CAPTION, time).color(color).id("clock").grow(1),
-            ui.icon(small_icon(icons::WIFI)).color(color),
-            ui.icon(small_icon(icons::BATTERY)).color(color),
-            ui.text(&CAPTION, "78%").color(color),
+            ui.text(&CAPTION, time).foreground(color).id("clock").grow(1),
+            ui.icon(small_icon(icons::WIFI)).foreground(color),
+            ui.icon(small_icon(icons::BATTERY)).foreground(color),
+            ui.text(&CAPTION, "78%").foreground(color),
         ])
         .height(ui.insets().top)
         .padding_x(24)

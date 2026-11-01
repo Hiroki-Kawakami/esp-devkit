@@ -308,10 +308,8 @@ A `theme` entry generates a `devkit_ui::ThemeAssets`, under its name in
       "widgets": {
         "unit": { "radius": 16 },
         "list_item": {
-          "height": 96,
-          "padding_x": "widgets.unit.padding",
-          "meta_font": "font.caption",
-          "meta_color": "vars.text_secondary"
+          "root": { "height": 96, "padding_x": "widgets.unit.padding" },
+          "meta": { "font": "font.caption", "foreground": "vars.text_secondary" }
         }
       }
     }
@@ -337,30 +335,44 @@ static THEME: Theme = Theme::new(&resources::TOUCH, &widgets::DEFAULT);
 - `widgets` maps a widget to the fields of its type: `list_item` is
   `ListItemTheme`, `unit` is `UnitTheme`, the base values with no widget of their
   own. The compiler checks the names and types in the generated `resources.rs`.
-  What the entry sets replaces the base field by field.
+  What the entry sets replaces the base key by key, inside styles too.
 - `vars` are names of the theme's own, for any value, and never reach the
   firmware. One that nothing uses gives a warning.
 - Values in `vars` and `widgets` are:
 
   | value | is |
   |---|---|
-  | `12` | a number |
+  | `12`, `true` | a number, a bool |
   | `"#rrggbb"`, `"#rrggbbaa"` | a color for both modes (`ColorRole::Fixed`) |
   | `"color.x"` | a name of `Palette` (a `ColorRole`) |
   | `"font.x"` | a name of `fonts` |
+  | `"Align.Center"` | a value of a `devkit_ui` enum |
   | `"vars.x"`, `"widgets.y.z"` | that value |
-  | `{ "base": ..., "states": [...] }` | a `WidgetLook` |
+  | an object | a `StateStyle` |
 
-- A look gives `base` and `states`, each entry a state and what changes in it,
-  applied in order. `pressed`, `hovered`, `focused`, `selected`, `disabled` and
-  `checked` exist. The parts are `background`, `foreground`, `border` and `opacity`.
+- In a style, each key is a `Prop` of that name, `padding_x` for `Prop::PaddingX`,
+  and an array gives several values: `"border": ["color.divider", 2]`. `font` is
+  for text. `states` maps a state to what changes in it, an object or a reference
+  to one, which can hold no `font`. `pressed`, `hovered`, `focused`, `selected`,
+  `disabled` and `checked` exist, and `selected|pressed` takes both. `extends` is a
+  style or a list of them to start from.
 
   ```json
   {
-    "base": { "background": "color.surface", "border": { "color": "color.divider", "width": 2 } },
-    "states": [["pressed", { "background": "color.pressed" }], ["disabled", { "opacity": 102 }]]
+    "vars": { "dimmed": { "opacity": 102 } },
+    "widgets": {
+      "button": {
+        "root": { "height": 72, "radius": 14, "states": { "disabled": "vars.dimmed" } },
+        "primary": {
+          "extends": "widgets.button.root",
+          "background": "color.primary",
+          "states": { "pressed": { "background": "color.primary_pressed" } }
+        }
+      }
+    }
   }
   ```
+
 - A theme can be generated for each entry, to switch between them.
 
 ### Binary format

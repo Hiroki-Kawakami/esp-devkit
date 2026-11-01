@@ -26,6 +26,7 @@ use crate::widgets;
 const SCREEN: Rect = Rect::new(0, 0, 400, 600);
 const WHITE: Color = Color::rgb(255, 255, 255);
 const RED: Color = Color::rgb(255, 0, 0);
+const BLUE: Color = Color::rgb(0, 0, 255);
 
 fn chain() -> &'static FontChain {
     let mut records = Vec::new();
@@ -65,58 +66,44 @@ fn chain() -> &'static FontChain {
     Box::leak(Box::new(FontChain::new(Vec::leak(alloc::vec![font]))))
 }
 
-const DISABLED: (State, Look) = (State::DISABLED, Look::opacity(102));
-const PRESSED: (State, Look) = (State::PRESSED, Look::background(ColorRole::Pressed));
-const FRAMED: Look = Look { border: Some(LookBorder { color: ColorRole::Divider, width: 2 }), ..Look::fill(ColorRole::Surface, ColorRole::OnSurface) };
+static EMPTY: StateStyle = StateStyle::EMPTY;
+static SLIDER_ROOT: StateStyle = StateStyle { base: &[Prop::Height(48), Prop::PaddingX(14)], ..StateStyle::EMPTY };
+static SLIDER_TRACK: StateStyle = StateStyle { base: &[Prop::Height(8), Prop::Background(ColorRole::Selected)], ..StateStyle::EMPTY };
+static SLIDER_FILL: StateStyle = StateStyle { base: &[Prop::MinWidth(8), Prop::Background(ColorRole::Primary)], ..StateStyle::EMPTY };
+static SLIDER_THUMB: StateStyle = StateStyle { base: &[Prop::Width(28), Prop::Height(28)], ..StateStyle::EMPTY };
+static ICON_BUTTON: StateStyle = StateStyle { base: &[Prop::Width(64), Prop::Height(64)], ..StateStyle::EMPTY };
+static TOP_BAR: StateStyle = StateStyle { base: &[Prop::Height(80), Prop::PaddingX(8), Prop::Gap(12)], ..StateStyle::EMPTY };
+static TOP_BAR_BACK: StateStyle = StateStyle { base: &[Prop::Height(64), Prop::Gap(12)], ..StateStyle::EMPTY };
+static DROPDOWN_ITEM: StateStyle = StateStyle { base: &[Prop::Height(56)], ..StateStyle::EMPTY };
+static DROPDOWN_MENU: StateStyle = StateStyle { base: &[Prop::Radius(14), Prop::Border(ColorRole::Divider, 2)], ..StateStyle::EMPTY };
+static TABLE_ROW: StateStyle = StateStyle { base: &[Prop::MinHeight(88), Prop::PaddingX(24), Prop::Gap(12)], ..StateStyle::EMPTY };
+static TABLE_LINE: StateStyle = StateStyle { base: &[Prop::Height(1)], ..StateStyle::EMPTY };
+static KEY: StateStyle = StateStyle { states: &[(State::PRESSED, &[Prop::Background(ColorRole::Pressed)])], ..StateStyle::EMPTY };
 
-static BUTTON: WidgetLook = WidgetLook {
-    base: Look::fill(ColorRole::Primary, ColorRole::OnPrimary),
-    states: &[(State::PRESSED, Look::background(ColorRole::PrimaryPressed)), DISABLED],
+static WIDGETS: Widgets = Widgets {
+    unit: UnitTheme { padding: 24, gap: 12, radius: 14 },
+    button: ButtonTheme { root: &EMPTY, label: &EMPTY, primary: &EMPTY, secondary: &EMPTY, destructive: &EMPTY, plain: &EMPTY, navigation: &EMPTY, primary_outline: &EMPTY, secondary_outline: &EMPTY, destructive_outline: &EMPTY, plain_outline: &EMPTY },
+    icon_button: IconButtonTheme { root: &ICON_BUTTON },
+    list: ListTheme { row_height: 80 },
+    list_item: ListItemTheme { root: &EMPTY, text: &EMPTY, title: &EMPTY, meta: &EMPTY, leading: &EMPTY, trailing: &EMPTY },
+    top_bar: TopBarTheme { back_height: 64, padding_x: 8, root: &TOP_BAR, title: &EMPTY, back: &TOP_BAR_BACK },
+    switch: SwitchTheme { root: &EMPTY, thumb: &EMPTY },
+    checkbox: CheckboxTheme { root: &EMPTY, mark: &EMPTY },
+    slider: SliderTheme { root: &SLIDER_ROOT, track: &SLIDER_TRACK, fill: &SLIDER_FILL, thumb: &SLIDER_THUMB },
+    segmented: SegmentedTheme { root: &EMPTY, item: &EMPTY, label: &EMPTY },
+    dropdown: DropdownTheme { height: 56, root: &DROPDOWN_ITEM, label: &EMPTY, icon: &EMPTY },
+    dropdown_menu: DropdownMenuTheme { root: &DROPDOWN_MENU, item: &DROPDOWN_ITEM },
+    table: TableTheme { padding: 24 },
+    table_header: TableHeaderTheme { root: &EMPTY },
+    table_section: TableSectionTheme { root: &EMPTY, divider: &EMPTY, line: &TABLE_LINE },
+    table_row: TableRowTheme { root: &TABLE_ROW, label: &EMPTY, value: &EMPTY, chevron: &EMPTY },
+    menu: MenuTheme { panel: &EMPTY },
+    menu_item: MenuItemTheme { root: &EMPTY, label: &EMPTY },
+    modal: ModalTheme { width: 360, scrim: &EMPTY, panel: &EMPTY },
+    toast: ToastTheme { root: &EMPTY, label: &EMPTY },
+    text_field: TextFieldTheme { placeholder_color: ColorRole::Muted, area_min_height: 160, root: &EMPTY },
+    keyboard: KeyboardTheme { key_height: 80, gap: 8, root: &EMPTY, label: &EMPTY, key: &KEY, special: &KEY, primary: &KEY },
 };
-static BUTTON_SECONDARY: WidgetLook = WidgetLook { base: FRAMED, states: &[PRESSED, DISABLED] };
-static ICON_BUTTON: WidgetLook = WidgetLook { base: Look::foreground(ColorRole::OnSurface), states: &[PRESSED, DISABLED] };
-static ROW: WidgetLook = WidgetLook {
-    base: Look::fill(ColorRole::Surface, ColorRole::OnSurface),
-    states: &[(State::SELECTED, Look::background(ColorRole::Selected)), PRESSED, DISABLED],
-};
-static MENU_ITEM: WidgetLook = WidgetLook { base: Look::foreground(ColorRole::OnSurface), states: &[PRESSED, DISABLED] };
-static SEGMENT: WidgetLook = WidgetLook {
-    base: Look::foreground(ColorRole::OnSurface),
-    states: &[PRESSED, (State::SELECTED, Look::fill(ColorRole::Primary, ColorRole::OnPrimary)), DISABLED],
-};
-static DROPDOWN_ITEM: WidgetLook = WidgetLook {
-    base: Look::foreground(ColorRole::OnSurface),
-    states: &[(State::SELECTED, Look::background(ColorRole::Selected)), PRESSED, DISABLED],
-};
-static TEXT_FIELD: WidgetLook = WidgetLook { base: FRAMED, states: &[(State::FOCUSED, Look::outline(ColorRole::Primary, 2)), DISABLED] };
-static KEY: WidgetLook = WidgetLook { base: Look::fill(ColorRole::Surface, ColorRole::OnSurface), states: &[PRESSED] };
-static KEY_SPECIAL: WidgetLook = WidgetLook { base: Look::fill(ColorRole::Divider, ColorRole::OnSurface), states: &[PRESSED] };
-
-fn theme_widgets(font: &'static FontChain) -> Widgets {
-    Widgets {
-        unit: UnitTheme { padding: 24, gap: 12, radius: 14 },
-        button: ButtonTheme { height: 72, padding_x: 24, radius: 14, font, primary: &BUTTON, secondary: &BUTTON_SECONDARY },
-        icon_button: IconButtonTheme { size: 64, radius: 32, look: &ICON_BUTTON },
-        list_item: ListItemTheme { height: 80, padding_x: 24, gap: 24, text_gap: 4, title_font: font, meta_font: font, leading_color: ColorRole::Muted, meta_color: ColorRole::Muted, trailing_color: ColorRole::Divider, divider_color: ColorRole::Divider, look: &ROW },
-        top_bar: TopBarTheme { height: 80, padding_x: 8, gap: 12, font, back_height: 64, back_radius: 14, back_look: &ICON_BUTTON },
-        switch: SwitchTheme { width: 64, height: 36, thumb: 28, on_color: ColorRole::Primary, off_color: ColorRole::Divider, thumb_color: ColorRole::Surface },
-        checkbox: CheckboxTheme { size: 28, radius: 6, mark_inset: 6, mark_radius: 4, on_color: ColorRole::Primary, off_color: ColorRole::Divider, mark_color: ColorRole::OnPrimary },
-        slider: SliderTheme { height: 48, track: 8, thumb: 28, active_color: ColorRole::Primary, track_color: ColorRole::Selected, thumb_color: ColorRole::Primary },
-        segmented: SegmentedTheme { height: 56, inset: 4, radius: 14, background: ColorRole::Background, item_padding_x: 20, item_radius: 10, font, look: &SEGMENT },
-        dropdown: DropdownTheme { width: 260, height: 56, padding_x: 12, gap: 12, radius: 14, font, icon_color: ColorRole::Muted, look: &BUTTON_SECONDARY },
-        dropdown_menu: DropdownMenuTheme { radius: 14, look: &BUTTON_SECONDARY, item_look: &DROPDOWN_ITEM },
-        table: TableTheme { padding: 24 },
-        table_header: TableHeaderTheme { indent: 8, top: 32, bottom: 12, font, color: ColorRole::Muted },
-        table_section: TableSectionTheme { radius: 24, background: ColorRole::Surface, divider_color: ColorRole::Divider, divider_inset: 24 },
-        table_row: TableRowTheme { min_height: 88, padding_x: 24, gap: 12, label_font: font, value_font: font, value_color: ColorRole::Muted, chevron_color: ColorRole::Muted, look: &MENU_ITEM },
-        menu: MenuTheme { width: 380, padding_y: 12, radius: 20, right: 16, background: ColorRole::Surface, shadow_y: 12, shadow_blur: 32, shadow_color: ColorRole::Shadow },
-        menu_item: MenuItemTheme { height: 72, padding_x: 24, font, look: &MENU_ITEM },
-        modal: ModalTheme { width: 560, padding: 24, radius: 20, background: ColorRole::Surface, scrim: ColorRole::Scrim },
-        toast: ToastTheme { padding_x: 24, padding_y: 12, radius: 14, margin: 24, font, background: ColorRole::OnSurface, foreground: ColorRole::Surface },
-        text_field: TextFieldTheme { padding_x: 12, padding_y: 12, radius: 14, font, placeholder_color: ColorRole::Muted, area_min_height: 160, look: &TEXT_FIELD },
-        keyboard: KeyboardTheme { key_height: 80, gap: 8, radius: 7, font, background: ColorRole::Background, key: &KEY, special: &KEY_SPECIAL, primary: &BUTTON },
-    }
-}
 
 fn theme() -> &'static Theme {
     let chain = chain();
@@ -130,13 +117,15 @@ fn theme() -> &'static Theme {
         primary: Color::rgb(33, 150, 243),
         on_primary: Color::rgb(255, 255, 255),
         primary_pressed: Color::rgb(25, 118, 210),
+        destructive: Color::rgb(211, 47, 47),
+        on_destructive: Color::rgb(255, 255, 255),
         divider: Color::rgb(217, 221, 224),
         pressed: Color::rgb(223, 227, 230),
         selected: Color::rgb(227, 242, 253),
         scrim: Color::rgba(0, 0, 0, 128),
         shadow: Color::rgba(17, 20, 24, 56),
     };
-    let assets = ThemeAssets { light: colors, dark: None, fonts: Fonts { title: chain, body: chain, caption: chain }, icons, widgets: theme_widgets(chain) };
+    let assets = ThemeAssets { light: colors, dark: None, fonts: Fonts { title: chain, body: chain, caption: chain }, icons, widgets: WIDGETS };
     Box::leak(Box::new(Theme::new(&assets, &widgets::DEFAULT)))
 }
 
@@ -157,9 +146,10 @@ fn tap(tree: &mut Tree, id: &str) {
     tree.update();
 }
 
-static PRESS_LOOK: WidgetLook = WidgetLook {
-    base: Look::background(ColorRole::Fixed(RED)),
-    states: &[(State::PRESSED, Look::background(ColorRole::Fixed(WHITE))), (State::DISABLED, Look::opacity(100))],
+static PRESS_STYLE: StateStyle = StateStyle {
+    font: None,
+    base: &[Prop::Background(ColorRole::Fixed(RED))],
+    states: &[(State::PRESSED, &[Prop::Background(ColorRole::Fixed(WHITE))]), (State::DISABLED, &[Prop::Opacity(100)])],
 };
 
 #[derive(Clone, Copy)]
@@ -213,7 +203,7 @@ impl Component for Sample {
         ui.column([
             ui.row([
                 ui.text(self.font, ui.format(format_args!("n={}", self.count))).id("count").grow(1),
-                ui.column([]).size(40, 30).look(&PRESS_LOOK).id("button").on_tap(Msg::Inc),
+                ui.column([]).size(40, 30).style(&PRESS_STYLE).id("button").on_tap(Msg::Inc),
             ])
             .height(40)
             .padding_x(10)
@@ -1063,14 +1053,14 @@ fn a_drag_follows_the_contact_without_a_tap_slop() {
     let slider = rect_of(&tree, "slider");
     tree.touch(&[(0, (slider.x + 100, slider.y + 10))], 0);
     tree.update();
-    let inner = tree.nodes[tree.find("slider").unwrap() as usize].first_child;
-    let track = tree.nodes[inner as usize].first_child;
-    let fill = tree.nodes[track as usize].next;
+    let track = tree.nodes[tree.find("slider").unwrap() as usize].first_child;
+    let fill = tree.nodes[track as usize].first_child;
     assert_eq!(tree.nodes[fill as usize].rect.w, 85);
     tree.touch(&[(0, (slider.x + 150, slider.y + 10))], 16);
     tree.update();
     assert_eq!(tree.nodes[fill as usize].rect.w, 135);
-    let thumb = tree.nodes[tree.nodes[fill as usize].first_child as usize].screen;
+    let end = tree.nodes[fill as usize].first_child;
+    let thumb = tree.nodes[tree.nodes[end as usize].first_child as usize].screen;
     assert_eq!(thumb.x + thumb.w / 2, tree.nodes[fill as usize].screen.right());
     tree.touch(&[], 32);
     tree.update();
@@ -1089,8 +1079,8 @@ impl Component for Parts {
         ui.column([
             widgets::slider(ui, 0, |_| ()).part(Part::Thumb, |thumb| thumb.background(RED).id("thumb")).part(Part::Fill, |fill| fill.id("fill")),
             widgets::switch(ui, false, ()).part(Part::Track, |track| track.background(RED).id("track")),
-            widgets::list_item(ui, None, "Title", None, None, ()).part(Part::Meta, |meta| meta.id("no-meta")).part(Part::Title, |title| title.color(RED).id("title")),
-            widgets::segmented(ui, &[("A", ()), ("B", ())], 0).part(Part::Item, |item| item.background(WHITE)).id("segments"),
+            widgets::list_item(ui, None, "Title", None, None, ()).part(Part::Meta, |meta| meta.id("no-meta")).part(Part::Title, |title| title.foreground(RED).id("title")),
+            widgets::segmented(ui, &[("A", ()), ("B", ())], 9).part(Part::Item, |item| item.background(WHITE)).part(Part::Label, |label| label.font(ui.theme().fonts.title).id("label")).id("segments"),
             ui.row([widgets::slider(ui, 0, |_| ()).width(200)]).part(Part::Thumb, |thumb| thumb.id("nested-thumb")),
         ])
     }
@@ -1101,17 +1091,18 @@ fn a_part_reaches_the_pieces_of_a_widget_inside_it() {
     let mut tree = Tree::new(Parts, SCREEN, Caps::INTERNAL, theme());
     settle(&mut tree);
     let background = |id: &str| tree.nodes[tree.find(id).unwrap() as usize].style.background;
-    assert_eq!(background("thumb"), Some(RED));
+    assert_eq!(background("thumb"), Some(RED.into()));
     assert!(background("fill").is_some(), "the rest of the widget stays");
-    assert_eq!(background("track"), Some(RED), "the root can be a part");
+    assert_eq!(background("track"), Some(RED.into()), "the root can be a part");
     assert!(tree.find("title").is_some());
     assert!(tree.find("no-meta").is_none(), "an absent part does nothing");
     assert!(tree.find("nested-thumb").is_some());
+    assert!(tree.find("label").is_some());
 
     let mut item = tree.nodes[tree.find("segments").unwrap() as usize].first_child;
     let mut items = 0;
     while item != NONE {
-        assert_eq!(tree.nodes[item as usize].style.background, Some(WHITE));
+        assert_eq!(tree.nodes[item as usize].style.background, Some(WHITE.into()));
         item = tree.nodes[item as usize].next;
         items += 1;
     }
@@ -1243,15 +1234,130 @@ fn disabled_nodes_take_no_input_and_block_what_is_below() {
 }
 
 #[test]
-fn looks_stack_by_state_and_foreground_reaches_text() {
-    static LOOK: WidgetLook = WidgetLook {
-        base: Look::fill(ColorRole::Fixed(RED), ColorRole::Fixed(WHITE)),
-        states: &[(State::SELECTED, Look::background(ColorRole::Fixed(WHITE))), (State::PRESSED, Look { foreground: Some(ColorRole::Fixed(RED)), ..Look::NONE })],
+fn the_heavier_state_wins_in_any_order() {
+    const FIXED: fn(Color) -> Option<ColorRole> = |color| Some(ColorRole::Fixed(color));
+    static STYLE: StateStyle = StateStyle {
+        font: None,
+        base: &[],
+        states: &[
+            (State::PRESSED, &[Prop::Background(ColorRole::Fixed(WHITE))]),
+            (State::SELECTED, &[Prop::Background(ColorRole::Fixed(RED)), Prop::Foreground(ColorRole::Fixed(RED))]),
+        ],
     };
-    assert_eq!(LOOK.resolve(State::empty()).background, Some(ColorRole::Fixed(RED)));
-    assert_eq!(LOOK.resolve(State::SELECTED).background, Some(ColorRole::Fixed(WHITE)));
-    let both = LOOK.resolve(State::SELECTED | State::PRESSED);
-    assert_eq!((both.background, both.foreground), (Some(ColorRole::Fixed(WHITE)), Some(ColorRole::Fixed(RED))));
+    let resolved = |state: State, when: &[(State, Prop)]| {
+        let mut style = Style::default();
+        style.states = Some(&STYLE);
+        style.background = FIXED(BLUE);
+        style.resolve(state, when);
+        style
+    };
+    assert_eq!(resolved(State::empty(), &[]).background, FIXED(BLUE), "a node's own value stays without a state");
+    assert_eq!(resolved(State::SELECTED, &[]).background, FIXED(RED));
+    let both = resolved(State::SELECTED | State::PRESSED, &[]);
+    assert_eq!((both.background, both.foreground), (FIXED(WHITE), FIXED(RED)));
+
+    let selected = [(State::SELECTED, Prop::Background(ColorRole::Fixed(BLUE)))];
+    assert_eq!(resolved(State::SELECTED, &selected).background, FIXED(BLUE), "within a state, when is above the table");
+    assert_eq!(resolved(State::SELECTED | State::PRESSED, &selected).background, FIXED(WHITE), "a lighter when leaves a heavier table");
+    let combined = [(State::SELECTED | State::PRESSED, Prop::Background(ColorRole::Fixed(BLUE)))];
+    assert_eq!(resolved(State::SELECTED | State::PRESSED, &combined).background, FIXED(BLUE), "both states together are heavier");
+}
+
+struct Stateful;
+
+impl Screen for Stateful {}
+
+impl Component for Stateful {
+    type Msg = ();
+
+    fn update(&mut self, _: (), _: &mut Cx<Self>) {}
+
+    fn view<'a>(&'a self, ui: &'a Ui<()>) -> Element<'a, ()> {
+        let pressed_height = ui.screen_size().1 / 10;
+        ui.column([
+            ui.row([]).height(40).when(State::PRESSED, &[Prop::Height(pressed_height)]).id("grows").on_tap(()),
+            ui.row([]).height(10).id("after"),
+            widgets::slider(ui, 0, |_| ()).width(200).id("slider").part(Part::Thumb, |thumb| thumb.size(40, 40).id("thumb")),
+            ui.row([widgets::slider(ui, 0, |_| ()).width(200).part(Part::Thumb, |thumb| thumb.id("inner-thumb"))]).padding(20).state_source().id("outer").on_tap(()),
+        ])
+    }
+}
+
+#[test]
+fn a_state_lays_out_again_and_gives_the_values_back() {
+    let mut tree = Tree::new(Stateful, SCREEN, Caps::INTERNAL, theme());
+    settle(&mut tree);
+    let grows = rect_of(&tree, "grows");
+    assert_eq!((grows.h, rect_of(&tree, "after").y), (40, grows.y + 40));
+    tree.touch(&[(0, (grows.x + 5, grows.y + 5))], 0);
+    tree.update();
+    assert_eq!((rect_of(&tree, "grows").h, rect_of(&tree, "after").y), (60, grows.y + 60), "the value comes from a runtime when");
+    tree.touch(&[], 16);
+    tree.update();
+    assert_eq!((rect_of(&tree, "grows").h, rect_of(&tree, "after").y), (40, grows.y + 40));
+}
+
+#[test]
+fn a_drag_presses_and_parts_take_the_state_of_their_source() {
+    let mut tree = Tree::new(Stateful, SCREEN, Caps::INTERNAL, theme());
+    settle(&mut tree);
+    let pressed = |tree: &Tree, id: &str| tree.nodes[tree.find(id).unwrap() as usize].state.contains(State::PRESSED);
+    let slider = rect_of(&tree, "slider");
+    tree.touch(&[(0, (slider.x + 100, slider.y + 10))], 0);
+    tree.update();
+    assert!(pressed(&tree, "slider"));
+    assert!(pressed(&tree, "thumb"), "with no rebuild of the part");
+    assert!(!pressed(&tree, "inner-thumb"));
+    tree.touch(&[], 16);
+    tree.update();
+    assert!(!pressed(&tree, "slider") && !pressed(&tree, "thumb"));
+
+    let outer = rect_of(&tree, "outer");
+    tree.touch(&[(0, (outer.x + 5, outer.y + 5))], 32);
+    tree.update();
+    assert!(pressed(&tree, "outer"));
+    assert!(!pressed(&tree, "inner-thumb"), "a nearer source stops what comes from further out");
+    tree.touch(&[], 48);
+    tree.update();
+}
+
+#[test]
+fn a_thumb_of_any_size_stays_centered() {
+    let mut tree = Tree::new(Stateful, SCREEN, Caps::INTERNAL, theme());
+    settle(&mut tree);
+    let thumb = rect_of(&tree, "thumb");
+    let slider = rect_of(&tree, "slider");
+    assert_eq!((thumb.w, thumb.h), (40, 40));
+    assert_eq!(thumb.y + thumb.h / 2, slider.y + slider.h / 2);
+}
+
+struct TwoStyles;
+
+impl Screen for TwoStyles {}
+
+impl Component for TwoStyles {
+    type Msg = ();
+
+    fn update(&mut self, _: (), _: &mut Cx<Self>) {}
+
+    fn view<'a>(&'a self, ui: &'a Ui<()>) -> Element<'a, ()> {
+        static FIRST: StateStyle = StateStyle { font: None, base: &[Prop::Width(10), Prop::Height(10)], states: &[(State::PRESSED, &[Prop::Width(20)])] };
+        static SECOND: StateStyle = StateStyle { font: None, base: &[Prop::Height(30)], states: &[] };
+        ui.column([ui.row([]).style(&FIRST).style(&SECOND).align_self(Align::Start).id("styled").on_tap(())])
+    }
+}
+
+#[test]
+fn a_second_style_adds_its_base_and_replaces_the_states() {
+    let mut tree = Tree::new(TwoStyles, SCREEN, Caps::INTERNAL, theme());
+    settle(&mut tree);
+    let styled = rect_of(&tree, "styled");
+    assert_eq!((styled.w, styled.h), (10, 30));
+    tree.touch(&[(0, (styled.x + 5, styled.y + 5))], 0);
+    tree.update();
+    assert_eq!(rect_of(&tree, "styled").w, 10);
+    tree.touch(&[], 16);
+    tree.update();
 }
 
 #[test]
@@ -2342,8 +2448,7 @@ fn a_color_mode_swaps_the_palette_under_the_same_looks() {
     assert_eq!(dark.palette(ColorMode::Dark).surface, Color::rgb(1, 2, 3));
     assert_eq!(theme().palette(ColorMode::Dark).surface, theme().light.surface, "no dark colors stays light");
 
-    let look = dark.widgets.list_item.look.base;
-    assert_eq!(look.colored(dark.palette(ColorMode::Dark)).background, Some(Color::rgb(1, 2, 3)));
+    assert_eq!(dark.palette(ColorMode::Dark).color(ColorRole::Surface), Color::rgb(1, 2, 3));
 }
 
 #[test]

@@ -9,9 +9,9 @@ use devkit_gfx::FontChain;
 
 use crate::component::{Child, Component, Cx};
 use crate::element::{Element, Ui};
-use crate::style::{Align, Justify, Role};
+use crate::style::{Align, Justify, Role, StateStyle};
 use crate::text_buffer::TextInput;
-use crate::theme::{Icon, Icons, Theme, WidgetLook};
+use crate::theme::{Icon, Icons, Theme};
 
 pub type LayerId = u8;
 
@@ -91,14 +91,14 @@ pub struct Key {
     action: KeyAction,
     width: u8,
     role: KeyRole,
-    look: Option<&'static WidgetLook>,
+    style: Option<&'static StateStyle>,
     font: Option<&'static FontChain>,
     repeat: bool,
 }
 
 impl Key {
     pub const fn action(label: KeyLabel, action: KeyAction) -> Self {
-        Self { label, action, width: QUARTER, role: KeyRole::Normal, look: None, font: None, repeat: false }
+        Self { label, action, width: QUARTER, role: KeyRole::Normal, style: None, font: None, repeat: false }
     }
 
     /// A key typing its own label.
@@ -128,8 +128,8 @@ impl Key {
         self
     }
 
-    pub const fn look(mut self, look: &'static WidgetLook) -> Self {
-        self.look = Some(look);
+    pub const fn style(mut self, style: &'static StateStyle) -> Self {
+        self.style = Some(style);
         self
     }
 
@@ -362,7 +362,7 @@ impl Component for KeyboardPanel {
                 ui.row(items).gap(k.gap).height(k.key_height)
             })
             .collect();
-        let panel = ui.column(rows).gap(k.gap).padding(k.gap).background(ui.color(k.background)).keep_focus().on_tap(KeyboardMsg::Panel).id("keyboard");
+        let panel = ui.column(rows).gap(k.gap).padding(k.gap).style(k.root).keep_focus().on_tap(KeyboardMsg::Panel).id("keyboard");
         match self.width {
             Some(width) => panel.width(width),
             None => panel.absolute(Some(0), None, Some(0), Some(0)),
@@ -387,17 +387,19 @@ fn key_element<'a>(ui: &'a Ui<KeyboardMsg>, key: &Key, row: u8, column: u8, widt
     if matches!(key.action, KeyAction::None) {
         return ui.column([]).width(width);
     }
-    let font = key.font.unwrap_or(k.font);
     let label = match key.label {
         KeyLabel::None => ui.empty(),
-        KeyLabel::Text(text) => ui.text(font, text).ellipsis(),
+        KeyLabel::Text(text) => {
+            let label = ui.text(theme.fonts.body, text).style(k.label).ellipsis();
+            key.font.map_or(label, |font| label.font(font))
+        }
         KeyLabel::Icon(pick) => ui.icon(pick(&theme.icons)),
         KeyLabel::Fixed(icon) => ui.icon(icon),
     };
-    let look = key.look.unwrap_or(match key.role {
+    let style = key.style.unwrap_or(match key.role {
         KeyRole::Normal => k.key,
         KeyRole::Special => k.special,
         KeyRole::Primary => k.primary,
     });
-    ui.row([label]).look(look).width(width).height(k.key_height).radius(k.radius).align(Align::Center).justify(Justify::Center).role(Role::Button).repeat(key.repeat).keep_focus().on_tap(KeyboardMsg::Key(row, column))
+    ui.row([label]).style(style).width(width).height(k.key_height).align(Align::Center).justify(Justify::Center).role(Role::Button).repeat(key.repeat).keep_focus().on_tap(KeyboardMsg::Key(row, column))
 }

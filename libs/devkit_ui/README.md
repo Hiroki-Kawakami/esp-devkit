@@ -21,7 +21,7 @@ impl Component for FileBrowser {
     fn view<'a>(&'a self, ui: &'a Ui<Msg>) -> Element<'a, Msg> {
         ui.column([
             ui.row([
-                ui.text(&TITLE, "Download").color(INK).grow(1),
+                ui.text(&TITLE, "Download").foreground(INK).grow(1),
                 ui.icon(&ICONS, icons::MORE).id("more").on_tap(Msg::ToggleMenu),
             ]).height(80).align(Align::Center),
             ui.list(0, self.names.len(), 80).grow(1),
@@ -69,9 +69,36 @@ app.run();
   `min_width` bound it.
 - `State` says what a node is going through: `PRESSED`, `HOVERED` and `FOCUSED`
   come from input, without a rebuild; `.disabled()`, `.selected()` and
-  `.checked()` from the view. A `WidgetLook` maps states to a `Look`, and its
-  foreground colors text inside that sets none. A disabled node takes no input
-  and shields what is below it.
+  `.checked()` from the view. A node holding a drag is pressed too. A disabled
+  node takes no input and shields what is below it.
+- `.foreground()` colors text and icons on the node and inside, where they set
+  none. `.background()` and the other colors take a `Color` or a `ColorRole`, which
+  follows the palette.
+- Every value of a `Style` can change with a state, with no view running: what
+  needs layout gets it, the rest only repaints. A `StateStyle` is a style to share:
+  `base` values and what each state changes. `.style(&S)` puts the base on the
+  node, so what is set after it wins; a second style adds its base and replaces
+  the states. `.when()` changes values for one node, from values known at run
+  time, and costs memory there. `Prop` is one value.
+
+  ```rust
+  static DANGER: StateStyle = StateStyle {
+      font: None,
+      base: &[Prop::Background(ColorRole::Destructive), Prop::Foreground(ColorRole::OnDestructive)],
+      states: &[(State::PRESSED, &[Prop::Opacity(200)])],
+  };
+
+  ui.row(children).style(&DANGER).radius(8).when(State::SELECTED, &[Prop::Border(self.color.into(), 4)])
+  ```
+
+- A heavier state wins, whatever the order: `CHECKED`, `SELECTED`, `FOCUSED`,
+  `HOVERED`, `PRESSED`, `DISABLED`, rising. Several states together are heavier than
+  the heaviest alone. So it goes the shared base, the node's own values, then by
+  weight the shared states and `.when` of each. A value of a shared state thus wins
+  over `.background()` while that state holds.
+- `.state_source()` lets nodes inside take states with `.inherit_state(states)`,
+  from the nearest source in the component. This is how a widget passes its
+  state to its pieces; states go no other way.
 
 ## Touch
 
@@ -125,21 +152,19 @@ app.run();
   one.
 - A `Theme` joins two halves. `ThemeAssets` is what resgen generates from a
   definition: colors, fonts, icons and each widget's values, so a theme replaces
-  any of them without the rest of it reaching the firmware. `WidgetStyle` is code:
-  `keyboards` and `motion`, with `widgets::DEFAULT` as it comes.
+  any of them without the rest of it reaching the firmware. `ThemeBehavior` is
+  code: `keyboards` and `motion`, with `widgets::DEFAULT` as it comes.
 
   ```rust
   static THEME: Theme = Theme::new(&resources::TOUCH, &widgets::DEFAULT);
 
-  static STYLE: WidgetStyle = WidgetStyle { motion: STILL, ..widgets::DEFAULT };
+  static BEHAVIOR: ThemeBehavior = ThemeBehavior { motion: STILL, ..widgets::DEFAULT };
   ```
 
-- `theme.widgets` has one struct per widget, sizes, fonts, colors and looks, and
-  `unit` with the base values of a theme, `padding`, `gap` and `radius`, for views
-  of their own. Touch sizes go by `widgets.button`.
-- A look changes colors with a node's state, without running a view. `Look`s name
-  colors by `ColorRole`, or `ColorRole::Fixed`, so they work with any palette, as
-  do the color fields of `theme.widgets`: `ui.color(role)` turns one into a color.
+- `theme.widgets` has one struct per widget: a `StateStyle` for each of its pieces,
+  and numbers where code calculates with them. `unit` has the base values of a
+  theme, `padding`, `gap` and `radius`, for views of their own. Touch sizes go by
+  `widgets.button`, and `widgets.list.row_height` is a default for `ui.list`.
   `Input::set_color_mode` swaps the palette and repaints; a theme without
   dark colors stays light. `ui.colors()` gives the palette in use and
   `ui.color_mode()` the mode. `SavedColorMode` keeps it across restarts.
@@ -160,13 +185,12 @@ app.run();
   | `checkbox` | `Mark` |
   | `list_item` | `Leading`, `Title`, `Meta`, `Trailing` |
   | `top_bar` | `Back`, `Title` |
-  | `segmented` | `Item` |
+  | `segmented` | `Item`, `Label` |
   | `menu` | `Panel` |
   | `modal` | `Panel`, `Scrim` |
 
-  It reaches every match below the element, and not into child components. A
-  look wins over `.background` on the same node, so a piece with a look takes
-  `.look`.
+  It reaches every match below the element, and not into child components.
+
 - `table` lays out a scrolling form: `table_section` is a rounded panel of rows and
   `table_header` the title above one. `table_row` holds any children, and
   `table_label`, `table_value` and `table_chevron` are the usual ones. Unlike
@@ -249,11 +273,11 @@ config.plugins.push(Box::new(SavedColorMode::new()));
   `KeyboardMode::Auto`, while an input has focus and no physical keyboard is
   reported by `Input::set_keyboard_connected`. It raises `insets().bottom`.
   `widgets::keyboard` places one in a view instead.
-- A `Keyboard` is static data. Label and action of a `Key` are separate, a look
+- A `Keyboard` is static data. Label and action of a `Key` are separate, a style
   or font can replace the theme's, and widths go by quarters of a column: a key
   `n` wide covers `n` pitches less one gap, so a wide key spans the gaps it
   covers. `Theme::keyboards` holds the default layouts and `theme.widgets.keyboard`
-  the sizes and looks; `.input` picks a layout and `.keyboard` overrides it.
+  the sizes and styles; `.input` picks a layout and `.keyboard` overrides it.
 
   ```rust
   static PORT_KEYS: Keyboard = Keyboard {
