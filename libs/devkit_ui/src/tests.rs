@@ -1234,6 +1234,11 @@ fn disabled_nodes_take_no_input_and_block_what_is_below() {
 }
 
 #[test]
+fn an_element_on_the_stack_is_only_a_pointer() {
+    assert_eq!(size_of::<Element<'_, ()>>(), size_of::<usize>());
+}
+
+#[test]
 fn the_heavier_state_wins_in_any_order() {
     const FIXED: fn(Color) -> Option<ColorRole> = |color| Some(ColorRole::Fixed(color));
     static STYLE: StateStyle = StateStyle {

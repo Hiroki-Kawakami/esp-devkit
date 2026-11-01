@@ -697,7 +697,10 @@ impl Tree {
         }
     }
 
-    fn create_node<M: Copy>(&mut self, owner: u16, element: &Element<'_, M>) -> NodeId {
+    // Apart from create_node, which recurses: a `Node` is large, and would stay on
+    // the stack at every level of a tree.
+    #[inline(never)]
+    fn new_node<M: Copy>(&mut self, owner: u16, element: &Element<'_, M>) -> NodeId {
         let content = match element.content {
             Content::Empty | Content::Box => NodeContent::Box,
             Content::Text { font, text, options, edit } => {
@@ -723,6 +726,11 @@ impl Tree {
         let id = self.alloc_node(Node::new(content, owner, self.caps));
         self.layout_dirty = true;
         self.apply_common(id, element);
+        id
+    }
+
+    fn create_node<M: Copy>(&mut self, owner: u16, element: &Element<'_, M>) -> NodeId {
+        let id = self.new_node(owner, element);
         match element.content {
             Content::Canvas(_) => self.canvases.push(id),
             Content::External(_) => {

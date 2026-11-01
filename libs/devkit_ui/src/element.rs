@@ -8,6 +8,7 @@ use alloc::vec::Vec;
 use core::any::TypeId;
 use core::fmt::{self, Write};
 use core::marker::PhantomData;
+use core::ops::{Deref, DerefMut};
 use core::ptr::{self, NonNull};
 
 use devkit_gfx::{Align as TextAlign, Color, FontChain, Image, ImageFormat, Overflow, Rect, TextOptions};
@@ -171,9 +172,36 @@ impl<S: Child + Screen> ChildSpec for ScreenElement<S> {
     }
 }
 
-/// A description of a node, valid during one rebuild.
-#[derive(Clone, Copy)]
+/// A description of a node, valid during one rebuild. It lives in the rebuild's
+/// memory, because a view holds many at once and the stack is small: a copy is
+/// the same element, and a change to one shows in the other.
 pub struct Element<'a, M: Copy> {
+    data: NonNull<ElementData<'a, M>>,
+}
+
+impl<M: Copy> Clone for Element<'_, M> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<M: Copy> Copy for Element<'_, M> {}
+
+impl<'a, M: Copy> Deref for Element<'a, M> {
+    type Target = ElementData<'a, M>;
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { self.data.as_ref() }
+    }
+}
+
+impl<M: Copy> DerefMut for Element<'_, M> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { self.data.as_mut() }
+    }
+}
+
+pub struct ElementData<'a, M: Copy> {
     bump: NonNull<Bump>,
     pub(crate) content: Content<'a>,
     children: NonNull<[Element<'a, M>]>,
@@ -203,10 +231,11 @@ pub struct Element<'a, M: Copy> {
 
 impl<'a, M: Copy> Element<'a, M> {
     fn new(bump: NonNull<Bump>, content: Content<'a>, children: &'a mut [Element<'a, M>]) -> Self {
-        Self { bump, content, children: NonNull::from(children), style: Style::default(), when: &[], inherit: State::empty(), state_source: false, key: None, id: None, part: None, role: Role::None, tap: None, drag: None, tap_at: None, on_scroll: None, gestures: None, size: None, input: None, focusable: false, keep_focus: false, keyboard: None, input_kind: InputKind::Text, repeat: false, state: State::empty(), _msg: PhantomData }
+        let data = ElementData { bump, content, children: NonNull::from(children), style: Style::default(), when: &[], inherit: State::empty(), state_source: false, key: None, id: None, part: None, role: Role::None, tap: None, drag: None, tap_at: None, on_scroll: None, gestures: None, size: None, input: None, focusable: false, keep_focus: false, keyboard: None, input_kind: InputKind::Text, repeat: false, state: State::empty(), _msg: PhantomData };
+        Self { data: unsafe { NonNull::new_unchecked(bump.as_ref().alloc(data)) } }
     }
 
-    pub const fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         matches!(self.content, Content::Empty)
     }
 
@@ -232,7 +261,6 @@ impl<'a, M: Copy> Element<'a, M> {
     }
 
     /// Changes each `part` of this widget. Not the inside of child components.
-    /// Copies of an element share its children, so all of them see the change.
     pub fn part(mut self, part: Part, style: impl Fn(Self) -> Self) -> Self {
         self.style_part(part, &style);
         self
