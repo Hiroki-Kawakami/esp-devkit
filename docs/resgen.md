@@ -304,7 +304,16 @@ A `theme` entry generates a `devkit_ui::ThemeAssets`, under its name in
       "fonts": { "body": ["body_24", "jp_24"] },
       "icons": { "back": "icons/my-back.svg" },
       "colors": { "light": { "primary": "#2196f3" }, "dark": { "primary": "#64b5f6" } },
-      "metrics": { "radius": 16 }
+      "vars": { "text_secondary": "color.muted" },
+      "widgets": {
+        "unit": { "radius": 16 },
+        "list_item": {
+          "height": 96,
+          "padding_x": "widgets.unit.padding",
+          "meta_font": "font.caption",
+          "meta_color": "vars.text_secondary"
+        }
+      }
     }
   }
 }
@@ -318,13 +327,40 @@ static THEME: Theme = Theme::new(&resources::TOUCH, &widgets::DEFAULT);
   that directory, so themes can share them: `tabler` holds the Tabler icons. What
   the entry sets replaces it, key by key; without a base every key is required.
 - `fonts` sets `title`, `body` and `caption`, each a font of the definition or a
-  list making a chain. Fonts of the base go in only if the theme still uses them.
+  list making a chain. Other names are for `font.x` values. Fonts of the base go
+  in only if the theme still uses them.
 - `icons` maps the names of `Icons` to SVG files, and `icon_size` their sizes in
   pixels, 40 by default. Icons of one size share a font, and a replaced file is
   left out.
 - `colors` has `light` and optionally `dark`, each the names of `Palette` as
   `#rrggbb` or `#rrggbbaa`.
-- `metrics` has the names of `Metrics`.
+- `widgets` maps a widget to the fields of its type: `list_item` is
+  `ListItemTheme`, `unit` is `UnitTheme`, the base values with no widget of their
+  own. The compiler checks the names and types in the generated `resources.rs`.
+  What the entry sets replaces the base field by field.
+- `vars` are names of the theme's own, for any value, and never reach the
+  firmware. One that nothing uses gives a warning.
+- Values in `vars` and `widgets` are:
+
+  | value | is |
+  |---|---|
+  | `12` | a number |
+  | `"#rrggbb"`, `"#rrggbbaa"` | a color for both modes (`ColorRole::Fixed`) |
+  | `"color.x"` | a name of `Palette` (a `ColorRole`) |
+  | `"font.x"` | a name of `fonts` |
+  | `"vars.x"`, `"widgets.y.z"` | that value |
+  | `{ "base": ..., "states": [...] }` | a `WidgetLook` |
+
+- A look gives `base` and `states`, each entry a state and what changes in it,
+  applied in order. `pressed`, `hovered`, `focused`, `selected`, `disabled` and
+  `checked` exist. The parts are `background`, `foreground`, `border` and `opacity`.
+
+  ```json
+  {
+    "base": { "background": "color.surface", "border": { "color": "color.divider", "width": 2 } },
+    "states": [["pressed", { "background": "color.pressed" }], ["disabled", { "opacity": 102 }]]
+  }
+  ```
 - A theme can be generated for each entry, to switch between them.
 
 ### Binary format

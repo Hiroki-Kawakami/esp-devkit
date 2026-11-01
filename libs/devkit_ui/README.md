@@ -124,9 +124,9 @@ app.run();
   screen and places itself, by a rectangle from `on_tap_at`. `DropdownMenu` is
   one.
 - A `Theme` joins two halves. `ThemeAssets` is what resgen generates from a
-  definition: colors, metrics, fonts and icons, so a theme replaces any of them
-  without the rest of it reaching the firmware. `WidgetStyle` is code:
-  `keyboards`, `motion` and `looks`, with `widgets::DEFAULT` as it comes.
+  definition: colors, fonts, icons and each widget's values, so a theme replaces
+  any of them without the rest of it reaching the firmware. `WidgetStyle` is code:
+  `keyboards` and `motion`, with `widgets::DEFAULT` as it comes.
 
   ```rust
   static THEME: Theme = Theme::new(&resources::TOUCH, &widgets::DEFAULT);
@@ -134,8 +134,13 @@ app.run();
   static STYLE: WidgetStyle = WidgetStyle { motion: STILL, ..widgets::DEFAULT };
   ```
 
-- `Look`s name colors by `ColorRole`, or `ColorRole::Fixed`, so they work with any
-  palette. `Input::set_color_mode` swaps the palette and repaints; a theme without
+- `theme.widgets` has one struct per widget, sizes, fonts, colors and looks, and
+  `unit` with the base values of a theme, `padding`, `gap` and `radius`, for views
+  of their own. Touch sizes go by `widgets.button`.
+- A look changes colors with a node's state, without running a view. `Look`s name
+  colors by `ColorRole`, or `ColorRole::Fixed`, so they work with any palette, as
+  do the color fields of `theme.widgets`: `ui.color(role)` turns one into a color.
+  `Input::set_color_mode` swaps the palette and repaints; a theme without
   dark colors stays light. `ui.colors()` gives the palette in use and
   `ui.color_mode()` the mode. `SavedColorMode` keeps it across restarts.
 - `cx.set_theme` changes the theme, `Screen::theme` replaces it for a screen.
@@ -226,8 +231,8 @@ config.plugins.push(Box::new(SavedColorMode::new()));
 - A `Keyboard` is static data. Label and action of a `Key` are separate, a look
   or font can replace the theme's, and widths go by quarters of a column: a key
   `n` wide covers `n` pitches less one gap, so a wide key spans the gaps it
-  covers. `Theme::keyboards` holds the defaults, `.input` picks one of them and
-  `.keyboard` overrides it.
+  covers. `Theme::keyboards` holds the default layouts and `theme.widgets.keyboard`
+  the sizes and looks; `.input` picks a layout and `.keyboard` overrides it.
 
   ```rust
   static PORT_KEYS: Keyboard = Keyboard {

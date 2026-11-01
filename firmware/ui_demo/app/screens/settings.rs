@@ -54,7 +54,7 @@ impl Settings {
 fn slider_row<'a, M: Copy>(ui: &'a Ui<M>, label: &'a str, text: &'a str, value: u8, on_drag: fn(Drag) -> M) -> Element<'a, M> {
     let theme = ui.theme();
     let header = ui.row([table_label(ui, label), ui.text(theme.fonts.caption, text).color(ui.colors().muted)]).align(Align::Center);
-    table_row(ui, [ui.column([header, slider(ui, value, on_drag)]).padding_each(0, theme.metrics.padding, 0, theme.metrics.gap).grow(1)])
+    table_row(ui, [ui.column([header, slider(ui, value, on_drag)]).padding_each(0, theme.widgets.unit.padding, 0, theme.widgets.unit.gap).grow(1)])
 }
 
 impl Component for Settings {

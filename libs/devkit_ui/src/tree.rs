@@ -1432,7 +1432,8 @@ impl Tree {
         let node = &self.nodes[id as usize];
         let Some(map) = node.drag else { return };
         let screen = node.screen;
-        let drag = Drag { x: point.0 - screen.x, y: point.1 - screen.y, width: screen.w, ended };
+        let [left, top, right, _] = node.style.padding;
+        let drag = Drag { x: point.0 - screen.x - left, y: point.1 - screen.y - top, width: screen.w - left - right, ended };
         let msg = unsafe { (map.call)(map.function, drag) };
         self.queue.push_back((node.owner, msg));
     }

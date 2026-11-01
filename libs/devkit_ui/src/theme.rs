@@ -6,7 +6,7 @@
 use devkit_gfx::{Color, FontChain};
 
 use crate::keyboard::{Keyboard, NUMERIC, QWERTY};
-use crate::style::{Shadow, State};
+use crate::style::State;
 
 #[derive(Clone, Copy)]
 pub struct Palette {
@@ -60,10 +60,6 @@ impl Palette {
             ColorRole::Fixed(color) => color,
         }
     }
-
-    pub const fn menu_shadow(&self) -> Shadow {
-        Shadow { y: 12, blur: 32, color: self.shadow }
-    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -71,17 +67,6 @@ pub enum ColorMode {
     #[default]
     Light,
     Dark,
-}
-
-#[derive(Clone, Copy)]
-pub struct Metrics {
-    pub bar_height: i16,
-    pub bar_padding: i16,
-    pub row_height: i16,
-    pub touch_size: i16,
-    pub padding: i16,
-    pub gap: i16,
-    pub radius: u8,
 }
 
 #[derive(Clone, Copy)]
@@ -112,18 +97,11 @@ pub struct Icons {
     pub enter: Icon,
 }
 
-/// The on-screen keyboard of a theme.
+/// The on-screen keyboards of a theme.
 #[derive(Clone, Copy)]
 pub struct Keyboards {
     pub text: &'static Keyboard,
     pub number: &'static Keyboard,
-    /// `None` is the theme's body font.
-    pub font: Option<&'static FontChain>,
-    pub key_height: i16,
-    pub gap: i16,
-    pub key: &'static WidgetLook,
-    pub special: &'static WidgetLook,
-    pub primary: &'static WidgetLook,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -227,19 +205,240 @@ impl WidgetLook {
     }
 }
 
-/// The looks widgets take by default.
+/// Base values, for widgets and apps alike; no widget of its own.
 #[derive(Clone, Copy)]
-pub struct Looks {
-    pub button: &'static WidgetLook,
-    pub button_secondary: &'static WidgetLook,
-    pub icon_button: &'static WidgetLook,
-    pub row: &'static WidgetLook,
-    pub menu_item: &'static WidgetLook,
-    pub segment: &'static WidgetLook,
-    pub dropdown_item: &'static WidgetLook,
-    pub text_field: &'static WidgetLook,
+pub struct UnitTheme {
+    pub padding: i16,
+    pub gap: i16,
+    pub radius: u8,
+}
+
+#[derive(Clone, Copy)]
+pub struct ButtonTheme {
+    pub height: i16,
+    pub padding_x: i16,
+    pub radius: u8,
+    pub font: &'static FontChain,
+    pub primary: &'static WidgetLook,
+    pub secondary: &'static WidgetLook,
+}
+
+#[derive(Clone, Copy)]
+pub struct IconButtonTheme {
+    pub size: i16,
+    pub radius: u8,
+    pub look: &'static WidgetLook,
+}
+
+#[derive(Clone, Copy)]
+pub struct ListItemTheme {
+    pub height: i16,
+    pub padding_x: i16,
+    pub gap: i16,
+    pub text_gap: i16,
+    pub title_font: &'static FontChain,
+    pub meta_font: &'static FontChain,
+    pub leading_color: ColorRole,
+    pub meta_color: ColorRole,
+    pub trailing_color: ColorRole,
+    pub divider_color: ColorRole,
+    pub look: &'static WidgetLook,
+}
+
+#[derive(Clone, Copy)]
+pub struct TopBarTheme {
+    pub height: i16,
+    pub padding_x: i16,
+    pub gap: i16,
+    pub font: &'static FontChain,
+    pub back_height: i16,
+    pub back_radius: u8,
+    pub back_look: &'static WidgetLook,
+}
+
+#[derive(Clone, Copy)]
+pub struct SwitchTheme {
+    pub width: i16,
+    pub height: i16,
+    pub thumb: i16,
+    pub on_color: ColorRole,
+    pub off_color: ColorRole,
+    pub thumb_color: ColorRole,
+}
+
+#[derive(Clone, Copy)]
+pub struct CheckboxTheme {
+    pub size: i16,
+    pub radius: u8,
+    pub mark_inset: i16,
+    pub mark_radius: u8,
+    pub on_color: ColorRole,
+    pub off_color: ColorRole,
+    pub mark_color: ColorRole,
+}
+
+#[derive(Clone, Copy)]
+pub struct SliderTheme {
+    pub height: i16,
+    pub track: i16,
+    pub thumb: i16,
+    pub active_color: ColorRole,
+    pub track_color: ColorRole,
+    pub thumb_color: ColorRole,
+}
+
+#[derive(Clone, Copy)]
+pub struct SegmentedTheme {
+    pub height: i16,
+    pub inset: i16,
+    pub radius: u8,
+    pub background: ColorRole,
+    pub item_padding_x: i16,
+    pub item_radius: u8,
+    pub font: &'static FontChain,
+    pub look: &'static WidgetLook,
+}
+
+#[derive(Clone, Copy)]
+pub struct DropdownTheme {
+    pub width: i16,
+    pub height: i16,
+    pub padding_x: i16,
+    pub gap: i16,
+    pub radius: u8,
+    pub font: &'static FontChain,
+    pub icon_color: ColorRole,
+    pub look: &'static WidgetLook,
+}
+
+#[derive(Clone, Copy)]
+pub struct DropdownMenuTheme {
+    pub radius: u8,
+    pub look: &'static WidgetLook,
+    pub item_look: &'static WidgetLook,
+}
+
+#[derive(Clone, Copy)]
+pub struct TableTheme {
+    pub padding: i16,
+}
+
+#[derive(Clone, Copy)]
+pub struct TableHeaderTheme {
+    pub indent: i16,
+    pub top: i16,
+    pub bottom: i16,
+    pub font: &'static FontChain,
+    pub color: ColorRole,
+}
+
+#[derive(Clone, Copy)]
+pub struct TableSectionTheme {
+    pub radius: u8,
+    pub background: ColorRole,
+    pub divider_color: ColorRole,
+    pub divider_inset: i16,
+}
+
+#[derive(Clone, Copy)]
+pub struct TableRowTheme {
+    pub min_height: i16,
+    pub padding_x: i16,
+    pub gap: i16,
+    pub label_font: &'static FontChain,
+    pub value_font: &'static FontChain,
+    pub value_color: ColorRole,
+    pub chevron_color: ColorRole,
+    pub look: &'static WidgetLook,
+}
+
+#[derive(Clone, Copy)]
+pub struct MenuTheme {
+    pub width: i16,
+    pub padding_y: i16,
+    pub radius: u8,
+    pub right: i16,
+    pub background: ColorRole,
+    pub shadow_y: i8,
+    pub shadow_blur: u8,
+    pub shadow_color: ColorRole,
+}
+
+#[derive(Clone, Copy)]
+pub struct MenuItemTheme {
+    pub height: i16,
+    pub padding_x: i16,
+    pub font: &'static FontChain,
+    pub look: &'static WidgetLook,
+}
+
+#[derive(Clone, Copy)]
+pub struct ModalTheme {
+    pub width: i16,
+    pub padding: i16,
+    pub radius: u8,
+    pub background: ColorRole,
+    pub scrim: ColorRole,
+}
+
+#[derive(Clone, Copy)]
+pub struct ToastTheme {
+    pub padding_x: i16,
+    pub padding_y: i16,
+    pub radius: u8,
+    pub margin: i16,
+    pub font: &'static FontChain,
+    pub background: ColorRole,
+    pub foreground: ColorRole,
+}
+
+#[derive(Clone, Copy)]
+pub struct TextFieldTheme {
+    pub padding_x: i16,
+    pub padding_y: i16,
+    pub radius: u8,
+    pub font: &'static FontChain,
+    pub placeholder_color: ColorRole,
+    pub area_min_height: i16,
+    pub look: &'static WidgetLook,
+}
+
+#[derive(Clone, Copy)]
+pub struct KeyboardTheme {
+    pub key_height: i16,
+    pub gap: i16,
+    pub radius: u8,
+    pub font: &'static FontChain,
+    pub background: ColorRole,
     pub key: &'static WidgetLook,
-    pub key_special: &'static WidgetLook,
+    pub special: &'static WidgetLook,
+    pub primary: &'static WidgetLook,
+}
+
+/// Each widget's values, generated by resgen.
+#[derive(Clone, Copy)]
+pub struct Widgets {
+    pub unit: UnitTheme,
+    pub button: ButtonTheme,
+    pub icon_button: IconButtonTheme,
+    pub list_item: ListItemTheme,
+    pub top_bar: TopBarTheme,
+    pub switch: SwitchTheme,
+    pub checkbox: CheckboxTheme,
+    pub slider: SliderTheme,
+    pub segmented: SegmentedTheme,
+    pub dropdown: DropdownTheme,
+    pub dropdown_menu: DropdownMenuTheme,
+    pub table: TableTheme,
+    pub table_header: TableHeaderTheme,
+    pub table_section: TableSectionTheme,
+    pub table_row: TableRowTheme,
+    pub menu: MenuTheme,
+    pub menu_item: MenuItemTheme,
+    pub modal: ModalTheme,
+    pub toast: ToastTheme,
+    pub text_field: TextFieldTheme,
+    pub keyboard: KeyboardTheme,
 }
 
 /// What a theme's definition gives, generated by resgen.
@@ -247,9 +446,9 @@ pub struct ThemeAssets {
     pub light: Palette,
     /// `None` stays light.
     pub dark: Option<Palette>,
-    pub metrics: Metrics,
     pub fonts: Fonts,
     pub icons: Icons,
+    pub widgets: Widgets,
 }
 
 /// How widgets are built on any assets.
@@ -257,19 +456,17 @@ pub struct ThemeAssets {
 pub struct WidgetStyle {
     pub keyboards: Keyboards,
     pub motion: Motion,
-    pub looks: Looks,
 }
 
 #[derive(Clone, Copy)]
 pub struct Theme {
     pub light: Palette,
     pub dark: Option<Palette>,
-    pub metrics: Metrics,
     pub fonts: Fonts,
     pub icons: Icons,
+    pub widgets: Widgets,
     pub keyboards: Keyboards,
     pub motion: Motion,
-    pub looks: Looks,
 }
 
 impl Theme {
@@ -277,12 +474,11 @@ impl Theme {
         Self {
             light: assets.light,
             dark: assets.dark,
-            metrics: assets.metrics,
             fonts: assets.fonts,
             icons: assets.icons,
+            widgets: assets.widgets,
             keyboards: widgets.keyboards,
             motion: widgets.motion,
-            looks: widgets.looks,
         }
     }
 
@@ -294,56 +490,8 @@ impl Theme {
     }
 }
 
-const DISABLED: (State, Look) = (State::DISABLED, Look::opacity(102));
-const PRESSED: (State, Look) = (State::PRESSED, Look::background(ColorRole::Pressed));
-const FRAMED: Look = Look { border: Some(LookBorder { color: ColorRole::Divider, width: 2 }), ..Look::fill(ColorRole::Surface, ColorRole::OnSurface) };
-
-static BUTTON: WidgetLook = WidgetLook {
-    base: Look::fill(ColorRole::Primary, ColorRole::OnPrimary),
-    states: &[(State::PRESSED, Look::background(ColorRole::PrimaryPressed)), DISABLED],
-};
-static BUTTON_SECONDARY: WidgetLook = WidgetLook { base: FRAMED, states: &[PRESSED, DISABLED] };
-static ICON_BUTTON: WidgetLook = WidgetLook { base: Look::foreground(ColorRole::OnSurface), states: &[PRESSED, DISABLED] };
-static ROW: WidgetLook = WidgetLook {
-    base: Look::fill(ColorRole::Surface, ColorRole::OnSurface),
-    states: &[(State::SELECTED, Look::background(ColorRole::Selected)), PRESSED, DISABLED],
-};
-static MENU_ITEM: WidgetLook = WidgetLook { base: Look::foreground(ColorRole::OnSurface), states: &[PRESSED, DISABLED] };
-static SEGMENT: WidgetLook = WidgetLook {
-    base: Look::foreground(ColorRole::OnSurface),
-    states: &[PRESSED, (State::SELECTED, Look::fill(ColorRole::Primary, ColorRole::OnPrimary)), DISABLED],
-};
-static DROPDOWN_ITEM: WidgetLook = WidgetLook {
-    base: Look::foreground(ColorRole::OnSurface),
-    states: &[(State::SELECTED, Look::background(ColorRole::Selected)), PRESSED, DISABLED],
-};
-static TEXT_FIELD: WidgetLook = WidgetLook { base: FRAMED, states: &[(State::FOCUSED, Look::outline(ColorRole::Primary, 2)), DISABLED] };
-static KEY: WidgetLook = WidgetLook { base: Look::fill(ColorRole::Surface, ColorRole::OnSurface), states: &[PRESSED] };
-static KEY_SPECIAL: WidgetLook = WidgetLook { base: Look::fill(ColorRole::Divider, ColorRole::OnSurface), states: &[PRESSED] };
-
 /// The widgets as they come.
 pub static DEFAULT: WidgetStyle = WidgetStyle {
-    keyboards: Keyboards {
-        text: &QWERTY,
-        number: &NUMERIC,
-        font: None,
-        key_height: 80,
-        gap: 8,
-        key: &KEY,
-        special: &KEY_SPECIAL,
-        primary: &BUTTON,
-    },
+    keyboards: Keyboards { text: &QWERTY, number: &NUMERIC },
     motion: Motion { transition: Transition::Slide, duration_ms: 200 },
-    looks: Looks {
-        button: &BUTTON,
-        button_secondary: &BUTTON_SECONDARY,
-        icon_button: &ICON_BUTTON,
-        row: &ROW,
-        menu_item: &MENU_ITEM,
-        segment: &SEGMENT,
-        dropdown_item: &DROPDOWN_ITEM,
-        text_field: &TEXT_FIELD,
-        key: &KEY,
-        key_special: &KEY_SPECIAL,
-    },
 };

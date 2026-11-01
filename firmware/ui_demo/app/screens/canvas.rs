@@ -131,7 +131,7 @@ impl Component for CanvasDemo {
 
     fn view<'a>(&'a self, ui: &'a Ui<CanvasMsg>) -> Element<'a, CanvasMsg> {
         let theme = ui.theme();
-        let redraw = button(ui, "Redraw", theme.looks.button_secondary, CanvasMsg::Redraw).keep_focus().id("term-redraw");
+        let redraw = button(ui, "Redraw", theme.widgets.button.secondary, CanvasMsg::Redraw).keep_focus().id("term-redraw");
         ui.column([
             top_bar(ui, Some(CanvasMsg::Back), "Canvas", redraw),
             ui.canvas(TERMINAL).grow(1).id("term").on_size(CanvasMsg::Sized).on_input(CanvasMsg::Key),

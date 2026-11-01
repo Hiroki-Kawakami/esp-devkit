@@ -65,6 +65,59 @@ fn chain() -> &'static FontChain {
     Box::leak(Box::new(FontChain::new(Vec::leak(alloc::vec![font]))))
 }
 
+const DISABLED: (State, Look) = (State::DISABLED, Look::opacity(102));
+const PRESSED: (State, Look) = (State::PRESSED, Look::background(ColorRole::Pressed));
+const FRAMED: Look = Look { border: Some(LookBorder { color: ColorRole::Divider, width: 2 }), ..Look::fill(ColorRole::Surface, ColorRole::OnSurface) };
+
+static BUTTON: WidgetLook = WidgetLook {
+    base: Look::fill(ColorRole::Primary, ColorRole::OnPrimary),
+    states: &[(State::PRESSED, Look::background(ColorRole::PrimaryPressed)), DISABLED],
+};
+static BUTTON_SECONDARY: WidgetLook = WidgetLook { base: FRAMED, states: &[PRESSED, DISABLED] };
+static ICON_BUTTON: WidgetLook = WidgetLook { base: Look::foreground(ColorRole::OnSurface), states: &[PRESSED, DISABLED] };
+static ROW: WidgetLook = WidgetLook {
+    base: Look::fill(ColorRole::Surface, ColorRole::OnSurface),
+    states: &[(State::SELECTED, Look::background(ColorRole::Selected)), PRESSED, DISABLED],
+};
+static MENU_ITEM: WidgetLook = WidgetLook { base: Look::foreground(ColorRole::OnSurface), states: &[PRESSED, DISABLED] };
+static SEGMENT: WidgetLook = WidgetLook {
+    base: Look::foreground(ColorRole::OnSurface),
+    states: &[PRESSED, (State::SELECTED, Look::fill(ColorRole::Primary, ColorRole::OnPrimary)), DISABLED],
+};
+static DROPDOWN_ITEM: WidgetLook = WidgetLook {
+    base: Look::foreground(ColorRole::OnSurface),
+    states: &[(State::SELECTED, Look::background(ColorRole::Selected)), PRESSED, DISABLED],
+};
+static TEXT_FIELD: WidgetLook = WidgetLook { base: FRAMED, states: &[(State::FOCUSED, Look::outline(ColorRole::Primary, 2)), DISABLED] };
+static KEY: WidgetLook = WidgetLook { base: Look::fill(ColorRole::Surface, ColorRole::OnSurface), states: &[PRESSED] };
+static KEY_SPECIAL: WidgetLook = WidgetLook { base: Look::fill(ColorRole::Divider, ColorRole::OnSurface), states: &[PRESSED] };
+
+fn theme_widgets(font: &'static FontChain) -> Widgets {
+    Widgets {
+        unit: UnitTheme { padding: 24, gap: 12, radius: 14 },
+        button: ButtonTheme { height: 72, padding_x: 24, radius: 14, font, primary: &BUTTON, secondary: &BUTTON_SECONDARY },
+        icon_button: IconButtonTheme { size: 64, radius: 32, look: &ICON_BUTTON },
+        list_item: ListItemTheme { height: 80, padding_x: 24, gap: 24, text_gap: 4, title_font: font, meta_font: font, leading_color: ColorRole::Muted, meta_color: ColorRole::Muted, trailing_color: ColorRole::Divider, divider_color: ColorRole::Divider, look: &ROW },
+        top_bar: TopBarTheme { height: 80, padding_x: 8, gap: 12, font, back_height: 64, back_radius: 14, back_look: &ICON_BUTTON },
+        switch: SwitchTheme { width: 64, height: 36, thumb: 28, on_color: ColorRole::Primary, off_color: ColorRole::Divider, thumb_color: ColorRole::Surface },
+        checkbox: CheckboxTheme { size: 28, radius: 6, mark_inset: 6, mark_radius: 4, on_color: ColorRole::Primary, off_color: ColorRole::Divider, mark_color: ColorRole::OnPrimary },
+        slider: SliderTheme { height: 48, track: 8, thumb: 28, active_color: ColorRole::Primary, track_color: ColorRole::Selected, thumb_color: ColorRole::Primary },
+        segmented: SegmentedTheme { height: 56, inset: 4, radius: 14, background: ColorRole::Background, item_padding_x: 20, item_radius: 10, font, look: &SEGMENT },
+        dropdown: DropdownTheme { width: 260, height: 56, padding_x: 12, gap: 12, radius: 14, font, icon_color: ColorRole::Muted, look: &BUTTON_SECONDARY },
+        dropdown_menu: DropdownMenuTheme { radius: 14, look: &BUTTON_SECONDARY, item_look: &DROPDOWN_ITEM },
+        table: TableTheme { padding: 24 },
+        table_header: TableHeaderTheme { indent: 8, top: 32, bottom: 12, font, color: ColorRole::Muted },
+        table_section: TableSectionTheme { radius: 24, background: ColorRole::Surface, divider_color: ColorRole::Divider, divider_inset: 24 },
+        table_row: TableRowTheme { min_height: 88, padding_x: 24, gap: 12, label_font: font, value_font: font, value_color: ColorRole::Muted, chevron_color: ColorRole::Muted, look: &MENU_ITEM },
+        menu: MenuTheme { width: 380, padding_y: 12, radius: 20, right: 16, background: ColorRole::Surface, shadow_y: 12, shadow_blur: 32, shadow_color: ColorRole::Shadow },
+        menu_item: MenuItemTheme { height: 72, padding_x: 24, font, look: &MENU_ITEM },
+        modal: ModalTheme { width: 560, padding: 24, radius: 20, background: ColorRole::Surface, scrim: ColorRole::Scrim },
+        toast: ToastTheme { padding_x: 24, padding_y: 12, radius: 14, margin: 24, font, background: ColorRole::OnSurface, foreground: ColorRole::Surface },
+        text_field: TextFieldTheme { padding_x: 12, padding_y: 12, radius: 14, font, placeholder_color: ColorRole::Muted, area_min_height: 160, look: &TEXT_FIELD },
+        keyboard: KeyboardTheme { key_height: 80, gap: 8, radius: 7, font, background: ColorRole::Background, key: &KEY, special: &KEY_SPECIAL, primary: &BUTTON },
+    }
+}
+
 fn theme() -> &'static Theme {
     let chain = chain();
     let icon = Icon { font: chain, glyph: 'A' };
@@ -83,8 +136,7 @@ fn theme() -> &'static Theme {
         scrim: Color::rgba(0, 0, 0, 128),
         shadow: Color::rgba(17, 20, 24, 56),
     };
-    let metrics = Metrics { bar_height: 80, bar_padding: 8, row_height: 80, touch_size: 64, padding: 24, gap: 12, radius: 14 };
-    let assets = ThemeAssets { light: colors, dark: None, metrics, fonts: Fonts { title: chain, body: chain, caption: chain }, icons };
+    let assets = ThemeAssets { light: colors, dark: None, fonts: Fonts { title: chain, body: chain, caption: chain }, icons, widgets: theme_widgets(chain) };
     Box::leak(Box::new(Theme::new(&assets, &widgets::DEFAULT)))
 }
 
@@ -1294,7 +1346,7 @@ fn keys_line_up_across_rows_and_type_through_layers() {
         tree.touch(&[], 10);
         run(tree);
     };
-    let k = theme().keyboards;
+    let k = theme().widgets.keyboard;
     let pitch = (400 - k.gap) / 10;
     let row_y = |row: i16| keyboard.y + k.gap + row * (k.key_height + k.gap) + 10;
     // Shift, then one upper case letter, then back to lower case.
@@ -1415,8 +1467,8 @@ fn full_rows_end_at_the_panel_edge() {
     tap(&mut tree, "name");
     run(&mut tree);
     let keyboard = rect_of(&tree, "keyboard");
-    let gap = theme().keyboards.gap;
-    let y = keyboard.y + gap + 2 * (theme().keyboards.key_height + gap) + 10;
+    let gap = theme().widgets.keyboard.gap;
+    let y = keyboard.y + gap + 2 * (theme().widgets.keyboard.key_height + gap) + 10;
     tree.touch(&[(0, (keyboard.right() - gap - 1, y))], 0);
     tree.update();
     assert!(tree.timed(), "the last pixel of the row is the repeating key");
@@ -1433,7 +1485,7 @@ fn a_held_key_repeats_and_its_release_adds_nothing() {
     run(&mut tree);
     assert_eq!(text_of(&tree, "name"), "aaa");
     let keyboard = rect_of(&tree, "keyboard");
-    let k = theme().keyboards;
+    let k = theme().widgets.keyboard;
     let y = keyboard.y + k.gap + 2 * (k.key_height + k.gap) + 10;
     tree.touch(&[(0, (380, y))], 0);
     tree.update();
@@ -1535,7 +1587,7 @@ fn keys_pressed_together_both_type_in_release_order() {
     tap(&mut tree, "name");
     run(&mut tree);
     let keyboard = rect_of(&tree, "keyboard");
-    let k = theme().keyboards;
+    let k = theme().widgets.keyboard;
     let pitch = (keyboard.w - k.gap) / 10;
     let y = keyboard.y + k.gap + 10;
     let (q, w) = (k.gap + 10, k.gap + pitch + 10);
@@ -1553,8 +1605,8 @@ fn a_finger_on_a_held_key_does_not_end_the_input() {
     tap(&mut tree, "name");
     run(&mut tree);
     let keyboard = rect_of(&tree, "keyboard");
-    let y = keyboard.y + theme().keyboards.gap + 10;
-    let x = theme().keyboards.gap + 10;
+    let y = keyboard.y + theme().widgets.keyboard.gap + 10;
+    let x = theme().widgets.keyboard.gap + 10;
     tree.touch(&[(0, (x, y))], 0);
     tree.touch(&[(0, (x, y)), (1, (x + 2, y))], 10);
     tree.touch(&[(0, (x, y))], 20);
@@ -2242,13 +2294,13 @@ fn a_covered_split_comes_back_whole() {
 fn a_color_mode_swaps_the_palette_under_the_same_looks() {
     let mut colors = theme().light;
     colors.surface = Color::rgb(1, 2, 3);
-    let assets = ThemeAssets { dark: Some(colors), ..ThemeAssets { light: theme().light, dark: None, metrics: theme().metrics, fonts: theme().fonts, icons: theme().icons } };
+    let assets = ThemeAssets { dark: Some(colors), ..ThemeAssets { light: theme().light, dark: None, fonts: theme().fonts, icons: theme().icons, widgets: theme().widgets } };
     let dark: &'static Theme = Box::leak(Box::new(Theme::new(&assets, &widgets::DEFAULT)));
     assert_eq!(dark.palette(ColorMode::Light).surface, theme().light.surface);
     assert_eq!(dark.palette(ColorMode::Dark).surface, Color::rgb(1, 2, 3));
     assert_eq!(theme().palette(ColorMode::Dark).surface, theme().light.surface, "no dark colors stays light");
 
-    let look = dark.looks.row.base;
+    let look = dark.widgets.list_item.look.base;
     assert_eq!(look.colored(dark.palette(ColorMode::Dark)).background, Some(Color::rgb(1, 2, 3)));
 }
 

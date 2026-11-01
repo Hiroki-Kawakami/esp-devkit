@@ -47,4 +47,4 @@ pub use plugin::{Plugin, PluginContext, PluginInit, SavedColorMode, Store, UiEve
 pub use presenter::{Config, PresentMode, Presenter, Stats, StripMemory, Strips};
 pub use style::{Align, Bars, Dimension, Direction, Insets, Justify, Role, ScreenStyle, Shadow, State, Style};
 pub use text_buffer::{TextBuffer, TextInput};
-pub use theme::{Border, ColorMode, ColorRole, Fonts, Icon, Icons, Keyboards, Look, LookBorder, Looks, Metrics, Motion, Palette, Theme, ThemeAssets, Transition, WidgetLook, WidgetStyle};
+pub use theme::{Border, ButtonTheme, CheckboxTheme, ColorMode, ColorRole, DropdownMenuTheme, DropdownTheme, Fonts, Icon, IconButtonTheme, Icons, KeyboardTheme, Keyboards, ListItemTheme, Look, LookBorder, MenuItemTheme, MenuTheme, ModalTheme, Motion, Palette, SegmentedTheme, SliderTheme, SwitchTheme, TableHeaderTheme, TableRowTheme, TableSectionTheme, TableTheme, TextFieldTheme, Theme, ThemeAssets, ToastTheme, TopBarTheme, Transition, UnitTheme, WidgetLook, WidgetStyle, Widgets};

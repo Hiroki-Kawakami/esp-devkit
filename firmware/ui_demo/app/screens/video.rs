@@ -142,11 +142,11 @@ impl Component for VideoDemo {
 
     fn view<'a>(&'a self, ui: &'a Ui<VideoMsg>) -> Element<'a, VideoMsg> {
         let theme = ui.theme();
-        let look = theme.looks.button_secondary;
+        let look = theme.widgets.button.secondary;
         let menu = if self.menu {
             ui.column([ui.text(theme.fonts.title, "Over the video").color(Color::rgb(255, 255, 255))])
-                .padding(theme.metrics.padding)
-                .radius(theme.metrics.radius)
+                .padding(theme.widgets.unit.padding)
+                .radius(theme.widgets.unit.radius)
                 .background(Color::rgba(0x20, 0x20, 0x28, 0xC0))
                 .absolute(Some(80), Some(400), Some(80), None)
                 .height(200)
@@ -164,8 +164,8 @@ impl Component for VideoDemo {
                 button(ui, "Stamp", look, VideoMsg::Policy(Policy::Stamp)).grow(1).id("video-stamp"),
                 button(ui, "Full", look, VideoMsg::Policy(Policy::Exclusive)).grow(1).id("video-full"),
             ])
-            .padding(theme.metrics.padding)
-            .gap(theme.metrics.gap),
+            .padding(theme.widgets.unit.padding)
+            .gap(theme.widgets.unit.gap),
             menu,
         ])
         .padding_each(0, ui.insets().top, 0, 0)

@@ -78,8 +78,8 @@ impl Component for GestureDemo {
         let (x, y) = (self.position.0 - side / 2, self.position.1 - side / 2);
         ui.column([
             top_bar(ui, Some(GestureMsg::Back), "Gestures", ui.empty()),
-            ui.text(theme.fonts.body, &self.label).padding(theme.metrics.padding).id("gesture-label"),
-            ui.column([ui.column([]).size(side, side).radius(theme.metrics.radius).background(c.primary).absolute(Some(x), Some(y), None, None).id("gesture-box")])
+            ui.text(theme.fonts.body, &self.label).padding(theme.widgets.unit.padding).id("gesture-label"),
+            ui.column([ui.column([]).size(side, side).radius(theme.widgets.unit.radius).background(c.primary).absolute(Some(x), Some(y), None, None).id("gesture-box")])
                 .grow(1)
                 .clip()
                 .id("gesture-area")

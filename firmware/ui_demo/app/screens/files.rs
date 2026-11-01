@@ -179,7 +179,7 @@ impl Component for Browser {
                 .height(48)
                 .padding_each(24, 13, 24, 0)
                 .border_top(ui.colors().divider),
-            ui.list(FILES, self.names.len(), theme.metrics.row_height).revision(self.revision).id("files").grow(1).background(ui.colors().surface),
+            ui.list(FILES, self.names.len(), theme.widgets.list_item.height).revision(self.revision).id("files").grow(1).background(ui.colors().surface),
             popup,
         ])
         .padding_each(0, ui.insets().top, 0, 0)
@@ -262,7 +262,7 @@ impl Component for Detail {
 
     fn view<'a>(&'a self, ui: &'a Ui<DetailMsg>) -> Element<'a, DetailMsg> {
         let theme = ui.theme();
-        let (c, m) = (ui.colors(), &theme.metrics);
+        let (c, m) = (ui.colors(), &theme.widgets.unit);
         ui.column([
             top_bar(ui, Some(DetailMsg::Back), &self.name, ui.empty()),
             ui.column([
@@ -272,8 +272,8 @@ impl Component for Detail {
                 ui.text(theme.fonts.caption, ui.format(format_args!("Volume {}", self.volume))).color(c.muted),
                 slider(ui, self.volume, |d| DetailMsg::Volume(slider_value(d))).id("volume"),
                 ui.row([
-                    button(ui, "Rename", theme.looks.button_secondary, DetailMsg::Back).grow(1).disabled(!self.keep).id("rename"),
-                    button(ui, "Delete", theme.looks.button, DetailMsg::Ask).grow(1).id("delete"),
+                    button(ui, "Rename", theme.widgets.button.secondary, DetailMsg::Back).grow(1).disabled(!self.keep).id("rename"),
+                    button(ui, "Delete", theme.widgets.button.primary, DetailMsg::Ask).grow(1).id("delete"),
                 ])
                 .gap(m.gap),
                 ui.text(theme.fonts.caption, "This note is long enough to wrap, and what follows it moves down with its height.").color(c.muted).wrap().id("note"),
@@ -309,9 +309,9 @@ impl Component for Confirm {
             .column([
                 ui.text(theme.fonts.title, "Delete this file?").color(ui.colors().on_surface),
                 ui.text(theme.fonts.body, "This cannot be undone.").color(ui.colors().muted),
-                button(ui, "Cancel", theme.looks.button_secondary, ConfirmMsg::Close).id("cancel"),
+                button(ui, "Cancel", theme.widgets.button.secondary, ConfirmMsg::Close).id("cancel"),
             ])
-            .gap(theme.metrics.padding);
+            .gap(theme.widgets.unit.padding);
         modal(ui, content, ConfirmMsg::Close)
     }
 }

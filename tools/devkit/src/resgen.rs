@@ -15,6 +15,7 @@ use freetype::{Library, face::LoadFlag};
 use resvg::tiny_skia::{FilterQuality, Pixmap, PixmapPaint, Transform};
 use resvg::usvg::{Options, Tree};
 use serde::Deserialize;
+use serde_json::Value;
 
 // Shared with the firmware side, which uses parts the host does not.
 #[allow(dead_code)]
@@ -53,7 +54,9 @@ struct ThemeEntry {
     #[serde(default)]
     colors: BTreeMap<String, BTreeMap<String, String>>,
     #[serde(default)]
-    metrics: BTreeMap<String, i32>,
+    vars: BTreeMap<String, Value>,
+    #[serde(default)]
+    widgets: BTreeMap<String, BTreeMap<String, Value>>,
     #[serde(default)]
     font: BTreeMap<String, FontEntry>,
 }
@@ -81,15 +84,7 @@ const THEME_COLORS: [&str; 12] = [
     "surface", "background", "on_surface", "muted", "primary", "on_primary", "primary_pressed", "divider",
     "pressed", "selected", "scrim", "shadow",
 ];
-const THEME_METRICS: [(&str, &str); 7] = [
-    ("bar_height", "i16"),
-    ("bar_padding", "i16"),
-    ("row_height", "i16"),
-    ("touch_size", "i16"),
-    ("padding", "i16"),
-    ("gap", "i16"),
-    ("radius", "u8"),
-];
+const THEME_STATES: [&str; 6] = ["pressed", "hovered", "focused", "selected", "disabled", "checked"];
 const DEFAULT_ICON_SIZE: u16 = 40;
 
 #[derive(Deserialize, Clone)]
@@ -135,7 +130,164 @@ struct Theme {
     icons: BTreeMap<String, (String, String)>,
     light: BTreeMap<String, String>,
     dark: Option<BTreeMap<String, String>>,
-    metrics: BTreeMap<String, i32>,
+    widgets: BTreeMap<String, BTreeMap<String, Token>>,
+    /// Rust of each look, by where it is defined.
+    looks: BTreeMap<String, String>,
+    unused_vars: Vec<String>,
+}
+
+/// What a value of `vars` or `widgets` comes to.
+#[derive(Clone)]
+enum Token {
+    Number(i64),
+    Color(String),
+    Font(String),
+    Look(String),
+}
+
+impl Token {
+    fn code(&self, symbol: &str) -> String {
+        match self {
+            Self::Number(number) => number.to_string(),
+            Self::Color(code) => code.clone(),
+            Self::Font(slot) => format!("&{}", chain_symbol(symbol, slot)),
+            Self::Look(path) => format!("&{}", look_symbol(symbol, path)),
+        }
+    }
+}
+
+fn chain_symbol(symbol: &str, slot: &str) -> String {
+    format!("{symbol}_{}_CHAIN", slot.to_uppercase())
+}
+
+fn look_symbol(symbol: &str, path: &str) -> String {
+    format!("{symbol}_{}_LOOK", path.replace('.', "_").to_uppercase())
+}
+
+static NO_LOOK: Value = Value::Null;
+
+/// Follows the references of one theme down to their values.
+struct Resolver<'a> {
+    theme: &'a str,
+    vars: &'a BTreeMap<String, Value>,
+    widgets: &'a BTreeMap<String, BTreeMap<String, Value>>,
+    looks: BTreeMap<String, String>,
+    used_vars: BTreeSet<String>,
+    used_fonts: BTreeSet<String>,
+    following: Vec<String>,
+}
+
+impl<'a> Resolver<'a> {
+    fn value(&mut self, path: &str, value: &'a Value) -> Result<Token, String> {
+        match value {
+            Value::Number(number) => {
+                number.as_i64().map(Token::Number).ok_or_else(|| format!("theme.{}.{path}: not an integer", self.theme))
+            }
+            Value::String(text) => self.text(path, text),
+            Value::Object(_) => self.look(path, value),
+            _ => Err(format!("theme.{}.{path}: not a value", self.theme)),
+        }
+    }
+
+    fn text(&mut self, path: &str, text: &str) -> Result<Token, String> {
+        if text.starts_with('#') {
+            let [r, g, b, a] = parse_color(text)
+                .ok_or_else(|| format!("theme.{}.{path}: {text} is not #rrggbb or #rrggbbaa", self.theme))?;
+            return Ok(Token::Color(format!("devkit_ui::ColorRole::Fixed(devkit_gfx::Color::rgba({r}, {g}, {b}, {a}))")));
+        }
+        if let Some(color) = text.strip_prefix("color.") {
+            if !THEME_COLORS.contains(&color) {
+                return Err(format!("theme.{}.{path}: no color {color}", self.theme));
+            }
+            return Ok(Token::Color(format!("devkit_ui::ColorRole::{}", type_name(color))));
+        }
+        if let Some(font) = text.strip_prefix("font.") {
+            self.used_fonts.insert(font.to_string());
+            return Ok(Token::Font(font.to_string()));
+        }
+        let target = if let Some(name) = text.strip_prefix("vars.") {
+            self.used_vars.insert(name.to_string());
+            self.vars.get(name)
+        } else if let Some((widget, field)) = text.strip_prefix("widgets.").and_then(|rest| rest.split_once('.')) {
+            self.widgets.get(widget).and_then(|fields| fields.get(field))
+        } else {
+            return Err(format!("theme.{}.{path}: {text} is not a value", self.theme));
+        };
+        let target = target.ok_or_else(|| format!("theme.{}.{path}: no {text}", self.theme))?;
+        if self.following.iter().any(|followed| followed == text) {
+            return Err(format!("theme.{}.{path}: {text} refers to itself", self.theme));
+        }
+        self.following.push(text.to_string());
+        let token = self.value(text, target);
+        self.following.pop();
+        token
+    }
+
+    fn look(&mut self, path: &str, value: &'a Value) -> Result<Token, String> {
+        let base = self.look_part(path, value.get("base").unwrap_or(&NO_LOOK))?;
+        let mut states = Vec::new();
+        for entry in value.get("states").and_then(Value::as_array).into_iter().flatten() {
+            let (Some(state), Some(look)) = (entry.get(0).and_then(Value::as_str), entry.get(1)) else {
+                return Err(format!("theme.{}.{path}.states: entries are [state, look]", self.theme));
+            };
+            if !THEME_STATES.contains(&state) {
+                return Err(format!("theme.{}.{path}.states: no state {state}", self.theme));
+            }
+            states.push(format!("(devkit_ui::State::{}, {})", state.to_uppercase(), self.look_part(path, look)?));
+        }
+        let code = format!("devkit_ui::WidgetLook {{ base: {base}, states: &[{}] }}", states.join(", "));
+        self.looks.insert(path.to_string(), code);
+        Ok(Token::Look(path.to_string()))
+    }
+
+    fn look_part(&mut self, path: &str, part: &'a Value) -> Result<String, String> {
+        let background = self.optional_color(path, part.get("background"))?;
+        let foreground = self.optional_color(path, part.get("foreground"))?;
+        let border = match part.get("border") {
+            Some(border) => {
+                let color = border.get("color").ok_or_else(|| format!("theme.{}.{path}: a border needs a color", self.theme))?;
+                let width = border.get("width").ok_or_else(|| format!("theme.{}.{path}: a border needs a width", self.theme))?;
+                let (color, width) = (self.color(path, color)?, self.number(path, width)?);
+                format!("Some(devkit_ui::LookBorder {{ color: {color}, width: {width} }})")
+            }
+            None => "None".to_string(),
+        };
+        let opacity = match part.get("opacity") {
+            Some(opacity) => format!("Some({})", self.number(path, opacity)?),
+            None => "None".to_string(),
+        };
+        Ok(format!("devkit_ui::Look {{ background: {background}, foreground: {foreground}, border: {border}, opacity: {opacity} }}"))
+    }
+
+    fn optional_color(&mut self, path: &str, value: Option<&'a Value>) -> Result<String, String> {
+        match value {
+            Some(value) => Ok(format!("Some({})", self.color(path, value)?)),
+            None => Ok("None".to_string()),
+        }
+    }
+
+    fn color(&mut self, path: &str, value: &'a Value) -> Result<String, String> {
+        match self.value(path, value)? {
+            Token::Color(code) => Ok(code),
+            _ => Err(format!("theme.{}.{path}: not a color", self.theme)),
+        }
+    }
+
+    fn number(&mut self, path: &str, value: &'a Value) -> Result<i64, String> {
+        match self.value(path, value)? {
+            Token::Number(number) => Ok(number),
+            _ => Err(format!("theme.{}.{path}: not a number", self.theme)),
+        }
+    }
+}
+
+fn type_name(name: &str) -> String {
+    name.split('_')
+        .map(|word| {
+            let mut chars = word.chars();
+            chars.next().map_or(String::new(), |first| first.to_ascii_uppercase().to_string() + chars.as_str())
+        })
+        .collect()
 }
 
 struct Context {
@@ -241,13 +393,36 @@ fn merge_themes(definition: &mut Definition, base: &Path, fonts_dir: &Path) -> R
         for (mode, colors) in entry.colors {
             merged.colors.entry(mode).or_default().extend(colors);
         }
-        merged.metrics.extend(entry.metrics);
+        merged.vars.extend(entry.vars);
+        for (widget, fields) in entry.widgets {
+            merged.widgets.entry(widget).or_default().extend(fields);
+        }
         if !entry.font.is_empty() {
             return Err(format!("theme.{name}.font: fonts go in the top level 'font'"));
         }
 
+        let mut resolver = Resolver {
+            theme: &name,
+            vars: &merged.vars,
+            widgets: &merged.widgets,
+            looks: BTreeMap::new(),
+            used_vars: BTreeSet::new(),
+            used_fonts: BTreeSet::new(),
+            following: Vec::new(),
+        };
+        let mut widgets = BTreeMap::new();
+        for (widget, fields) in &merged.widgets {
+            let mut tokens = BTreeMap::new();
+            for (field, value) in fields {
+                tokens.insert(field.clone(), resolver.value(&format!("widgets.{widget}.{field}"), value)?);
+            }
+            widgets.insert(widget.clone(), tokens);
+        }
+        let Resolver { looks, used_vars, used_fonts, .. } = resolver;
+        let unused_vars = merged.vars.keys().filter(|var| !used_vars.contains(*var)).cloned().collect();
+
         let mut fonts = BTreeMap::new();
-        for slot in THEME_FONTS {
+        for slot in THEME_FONTS.iter().copied().chain(used_fonts.iter().map(String::as_str)) {
             let choice = merged.fonts.get(slot).ok_or_else(|| format!("theme.{name}.fonts.{slot}: missing"))?;
             let mut chain = Vec::new();
             for font in choice.names() {
@@ -297,12 +472,7 @@ fn merge_themes(definition: &mut Definition, base: &Path, fonts_dir: &Path) -> R
         if let Some(dark) = &dark {
             check_palette(&name, dark)?;
         }
-        for (metric, _) in THEME_METRICS {
-            if !merged.metrics.contains_key(metric) {
-                return Err(format!("theme.{name}.metrics.{metric}: missing"));
-            }
-        }
-        themes.insert(name, Theme { fonts, icons, light, dark, metrics: merged.metrics });
+        themes.insert(name, Theme { fonts, icons, light, dark, widgets, looks, unused_vars });
     }
     Ok((themes, files))
 }
@@ -338,16 +508,14 @@ fn palette_code(colors: &BTreeMap<String, String>) -> String {
 
 fn theme_code(context: &Context, name: &str, theme: &Theme) -> String {
     let symbol = name.to_uppercase();
-    let chains: Vec<(String, String)> = THEME_FONTS
-        .iter()
-        .map(|slot| {
-            let fonts: Vec<String> = theme.fonts[*slot].iter().map(|f| format!("&{}", f.to_uppercase())).collect();
-            (format!("{symbol}_{}_CHAIN", slot.to_uppercase()), fonts.join(", "))
-        })
-        .collect();
     let mut text = String::new();
-    for (chain, fonts) in &chains {
-        text += &format!("static {chain}: devkit_gfx::FontChain = devkit_gfx::FontChain::new(&[{fonts}]);\n");
+    for (slot, fonts) in &theme.fonts {
+        let fonts: Vec<String> = fonts.iter().map(|f| format!("&{}", f.to_uppercase())).collect();
+        text += &format!(
+            "static {}: devkit_gfx::FontChain = devkit_gfx::FontChain::new(&[{}]);\n",
+            chain_symbol(&symbol, slot),
+            fonts.join(", ")
+        );
     }
     let mut sets: Vec<&String> = theme.icons.values().map(|(font, _)| font).collect();
     sets.sort();
@@ -359,8 +527,17 @@ fn theme_code(context: &Context, name: &str, theme: &Theme) -> String {
             set.to_uppercase()
         );
     }
-    let metrics: Vec<String> =
-        THEME_METRICS.iter().map(|(metric, _)| format!("{metric}: {}", theme.metrics[*metric])).collect();
+    for (path, look) in &theme.looks {
+        text += &format!("static {}: devkit_ui::WidgetLook = {look};\n", look_symbol(&symbol, path));
+    }
+    let widgets: Vec<String> = theme
+        .widgets
+        .iter()
+        .map(|(widget, fields)| {
+            let fields: Vec<String> = fields.iter().map(|(field, token)| format!("{field}: {}", token.code(&symbol))).collect();
+            format!("{widget}: devkit_ui::{}Theme {{ {} }}", type_name(widget), fields.join(", "))
+        })
+        .collect();
     let icons: Vec<String> = THEME_ICONS
         .iter()
         .map(|icon| {
@@ -373,15 +550,15 @@ fn theme_code(context: &Context, name: &str, theme: &Theme) -> String {
     text += &format!(
         "pub static {symbol}: devkit_ui::ThemeAssets = devkit_ui::ThemeAssets {{\n    \
          light: {},\n    dark: {dark},\n    \
-         metrics: devkit_ui::Metrics {{ {} }},\n    \
          fonts: devkit_ui::Fonts {{ title: &{}, body: &{}, caption: &{} }},\n    \
-         icons: devkit_ui::Icons {{ {} }},\n}};\n\n",
+         icons: devkit_ui::Icons {{ {} }},\n    \
+         widgets: devkit_ui::Widgets {{ {} }},\n}};\n\n",
         palette_code(&theme.light),
-        metrics.join(", "),
-        chains[0].0,
-        chains[1].0,
-        chains[2].0,
+        chain_symbol(&symbol, "title"),
+        chain_symbol(&symbol, "body"),
+        chain_symbol(&symbol, "caption"),
         icons.join(", "),
+        widgets.join(", "),
     );
     text
 }
@@ -447,6 +624,9 @@ fn write_index(context: &Context, out: &Path) -> Result<(), String> {
         );
     }
     for (name, theme) in &context.themes {
+        for var in &theme.unused_vars {
+            eprintln!("warning: theme.{name}.vars.{var}: not used");
+        }
         text += &theme_code(context, name, theme);
     }
     text += "pub mod icons {\n";

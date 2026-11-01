@@ -299,7 +299,7 @@ impl KeyboardPanel {
     }
 
     pub(crate) fn height(layout: &Keyboard, theme: &Theme) -> i16 {
-        let k = &theme.keyboards;
+        let k = &theme.widgets.keyboard;
         i16::from(layout.rows) * (k.key_height + k.gap) + k.gap
     }
 }
@@ -339,7 +339,7 @@ impl Component for KeyboardPanel {
         let Some(layout) = self.layout else { return ui.empty() };
         let Some(layer) = layout.layers.get(usize::from(self.layer)) else { return ui.empty() };
         let theme = ui.theme();
-        let k = &theme.keyboards;
+        let k = &theme.widgets.keyboard;
         let width = self.width.unwrap_or(ui.screen_size().0);
         let span = i32::from(width) - i32::from(k.gap);
         let columns = i32::from(layout.columns) * QUARTER as i32;
@@ -362,7 +362,7 @@ impl Component for KeyboardPanel {
                 ui.row(items).gap(k.gap).height(k.key_height)
             })
             .collect();
-        let panel = ui.column(rows).gap(k.gap).padding(k.gap).background(ui.colors().background).keep_focus().on_tap(KeyboardMsg::Panel).id("keyboard");
+        let panel = ui.column(rows).gap(k.gap).padding(k.gap).background(ui.color(k.background)).keep_focus().on_tap(KeyboardMsg::Panel).id("keyboard");
         match self.width {
             Some(width) => panel.width(width),
             None => panel.absolute(Some(0), None, Some(0), Some(0)),
@@ -383,11 +383,11 @@ impl Child for KeyboardPanel {
 
 fn key_element<'a>(ui: &'a Ui<KeyboardMsg>, key: &Key, row: u8, column: u8, width: i16) -> Element<'a, KeyboardMsg> {
     let theme = ui.theme();
-    let k = &theme.keyboards;
+    let k = &theme.widgets.keyboard;
     if matches!(key.action, KeyAction::None) {
         return ui.column([]).width(width);
     }
-    let font = key.font.or(k.font).unwrap_or(theme.fonts.body);
+    let font = key.font.unwrap_or(k.font);
     let label = match key.label {
         KeyLabel::None => ui.empty(),
         KeyLabel::Text(text) => ui.text(font, text).ellipsis(),
@@ -399,5 +399,5 @@ fn key_element<'a>(ui: &'a Ui<KeyboardMsg>, key: &Key, row: u8, column: u8, widt
         KeyRole::Special => k.special,
         KeyRole::Primary => k.primary,
     });
-    ui.row([label]).look(look).width(width).height(k.key_height).radius(theme.metrics.radius / 2).align(Align::Center).justify(Justify::Center).role(Role::Button).repeat(key.repeat).keep_focus().on_tap(KeyboardMsg::Key(row, column))
+    ui.row([label]).look(look).width(width).height(k.key_height).radius(k.radius).align(Align::Center).justify(Justify::Center).role(Role::Button).repeat(key.repeat).keep_focus().on_tap(KeyboardMsg::Key(row, column))
 }

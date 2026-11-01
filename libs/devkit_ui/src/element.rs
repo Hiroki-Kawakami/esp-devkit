@@ -22,7 +22,7 @@ use crate::nav::{DetailMap, SplitRole, SplitSpec, call_detail_map};
 use crate::gesture::{Gesture, GestureMap, Gestures, call_gesture_map};
 use crate::keyboard::{InputKind, Keyboard};
 use crate::text_buffer::TextInput;
-use crate::theme::{Border, ColorMode, Icon, Palette, Theme, WidgetLook};
+use crate::theme::{Border, ColorMode, ColorRole, Icon, Palette, Theme, WidgetLook};
 
 /// Creates or updates a child component during reconciliation.
 pub(crate) trait ChildSpec {
@@ -108,7 +108,7 @@ unsafe fn call_input_map<M: Copy>(function: *const (), input: TextInput) -> Eras
     Erased::new(function(input))
 }
 
-/// A drag on a node, in the node's coordinates.
+/// A drag on a node, in its area inside the padding.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Drag {
     pub x: i16,
@@ -629,6 +629,10 @@ impl<M: Copy> Ui<M> {
     /// The theme's colors in the color mode set.
     pub fn colors(&self) -> Palette {
         self.context.colors
+    }
+
+    pub fn color(&self, role: ColorRole) -> Color {
+        self.context.colors.color(role)
     }
 
     /// Whether this screen's navigator has somewhere to go back to from here.
