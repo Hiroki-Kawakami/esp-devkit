@@ -10,7 +10,7 @@ use core::fmt::{self, Write};
 use core::marker::PhantomData;
 use core::ptr::{self, NonNull};
 
-use devkit_gfx::{Align as TextAlign, Color, FontChain, Image, ImageFormat, Overflow, TextOptions};
+use devkit_gfx::{Align as TextAlign, Color, FontChain, Image, ImageFormat, Overflow, Rect, TextOptions};
 
 use crate::bump::Bump;
 use crate::component::{AnyHost, Child, EventMap, Host, ListId, Screen, call_event_map, screen_host};
@@ -128,6 +128,28 @@ unsafe fn call_drag_map<M: Copy>(function: *const (), drag: Drag) -> Erased {
     Erased::new(function(drag))
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct TapMap {
+    pub(crate) function: *const (),
+    pub(crate) call: unsafe fn(*const (), Rect) -> Erased,
+}
+
+unsafe fn call_tap_map<M: Copy>(function: *const (), rect: Rect) -> Erased {
+    let function: fn(Rect) -> M = unsafe { core::mem::transmute(function) };
+    Erased::new(function(rect))
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ScrollMap {
+    pub(crate) function: *const (),
+    pub(crate) call: unsafe fn(*const (), i32) -> Erased,
+}
+
+unsafe fn call_scroll_map<M: Copy>(function: *const (), offset: i32) -> Erased {
+    let function: fn(i32) -> M = unsafe { core::mem::transmute(function) };
+    Erased::new(function(offset))
+}
+
 struct ScreenElement<S: Child + Screen> {
     props: S::Props,
 }
@@ -161,6 +183,8 @@ pub struct Element<'a, M: Copy> {
     pub(crate) role: Role,
     pub(crate) tap: Option<Erased>,
     pub(crate) drag: Option<DragMap>,
+    pub(crate) tap_at: Option<TapMap>,
+    pub(crate) on_scroll: Option<ScrollMap>,
     pub(crate) gestures: Option<GestureMap>,
     pub(crate) size: Option<SizeMap>,
     pub(crate) input: Option<InputMap>,
@@ -175,7 +199,7 @@ pub struct Element<'a, M: Copy> {
 
 impl<'a, M: Copy> Element<'a, M> {
     fn new(content: Content<'a>, children: &'a [Element<'a, M>]) -> Self {
-        Self { content, children, style: Style::default(), key: None, id: None, role: Role::None, tap: None, drag: None, gestures: None, size: None, input: None, focusable: false, keep_focus: false, keyboard: None, input_kind: InputKind::Text, repeat: false, state: State::empty(), _msg: PhantomData }
+        Self { content, children, style: Style::default(), key: None, id: None, role: Role::None, tap: None, drag: None, tap_at: None, on_scroll: None, gestures: None, size: None, input: None, focusable: false, keep_focus: false, keyboard: None, input_kind: InputKind::Text, repeat: false, state: State::empty(), _msg: PhantomData }
     }
 
     pub const fn is_empty(&self) -> bool {
@@ -201,6 +225,26 @@ impl<'a, M: Copy> Element<'a, M> {
 
     pub fn on_tap(mut self, msg: M) -> Self {
         self.tap = Some(Erased::new(msg));
+        self
+    }
+
+    /// A tap that tells where this node is on the screen, to place a popup by it.
+    pub fn on_tap_at(mut self, on_tap: fn(Rect) -> M) -> Self {
+        self.tap_at = Some(TapMap { function: on_tap as *const (), call: call_tap_map::<M> });
+        self
+    }
+
+    /// On a `scroll` or `list`: the offset, every time it moves. Comes as often
+    /// as frames do, so rebuild only for what changes the view.
+    pub fn on_scroll(mut self, on_scroll: fn(i32) -> M) -> Self {
+        self.on_scroll = Some(ScrollMap { function: on_scroll as *const (), call: call_scroll_map::<M> });
+        self
+    }
+
+    /// Draws a divider along the bottom while the `scroll` or `list` named `id`
+    /// in this component is away from its start.
+    pub fn scroll_border(mut self, id: &'static str) -> Self {
+        self.style.scroll_border = Some(id);
         self
     }
 
@@ -479,6 +523,8 @@ impl<'a, M: Copy> Element<'a, M> {
         self
     }
 
+    /// Clips what is inside, to the `radius` too. The inside of a scroller or
+    /// a surface shown by the display stays square.
     pub fn clip(mut self) -> Self {
         self.style.clip = true;
         self

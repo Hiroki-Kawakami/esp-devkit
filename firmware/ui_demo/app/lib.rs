@@ -8,8 +8,8 @@
 extern crate alloc;
 
 mod bench;
-mod demo;
 mod scene;
+mod screens;
 
 mod resources {
     #![allow(dead_code)]
@@ -34,8 +34,8 @@ use idf::sync::{Mutex, Semaphore};
 use idf::{system, thread};
 
 use bench::{Bench, Params, Present};
-use demo::{FileManager, INSET_TOP, SPARE_STRIPS, StatusBar, StatusMsg, THEME};
 use scene::Kind;
+use screens::{Home, INSET_TOP, SPARE_STRIPS, StatusBar, StatusMsg, THEME};
 
 const TAG: &CStr = c"ui_demo";
 const SETTINGS_VALID: u32 = 0x5549_4445;
@@ -162,7 +162,7 @@ pub fn run() {
 }
 
 fn run_demo(board: &Board, display: &'static Display, settings: &Settings) {
-    demo::set_display(display);
+    screens::set_display(display);
     let mut config = AppConfig::new(&THEME);
     config.plugins.push(Box::new(SavedColorMode::new()));
     if settings.rotated {
@@ -171,7 +171,7 @@ fn run_demo(board: &Board, display: &'static Display, settings: &Settings) {
     if !settings.rotated {
         let rotation = AutoRotation::new(board.imu);
         config.plugins.push(Box::new(rotation.clone()));
-        demo::set_rotation(rotation);
+        screens::set_rotation(rotation);
     }
     if settings.data_internal {
         config.presenter.data_caps = Caps::INTERNAL;
@@ -181,7 +181,7 @@ fn run_demo(board: &Board, display: &'static Display, settings: &Settings) {
     }
     config.presenter.strip_bytes = VIDEO_STRIP_BYTES;
     config.presenter.strip_caps = Caps::SPIRAM;
-    let mut app = match App::new(display, board.touch, FileManager, config) {
+    let mut app = match App::new(display, board.touch, Home, config) {
         Ok(app) => app,
         Err(err) => {
             error!(TAG, "app: {err}");
@@ -194,7 +194,7 @@ fn run_demo(board: &Board, display: &'static Display, settings: &Settings) {
         harness_rs::set_idle(move || probe.idle());
     }
     let input = app.input();
-    demo::set_input(input.clone());
+    screens::set_input(input.clone());
     let key = {
         let input = input.clone();
         move |k| {
@@ -221,7 +221,7 @@ fn run_demo(board: &Board, display: &'static Display, settings: &Settings) {
             return;
         }
     }
-    harness_rs::register("video", |_| Ok(Some(demo::VIDEO_FRAMES.load(Ordering::Relaxed).to_string())));
+    harness_rs::register("video", |_| Ok(Some(screens::VIDEO_FRAMES.load(Ordering::Relaxed).to_string())));
     harness_rs::register("ui", move |args| match args {
         ["tree"] => probe.tree().map(Some),
         ["stats"] => probe.stats().map(Some),
@@ -248,8 +248,8 @@ fn run_demo(board: &Board, display: &'static Display, settings: &Settings) {
         ["keyboard", "removed"] => connect(false),
         ["dark", "on"] => input.set_color_mode(ColorMode::Dark).then_some(None).ok_or_else(|| "queue".to_string()),
         ["dark", "off"] => input.set_color_mode(ColorMode::Light).then_some(None).ok_or_else(|| "queue".to_string()),
-        ["card", "out"] => demo::set_card_present(false).then_some(None).ok_or_else(|| "queue".to_string()),
-        ["card", "in"] => demo::set_card_present(true).then_some(None).ok_or_else(|| "queue".to_string()),
+        ["card", "out"] => screens::set_card_present(false).then_some(None).ok_or_else(|| "queue".to_string()),
+        ["card", "in"] => screens::set_card_present(true).then_some(None).ok_or_else(|| "queue".to_string()),
         _ => Err("ui <tree|stats|tap <id>|invoke <id>|type <text>|key <name>|keyboard <connected|removed>|card <in|out>>".to_string()),
     });
     let clock = thread::Builder::new().name("clock").stack_size(4096).spawn(move || {

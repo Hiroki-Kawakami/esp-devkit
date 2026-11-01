@@ -104,6 +104,7 @@ pub(crate) struct Tree {
     pub(crate) navigators: Vec<NodeId>,
     pub(crate) root_navigator: NodeId,
     pub(crate) chrome: Vec<u16>,
+    pub(crate) popups: NodeId,
     pub(crate) restoring: Vec<Saved>,
     pub(crate) theme: &'static Theme,
     pub(crate) screen_style: ScreenStyle,
@@ -148,6 +149,7 @@ impl Tree {
             navigators: Vec::new(),
             root_navigator: NONE,
             chrome: Vec::new(),
+            popups: NONE,
             restoring: Vec::new(),
             theme,
             screen_style: ScreenStyle::default(),
@@ -193,6 +195,8 @@ impl Tree {
         tree.seed_navigator(nav, root);
         let overlay = tree.new_navigator(TypeId::of::<Overlay>(), 0);
         tree.add_plane(overlay);
+        tree.popups = tree.alloc_node(Node::new(NodeContent::Box, 0));
+        tree.add_plane(tree.popups);
         tree
     }
 
@@ -288,6 +292,7 @@ impl Tree {
         }
         self.trackers.clear();
         self.flings.clear();
+        self.close_popups();
         self.area = area;
         self.layout_dirty = true;
         self.keyboard_changed = true;
@@ -506,6 +511,8 @@ impl Tree {
         node.role = element.role;
         node.tap = element.tap;
         node.drag = element.drag;
+        node.tap_at = element.tap_at;
+        node.on_scroll = element.on_scroll;
         node.gestures = element.gestures;
         node.size = element.size;
         node.input = element.input;
@@ -752,6 +759,9 @@ impl Tree {
             self.mark_slot_dirty(slot);
         }
         self.queue.extend(requests.sends.into_iter().map(|m| (slot, m)));
+        for (id, msg) in requests.posts {
+            self.post(id, msg);
+        }
         if let Some(map) = &self.slots[usize::from(slot)].events {
             for event in requests.events {
                 let parent = unsafe { (map.call)(map.function, event) };
@@ -774,6 +784,12 @@ impl Tree {
         self.pending_redraw.extend(requests.redraw);
         for op in requests.nav {
             self.apply_nav(slot, op);
+        }
+        if requests.close_popup {
+            self.close_popup(slot);
+        }
+        for popup in requests.popups {
+            self.open_popup(slot, popup);
         }
     }
 
@@ -986,7 +1002,7 @@ impl Tree {
         self.caret_ms = 0;
     }
 
-    /// Adds the docked on-screen keyboard above everything.
+    /// Adds the docked on-screen keyboard, under only the popups.
     pub(crate) fn add_keyboard(&mut self, mode: KeyboardMode) {
         let slot = self.alloc_slot();
         let node = self.alloc_node(Node::new(NodeContent::Child(slot), slot));
@@ -999,10 +1015,11 @@ impl Tree {
         self.nodes[node as usize].style.absolute = Some(crate::style::Inset { left: Some(0), top: Some(0), right: Some(0), bottom: Some(0) });
         self.nodes[node as usize].parent = self.root;
         let mut child = self.nodes[self.root as usize].first_child;
-        while self.nodes[child as usize].next != NONE {
+        while self.nodes[child as usize].next != self.popups {
             child = self.nodes[child as usize].next;
         }
         self.nodes[child as usize].next = node;
+        self.nodes[node as usize].next = self.popups;
         self.mark_slot_dirty(slot);
         self.keyboard_changed = true;
     }
@@ -1132,15 +1149,45 @@ impl Tree {
             _ => return false,
         };
         let next = (*offset + delta).clamp(0, max.max(0));
-        let moved = next != *offset;
+        let before = *offset;
+        let moved = next != before;
         *offset = next;
         if moved {
             let node = &mut self.nodes[id as usize];
             node.scrolled = true;
             let screen = node.screen;
             self.damage.push(screen);
+            self.scroll_moved(id, before);
         }
         moved
+    }
+
+    /// Tells what follows `id`, whose offset has just left `before`.
+    pub(crate) fn scroll_moved(&mut self, id: NodeId, before: i32) {
+        let node = &self.nodes[id as usize];
+        let offset = node.scroll_offset().unwrap_or(0);
+        let (owner, name) = (node.owner, node.id);
+        if let Some(map) = node.on_scroll {
+            let msg = unsafe { (map.call)(map.function, offset) };
+            self.queue.push_back((owner, msg));
+        }
+        let Some(name) = name.filter(|_| (before == 0) != (offset == 0)) else { return };
+        let mut bars = Vec::new();
+        self.walk(self.root, &mut |_, node| {
+            if node.owner == owner && node.style.scroll_border == Some(name) {
+                bars.push(node.screen);
+            }
+        });
+        self.damage.extend(bars);
+    }
+
+    /// Whether the scroller `name` of `owner` is away from its start.
+    pub(crate) fn scrolled_away(&self, owner: u16, name: &str) -> bool {
+        let mut away = false;
+        self.walk(self.root, &mut |_, node| {
+            away |= node.owner == owner && node.id == Some(name) && node.scroll_offset().is_some_and(|offset| offset > 0);
+        });
+        away
     }
 
     fn hit(&self, id: NodeId, dx: i32, dy: i32, x: i32, y: i32) -> Option<Hit> {
@@ -1180,7 +1227,7 @@ impl Tree {
                 }
             } else if node.drag.is_some() {
                 found = Some(Hit { drag: id, ..NO_HIT });
-            } else if node.tap.is_some() || node.input.is_some() || node.focusable {
+            } else if node.tap.is_some() || node.tap_at.is_some() || node.input.is_some() || node.focusable {
                 found = Some(Hit { tap: id, scroller: if scrollable { id } else { NONE }, ..NO_HIT });
             } else if scrollable {
                 found = Some(Hit { scroller: id, ..NO_HIT });
@@ -1315,10 +1362,16 @@ impl Tree {
         }
     }
 
+    fn tap_msg(&self, id: NodeId) -> Option<Erased> {
+        let node = &self.nodes[id as usize];
+        let Some(map) = node.tap_at else { return node.tap };
+        Some(unsafe { (map.call)(map.function, node.screen) })
+    }
+
     pub(crate) fn finish_tap(&mut self, id: NodeId, point: (i16, i16), repeated: bool) {
+        let tap = self.tap_msg(id);
         let node = &self.nodes[id as usize];
         let owner = node.owner;
-        let tap = node.tap;
         if node.input.is_some() || node.focusable {
             let place = match &node.content {
                 NodeContent::Text(text) if node.input.is_some() => {
@@ -1406,7 +1459,7 @@ impl Tree {
         }
     }
 
-    fn walk(&self, id: NodeId, f: &mut impl FnMut(NodeId, &Node)) {
+    pub(crate) fn walk(&self, id: NodeId, f: &mut impl FnMut(NodeId, &Node)) {
         let node = &self.nodes[id as usize];
         if node.screen.is_empty() && !matches!(node.content, NodeContent::Child(_)) {
             return;
@@ -1478,8 +1531,9 @@ impl Tree {
         if node.state.contains(State::DISABLED) {
             return Err(format!("{name} is disabled"));
         }
-        let msg = node.tap.ok_or_else(|| format!("{name} takes no taps"))?;
-        self.queue.push_back((node.owner, msg));
+        let owner = node.owner;
+        let msg = self.tap_msg(id).ok_or_else(|| format!("{name} takes no taps"))?;
+        self.queue.push_back((owner, msg));
         Ok(())
     }
 

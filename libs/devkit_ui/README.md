@@ -47,6 +47,9 @@ app.run();
   keeps its state and rebuilds only when its props differ or it asks to.
 - Widgets are functions returning an `Element`; the primitives are boxes, text,
   images, `scroll` and `list`.
+- `on_scroll` reports a scroller's offset as it moves. `scroll_border(id)` shows
+  a divider under a node while the scroller named `id` is off its start, without
+  a message or a rebuild.
 - `list` builds only the rows in view, through `Component::list_row`. Scrolling
   moves the rows without running `view`. A rebuild of the owner rebuilds them,
   unless `revision` is given and did not change.
@@ -115,6 +118,11 @@ app.run();
   with the `Insets` it covers. Screens read them with `ui.insets()` and can avoid
   them or draw beneath. `ScreenStyle` tells the chrome what the top root screen
   wants. `Handle`s from `App::chrome` post to that component.
+- `cx.popup(component)` shows a component above everything, the keyboard
+  included, and works from any screen, a modal too. What is under it stays;
+  `cx.close_popup()` closes it, and so does a turn of the screen. It fills the
+  screen and places itself, by a rectangle from `on_tap_at`. `DropdownMenu` is
+  one.
 - A `Theme` joins two halves. `ThemeAssets` is what resgen generates from a
   definition: colors, metrics, fonts and icons, so a theme replaces any of them
   without the rest of it reaching the firmware. `WidgetStyle` is code:
@@ -133,6 +141,10 @@ app.run();
 - `cx.set_theme` changes the theme, `Screen::theme` replaces it for a screen.
 
 - `devkit_ui::widgets` are functions over the theme. State stays with the caller.
+- `table` lays out a scrolling form: `table_section` is a rounded panel of rows and
+  `table_header` the title above one. `table_row` holds any children, and
+  `table_label`, `table_value` and `table_chevron` are the usual ones. Unlike
+  `list`, every row exists.
 - `cx.animate(id, animation)` moves a node's offset or opacity, without running a
   view or layout.
 

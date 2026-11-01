@@ -42,12 +42,14 @@
     "close": "tabler/x.svg",
     "check": "tabler/check.svg",
     "chevron": "tabler/chevron-right.svg",
+    "expand": "tabler/chevron-down.svg",
     "shift": "tabler/arrow-big-up.svg",
     "backspace": "tabler/backspace.svg",
     "enter": "tabler/corner-down-left.svg"
   },
   "icon_size": {
     "chevron": 28,
+    "expand": 28,
     "shift": 28,
     "backspace": 28,
     "enter": 28
@@ -84,6 +86,7 @@
   },
   "metrics": {
     "bar_height": 80,
+    "bar_padding": 8,
     "row_height": 80,
     "touch_size": 64,
     "padding": 24,

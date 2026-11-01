@@ -20,6 +20,86 @@ use crate::text::PlacedGlyph;
 
 const NOT_VISIBLE: u32 = u32::MAX;
 
+/// What round clips keep while they are open. One per task drawing; it grows
+/// to what the frames need and stays.
+pub struct ClipStore<A: Allocator = Global> {
+    saved: Vec<u8, A>,
+}
+
+impl ClipStore<Global> {
+    pub fn new() -> Self {
+        Self::new_in(Global)
+    }
+}
+
+impl Default for ClipStore<Global> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<A: Allocator> ClipStore<A> {
+    pub fn new_in(alloc: A) -> Self {
+        Self { saved: Vec::new_in(alloc) }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct RoundClip {
+    rect: Rect,
+    corner: CornerMask,
+    area: Rect,
+    start: usize,
+}
+
+impl RoundClip {
+    /// Each corner within `area`: the part, and its mask at the part's top left.
+    fn corners(&self) -> [(Rect, *const u8, isize); 4] {
+        let r = self.corner.radius() as i16;
+        let stride = isize::from(r) * 2;
+        let data = self.corner.data();
+        let last_row = unsafe { data.offset(isize::from(r - 1) * stride) };
+        let (rect, right, low) = (self.rect, self.rect.right() - r, self.rect.bottom() - r);
+        let place = |x: i16, y: i16, mask: *const u8, mask_stride: isize| {
+            let tile = Rect::new(x, y, r, r);
+            let part = tile.intersect(&self.area);
+            let skip = isize::from(part.y - y) * mask_stride + isize::from(part.x - x);
+            (part, unsafe { mask.offset(skip) }, mask_stride)
+        };
+        [
+            place(rect.x, rect.y, data, stride),
+            place(right, rect.y, unsafe { data.add(r as usize) }, stride),
+            place(rect.x, low, last_row, -stride),
+            place(right, low, unsafe { last_row.add(r as usize) }, -stride),
+        ]
+    }
+}
+
+fn open_round_clip<P: Pixel, A: Allocator>(surface: &Surface, clip: RoundClip, store: &mut ClipStore<A>) -> Option<RoundClip> {
+    let corners = clip.corners();
+    let bytes: usize = corners.iter().filter(|c| !c.0.is_empty()).map(|c| c.0.area() as usize * P::BYTES).sum();
+    if bytes == 0 || store.saved.try_reserve(bytes).is_err() {
+        return None;
+    }
+    for (part, _, _) in corners {
+        if !part.is_empty() {
+            surface.save::<P, A>(&part, &mut store.saved);
+        }
+    }
+    Some(clip)
+}
+
+fn close_round_clip<P: Pixel, A: Allocator>(surface: &Surface, clip: &RoundClip, store: &mut ClipStore<A>) {
+    let mut at = clip.start;
+    for (part, mask, mask_stride) in clip.corners() {
+        if !part.is_empty() {
+            surface.restore::<P>(&part, unsafe { store.saved.as_ptr().add(at) }, mask, mask_stride);
+            at += part.area() as usize * P::BYTES;
+        }
+    }
+    store.saved.truncate(clip.start);
+}
+
 /// The glyph masks of a frame, resolved by one task so that any number of
 /// tasks can then `draw` without locks.
 pub struct Prepared<A: Allocator = Global> {
@@ -92,7 +172,8 @@ fn start_op(ops: &[Op<'_>], area: &Rect) -> usize {
     for (i, op) in ops.iter().enumerate().rev() {
         match op {
             Op::PopClip => depth += 1,
-            Op::PushClip(_) => depth = depth.saturating_sub(1),
+            Op::PopRoundClip => depth += 1,
+            Op::PushClip(_) | Op::PushRoundClip { .. } => depth = depth.saturating_sub(1),
             _ if depth == 0 && op.is_opaque() && op.bounds().contains(area) => return i,
             _ => {}
         }
@@ -169,29 +250,31 @@ fn draw_text<P: Pixel>(s: &Surface, glyphs: &[PlacedGlyph], masks: &[*const u8],
 }
 
 /// Paints `surface`'s area. Must lie within the regions given to `prepare`.
-pub fn draw<P: Pixel, A: Allocator, L: Allocator>(list: &DisplayList<'_, L>, prepared: &Prepared<A>, surface: &Surface) {
+pub fn draw<P: Pixel, A: Allocator, L: Allocator, S: Allocator>(list: &DisplayList<'_, L>, prepared: &Prepared<A>, store: &mut ClipStore<S>, surface: &Surface) {
     let start = start_op(list.ops(), &surface.area());
-    draw_ops::<P, A, L>(list, start, prepared, surface);
+    draw_ops::<P, A, L, S>(list, start, prepared, store, surface);
 }
 
 /// The same with only the operations from `first` on, in the clips open there.
-pub fn draw_from<P: Pixel, A: Allocator, L: Allocator>(list: &DisplayList<'_, L>, first: usize, prepared: &Prepared<A>, surface: &Surface) {
-    draw_ops::<P, A, L>(list, first, prepared, surface);
+/// Round clips open there stay square: what was under them is not drawn.
+pub fn draw_from<P: Pixel, A: Allocator, L: Allocator, S: Allocator>(list: &DisplayList<'_, L>, first: usize, prepared: &Prepared<A>, store: &mut ClipStore<S>, surface: &Surface) {
+    draw_ops::<P, A, L, S>(list, first, prepared, store, surface);
 }
 
-fn draw_ops<P: Pixel, A: Allocator, L: Allocator>(list: &DisplayList<'_, L>, first: usize, prepared: &Prepared<A>, surface: &Surface) {
+fn draw_ops<P: Pixel, A: Allocator, L: Allocator, S: Allocator>(list: &DisplayList<'_, L>, first: usize, prepared: &Prepared<A>, store: &mut ClipStore<S>, surface: &Surface) {
     let ops = list.ops();
     let area = surface.area();
     let mut clips = [area; MAX_CLIPS + 1];
+    let mut rounds: [Option<RoundClip>; MAX_CLIPS + 1] = [None; MAX_CLIPS + 1];
     let mut depth = 0;
     for (i, op) in ops.iter().enumerate() {
         if i < first {
             match *op {
-                Op::PushClip(rect) => {
+                Op::PushClip(rect) | Op::PushRoundClip { rect, .. } => {
                     clips[depth + 1] = clips[depth].intersect(&rect);
                     depth += 1;
                 }
-                Op::PopClip => depth -= 1,
+                Op::PopClip | Op::PopRoundClip => depth -= 1,
                 _ => {}
             }
             continue;
@@ -204,6 +287,19 @@ fn draw_ops<P: Pixel, A: Allocator, L: Allocator>(list: &DisplayList<'_, L>, fir
                 continue;
             }
             Op::PopClip => {
+                depth -= 1;
+                continue;
+            }
+            Op::PushRoundClip { rect, corner } => {
+                depth += 1;
+                clips[depth] = clip.intersect(&rect);
+                rounds[depth] = open_round_clip::<P, S>(surface, RoundClip { rect, corner, area: clips[depth], start: store.saved.len() }, store);
+                continue;
+            }
+            Op::PopRoundClip => {
+                if let Some(round) = rounds[depth].take() {
+                    close_round_clip::<P, S>(surface, &round, store);
+                }
                 depth -= 1;
                 continue;
             }
@@ -228,7 +324,7 @@ fn draw_ops<P: Pixel, A: Allocator, L: Allocator>(list: &DisplayList<'_, L>, fir
             Op::Raster { rect, origin, raster } => {
                 raster.raster(&mut RasterTarget::new::<P>(surface, rect.intersect(&clip), origin));
             }
-            Op::PushClip(_) | Op::PopClip => {}
+            Op::PushClip(_) | Op::PopClip | Op::PushRoundClip { .. } | Op::PopRoundClip => {}
         }
     }
 }

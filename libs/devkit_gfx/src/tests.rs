@@ -84,7 +84,7 @@ fn render<P: Pixel>(list: &DisplayList<'_>, cache: &mut GlyphCache, width: i16, 
         let part_stride = part.w as usize * P::BYTES;
         let mut pixels = vec![0u16; (part_stride * part.h as usize).div_ceil(2)];
         let surface = unsafe { Surface::new(pixels.as_mut_ptr().cast(), part_stride, *part) };
-        draw::<P, _, _>(list, &prepared, &surface);
+        draw::<P, _, _, _>(list, &prepared, &mut ClipStore::new(), &surface);
         let bytes = unsafe { core::slice::from_raw_parts(pixels.as_ptr().cast::<u8>(), part_stride * part.h as usize) };
         for row in 0..part.h as usize {
             let dst = (part.y as usize + row) * stride + part.x as usize * P::BYTES;
@@ -374,7 +374,7 @@ fn argb_keeps_transparency_and_blends_straight_alpha() {
     let mut list = DisplayList::new();
     list.fill(Rect::new(0, 0, 1, 1), Color::rgba(255, 0, 0, 128));
     list.fill(Rect::new(0, 0, 1, 1), Color::rgba(255, 0, 0, 128));
-    draw::<Argb8888, _, _>(&list, &Prepared::new(), &surface);
+    draw::<Argb8888, _, _, _>(&list, &Prepared::new(), &mut ClipStore::new(), &surface);
     assert_eq!(&pixels[4..], [0, 0, 0, 0], "untouched stays clear");
     assert_eq!(pixels[2], 255, "red does not darken over clear");
     assert!((190..=194).contains(&pixels[3]), "{}", pixels[3]);
@@ -405,7 +405,7 @@ fn drawing_from_a_mark_keeps_the_clips_open_there() {
     let first = list.ops().len();
     list.fill(Rect::new(0, 1, 4, 1), Color::rgb(0, 255, 0));
     list.pop_clip();
-    draw_from::<Argb8888, _, _>(&list, first, &Prepared::new(), &surface);
+    draw_from::<Argb8888, _, _, _>(&list, first, &Prepared::new(), &mut ClipStore::new(), &surface);
     assert_eq!(pixels[3], 0, "before the mark");
     assert_eq!(pixels[16 + 3], 255);
     assert_eq!(pixels[16 + 8 + 3], 0, "clipped");
@@ -538,4 +538,54 @@ fn damage_merges_and_promotes() {
     assert_eq!(damage.regions(), &[Rect::new(0, 0, 100, 100)]);
     damage.clear();
     assert!(damage.is_empty());
+}
+
+fn round_clip_list(corner: CornerMask) -> DisplayList<'static> {
+    let mut list = DisplayList::new();
+    list.fill(Rect::new(0, 0, 32, 32), Color::rgb(255, 0, 0));
+    list.fill(Rect::new(0, 0, 32, 6), Color::rgb(0, 255, 0));
+    list.push_round_clip(Rect::new(4, 4, 24, 24), corner);
+    list.fill(Rect::new(0, 0, 32, 32), Color::rgb(0, 0, 255));
+    list.pop_round_clip();
+    list
+}
+
+fn draw_rows(list: &DisplayList<'_>, rows: &[(i16, i16)]) -> Vec<u8> {
+    let mut out = vec![0u8; 32 * 32 * 3];
+    let mut store = ClipStore::new();
+    for &(y, h) in rows {
+        let surface = unsafe { Surface::new(out.as_mut_ptr().add(y as usize * 32 * 3), 32 * 3, Rect::new(0, y, 32, h)) };
+        draw::<Bgr888, _, _, _>(list, &Prepared::new(), &mut store, &surface);
+    }
+    out
+}
+
+#[test]
+fn a_round_clip_leaves_what_is_under_its_corners() {
+    let out = draw_rows(&round_clip_list(CornerMask::new_in(8, Global)), &[(0, 32)]);
+    let pixel = |x: usize, y: usize| [out[(y * 32 + x) * 3], out[(y * 32 + x) * 3 + 1], out[(y * 32 + x) * 3 + 2]];
+    assert_eq!(pixel(4, 4), [0, 255, 0], "the row above stays in the corner");
+    assert_eq!(pixel(27, 27), [0, 0, 255], "the fill under the clip stays in the corner");
+    assert_eq!(pixel(16, 16), [255, 0, 0], "inside");
+    assert_eq!(pixel(16, 4), [255, 0, 0], "along the top edge");
+    assert_eq!(pixel(0, 0), [0, 255, 0], "outside");
+}
+
+#[test]
+fn a_round_clip_matches_across_strips_cutting_its_corner() {
+    let list = round_clip_list(CornerMask::new_in(8, Global));
+    assert_eq!(draw_rows(&list, &[(0, 32)]), draw_rows(&list, &[(0, 7), (7, 18), (25, 7)]));
+}
+
+#[test]
+fn a_round_clip_open_at_the_mark_stays_square() {
+    let mut pixels = [0u8; 16 * 16 * 4];
+    let surface = unsafe { Surface::new(pixels.as_mut_ptr(), 16 * 4, Rect::new(0, 0, 16, 16)) };
+    let mut list = DisplayList::new();
+    list.push_round_clip(Rect::new(0, 0, 16, 16), CornerMask::new_in(4, Global));
+    let first = list.ops().len();
+    list.fill(Rect::new(0, 0, 16, 16), Color::rgb(0, 255, 0));
+    list.pop_round_clip();
+    draw_from::<Argb8888, _, _, _>(&list, first, &Prepared::new(), &mut ClipStore::new(), &surface);
+    assert_eq!(pixels[3], 255);
 }

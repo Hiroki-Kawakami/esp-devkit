@@ -28,6 +28,8 @@ pub enum Op<'a> {
     Raster { rect: Rect, origin: (i16, i16), raster: &'a dyn Raster },
     PushClip(Rect),
     PopClip,
+    PushRoundClip { rect: Rect, corner: CornerMask },
+    PopRoundClip,
 }
 
 impl Op<'_> {
@@ -37,8 +39,8 @@ impl Op<'_> {
             Self::Shadow { rect, mask, .. } => rect.expand(mask.blur() as i16),
             Self::Image { x, y, image, .. } => Rect::new(x, y, image.width() as i16, image.height() as i16),
             Self::Text { bounds, .. } => bounds,
-            Self::PushClip(rect) => rect,
-            Self::PopClip => Rect::default(),
+            Self::PushClip(rect) | Self::PushRoundClip { rect, .. } => rect,
+            Self::PopClip | Self::PopRoundClip => Rect::default(),
         }
     }
 
@@ -60,11 +62,11 @@ pub fn overlap(ops: &[Op<'_>], first: usize, rect: &Rect) -> Option<Rect> {
     let mut found: Option<Rect> = None;
     for (i, op) in ops.iter().enumerate() {
         match *op {
-            Op::PushClip(clip) => {
+            Op::PushClip(clip) | Op::PushRoundClip { rect: clip, .. } => {
                 clips[depth + 1] = clips[depth].intersect(&clip);
                 depth += 1;
             }
-            Op::PopClip => depth -= 1,
+            Op::PopClip | Op::PopRoundClip => depth -= 1,
             _ if i >= first => {
                 let part = op.bounds().intersect(&clips[depth]).intersect(rect);
                 if !part.is_empty() {
@@ -167,5 +169,19 @@ impl<'a, A: Allocator> DisplayList<'a, A> {
         assert!(self.clips > 0);
         self.clips -= 1;
         self.ops.push(Op::PopClip);
+    }
+
+    /// Clips what follows to `rect` with `corner`'s corners. `rect` must be at
+    /// least twice the corner radius on each side.
+    pub fn push_round_clip(&mut self, rect: Rect, corner: CornerMask) {
+        assert!(self.clips < MAX_CLIPS);
+        self.clips += 1;
+        self.ops.push(Op::PushRoundClip { rect, corner });
+    }
+
+    pub fn pop_round_clip(&mut self) {
+        assert!(self.clips > 0);
+        self.clips -= 1;
+        self.ops.push(Op::PopRoundClip);
     }
 }

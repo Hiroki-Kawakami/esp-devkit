@@ -17,6 +17,9 @@ pub trait Pixel: Copy + Send + Sync + 'static {
 
     fn pack(c: Color) -> Self;
 
+    /// The pixel stored at `src`.
+    unsafe fn load(src: *const u8) -> Self;
+
     unsafe fn fill(dst: *mut u8, n: usize, c: Self);
 
     /// `alpha` over the pixels.
@@ -60,6 +63,11 @@ impl Pixel for Rgb565 {
         let g = (c.g as u32 * 253 + 505) >> 10;
         let b = (c.b as u32 * 249 + 1014) >> 11;
         Self((r << 11 | g << 5 | b) as u16)
+    }
+
+    #[inline]
+    unsafe fn load(src: *const u8) -> Self {
+        Self(unsafe { src.cast::<u16>().read_unaligned() })
     }
 
     #[inline]
@@ -139,6 +147,11 @@ impl Pixel for Bgr888 {
     }
 
     #[inline]
+    unsafe fn load(src: *const u8) -> Self {
+        Self(unsafe { src.cast::<[u8; 3]>().read_unaligned() })
+    }
+
+    #[inline]
     unsafe fn fill(dst: *mut u8, n: usize, c: Self) {
         let [b, g, r] = c.0;
         if b == g && g == r {
@@ -215,6 +228,11 @@ impl Pixel for Argb8888 {
     #[inline]
     fn pack(c: Color) -> Self {
         Self([c.b, c.g, c.r, c.a])
+    }
+
+    #[inline]
+    unsafe fn load(src: *const u8) -> Self {
+        Self(unsafe { src.cast::<[u8; 4]>().read_unaligned() })
     }
 
     #[inline]

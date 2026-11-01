@@ -96,15 +96,19 @@ impl Tree {
                 list.fill(rect, color);
             }
         }
-        if let Some(Border { color, width }) = look.border.or(style.border) {
-            let ring = (style.radius > 0).then(|| effects.ring(style.radius, width));
-            list.border(rect, ring, i16::from(width), dim(color, opacity));
+        let border = look.border.or(style.border).map(|Border { color, width }| ((style.radius > 0).then(|| effects.ring(style.radius, width)), i16::from(width), dim(color, opacity)));
+        let round_clip = style.clip && style.radius > 0 && rect.w.min(rect.h) >= i16::from(style.radius) * 2 && matches!(node.content, NodeContent::Box | NodeContent::Child(_));
+        if !round_clip && let Some((ring, width, color)) = border {
+            list.border(rect, ring, width, color);
         }
         if let Some(color) = style.border_top {
             list.fill(Rect::new(sx, sy, rect.w, 1), dim(color, opacity));
         }
         if let Some(color) = style.border_bottom {
             list.fill(Rect::new(sx, rect.bottom() - 1, rect.w, 1), dim(color, opacity));
+        }
+        if style.scroll_border.is_some_and(|name| self.scrolled_away(node.owner, name)) {
+            list.fill(Rect::new(sx, rect.bottom() - 1, rect.w, 1), dim(palette.divider, opacity));
         }
 
         let [left, top, right, bottom] = style.padding;
@@ -189,6 +193,15 @@ impl Tree {
                 }
                 list.pop_clip();
                 list.pop_clip();
+            }
+            _ if round_clip => {
+                list.push_round_clip(rect, effects.corner(style.radius));
+                self.paint_children(id, x, y, rect.intersect(&clip), down, effects, regions, list);
+                list.pop_round_clip();
+                // After what is inside, which would cover it.
+                if let Some((ring, width, color)) = border {
+                    list.border(rect, ring, width, color);
+                }
             }
             _ if style.clip => {
                 let viewport = rect.intersect(&clip);

@@ -15,7 +15,7 @@ use core::time::Duration;
 
 use bsp_rs::display::{self, Blitter, Display, FrameBuffer, PixelFormat, Rotation};
 use devkit::Lease;
-use devkit_gfx::{Argb8888, Bgr888, Damage, DisplayList, GlyphCache, Pixel, Prepared, Rect, Rgb565, Surface, draw, draw_from};
+use devkit_gfx::{Argb8888, Bgr888, ClipStore, Damage, DisplayList, GlyphCache, Pixel, Prepared, Rect, Rgb565, Surface, draw, draw_from};
 use idf::heap::Caps;
 use idf::log::error;
 use idf::sync::Semaphore;
@@ -203,6 +203,7 @@ struct Lane {
     before: Rect,
     raster: u32,
     stall: u32,
+    clips: ClipStore<Caps>,
 }
 
 impl Lane {
@@ -260,7 +261,7 @@ impl Lane {
             self.before = self.last;
             self.last = *strip;
             let surface = unsafe { Surface::new(buffer, strip.w as usize * P::BYTES, *strip) };
-            draw::<P, _, _>(list, prepared, &surface);
+            draw::<P, _, _, _>(list, prepared, &mut self.clips, &surface);
             self.raster += t.elapsed().as_micros() as u32;
             let area = display::Rect {
                 x: strip.x as u16,
@@ -325,6 +326,7 @@ impl Presenter {
                 before: Rect::default(),
                 raster: 0,
                 stall: 0,
+                clips: ClipStore::new_in(Caps::INTERNAL),
             };
             let shared = shared.clone();
             let mut builder = thread::Builder::new()
@@ -607,7 +609,7 @@ impl Presenter {
         let prepared = unsafe { &mut *shared.prepared.get() };
         prepared.prepare(list, &[rect], cache);
         let surface = unsafe { Surface::new(drawn, rect.w as usize * Argb8888::BYTES, rect) };
-        draw_from::<Argb8888, _, _>(list, first, prepared, &surface);
+        draw_from::<Argb8888, _, _, _>(list, first, prepared, &mut ClipStore::new_in(Caps::SPIRAM), &surface);
         if self.rotation == Rotation::R0 {
             return Ok(Overlay { _memory: memory, pixels: drawn, rect });
         }

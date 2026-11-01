@@ -19,7 +19,7 @@ use crate::nav::SplitRole;
 use crate::rotation::Rotations;
 use crate::gesture::{Gesture, Gestures};
 use crate::keyboard::InputKind;
-use crate::node::NodeContent;
+use crate::node::{NONE, Node, NodeContent};
 use crate::tree::Tree;
 use crate::widgets;
 
@@ -68,7 +68,7 @@ fn chain() -> &'static FontChain {
 fn theme() -> &'static Theme {
     let chain = chain();
     let icon = Icon { font: chain, glyph: 'A' };
-    let icons = Icons { back: icon, more: icon, close: icon, check: icon, chevron: icon, shift: icon, backspace: icon, enter: icon };
+    let icons = Icons { back: icon, more: icon, close: icon, check: icon, chevron: icon, expand: icon, shift: icon, backspace: icon, enter: icon };
     let colors = Palette {
         surface: Color::rgb(255, 255, 255),
         background: Color::rgb(233, 234, 236),
@@ -83,7 +83,7 @@ fn theme() -> &'static Theme {
         scrim: Color::rgba(0, 0, 0, 128),
         shadow: Color::rgba(17, 20, 24, 56),
     };
-    let metrics = Metrics { bar_height: 80, row_height: 80, touch_size: 64, padding: 24, gap: 12, radius: 14 };
+    let metrics = Metrics { bar_height: 80, bar_padding: 8, row_height: 80, touch_size: 64, padding: 24, gap: 12, radius: 14 };
     let assets = ThemeAssets { light: colors, dark: None, metrics, fonts: Fonts { title: chain, body: chain, caption: chain }, icons };
     Box::leak(Box::new(Theme::new(&assets, &widgets::DEFAULT)))
 }
@@ -238,6 +238,308 @@ fn flex_lays_out_fixed_grow_and_cross_alignment() {
     assert_eq!(rect_of(&tree, "b").x, 12);
     let list = rect_of(&tree, "list");
     assert_eq!(list.y + list.h, 600);
+}
+
+struct Bar {
+    back: bool,
+    title: &'static str,
+    taps: &'static AtomicU32,
+}
+
+impl Screen for Bar {}
+
+impl Component for Bar {
+    type Msg = ();
+
+    fn update(&mut self, _msg: (), _cx: &mut Cx<Self>) {
+        self.taps.fetch_add(1, Relaxed);
+    }
+
+    fn view<'a>(&'a self, ui: &'a Ui<()>) -> Element<'a, ()> {
+        let more = widgets::icon_button(ui, ui.theme().icons.more, ()).id("more");
+        ui.column([widgets::top_bar(ui, self.back.then_some(()), self.title, more)])
+    }
+}
+
+fn bar_tree(back: bool, title: &'static str, taps: &'static AtomicU32) -> Tree {
+    let mut tree = Tree::new(Bar { back, title, taps }, SCREEN, Caps::INTERNAL, theme());
+    run(&mut tree);
+    tree
+}
+
+fn text_node<'a>(tree: &'a Tree, wanted: &str) -> &'a Node {
+    let found = tree.nodes.iter().find(|node| matches!(&node.content, NodeContent::Text(text) if text.text() == wanted));
+    found.unwrap_or_else(|| panic!("no {wanted} in {}", tree.describe()))
+}
+
+fn text_rect(tree: &Tree, wanted: &str) -> Rect {
+    text_node(tree, wanted).screen
+}
+
+#[test]
+fn top_bar_insets_a_lone_title_to_the_padding_and_sizes_the_back_button() {
+    let taps = Box::leak(Box::new(AtomicU32::new(0)));
+    let alone = bar_tree(false, "Title", taps);
+    let title = text_node(&alone, "Title");
+    assert_eq!(title.screen.x + title.style.padding[0], 24);
+    assert_eq!(title.style.padding[2], 16);
+    let tree = bar_tree(true, "Title", taps);
+    assert_eq!(rect_of(&tree, "back").x, 8);
+    // 64 px button around a 10 px icon and a 10 px title.
+    assert_eq!(text_rect(&tree, "A").x, 8 + 27);
+    assert_eq!(rect_of(&tree, "back").right(), text_rect(&tree, "Title").right() + 27);
+}
+
+#[test]
+fn top_bar_title_goes_back_and_the_rest_of_the_bar_does_not() {
+    let taps = Box::leak(Box::new(AtomicU32::new(0)));
+    let mut tree = bar_tree(true, "Title", taps);
+    let (title, back) = (text_rect(&tree, "Title"), rect_of(&tree, "back"));
+    let y = title.y + title.h / 2;
+    for (x, count) in [(title.x + title.w / 2, 1), (back.right() + 20, 1)] {
+        tree.touch(&[(0, (x, y))], 0);
+        tree.touch(&[], 10);
+        tree.update();
+        assert_eq!(taps.load(Relaxed), count);
+    }
+}
+
+#[test]
+fn top_bar_long_title_stops_at_the_actions() {
+    let taps = Box::leak(Box::new(AtomicU32::new(0)));
+    let tree = bar_tree(true, "A very long title that cannot fit in the bar next to the actions at all", taps);
+    assert!(rect_of(&tree, "back").right() + 12 <= rect_of(&tree, "more").x);
+    assert_eq!(rect_of(&tree, "more").w, 64);
+    assert_eq!(text_rect(&tree, "A").w, 8);
+}
+
+struct Choices {
+    choice: usize,
+}
+
+impl Screen for Choices {}
+
+impl Component for Choices {
+    type Msg = usize;
+
+    fn update(&mut self, msg: usize, cx: &mut Cx<Self>) {
+        self.choice = msg;
+        cx.rebuild();
+    }
+
+    fn view<'a>(&'a self, ui: &'a Ui<usize>) -> Element<'a, usize> {
+        let options = widgets::segmented(ui, &[("Off", 0), ("On", 1)], self.choice).id("choice");
+        let slider = ui.column([widgets::slider(ui, 0, |_| 0).id("slider")]).grow(1);
+        ui.column([widgets::table_section(
+            ui,
+            [
+                widgets::table_row(ui, [widgets::table_label(ui, "Mode"), options]),
+                widgets::table_row(ui, [widgets::table_label(ui, "Next"), widgets::table_value(ui, "Value"), widgets::table_chevron(ui)]).on_tap(1).id("next"),
+                widgets::table_row(ui, [slider]).id("tall").min_height(100),
+            ],
+        )
+        .id("section")])
+    }
+}
+
+#[test]
+fn a_segmented_control_marks_the_tapped_option() {
+    let mut tree = Tree::new(Choices { choice: 0 }, SCREEN, Caps::INTERNAL, theme());
+    run(&mut tree);
+    let selected = |tree: &Tree, label: &str| tree.nodes[text_node(tree, label).parent as usize].state.contains(State::SELECTED);
+    assert!(selected(&tree, "Off") && !selected(&tree, "On"));
+    let on = text_rect(&tree, "On");
+    tree.touch(&[(0, (on.x + 1, on.y + 1))], 0);
+    tree.touch(&[], 10);
+    tree.update();
+    assert!(!selected(&tree, "Off") && selected(&tree, "On"));
+}
+
+#[test]
+fn a_table_section_divides_its_rows_and_they_keep_its_width() {
+    let mut tree = Tree::new(Choices { choice: 0 }, SCREEN, Caps::INTERNAL, theme());
+    run(&mut tree);
+    let section = rect_of(&tree, "section");
+    let next = rect_of(&tree, "next");
+    assert_eq!(section.h, 88 * 2 + 100 + 2);
+    assert_eq!(next.y, section.y + 89);
+    assert_eq!((next.x, next.w), (section.x, section.w));
+    assert_eq!(rect_of(&tree, "slider").w, section.w - 48);
+    assert_eq!(text_rect(&tree, "Value").right() + 12 + 8 + 24, section.right());
+}
+
+struct Dropdowns {
+    chosen: &'static AtomicU32,
+}
+
+impl Screen for Dropdowns {}
+
+impl Component for Dropdowns {
+    type Msg = DropdownMsg;
+
+    fn update(&mut self, msg: DropdownMsg, cx: &mut Cx<Self>) {
+        match msg {
+            DropdownMsg::Open(anchor) => cx.popup(widgets::DropdownMenu::new(anchor, &["One", "Two"], 1, cx.handle(), DropdownMsg::Chosen)),
+            DropdownMsg::Chosen(index) => self.chosen.store(index as u32 + 1, Relaxed),
+            DropdownMsg::Modal => cx.nav_of::<Overlay>().push(Dropdowns { chosen: self.chosen }),
+        }
+    }
+
+    fn view<'a>(&'a self, ui: &'a Ui<DropdownMsg>) -> Element<'a, DropdownMsg> {
+        let content = ui.column([ui.column([]).height(500), widgets::dropdown(ui, "One", DropdownMsg::Open).id("open"), ui.column([]).height(1000)]);
+        ui.column([ui.row([]).size(40, 40).id("modal").on_tap(DropdownMsg::Modal), ui.scroll(content).grow(1)])
+    }
+}
+
+#[derive(Clone, Copy)]
+enum DropdownMsg {
+    Open(Rect),
+    Chosen(usize),
+    Modal,
+}
+
+fn dropdown_tree() -> (Tree, &'static AtomicU32) {
+    let chosen = Box::leak(Box::new(AtomicU32::new(0)));
+    let mut tree = Tree::new(Dropdowns { chosen }, SCREEN, Caps::INTERNAL, theme());
+    run(&mut tree);
+    (tree, chosen)
+}
+
+#[test]
+fn a_dropdown_menu_touches_the_dropdown_and_opens_upward_at_the_bottom() {
+    let (mut tree, _) = dropdown_tree();
+    tap(&mut tree, "open");
+    let open = rect_of(&tree, "open");
+    assert_eq!(rect_of(&tree, "dropdown-menu").bottom(), open.y);
+    assert_eq!(rect_of(&tree, "dropdown-menu").x, open.x);
+    tap(&mut tree, "menu-backdrop");
+    assert!(tree.find("dropdown-menu").is_none());
+    tree.touch(&[(0, (100, 300))], 0);
+    tree.touch(&[(0, (100, 0))], 16);
+    tree.touch(&[], 32);
+    run(&mut tree);
+    tap(&mut tree, "open");
+    let open = rect_of(&tree, "open");
+    assert_eq!(rect_of(&tree, "dropdown-menu").y, open.bottom());
+    assert_eq!(rect_of(&tree, "dropdown-menu").w, open.w);
+    let selected = |tree: &Tree, label: &str| {
+        let found = tree.nodes.iter().filter(|node| matches!(&node.content, NodeContent::Text(text) if text.text() == label)).last().unwrap();
+        tree.nodes[found.parent as usize].state.contains(State::SELECTED)
+    };
+    assert!(selected(&tree, "Two"));
+    assert!(!selected(&tree, "One"));
+}
+
+#[test]
+fn a_popup_stays_over_a_modal_and_reports_to_it() {
+    let (mut tree, chosen) = dropdown_tree();
+    tap(&mut tree, "modal");
+    settle(&mut tree);
+    let shown = |tree: &Tree| {
+        let mut count = 0;
+        tree.walk(tree.root, &mut |_, node| count += u32::from(node.id == Some("open")));
+        count
+    };
+    assert_eq!(shown(&tree), 2, "the modal over the first screen");
+    let modal = tree.nodes[tree.popups as usize].first_child;
+    assert_eq!(modal, NONE);
+    let overlay = tree.navigators[tree.navigators.len() - 1];
+    let open = tree.nodes[tree.nodes[overlay as usize].first_child as usize].screen;
+    let point = (open.x + 10, 500 + 40 + 10);
+    tree.touch(&[(0, point)], 0);
+    tree.touch(&[], 10);
+    tree.update();
+    assert!(tree.find("dropdown-menu").is_some());
+    assert_eq!(shown(&tree), 2, "still there under the popup");
+    let menu = rect_of(&tree, "dropdown-menu");
+    tree.touch(&[(0, (menu.x + 10, menu.bottom() - 10))], 20);
+    tree.touch(&[], 30);
+    settle(&mut tree);
+    assert!(tree.find("dropdown-menu").is_none());
+    assert_eq!(chosen.load(Relaxed), 2);
+}
+
+#[test]
+fn turning_the_screen_closes_popups() {
+    let (mut tree, _) = dropdown_tree();
+    tap(&mut tree, "open");
+    assert!(tree.find("dropdown-menu").is_some());
+    tree.set_area(Rect::new(0, 0, 600, 400));
+    run(&mut tree);
+    assert!(tree.find("dropdown-menu").is_none());
+}
+
+#[test]
+fn popups_stay_above_the_keyboard() {
+    let (mut tree, _) = dropdown_tree();
+    tree.add_keyboard(crate::keyboard::KeyboardMode::Auto);
+    let mut last = tree.nodes[tree.root as usize].first_child;
+    while tree.nodes[last as usize].next != NONE {
+        last = tree.nodes[last as usize].next;
+    }
+    assert_eq!(last, tree.popups);
+}
+
+struct Scroller {
+    offsets: &'static core::cell::RefCell<Vec<i32>>,
+}
+
+impl Screen for Scroller {}
+
+impl Component for Scroller {
+    type Msg = i32;
+
+    fn update(&mut self, msg: i32, _cx: &mut Cx<Self>) {
+        self.offsets.borrow_mut().push(msg);
+    }
+
+    fn view<'a>(&'a self, ui: &'a Ui<i32>) -> Element<'a, i32> {
+        ui.column([
+            ui.column([]).height(80).scroll_border("content").id("bar"),
+            ui.scroll(ui.column([ui.column([]).height(2000)])).grow(1).on_scroll(|offset| offset).id("content"),
+        ])
+    }
+}
+
+#[test]
+fn a_scroll_reports_every_move_and_shows_the_border_only_away_from_the_start() {
+    let offsets = Box::leak(Box::new(core::cell::RefCell::new(Vec::new())));
+    let mut tree = Tree::new(Scroller { offsets }, SCREEN, Caps::INTERNAL, theme());
+    run(&mut tree);
+    let bar = rect_of(&tree, "bar");
+    let owner = tree.nodes[tree.find("bar").unwrap() as usize].owner;
+    let drag = |tree: &mut Tree, y: i16, at: u32| {
+        tree.touch(&[(0, (100, y))], at);
+        tree.update();
+        tree.take_damage()
+    };
+    drag(&mut tree, 300, 0);
+    let first = drag(&mut tree, 260, 16);
+    assert!(tree.scrolled_away(owner, "content"));
+    assert!(first.iter().any(|r| r.intersect(&bar).h > 0), "{first:?}");
+    let second = drag(&mut tree, 240, 32);
+    assert!(second.iter().all(|r| r.intersect(&bar).h == 0), "{second:?}");
+    assert_eq!(offsets.borrow().len(), 2);
+    let back = drag(&mut tree, 600, 48);
+    assert!(!tree.scrolled_away(owner, "content"));
+    assert!(back.iter().any(|r| r.intersect(&bar).h > 0), "{back:?}");
+    assert_eq!(*offsets.borrow().last().unwrap(), 0);
+    tree.touch(&[], 64);
+}
+
+#[test]
+fn a_clip_with_a_radius_is_round_and_draws_its_border_over_what_is_inside() {
+    let (mut tree, _) = dropdown_tree();
+    tap(&mut tree, "open");
+    run(&mut tree);
+    let mut effects = crate::paint::Effects::new(Caps::INTERNAL);
+    let mut list = devkit_gfx::DisplayList::new_in(Caps::INTERNAL);
+    tree.paint(&mut effects, &[SCREEN], &mut list);
+    let ops = list.ops();
+    let push = ops.iter().position(|op| matches!(op, devkit_gfx::Op::PushRoundClip { .. })).unwrap();
+    let pop = ops.iter().position(|op| matches!(op, devkit_gfx::Op::PopRoundClip)).unwrap();
+    assert!(matches!(ops[pop + 1], devkit_gfx::Op::Border { .. }));
+    assert!(ops[push..pop].iter().any(|op| matches!(op, devkit_gfx::Op::Text { .. })));
 }
 
 #[test]
@@ -709,13 +1011,15 @@ fn a_drag_follows_the_contact_without_a_tap_slop() {
     let slider = rect_of(&tree, "slider");
     tree.touch(&[(0, (slider.x + 100, slider.y + 10))], 0);
     tree.update();
-    let filled = |tree: &Tree| tree.nodes[tree.find("slider").unwrap() as usize].first_child;
-    let track = filled(&tree);
+    let inner = tree.nodes[tree.find("slider").unwrap() as usize].first_child;
+    let track = tree.nodes[inner as usize].first_child;
     let fill = tree.nodes[track as usize].next;
-    assert_eq!(tree.nodes[fill as usize].rect.w, 99);
+    assert_eq!(tree.nodes[fill as usize].rect.w, 85);
     tree.touch(&[(0, (slider.x + 150, slider.y + 10))], 16);
     tree.update();
-    assert_eq!(tree.nodes[fill as usize].rect.w, 149);
+    assert_eq!(tree.nodes[fill as usize].rect.w, 135);
+    let thumb = tree.nodes[tree.nodes[fill as usize].first_child as usize].screen;
+    assert_eq!(thumb.x + thumb.w / 2, tree.nodes[fill as usize].screen.right());
     tree.touch(&[], 32);
     tree.update();
 }

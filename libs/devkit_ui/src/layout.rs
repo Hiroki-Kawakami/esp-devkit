@@ -160,8 +160,12 @@ impl Tree {
                     let (_, h) = self.measure(child, content.w, UNBOUNDED);
                     self.arrange(child, Rect::new(0, 0, content.w, h));
                     if let NodeContent::Scroll(scroll) = &mut self.nodes[id as usize].content {
+                        let before = scroll.offset;
                         scroll.content = i32::from(h);
-                        scroll.offset = scroll.offset.min((i32::from(h) - i32::from(content.h)).max(0));
+                        scroll.offset = before.min((i32::from(h) - i32::from(content.h)).max(0));
+                        if scroll.offset != before {
+                            self.scroll_moved(id, before);
+                        }
                     }
                 }
             }
@@ -172,7 +176,11 @@ impl Tree {
                     self.arrange(row, Rect::new(0, 0, content.w, row_height));
                 }
                 if let NodeContent::List(list) = &mut self.nodes[id as usize].content {
-                    list.offset = list.offset.min(end.max(0));
+                    let before = list.offset;
+                    list.offset = before.min(end.max(0));
+                    if list.offset != before {
+                        self.scroll_moved(id, before);
+                    }
                 }
             }
             NodeContent::Text(_) => {

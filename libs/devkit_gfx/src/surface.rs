@@ -3,6 +3,9 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
+use alloc::vec::Vec;
+use core::alloc::Allocator;
+
 use crate::color::{Color, mul8};
 use crate::format::ImageFormat;
 use crate::geom::Rect;
@@ -78,6 +81,39 @@ impl Surface {
                     P::blend_mask_alpha(row, m, r.w as usize, packed, c.a);
                 }
                 row = row.add(self.stride);
+                m = m.offset(mask_stride);
+            }
+        }
+    }
+
+    /// Appends the pixels of `rect`, which must be inside the surface.
+    pub(crate) fn save<P: Pixel, A: Allocator>(&self, rect: &Rect, out: &mut Vec<u8, A>) {
+        let mut row = self.row::<P>(rect.x, rect.y);
+        for _ in 0..rect.h {
+            out.extend_from_slice(unsafe { core::slice::from_raw_parts(row, rect.w as usize * P::BYTES) });
+            row = unsafe { row.add(self.stride) };
+        }
+    }
+
+    /// Brings `saved`, rows of `rect` as `save` left them, back where `mask` is
+    /// not full. `mask` addresses `rect`'s top left pixel.
+    pub(crate) fn restore<P: Pixel>(&self, rect: &Rect, saved: *const u8, mask: *const u8, mask_stride: isize) {
+        let (width, mut row, mut from, mut m) = (rect.w as usize, self.row::<P>(rect.x, rect.y), saved, mask);
+        for _ in 0..rect.h {
+            for i in 0..width {
+                unsafe {
+                    let back = 255 - m.add(i).read();
+                    let (dst, src) = (row.add(i * P::BYTES), from.add(i * P::BYTES));
+                    match back {
+                        0 => {}
+                        255 => core::ptr::copy_nonoverlapping(src, dst, P::BYTES),
+                        _ => P::blend_mask(dst, &back, 1, P::load(src)),
+                    }
+                }
+            }
+            unsafe {
+                row = row.add(self.stride);
+                from = from.add(width * P::BYTES);
                 m = m.offset(mask_stride);
             }
         }

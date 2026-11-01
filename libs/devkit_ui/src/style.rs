@@ -126,6 +126,7 @@ pub struct Style {
     pub(crate) border: Option<Border>,
     pub(crate) border_top: Option<Color>,
     pub(crate) border_bottom: Option<Color>,
+    pub(crate) scroll_border: Option<&'static str>,
     pub(crate) shadow: Option<Shadow>,
     pub(crate) opacity: Option<u8>,
     pub(crate) clip: bool,

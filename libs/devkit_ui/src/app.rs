@@ -157,7 +157,6 @@ impl<M> Handle<M> {
         Self { link, id, _msg: PhantomData }
     }
 
-    #[cfg(test)]
     pub(crate) fn id(&self) -> u32 {
         self.id
     }

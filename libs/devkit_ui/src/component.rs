@@ -107,8 +107,11 @@ pub struct RenderMode {
 pub(crate) struct Requests {
     pub(crate) rebuild: bool,
     pub(crate) sends: Vec<Erased>,
+    pub(crate) posts: Vec<(u32, Erased)>,
     pub(crate) events: Vec<Erased>,
     pub(crate) nav: Vec<NavOp>,
+    pub(crate) popups: Vec<Box<dyn AnyHost>>,
+    pub(crate) close_popup: bool,
     pub(crate) render: Option<RenderRequest>,
     pub(crate) theme: Option<&'static Theme>,
     pub(crate) replaced: Option<Strips>,
@@ -163,6 +166,11 @@ impl<C: Component> Cx<C> {
         self.requests.sends.push(Erased::new(msg));
     }
 
+    /// Delivers `msg` to the component of `target` after the current one.
+    pub fn send_to<M: Copy + 'static>(&mut self, target: &Handle<M>, msg: M) {
+        self.requests.posts.push((target.id(), Erased::new(msg)));
+    }
+
     /// Tells the parent, through the mapping given to `Ui::child`.
     pub fn emit(&mut self, event: C::Event) {
         self.requests.events.push(Erased::new(event));
@@ -177,6 +185,17 @@ impl<C: Component> Cx<C> {
     /// inside it, then anywhere.
     pub fn nav_of<K: 'static>(&mut self) -> Nav<'_> {
         Nav { requests: &mut self.requests, target: Some(TypeId::of::<K>()) }
+    }
+
+    /// Shows `component` above everything, keeping what is under it. It fills
+    /// the screen, and places itself; a turn of the screen closes it.
+    pub fn popup<P: Component>(&mut self, component: P) {
+        self.requests.popups.push(Box::new(Host::<P>::new(component, None)));
+    }
+
+    /// Closes the popup this component is part of.
+    pub fn close_popup(&mut self) {
+        self.requests.close_popup = true;
     }
 
     /// Paints the canvas with this id again, without a view or layout.

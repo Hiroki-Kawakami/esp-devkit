@@ -13,7 +13,7 @@ use crate::erased::Erased;
 use crate::node::{NONE, Node, NodeContent, NodeId};
 use crate::presenter::Strips;
 use crate::style::{Dimension, Style};
-use crate::theme::Transition;
+use crate::theme::{Theme, Transition};
 use crate::tree::Tree;
 
 /// The whole-screen navigator `App` owns.
@@ -364,10 +364,16 @@ impl Tree {
         if requests.render.is_some() {
             idf::log::error!(c"ui", "a covered screen cannot change the render mode");
         }
+        if !requests.popups.is_empty() {
+            idf::log::error!(c"ui", "a covered screen cannot open a popup");
+        }
         for op in requests.nav {
             self.apply_nav_from(nav, op);
         }
         for msg in requests.sends {
+            self.post(id, msg);
+        }
+        for (id, msg) in requests.posts {
             self.post(id, msg);
         }
     }
@@ -390,13 +396,17 @@ impl Tree {
 
     /// Creates the nodes of `entry`'s screen, as a new last child of `nav`.
     pub(crate) fn mount(&mut self, nav: NodeId, host: Box<dyn AnyHost>, saved: Saved) -> NodeId {
-        let theme = host.theme();
         let parent_slot = self.nodes[nav as usize].owner;
+        let inherited = self.slots.get(usize::from(parent_slot)).map_or(self.theme, |s| s.theme);
+        self.mount_themed(nav, host, saved, inherited)
+    }
+
+    fn mount_themed(&mut self, nav: NodeId, host: Box<dyn AnyHost>, saved: Saved, inherited: &'static Theme) -> NodeId {
+        let theme = host.theme();
         let slot = self.alloc_slot();
         let node = self.alloc_node(Node::new(NodeContent::Child(slot), slot));
         self.nodes[node as usize].style = Self::fill_style();
         self.nodes[node as usize].parent = nav;
-        let inherited = self.slots.get(usize::from(parent_slot)).map_or(self.theme, |s| s.theme);
         let slot_index = usize::from(slot);
         self.slots[slot_index].host = Some(host);
         self.slots[slot_index].node = node;
@@ -407,6 +417,36 @@ impl Tree {
         self.restoring.pop();
         self.layout_dirty = true;
         node
+    }
+
+    /// Shows `host` above everything, in the theme of the component `from`.
+    pub(crate) fn open_popup(&mut self, from: u16, host: Box<dyn AnyHost>) {
+        let theme = self.slots[usize::from(from)].theme;
+        let node = self.mount_themed(self.popups, host, Saved::default(), theme);
+        self.nodes[node as usize].style.absolute = Some(crate::style::Inset { left: Some(0), top: Some(0), right: Some(0), bottom: Some(0) });
+    }
+
+    /// Closes the popup that component `slot` is part of.
+    pub(crate) fn close_popup(&mut self, slot: u16) {
+        let mut node = self.slots[usize::from(slot)].node;
+        while node != NONE && self.nodes[node as usize].parent != self.popups {
+            node = self.nodes[node as usize].parent;
+        }
+        if node == NONE {
+            idf::log::error!(c"ui", "close_popup outside a popup");
+            return;
+        }
+        self.unmount(self.popups, node);
+    }
+
+    pub(crate) fn close_popups(&mut self) {
+        loop {
+            let popup = self.nodes[self.popups as usize].first_child;
+            if popup == NONE {
+                return;
+            }
+            self.unmount(self.popups, popup);
+        }
     }
 
     fn link_last(&mut self, parent: NodeId, node: NodeId) {

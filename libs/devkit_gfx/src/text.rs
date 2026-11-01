@@ -61,6 +61,10 @@ impl FontChain {
         Self { fonts, ascent, descent }
     }
 
+    pub const fn px(&self) -> u16 {
+        self.fonts[0].px()
+    }
+
     pub const fn line_height(&self) -> i16 {
         self.ascent + self.descent
     }

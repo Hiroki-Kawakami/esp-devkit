@@ -76,6 +76,7 @@ pub enum ColorMode {
 #[derive(Clone, Copy)]
 pub struct Metrics {
     pub bar_height: i16,
+    pub bar_padding: i16,
     pub row_height: i16,
     pub touch_size: i16,
     pub padding: i16,
@@ -105,6 +106,7 @@ pub struct Icons {
     pub close: Icon,
     pub check: Icon,
     pub chevron: Icon,
+    pub expand: Icon,
     pub shift: Icon,
     pub backspace: Icon,
     pub enter: Icon,
@@ -233,6 +235,8 @@ pub struct Looks {
     pub icon_button: &'static WidgetLook,
     pub row: &'static WidgetLook,
     pub menu_item: &'static WidgetLook,
+    pub segment: &'static WidgetLook,
+    pub dropdown_item: &'static WidgetLook,
     pub text_field: &'static WidgetLook,
     pub key: &'static WidgetLook,
     pub key_special: &'static WidgetLook,
@@ -305,6 +309,14 @@ static ROW: WidgetLook = WidgetLook {
     states: &[(State::SELECTED, Look::background(ColorRole::Selected)), PRESSED, DISABLED],
 };
 static MENU_ITEM: WidgetLook = WidgetLook { base: Look::foreground(ColorRole::OnSurface), states: &[PRESSED, DISABLED] };
+static SEGMENT: WidgetLook = WidgetLook {
+    base: Look::foreground(ColorRole::OnSurface),
+    states: &[PRESSED, (State::SELECTED, Look::fill(ColorRole::Primary, ColorRole::OnPrimary)), DISABLED],
+};
+static DROPDOWN_ITEM: WidgetLook = WidgetLook {
+    base: Look::foreground(ColorRole::OnSurface),
+    states: &[(State::SELECTED, Look::background(ColorRole::Selected)), PRESSED, DISABLED],
+};
 static TEXT_FIELD: WidgetLook = WidgetLook { base: FRAMED, states: &[(State::FOCUSED, Look::outline(ColorRole::Primary, 2)), DISABLED] };
 static KEY: WidgetLook = WidgetLook { base: Look::fill(ColorRole::Surface, ColorRole::OnSurface), states: &[PRESSED] };
 static KEY_SPECIAL: WidgetLook = WidgetLook { base: Look::fill(ColorRole::Divider, ColorRole::OnSurface), states: &[PRESSED] };
@@ -328,6 +340,8 @@ pub static DEFAULT: WidgetStyle = WidgetStyle {
         icon_button: &ICON_BUTTON,
         row: &ROW,
         menu_item: &MENU_ITEM,
+        segment: &SEGMENT,
+        dropdown_item: &DROPDOWN_ITEM,
         text_field: &TEXT_FIELD,
         key: &KEY,
         key_special: &KEY_SPECIAL,

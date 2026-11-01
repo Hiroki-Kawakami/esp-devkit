@@ -12,7 +12,7 @@ use idf::heap::Caps;
 use crate::component::ListId;
 use crate::canvas::CanvasId;
 use crate::external::ExternalSurface;
-use crate::element::{DragMap, Edit, InputMap, SizeMap};
+use crate::element::{DragMap, Edit, InputMap, ScrollMap, SizeMap, TapMap};
 use crate::erased::Erased;
 use crate::gesture::GestureMap;
 use crate::keyboard::{InputKind, Keyboard};
@@ -34,6 +34,16 @@ pub(crate) struct TextNode {
     pub(crate) laid_out: Option<i16>,
     pub(crate) edit: Option<Edit>,
     pub(crate) scroll: Cell<i16>,
+}
+
+impl Node {
+    pub(crate) fn scroll_offset(&self) -> Option<i32> {
+        match &self.content {
+            NodeContent::Scroll(scroll) => Some(scroll.offset),
+            NodeContent::List(list) => Some(list.offset),
+            _ => None,
+        }
+    }
 }
 
 impl TextNode {
@@ -118,6 +128,8 @@ pub(crate) struct Node {
     pub(crate) owner: u16,
     pub(crate) tap: Option<Erased>,
     pub(crate) drag: Option<DragMap>,
+    pub(crate) tap_at: Option<TapMap>,
+    pub(crate) on_scroll: Option<ScrollMap>,
     pub(crate) gestures: Option<GestureMap>,
     pub(crate) size: Option<SizeMap>,
     pub(crate) input: Option<InputMap>,
@@ -159,6 +171,8 @@ impl Node {
             owner,
             tap: None,
             drag: None,
+            tap_at: None,
+            on_scroll: None,
             gestures: None,
             size: None,
             input: None,

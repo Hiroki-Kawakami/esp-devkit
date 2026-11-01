@@ -76,13 +76,14 @@ impl FontChoice {
 
 const THEME_DIR: &str = "themes";
 const THEME_FONTS: [&str; 3] = ["title", "body", "caption"];
-const THEME_ICONS: [&str; 8] = ["back", "more", "close", "check", "chevron", "shift", "backspace", "enter"];
+const THEME_ICONS: [&str; 9] = ["back", "more", "close", "check", "chevron", "expand", "shift", "backspace", "enter"];
 const THEME_COLORS: [&str; 12] = [
     "surface", "background", "on_surface", "muted", "primary", "on_primary", "primary_pressed", "divider",
     "pressed", "selected", "scrim", "shadow",
 ];
-const THEME_METRICS: [(&str, &str); 6] = [
+const THEME_METRICS: [(&str, &str); 7] = [
     ("bar_height", "i16"),
+    ("bar_padding", "i16"),
     ("row_height", "i16"),
     ("touch_size", "i16"),
     ("padding", "i16"),
