@@ -17,7 +17,6 @@ use crate::element::{Children, Drag, Element, Ui};
 use crate::keyboard::{Keyboard, KeyboardPanel, KeyboardProps};
 use crate::text_buffer::{TextBuffer, TextInput};
 use crate::style::{Align, Justify, Part, Role, State, StateStyle};
-pub use crate::theme::DEFAULT;
 use crate::theme::Icon;
 
 const VALUE_RANGE: u16 = 255;

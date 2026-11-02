@@ -522,7 +522,6 @@
       }
     },
     "keyboard": {
-      "key_height": 80,
       "gap": 8,
       "root": {
         "background": "color.background"
@@ -558,5 +557,83 @@
         }
       }
     }
+  },
+  "keyboards": {
+    "keys": {
+      "⌫": { "icon": "backspace", "action": "TextInput.Backspace", "width": 1.5, "role": "KeyRole.Special", "repeat": true },
+      "⌫1": { "extends": "⌫", "width": 1 },
+      "⌫2": { "extends": "⌫", "width": 2 },
+      "⏎": { "icon": "enter", "action": "TextInput.Enter", "width": 1.5, "role": "KeyRole.Primary" },
+      "⎵": { "insert": " ", "width": 5 },
+      "⇧": { "icon": "shift", "action": "layer.upper", "once": true, "double": "caps", "width": 1.5, "role": "KeyRole.Special" },
+      "⇧upper": { "icon": "shift", "action": "layer.lower", "double": "caps", "width": 1.5 },
+      "⇧caps": { "icon": "shift", "action": "layer.lower", "width": 1.5, "role": "KeyRole.Primary" },
+      "?123": { "label": "?123", "action": "layer.symbols", "width": 1.5, "role": "KeyRole.Special" },
+      "ABC": { "label": "ABC", "action": "layer.lower", "width": 1.5, "role": "KeyRole.Special" }
+    },
+    "text": {
+      "height": 360,
+      "layers": [
+        {
+          "id": "lower",
+          "columns": 10,
+          "layout": [
+            ["q", "w", "e", "r", "t", "y", "u", "i", "o", "p"],
+            [0.5, "a", "s", "d", "f", "g", "h", "j", "k", "l"],
+            ["⇧", "z", "x", "c", "v", "b", "n", "m", "⌫"],
+            ["?123", ",", "⎵", ".", "⏎"]
+          ]
+        },
+        {
+          "id": "upper",
+          "columns": 10,
+          "layout": [
+            ["Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P"],
+            [0.5, "A", "S", "D", "F", "G", "H", "J", "K", "L"],
+            ["⇧upper", "Z", "X", "C", "V", "B", "N", "M", "⌫"],
+            ["?123", ",", "⎵", ".", "⏎"]
+          ]
+        },
+        {
+          "id": "caps",
+          "columns": 10,
+          "layout": [
+            ["Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P"],
+            [0.5, "A", "S", "D", "F", "G", "H", "J", "K", "L"],
+            ["⇧caps", "Z", "X", "C", "V", "B", "N", "M", "⌫"],
+            ["?123", ",", "⎵", ".", "⏎"]
+          ]
+        },
+        {
+          "id": "symbols",
+          "columns": 10,
+          "layout": [
+            ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"],
+            ["@", "#", "$", "%", "&", "*", "-", "+", "(", ")"],
+            ["!", "\"", "'", ":", ";", "/", "?", "_", "⌫2"],
+            ["ABC", ",", "⎵", ".", "⏎"]
+          ]
+        }
+      ]
+    },
+    "number": {
+      "height": 360,
+      "layers": [
+        {
+          "id": "main",
+          "columns": 3,
+          "layout": [
+            ["1", "2", "3"],
+            ["4", "5", "6"],
+            ["7", "8", "9"],
+            [".", "0", "⌫1"]
+          ]
+        }
+      ]
+    }
+  },
+  "motion": {
+    "transition": "Transition.Slide",
+    "duration_ms": 200
   }
 }

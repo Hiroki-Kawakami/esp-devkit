@@ -58,7 +58,46 @@ struct ThemeEntry {
     #[serde(default)]
     widgets: Map<String, Value>,
     #[serde(default)]
+    keyboards: Map<String, Value>,
+    #[serde(default)]
+    motion: Map<String, Value>,
+    #[serde(default)]
     font: BTreeMap<String, FontEntry>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct KeyboardEntry {
+    height: i16,
+    layers: Vec<LayerEntry>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LayerEntry {
+    id: String,
+    columns: u8,
+    layout: Vec<Vec<Value>>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct KeyEntry {
+    icon: Option<String>,
+    label: Option<String>,
+    action: Option<String>,
+    #[serde(default)]
+    once: bool,
+    double: Option<String>,
+    insert: Option<String>,
+    custom: Option<u16>,
+    #[serde(default = "default_key_width")]
+    width: f64,
+    role: Option<String>,
+    #[serde(default)]
+    repeat: bool,
+    font: Option<String>,
+    style: Option<String>,
 }
 
 #[derive(Deserialize, Clone)]
@@ -84,9 +123,12 @@ const THEME_COLORS: [&str; 14] = [
     "surface", "background", "on_surface", "muted", "primary", "on_primary", "primary_pressed", "destructive",
     "on_destructive", "divider", "pressed", "selected", "scrim", "shadow",
 ];
+const THEME_KEYBOARDS: [&str; 2] = ["text", "number"];
 const THEME_ANIMATED: [&str; 3] = ["color", "opacity", "position"];
 const THEME_STATES: [&str; 6] = ["pressed", "hovered", "focused", "selected", "disabled", "checked"];
 const DEFAULT_ICON_SIZE: u16 = 40;
+const THEME_KEYS: &str = "keys";
+const KEY_QUARTERS: f64 = 4.0;
 
 #[derive(Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
@@ -115,6 +157,10 @@ fn default_compress() -> bool {
     true
 }
 
+fn default_key_width() -> f64 {
+    1.0
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ImageEntry {
@@ -134,7 +180,48 @@ struct Theme {
     widgets: BTreeMap<String, BTreeMap<String, Token>>,
     /// Rust of each style, by where it is defined.
     styles: BTreeMap<String, String>,
+    keyboards: BTreeMap<String, ThemeKeyboard>,
+    motion: BTreeMap<String, Token>,
     unused_vars: Vec<String>,
+    unused_keys: Vec<String>,
+}
+
+struct ThemeKeyboard {
+    height: i16,
+    layers: Vec<ThemeLayer>,
+}
+
+struct ThemeLayer {
+    columns: u8,
+    rows: Vec<Vec<ThemeKey>>,
+}
+
+/// Rust of a key. `icon` is left a name, as code points come after the themes.
+struct ThemeKey {
+    icon: Option<String>,
+    label: String,
+    action: String,
+    options: String,
+}
+
+impl ThemeKey {
+    fn insert(text: &str) -> Self {
+        Self {
+            icon: None,
+            label: format!("devkit_ui::keyboard::KeyLabel::Text({text:?})"),
+            action: format!("devkit_ui::keyboard::KeyAction::Insert({text:?})"),
+            options: String::new(),
+        }
+    }
+
+    fn spacer(width: f64) -> Self {
+        Self {
+            icon: None,
+            label: "devkit_ui::keyboard::KeyLabel::None".to_string(),
+            action: "devkit_ui::keyboard::KeyAction::None".to_string(),
+            options: format!(".width({width:?})"),
+        }
+    }
 }
 
 /// What a value of `vars` or `widgets` comes to.
@@ -168,6 +255,10 @@ fn style_symbol(symbol: &str, path: &str) -> String {
     format!("{symbol}_{}_STYLE", path.replace('.', "_").to_uppercase())
 }
 
+fn keyboard_symbol(symbol: &str, keyboard: &str) -> String {
+    format!("{symbol}_{}_KEYBOARD", keyboard.to_uppercase())
+}
+
 /// Sets what `from` has, going into objects, so a style changes key by key.
 fn merge(into: &mut Map<String, Value>, from: Map<String, Value>) {
     for (key, value) in from {
@@ -193,6 +284,7 @@ struct Resolver<'a> {
     styles: BTreeMap<String, String>,
     used_vars: BTreeSet<String>,
     used_fonts: BTreeSet<String>,
+    used_keys: BTreeSet<String>,
     following: Vec<String>,
 }
 
@@ -308,6 +400,137 @@ impl Resolver<'_> {
             self.styles.insert(path.to_string(), code);
         }
         Ok(Token::Style(path.to_string()))
+    }
+
+    fn keyboard(&mut self, path: &str, value: &Value, keys: &Map<String, Value>) -> Result<ThemeKeyboard, String> {
+        let entry: KeyboardEntry = serde_json::from_value(value.clone()).map_err(|e| self.error(path, e))?;
+        if entry.layers.is_empty() {
+            return Err(self.error(path, "no layers"));
+        }
+        let Token::Number(gap) = self.text(path, "widgets.keyboard.gap")? else { return Err(self.error(path, "widgets.keyboard.gap is not a number")) };
+        let ids: Vec<&str> = entry.layers.iter().map(|layer| layer.id.as_str()).collect();
+        let mut layers = Vec::new();
+        for (index, layer) in entry.layers.iter().enumerate() {
+            let path = format!("{path}.layers.{}", layer.id);
+            if ids[..index].contains(&layer.id.as_str()) {
+                return Err(self.error(&path, "the id is used twice"));
+            }
+            let row_count = layer.layout.len() as i64;
+            if row_count == 0 || (i64::from(entry.height) - gap) / row_count - gap <= 0 {
+                return Err(self.error(&path, format!("height {} has no room for {row_count} rows", entry.height)));
+            }
+            let mut rows = Vec::new();
+            for items in &layer.layout {
+                let mut quarters = 0.0;
+                let mut row = Vec::new();
+                for item in items {
+                    let (key, width) = self.layer_key(&path, item, keys, &ids)?;
+                    if width <= 0.0 || (width * KEY_QUARTERS).fract() != 0.0 {
+                        return Err(self.error(&path, format!("{item}: key widths go by quarters")));
+                    }
+                    quarters += width * KEY_QUARTERS;
+                    row.push(key);
+                }
+                if quarters > f64::from(layer.columns) * KEY_QUARTERS {
+                    return Err(self.error(&path, format!("a row is wider than {} columns", layer.columns)));
+                }
+                rows.push(row);
+            }
+            layers.push(ThemeLayer { columns: layer.columns, rows });
+        }
+        Ok(ThemeKeyboard { height: entry.height, layers })
+    }
+
+    /// A key of a row, with its width.
+    fn layer_key(&mut self, path: &str, item: &Value, keys: &Map<String, Value>, ids: &[&str]) -> Result<(ThemeKey, f64), String> {
+        match item {
+            Value::Number(width) => {
+                let width = width.as_f64().ok_or_else(|| self.error(path, format!("{item}: not a width")))?;
+                Ok((ThemeKey::spacer(width), width))
+            }
+            Value::String(name) if keys.contains_key(name) => {
+                let fields = self.key_fields(path, name, keys)?;
+                let entry: KeyEntry = serde_json::from_value(Value::Object(fields)).map_err(|e| self.error(path, format!("{name}: {e}")))?;
+                Ok((self.key(path, name, &entry, ids)?, entry.width))
+            }
+            Value::String(text) => Ok((ThemeKey::insert(text), default_key_width())),
+            _ => Err(self.error(path, format!("{item}: not a key"))),
+        }
+    }
+
+    /// The key `name` with what it extends under it.
+    fn key_fields(&mut self, path: &str, name: &str, keys: &Map<String, Value>) -> Result<Map<String, Value>, String> {
+        let Some(Value::Object(key)) = keys.get(name) else { return Err(self.error(path, format!("no key {name}"))) };
+        self.used_keys.insert(name.to_string());
+        let mut fields = Map::new();
+        if let Some(parent) = key.get("extends") {
+            let Some(parent) = parent.as_str() else { return Err(self.error(path, format!("{name}: extends takes a key"))) };
+            self.enter(path, parent)?;
+            fields = self.key_fields(path, parent, keys)?;
+            self.following.pop();
+        }
+        merge(&mut fields, key.clone());
+        fields.remove("extends");
+        Ok(fields)
+    }
+
+    fn key(&mut self, path: &str, name: &str, key: &KeyEntry, ids: &[&str]) -> Result<ThemeKey, String> {
+        let error = |resolver: &Self, message: &str| resolver.error(path, format!("{name}: {message}"));
+        if key.icon.is_some() && key.label.is_some() {
+            return Err(error(self, "needs at most one of 'icon' or 'label'"));
+        }
+        if key.icon.as_deref().is_some_and(|icon| !THEME_ICONS.contains(&icon)) {
+            return Err(error(self, "no such icon"));
+        }
+        let layer = key.action.as_deref().and_then(|action| action.strip_prefix("layer."));
+        if layer.is_none() && (key.once || key.double.is_some()) {
+            return Err(error(self, "'once' and 'double' are for layer changes"));
+        }
+        let action = match (&key.action, &key.insert, key.custom) {
+            (Some(action), None, None) => match layer {
+                Some(layer) => {
+                    let mut code = format!("devkit_ui::keyboard::KeyAction::layer({})", self.layer_id(path, ids, layer)?);
+                    if key.once {
+                        code += ".once()";
+                    }
+                    if let Some(double) = &key.double {
+                        code += &format!(".double({})", self.layer_id(path, ids, double)?);
+                    }
+                    code
+                }
+                None => {
+                    let Token::Literal(input) = self.text(path, action)? else { return Err(error(self, "action is no value of TextInput")) };
+                    format!("devkit_ui::keyboard::KeyAction::Press({input})")
+                }
+            },
+            (None, Some(text), None) => format!("devkit_ui::keyboard::KeyAction::Insert({text:?})"),
+            (None, None, Some(id)) => format!("devkit_ui::keyboard::KeyAction::Custom({id})"),
+            _ => return Err(error(self, "needs exactly one of 'action', 'insert' or 'custom'")),
+        };
+        let mut options = String::new();
+        if key.width != default_key_width() {
+            options += &format!(".width({:?})", key.width);
+        }
+        if let Some(role) = &key.role {
+            options += &format!(".role({})", self.text(path, role)?.code(&self.symbol));
+        }
+        if key.repeat {
+            options += ".repeat()";
+        }
+        if let Some(font) = &key.font {
+            let token @ Token::Font(_) = self.text(path, font)? else { return Err(error(self, "font is not a font")) };
+            options += &format!(".font({})", token.code(&self.symbol));
+        }
+        if let Some(style) = &key.style {
+            let token @ Token::Style(_) = self.text(path, style)? else { return Err(error(self, "style is not a style")) };
+            options += &format!(".style({})", token.code(&self.symbol));
+        }
+        let label = key.label.as_ref().map_or("devkit_ui::keyboard::KeyLabel::None".to_string(), |text| format!("devkit_ui::keyboard::KeyLabel::Text({text:?})"));
+        Ok(ThemeKey { icon: key.icon.clone(), label, action, options })
+    }
+
+    fn layer_id(&self, path: &str, ids: &[&str], name: &str) -> Result<usize, String> {
+        ids.iter().position(|id| *id == name).ok_or_else(|| self.error(path, format!("no layer {name}")))
     }
 
     fn referred(&mut self, path: &str, text: &str) -> Result<Map<String, Value>, String> {
@@ -500,6 +723,8 @@ fn merge_themes(definition: &mut Definition, base: &Path, fonts_dir: &Path) -> R
         }
         merge(&mut merged.vars, entry.vars);
         merge(&mut merged.widgets, entry.widgets);
+        merge(&mut merged.keyboards, entry.keyboards);
+        merge(&mut merged.motion, entry.motion);
         if !entry.font.is_empty() {
             return Err(format!("theme.{name}.font: fonts go in the top level 'font'"));
         }
@@ -511,6 +736,7 @@ fn merge_themes(definition: &mut Definition, base: &Path, fonts_dir: &Path) -> R
             styles: BTreeMap::new(),
             used_vars: BTreeSet::new(),
             used_fonts: BTreeSet::new(),
+            used_keys: BTreeSet::new(),
             following: Vec::new(),
         };
         let mut widgets = BTreeMap::new();
@@ -522,8 +748,33 @@ fn merge_themes(definition: &mut Definition, base: &Path, fonts_dir: &Path) -> R
             }
             widgets.insert(widget.clone(), tokens);
         }
-        let Resolver { styles, used_vars, used_fonts, .. } = resolver;
+        let keys = match merged.keyboards.get(THEME_KEYS) {
+            None => Map::new(),
+            Some(Value::Object(keys)) => keys.clone(),
+            Some(_) => return Err(format!("theme.{name}.keyboards.{THEME_KEYS}: not an object")),
+        };
+        for keyboard in THEME_KEYBOARDS {
+            if !merged.keyboards.contains_key(keyboard) {
+                return Err(format!("theme.{name}.keyboards.{keyboard}: missing"));
+            }
+        }
+        let mut keyboards = BTreeMap::new();
+        for (keyboard, value) in merged.keyboards.iter().filter(|(keyboard, _)| *keyboard != THEME_KEYS) {
+            if !is_ident(keyboard) {
+                return Err(format!("theme.{name}.keyboards.{keyboard}: not an identifier"));
+            }
+            keyboards.insert(keyboard.clone(), resolver.keyboard(&format!("keyboards.{keyboard}"), value, &keys)?);
+        }
+        if merged.motion.is_empty() {
+            return Err(format!("theme.{name}.motion: missing"));
+        }
+        let mut motion = BTreeMap::new();
+        for (field, value) in &merged.motion {
+            motion.insert(field.clone(), resolver.value(&format!("motion.{field}"), value)?);
+        }
+        let Resolver { styles, used_vars, used_fonts, used_keys, .. } = resolver;
         let unused_vars = merged.vars.keys().filter(|var| !used_vars.contains(*var)).cloned().collect();
+        let unused_keys = keys.keys().filter(|key| !used_keys.contains(*key)).cloned().collect();
 
         let mut fonts = BTreeMap::new();
         for slot in THEME_FONTS.iter().copied().chain(used_fonts.iter().map(String::as_str)) {
@@ -576,7 +827,7 @@ fn merge_themes(definition: &mut Definition, base: &Path, fonts_dir: &Path) -> R
         if let Some(dark) = &dark {
             check_palette(&name, dark)?;
         }
-        themes.insert(name, Theme { fonts, icons, light, dark, widgets, styles, unused_vars });
+        themes.insert(name, Theme { fonts, icons, light, dark, widgets, styles, keyboards, motion, unused_vars, unused_keys });
     }
     Ok((themes, files))
 }
@@ -610,6 +861,36 @@ fn palette_code(colors: &BTreeMap<String, String>) -> String {
     format!("devkit_ui::Palette {{ {} }}", fields.join(", "))
 }
 
+fn icon_code(context: &Context, theme: &Theme, icon: &str) -> String {
+    let (font, glyph) = &theme.icons[icon];
+    let codepoint = context.icons[glyph];
+    format!("devkit_ui::Icon {{ font: &{}_CHAIN, glyph: '\\u{{{codepoint:x}}}' }}", font.to_uppercase())
+}
+
+fn key_code(context: &Context, theme: &Theme, key: &ThemeKey) -> String {
+    let label = key.icon.as_ref().map_or(key.label.clone(), |icon| format!("devkit_ui::keyboard::KeyLabel::Fixed({})", icon_code(context, theme, icon)));
+    format!("devkit_ui::keyboard::Key::action({label}, {}){}", key.action, key.options)
+}
+
+fn keyboard_code(context: &Context, theme: &Theme, keyboard: &ThemeKeyboard) -> String {
+    let layers: Vec<String> = keyboard
+        .layers
+        .iter()
+        .map(|layer| {
+            let rows: Vec<String> = layer
+                .rows
+                .iter()
+                .map(|row| {
+                    let keys: Vec<String> = row.iter().map(|key| key_code(context, theme, key)).collect();
+                    format!("&[{}]", keys.join(", "))
+                })
+                .collect();
+            format!("devkit_ui::keyboard::Layer {{ columns: {}, rows: &[{}] }}", layer.columns, rows.join(", "))
+        })
+        .collect();
+    format!("devkit_ui::keyboard::Keyboard {{ height: {}, layers: &[{}] }}", keyboard.height, layers.join(", "))
+}
+
 fn theme_code(context: &Context, name: &str, theme: &Theme) -> String {
     let symbol = name.to_uppercase();
     let mut text = String::new();
@@ -634,6 +915,9 @@ fn theme_code(context: &Context, name: &str, theme: &Theme) -> String {
     for (path, style) in &theme.styles {
         text += &format!("static {}: devkit_ui::StateStyle = {style};\n", style_symbol(&symbol, path));
     }
+    for (keyboard, value) in &theme.keyboards {
+        text += &format!("pub static {}: devkit_ui::keyboard::Keyboard = {};\n", keyboard_symbol(&symbol, keyboard), keyboard_code(context, theme, value));
+    }
     let widgets: Vec<String> = theme
         .widgets
         .iter()
@@ -644,25 +928,27 @@ fn theme_code(context: &Context, name: &str, theme: &Theme) -> String {
         .collect();
     let icons: Vec<String> = THEME_ICONS
         .iter()
-        .map(|icon| {
-            let (font, glyph) = &theme.icons[*icon];
-            let codepoint = context.icons[glyph];
-            format!("{icon}: devkit_ui::Icon {{ font: &{}_CHAIN, glyph: '\\u{{{codepoint:x}}}' }}", font.to_uppercase())
-        })
+        .map(|icon| format!("{icon}: {}", icon_code(context, theme, icon)))
         .collect();
     let dark = theme.dark.as_ref().map_or("None".to_string(), |d| format!("Some({})", palette_code(d)));
+    let motion: Vec<String> = theme.motion.iter().map(|(field, token)| format!("{field}: {}", token.code(&symbol))).collect();
     text += &format!(
-        "pub static {symbol}: devkit_ui::ThemeAssets = devkit_ui::ThemeAssets {{\n    \
+        "pub static {symbol}: devkit_ui::Theme = devkit_ui::Theme {{\n    \
          light: {},\n    dark: {dark},\n    \
          fonts: devkit_ui::Fonts {{ title: &{}, body: &{}, caption: &{} }},\n    \
          icons: devkit_ui::Icons {{ {} }},\n    \
-         widgets: devkit_ui::Widgets {{ {} }},\n}};\n\n",
+         widgets: devkit_ui::Widgets {{ {} }},\n    \
+         keyboards: devkit_ui::Keyboards {{ text: &{}, number: &{} }},\n    \
+         motion: devkit_ui::Motion {{ {} }},\n}};\n\n",
         palette_code(&theme.light),
         chain_symbol(&symbol, "title"),
         chain_symbol(&symbol, "body"),
         chain_symbol(&symbol, "caption"),
         icons.join(", "),
         widgets.join(", "),
+        keyboard_symbol(&symbol, "text"),
+        keyboard_symbol(&symbol, "number"),
+        motion.join(", "),
     );
     text
 }
@@ -730,6 +1016,9 @@ fn write_index(context: &Context, out: &Path) -> Result<(), String> {
     for (name, theme) in &context.themes {
         for var in &theme.unused_vars {
             eprintln!("warning: theme.{name}.vars.{var}: not used");
+        }
+        for key in &theme.unused_keys {
+            eprintln!("warning: theme.{name}.keyboards.keys.{key}: not used");
         }
         text += &theme_code(context, name, theme);
     }

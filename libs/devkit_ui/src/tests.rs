@@ -18,7 +18,7 @@ use crate::external::ExternalSurface;
 use crate::nav::SplitRole;
 use crate::rotation::Rotations;
 use crate::gesture::{Gesture, Gestures};
-use crate::keyboard::InputKind;
+use crate::keyboard::{InputKind, Key, KeyAction, KeyLabel, Keyboard, Layer};
 use crate::node::{NONE, Node, NodeContent};
 use crate::tree::Tree;
 use crate::widgets;
@@ -80,6 +80,50 @@ static TABLE_ROW: StateStyle = StateStyle { base: &[Prop::MinHeight(88), Prop::P
 static TABLE_LINE: StateStyle = StateStyle { base: &[Prop::Height(1)], ..StateStyle::EMPTY };
 static KEY: StateStyle = StateStyle { states: &[(State::PRESSED, &[Prop::Background(ColorRole::Pressed)])], ..StateStyle::EMPTY };
 
+const KEY_PITCH: i16 = 88;
+const TEXT_KEYS_HEIGHT: i16 = 4 * KEY_PITCH + 8;
+const BACKSPACE: Key = Key::action(KeyLabel::None, KeyAction::Press(TextInput::Backspace)).width(1.5).repeat();
+const SPREAD: Key = Key::spacer(7.0);
+const TO_LOWER: Key = Key::action(KeyLabel::None, KeyAction::layer(0)).width(1.5);
+const SYMBOLS: Key = Key::action(KeyLabel::Text("?123"), KeyAction::layer(3)).width(1.5);
+
+static TEXT_KEYS: Keyboard = Keyboard {
+    height: TEXT_KEYS_HEIGHT,
+    layers: &[
+        Layer {
+            columns: 10,
+            rows: &[
+                &[Key::text("q"), Key::text("w")],
+                &[Key::text("a")],
+                &[Key::action(KeyLabel::None, KeyAction::layer(1).once().double(2)).width(1.5), SPREAD, BACKSPACE],
+                &[SYMBOLS],
+            ],
+        },
+        Layer {
+            columns: 10,
+            rows: &[
+                &[Key::text("Q"), Key::text("W")],
+                &[Key::text("A")],
+                &[Key::action(KeyLabel::None, KeyAction::layer(0).double(2)).width(1.5), SPREAD, BACKSPACE],
+                &[SYMBOLS],
+            ],
+        },
+        Layer {
+            columns: 10,
+            rows: &[&[Key::text("Q"), Key::text("W")], &[Key::text("A")], &[TO_LOWER, SPREAD, BACKSPACE], &[SYMBOLS]],
+        },
+        Layer {
+            columns: 4,
+            rows: &[&[Key::text("1"), Key::text("2")], &[Key::action(KeyLabel::Text("ABC"), KeyAction::layer(0)), Key::text("3")]],
+        },
+    ],
+};
+
+static NUMBER_KEYS: Keyboard = Keyboard {
+    height: 200,
+    layers: &[Layer { columns: 3, rows: &[&[Key::text("1"), Key::text("2"), Key::text("3")]] }],
+};
+
 static WIDGETS: Widgets = Widgets {
     unit: UnitTheme { padding: 24, gap: 12, radius: 14 },
     button: ButtonTheme { root: &EMPTY, label: &EMPTY, primary: &EMPTY, secondary: &EMPTY, destructive: &EMPTY, plain: &EMPTY, navigation: &EMPTY, primary_outline: &EMPTY, secondary_outline: &EMPTY, destructive_outline: &EMPTY, plain_outline: &EMPTY },
@@ -102,7 +146,7 @@ static WIDGETS: Widgets = Widgets {
     modal: ModalTheme { width: 360, scrim: &EMPTY, panel: &EMPTY },
     toast: ToastTheme { root: &EMPTY, label: &EMPTY },
     text_field: TextFieldTheme { placeholder_color: ColorRole::Muted, area_min_height: 160, root: &EMPTY },
-    keyboard: KeyboardTheme { key_height: 80, gap: 8, root: &EMPTY, label: &EMPTY, key: &KEY, special: &KEY, primary: &KEY },
+    keyboard: KeyboardTheme { gap: 8, root: &EMPTY, label: &EMPTY, key: &KEY, special: &KEY, primary: &KEY },
 };
 
 fn theme() -> &'static Theme {
@@ -125,8 +169,15 @@ fn theme() -> &'static Theme {
         scrim: Color::rgba(0, 0, 0, 128),
         shadow: Color::rgba(17, 20, 24, 56),
     };
-    let assets = ThemeAssets { light: colors, dark: None, fonts: Fonts { title: chain, body: chain, caption: chain }, icons, widgets: WIDGETS };
-    Box::leak(Box::new(Theme::new(&assets, &widgets::DEFAULT)))
+    Box::leak(Box::new(Theme {
+        light: colors,
+        dark: None,
+        fonts: Fonts { title: chain, body: chain, caption: chain },
+        icons,
+        widgets: WIDGETS,
+        keyboards: Keyboards { text: &TEXT_KEYS, number: &NUMBER_KEYS },
+        motion: Motion { transition: Transition::Slide, duration_ms: 200 },
+    }))
 }
 
 fn run(tree: &mut Tree) -> Vec<Rect> {
@@ -1602,10 +1653,11 @@ fn focus_routes_input_and_shows_the_field_keyboard() {
     run(&mut tree);
     assert_eq!(text_of(&tree, "name"), "xy");
 
-    let qwerty = rect_of(&tree, "keyboard").h;
+    assert_eq!(keyboard.h, TEXT_KEYS_HEIGHT);
     tap(&mut tree, "pin");
     run(&mut tree);
-    assert_eq!(rect_of(&tree, "keyboard").h, qwerty, "both layouts have four rows");
+    assert_eq!(rect_of(&tree, "keyboard").h, NUMBER_KEYS.height, "each layout has its own height");
+    assert_eq!(tree.context(0).insets.bottom, NUMBER_KEYS.height);
     tree.input(TextInput::Char('7'));
     run(&mut tree);
     assert_eq!(text_of(&tree, "pin"), "7");
@@ -1646,7 +1698,7 @@ fn keys_line_up_across_rows_and_type_through_layers() {
     };
     let k = theme().widgets.keyboard;
     let pitch = (400 - k.gap) / 10;
-    let row_y = |row: i16| keyboard.y + k.gap + row * (k.key_height + k.gap) + 10;
+    let row_y = |row: i16| keyboard.y + k.gap + row * KEY_PITCH + 10;
     // Shift, then one upper case letter, then back to lower case.
     press(&mut tree, k.gap + 10, row_y(2));
     press(&mut tree, k.gap + pitch + 10, row_y(0));
@@ -1760,13 +1812,33 @@ fn the_bottom_inset_is_the_larger_of_chrome_and_keyboard() {
 }
 
 #[test]
+fn a_layer_keeps_the_panel_height_and_shares_it_between_its_rows() {
+    let mut tree = form_tree();
+    tap(&mut tree, "name");
+    run(&mut tree);
+    let keyboard = rect_of(&tree, "keyboard");
+    let gap = theme().widgets.keyboard.gap;
+    let press = |tree: &mut Tree, x: i16, y: i16| {
+        tree.touch(&[(0, (x, y))], 0);
+        tree.touch(&[], 10);
+        run(tree);
+    };
+    press(&mut tree, gap + 10, keyboard.y + gap + 3 * KEY_PITCH + 10);
+    assert_eq!(rect_of(&tree, "keyboard"), keyboard);
+    assert_eq!(tree.context(0).insets.bottom, keyboard.h);
+    press(&mut tree, keyboard.right() / 4 + 10, keyboard.bottom() - gap - 2);
+    press(&mut tree, keyboard.right() / 4 + 10, keyboard.y + gap + 2);
+    assert_eq!(text_of(&tree, "name"), "32", "the columns and the taller rows are those of this layer");
+}
+
+#[test]
 fn full_rows_end_at_the_panel_edge() {
     let mut tree = form_tree();
     tap(&mut tree, "name");
     run(&mut tree);
     let keyboard = rect_of(&tree, "keyboard");
     let gap = theme().widgets.keyboard.gap;
-    let y = keyboard.y + gap + 2 * (theme().widgets.keyboard.key_height + gap) + 10;
+    let y = keyboard.y + gap + 2 * KEY_PITCH + 10;
     tree.touch(&[(0, (keyboard.right() - gap - 1, y))], 0);
     tree.update();
     assert!(tree.timed(), "the last pixel of the row is the repeating key");
@@ -1784,7 +1856,7 @@ fn a_held_key_repeats_and_its_release_adds_nothing() {
     assert_eq!(text_of(&tree, "name"), "aaa");
     let keyboard = rect_of(&tree, "keyboard");
     let k = theme().widgets.keyboard;
-    let y = keyboard.y + k.gap + 2 * (k.key_height + k.gap) + 10;
+    let y = keyboard.y + k.gap + 2 * KEY_PITCH + 10;
     tree.touch(&[(0, (380, y))], 0);
     tree.update();
     assert!(tree.timed());
@@ -2592,8 +2664,7 @@ fn a_covered_split_comes_back_whole() {
 fn a_color_mode_swaps_the_palette_under_the_same_looks() {
     let mut colors = theme().light;
     colors.surface = Color::rgb(1, 2, 3);
-    let assets = ThemeAssets { dark: Some(colors), ..ThemeAssets { light: theme().light, dark: None, fonts: theme().fonts, icons: theme().icons, widgets: theme().widgets } };
-    let dark: &'static Theme = Box::leak(Box::new(Theme::new(&assets, &widgets::DEFAULT)));
+    let dark: &'static Theme = Box::leak(Box::new(Theme { dark: Some(colors), ..*theme() }));
     assert_eq!(dark.palette(ColorMode::Light).surface, theme().light.surface);
     assert_eq!(dark.palette(ColorMode::Dark).surface, Color::rgb(1, 2, 3));
     assert_eq!(theme().palette(ColorMode::Dark).surface, theme().light.surface, "no dark colors stays light");

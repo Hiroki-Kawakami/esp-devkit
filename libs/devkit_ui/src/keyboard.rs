@@ -11,7 +11,7 @@ use crate::component::{Child, Component, Cx};
 use crate::element::{Element, Ui};
 use crate::style::{Align, Justify, Role, StateStyle};
 use crate::text_buffer::TextInput;
-use crate::theme::{Icon, Icons, Theme};
+use crate::theme::{Icon, Icons};
 
 pub type LayerId = u8;
 
@@ -146,13 +146,14 @@ impl Key {
 }
 
 pub struct Layer {
+    /// Key widths of a full row.
+    pub columns: u8,
     pub rows: &'static [&'static [Key]],
 }
 
 pub struct Keyboard {
-    /// Key widths of a full row.
-    pub columns: u8,
-    pub rows: u8,
+    /// Of the whole panel, whichever layer shows. Rows share it evenly.
+    pub height: i16,
     pub layers: &'static [Layer],
 }
 
@@ -162,87 +163,6 @@ pub enum InputKind {
     Text,
     Number,
 }
-
-const fn shift_icon(icons: &Icons) -> Icon {
-    icons.shift
-}
-
-const fn backspace_icon(icons: &Icons) -> Icon {
-    icons.backspace
-}
-
-const fn enter_icon(icons: &Icons) -> Icon {
-    icons.enter
-}
-
-const LOWER: LayerId = 0;
-const UPPER: LayerId = 1;
-const CAPS: LayerId = 2;
-const SYMBOLS: LayerId = 3;
-
-const BACKSPACE: Key = Key::action(KeyLabel::Icon(backspace_icon), KeyAction::Press(TextInput::Backspace)).width(1.5).role(KeyRole::Special).repeat();
-const ENTER: Key = Key::action(KeyLabel::Icon(enter_icon), KeyAction::Press(TextInput::Enter)).width(1.5).role(KeyRole::Primary);
-const SPACE: Key = Key::space().width(5.0);
-
-macro_rules! keys {
-    ($($text:literal),*) => { &[$(Key::text($text)),*] };
-}
-
-const ROW1_LOWER: &[Key] = keys!("q", "w", "e", "r", "t", "y", "u", "i", "o", "p");
-const ROW2_LOWER: &[Key] = &[Key::spacer(0.5), Key::text("a"), Key::text("s"), Key::text("d"), Key::text("f"), Key::text("g"), Key::text("h"), Key::text("j"), Key::text("k"), Key::text("l")];
-const ROW3_LOWER: &[Key] = &[
-    Key::action(KeyLabel::Icon(shift_icon), KeyAction::layer(UPPER).once().double(CAPS)).width(1.5).role(KeyRole::Special),
-    Key::text("z"), Key::text("x"), Key::text("c"), Key::text("v"), Key::text("b"), Key::text("n"), Key::text("m"),
-    BACKSPACE,
-];
-const ROW1_UPPER: &[Key] = keys!("Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P");
-const ROW2_UPPER: &[Key] = &[Key::spacer(0.5), Key::text("A"), Key::text("S"), Key::text("D"), Key::text("F"), Key::text("G"), Key::text("H"), Key::text("J"), Key::text("K"), Key::text("L")];
-const ROW3_UPPER: &[Key] = &[
-    Key::action(KeyLabel::Icon(shift_icon), KeyAction::layer(LOWER).double(CAPS)).width(1.5),
-    Key::text("Z"), Key::text("X"), Key::text("C"), Key::text("V"), Key::text("B"), Key::text("N"), Key::text("M"),
-    BACKSPACE,
-];
-const ROW3_CAPS: &[Key] = &[
-    Key::action(KeyLabel::Icon(shift_icon), KeyAction::layer(LOWER)).width(1.5).role(KeyRole::Primary),
-    Key::text("Z"), Key::text("X"), Key::text("C"), Key::text("V"), Key::text("B"), Key::text("N"), Key::text("M"),
-    BACKSPACE,
-];
-const ROW1_SYMBOLS: &[Key] = keys!("1", "2", "3", "4", "5", "6", "7", "8", "9", "0");
-const ROW2_SYMBOLS: &[Key] = keys!("@", "#", "$", "%", "&", "*", "-", "+", "(", ")");
-const ROW3_SYMBOLS: &[Key] = &[Key::text("!"), Key::text("\""), Key::text("'"), Key::text(":"), Key::text(";"), Key::text("/"), Key::text("?"), Key::text("_"), BACKSPACE.width(2.0)];
-const BOTTOM: &[Key] = &[
-    Key::action(KeyLabel::Text("?123"), KeyAction::layer(SYMBOLS)).width(1.5).role(KeyRole::Special),
-    Key::text(","),
-    SPACE,
-    Key::text("."),
-    ENTER,
-];
-const BOTTOM_SYMBOLS: &[Key] = &[
-    Key::action(KeyLabel::Text("ABC"), KeyAction::layer(LOWER)).width(1.5).role(KeyRole::Special),
-    Key::text(","),
-    SPACE,
-    Key::text("."),
-    ENTER,
-];
-
-pub static QWERTY: Keyboard = Keyboard {
-    columns: 10,
-    rows: 4,
-    layers: &[
-        Layer { rows: &[ROW1_LOWER, ROW2_LOWER, ROW3_LOWER, BOTTOM] },
-        Layer { rows: &[ROW1_UPPER, ROW2_UPPER, ROW3_UPPER, BOTTOM] },
-        Layer { rows: &[ROW1_UPPER, ROW2_UPPER, ROW3_CAPS, BOTTOM] },
-        Layer { rows: &[ROW1_SYMBOLS, ROW2_SYMBOLS, ROW3_SYMBOLS, BOTTOM_SYMBOLS] },
-    ],
-};
-
-pub static NUMERIC: Keyboard = Keyboard {
-    columns: 3,
-    rows: 4,
-    layers: &[Layer {
-        rows: &[keys!("1", "2", "3"), keys!("4", "5", "6"), keys!("7", "8", "9"), &[Key::text("."), Key::text("0"), BACKSPACE.width(1.0)]],
-    }],
-};
 
 #[derive(Clone, Copy)]
 pub enum KeyboardMsg {
@@ -297,11 +217,6 @@ impl KeyboardPanel {
         self.after_once = change.once.then_some(self.layer);
         self.layer = change.to;
     }
-
-    pub(crate) fn height(layout: &Keyboard, theme: &Theme) -> i16 {
-        let k = &theme.widgets.keyboard;
-        i16::from(layout.rows) * (k.key_height + k.gap) + k.gap
-    }
 }
 
 impl Component for KeyboardPanel {
@@ -342,12 +257,16 @@ impl Component for KeyboardPanel {
         let k = &theme.widgets.keyboard;
         let width = self.width.unwrap_or(ui.screen_size().0);
         let span = i32::from(width) - i32::from(k.gap);
-        let columns = i32::from(layout.columns) * QUARTER as i32;
+        let columns = i32::from(layer.columns) * QUARTER as i32;
+        let span_y = i32::from(layout.height) - i32::from(k.gap);
+        let row_count = layer.rows.len() as i32;
         let rows: Vec<_> = layer
             .rows
             .iter()
             .enumerate()
             .map(|(r, keys)| {
+                let top = r as i32;
+                let height = ((top + 1) * span_y / row_count - top * span_y / row_count) as i16 - k.gap;
                 let mut start = 0;
                 let items: Vec<_> = keys
                     .iter()
@@ -356,13 +275,13 @@ impl Component for KeyboardPanel {
                         let end = start + i32::from(key.width);
                         let width = (end * span / columns - start * span / columns) as i16 - k.gap;
                         start = end;
-                        key_element(ui, key, r as u8, c as u8, width)
+                        key_element(ui, key, r as u8, c as u8, width, height)
                     })
                     .collect();
-                ui.row(items).gap(k.gap).height(k.key_height)
+                ui.row(items).gap(k.gap).height(height)
             })
             .collect();
-        let panel = ui.column(rows).gap(k.gap).padding(k.gap).style(k.root).keep_focus().on_tap(KeyboardMsg::Panel).id("keyboard");
+        let panel = ui.column(rows).height(layout.height).gap(k.gap).padding(k.gap).style(k.root).keep_focus().on_tap(KeyboardMsg::Panel).id("keyboard");
         match self.width {
             Some(width) => panel.width(width),
             None => panel.absolute(Some(0), None, Some(0), Some(0)),
@@ -381,7 +300,7 @@ impl Child for KeyboardPanel {
     }
 }
 
-fn key_element<'a>(ui: &'a Ui<KeyboardMsg>, key: &Key, row: u8, column: u8, width: i16) -> Element<'a, KeyboardMsg> {
+fn key_element<'a>(ui: &'a Ui<KeyboardMsg>, key: &Key, row: u8, column: u8, width: i16, height: i16) -> Element<'a, KeyboardMsg> {
     let theme = ui.theme();
     let k = &theme.widgets.keyboard;
     if matches!(key.action, KeyAction::None) {
@@ -401,5 +320,5 @@ fn key_element<'a>(ui: &'a Ui<KeyboardMsg>, key: &Key, row: u8, column: u8, widt
         KeyRole::Special => k.special,
         KeyRole::Primary => k.primary,
     });
-    ui.row([label]).style(style).width(width).height(k.key_height).align(Align::Center).justify(Justify::Center).role(Role::Button).repeat(key.repeat).keep_focus().on_tap(KeyboardMsg::Key(row, column))
+    ui.row([label]).style(style).width(width).height(height).align(Align::Center).justify(Justify::Center).role(Role::Button).repeat(key.repeat).keep_focus().on_tap(KeyboardMsg::Key(row, column))
 }

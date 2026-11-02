@@ -35,7 +35,7 @@ use idf::{system, thread};
 
 use bench::{Bench, Params, Present};
 use scene::Kind;
-use screens::{Home, INSET_TOP, SPARE_STRIPS, StatusBar, StatusMsg, THEME};
+use screens::{Home, INSET_TOP, SPARE_STRIPS, StatusBar, StatusMsg};
 
 const TAG: &CStr = c"ui_demo";
 const SETTINGS_VALID: u32 = 0x5549_4445;
@@ -163,7 +163,7 @@ pub fn run() {
 
 fn run_demo(board: &Board, display: &'static Display, settings: &Settings) {
     screens::set_display(display);
-    let mut config = AppConfig::new(&THEME);
+    let mut config = AppConfig::new(&resources::TOUCH);
     config.plugins.push(Box::new(SavedColorMode::new()));
     if settings.rotated {
         config.presenter.rotation = Rotation::R90;

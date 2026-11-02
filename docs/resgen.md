@@ -293,7 +293,7 @@ Icons get code points in name order from U+E000.
 
 ### Themes
 
-A `theme` entry generates a `devkit_ui::ThemeAssets`, under its name in
+A `theme` entry generates a `devkit_ui::Theme`, under its name in
 `resources.rs`. Only the Rust output has themes.
 
 ```json
@@ -311,14 +311,15 @@ A `theme` entry generates a `devkit_ui::ThemeAssets`, under its name in
           "root": { "height": 96, "padding_x": "widgets.unit.padding" },
           "meta": { "font": "font.caption", "foreground": "vars.text_secondary" }
         }
-      }
+      },
+      "motion": { "transition": "Transition.None" }
     }
   }
 }
 ```
 
 ```rust
-static THEME: Theme = Theme::new(&resources::TOUCH, &widgets::DEFAULT);
+let config = AppConfig::new(&resources::TOUCH);
 ```
 
 - `base` is a theme bundled in `tools/resgen/themes`, with its icons relative to
@@ -338,7 +339,9 @@ static THEME: Theme = Theme::new(&resources::TOUCH, &widgets::DEFAULT);
   What the entry sets replaces the base key by key, inside styles too.
 - `vars` are names of the theme's own, for any value, and never reach the
   firmware. One that nothing uses gives a warning.
-- Values in `vars` and `widgets` are:
+- `motion` has the fields of `Motion`.
+- `keyboards` has the keyboards of the theme, described below.
+- Values in `vars`, `widgets` and `motion` are:
 
   | value | is |
   |---|---|
@@ -379,6 +382,61 @@ static THEME: Theme = Theme::new(&resources::TOUCH, &widgets::DEFAULT);
   ```
 
 - A theme can be generated for each entry, to switch between them.
+
+### Keyboards
+
+`keyboards` holds a theme's layouts. `text` and `number` are required and go into
+`Theme::keyboards`. Any other name is a layout an app gives to `.keyboard`, as
+`resources::TOUCH_PORT_KEYBOARD` for `port` in `TOUCH`.
+
+```json
+{
+  "keyboards": {
+    "keys": {
+      "⌫": { "icon": "backspace", "action": "TextInput.Backspace", "width": 1.5, "role": "KeyRole.Special", "repeat": true },
+      "⌫1": { "extends": "⌫", "width": 1 },
+      "⇧": { "icon": "shift", "action": "layer.upper", "once": true, "double": "caps", "width": 1.5 },
+      "OK": { "label": "OK", "custom": 1, "role": "KeyRole.Primary" }
+    },
+    "number": {
+      "height": 360,
+      "layers": [
+        { "id": "main", "columns": 3, "layout": [["1", "2", "3"], [".", "0", "⌫1"]] }
+      ]
+    }
+  }
+}
+```
+
+- `height` is the whole panel's, gaps included. It stays through layer changes,
+  and each layer's rows share it evenly.
+- `layers` starts on the first entry. `columns` is the width of a full row, and a
+  row may be narrower: it stays on the left. The keys of a row are
+  - a name of `keys`,
+  - a number, for empty space that wide,
+  - any other string, for a key typing it.
+- `keys` are shared by the keyboards of the theme, and their names reach neither
+  the firmware nor the code. One that nothing uses gives a warning.
+
+  | field | is |
+  |---|---|
+  | `icon` | a name of `Icons` |
+  | `label` | text on the key; with no `icon` or `label` the key is blank |
+  | `action` | a `TextInput` value to send, or `layer.x` to change to the layer with that `id` |
+  | `once` | of `layer.x`: back to the previous layer after one character |
+  | `double` | of `layer.x`: the `id` a double tap goes to |
+  | `insert` | text to type |
+  | `custom` | a number reaching the input as `TextInput::Custom` |
+  | `width` | in columns, by quarters; default 1 |
+  | `role` | a `KeyRole`; default `KeyRole.Normal` |
+  | `repeat` | `true` repeats while held |
+  | `font` | `font.x` for the label |
+  | `style` | a reference to a style, which replaces the role's |
+  | `extends` | a name of `keys` to start from |
+
+  A key has one of `action`, `insert` and `custom`.
+- What the entry sets replaces the base key by key, so `keys` change one at a
+  time. `layers` is an array and is replaced whole.
 
 ### Binary format
 

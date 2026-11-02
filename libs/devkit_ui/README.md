@@ -150,15 +150,14 @@ app.run();
   `cx.close_popup()` closes it, and so does a turn of the screen. It fills the
   screen and places itself, by a rectangle from `on_tap_at`. `DropdownMenu` is
   one.
-- A `Theme` joins two halves. `ThemeAssets` is what resgen generates from a
-  definition: colors, fonts, icons and each widget's values, so a theme replaces
-  any of them without the rest of it reaching the firmware. `ThemeBehavior` is
-  code: `keyboards` and `motion`, with `widgets::DEFAULT` as it comes.
+- A `Theme` is what resgen generates from a definition: colors, fonts, icons,
+  each widget's values, keyboards and motion, so a theme replaces any of them
+  without the rest of it reaching the firmware.
 
   ```rust
-  static THEME: Theme = Theme::new(&resources::TOUCH, &widgets::DEFAULT);
+  let config = AppConfig::new(&resources::TOUCH);
 
-  static BEHAVIOR: ThemeBehavior = ThemeBehavior { motion: STILL, ..widgets::DEFAULT };
+  static STILL_TOUCH: Theme = Theme { motion: STILL, ..resources::TOUCH };
   ```
 
 - `theme.widgets` has one struct per widget: a `StateStyle` for each of its pieces,
@@ -281,14 +280,17 @@ config.plugins.push(Box::new(SavedColorMode::new()));
 - A `Keyboard` is static data. Label and action of a `Key` are separate, a style
   or font can replace the theme's, and widths go by quarters of a column: a key
   `n` wide covers `n` pitches less one gap, so a wide key spans the gaps it
-  covers. `Theme::keyboards` holds the default layouts and `theme.widgets.keyboard`
-  the sizes and styles; `.input` picks a layout and `.keyboard` overrides it.
+  covers. `height` is the whole panel's and stays through layer changes, with a
+  layer's rows sharing it evenly, and `columns` belongs to each layer.
+  `Theme::keyboards` holds the default layouts, defined in the theme as
+  [docs/resgen.md](../../docs/resgen.md) describes, and `theme.widgets.keyboard`
+  the gap and styles; `.input` picks a layout and `.keyboard` overrides it.
 
   ```rust
   static PORT_KEYS: Keyboard = Keyboard {
-      columns: 3,
-      rows: 1,
+      height: 96,
       layers: &[Layer {
+          columns: 3,
           rows: &[&[
               Key::text("."),
               Key::text(":"),

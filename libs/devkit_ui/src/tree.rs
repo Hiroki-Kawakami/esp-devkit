@@ -1170,7 +1170,7 @@ impl Tree {
         let Some(panel) = host.as_any().downcast_mut::<Host<KeyboardPanel>>() else { return };
         panel.component.show(layout);
         self.mark_slot_dirty(slot);
-        let height = layout.map_or(0, |l| KeyboardPanel::height(l, theme));
+        let height = layout.map_or(0, |l| l.height);
         if height != self.keyboard_height {
             self.keyboard_height = height;
             self.mark_all_dirty();
