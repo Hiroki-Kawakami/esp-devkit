@@ -507,7 +507,7 @@ impl Tree {
             child = next;
         }
         match &mut self.nodes[id as usize].content {
-            NodeContent::List(list) => saved.lists.push((list.id, list.offset)),
+            NodeContent::List(list) => saved.lists.push((list.id, list.offset.max(0))),
             NodeContent::Navigator(nav) => {
                 let stack = core::mem::take(&mut nav.stack);
                 let key = nav.key;

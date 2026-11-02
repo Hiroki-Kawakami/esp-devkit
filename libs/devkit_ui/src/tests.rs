@@ -696,7 +696,7 @@ fn a_scroll_reports_every_move_and_shows_the_border_only_away_from_the_start() {
     let back = drag(&mut tree, 600, 48);
     assert!(!tree.scrolled_away(owner, "content"));
     assert!(back.iter().any(|r| r.intersect(&bar).h > 0), "{back:?}");
-    assert_eq!(*offsets.borrow().last().unwrap(), 0);
+    assert!(*offsets.borrow().last().unwrap() < 0, "past the start, as it shows");
     tree.touch(&[], 64);
 }
 
@@ -2997,4 +2997,306 @@ fn a_picture_takes_every_other_pixel_at_half_size() {
     assert_eq!((picture.width, picture.height), (2, 1));
     let pixels = unsafe { core::slice::from_raw_parts(picture.as_mut_ptr(), 2) };
     assert_eq!(pixels, [6, 8], "the pixel each output centre falls on");
+}
+
+#[derive(Clone, Copy)]
+enum PullMsg {
+    Refresh,
+    Begin,
+    Done,
+    Grow,
+}
+
+struct Puller {
+    count: usize,
+    bounce: bool,
+    pull: bool,
+    refreshing: bool,
+    refreshes: &'static core::cell::Cell<u32>,
+}
+
+impl Puller {
+    fn new(count: usize) -> Self {
+        Self { count, bounce: true, pull: false, refreshing: false, refreshes: Box::leak(Box::new(core::cell::Cell::new(0))) }
+    }
+}
+
+impl Component for Puller {
+    type Msg = PullMsg;
+
+    fn update(&mut self, msg: PullMsg, cx: &mut Cx<Self>) {
+        match msg {
+            PullMsg::Refresh => {
+                self.refreshes.set(self.refreshes.get() + 1);
+                self.refreshing = true;
+            }
+            PullMsg::Begin => self.refreshing = true,
+            PullMsg::Done => self.refreshing = false,
+            PullMsg::Grow => self.count += 1,
+        }
+        cx.rebuild();
+    }
+
+    fn view<'a>(&'a self, ui: &'a Ui<PullMsg>) -> Element<'a, PullMsg> {
+        let list = ui.list(0, self.count, 40).grow(1).bounce(self.bounce).id("list");
+        if self.pull { list.pull(60, self.refreshing, PullMsg::Refresh) } else { list }
+    }
+
+    fn list_row<'a>(&'a self, _: ListId, _: usize, ui: &'a Ui<PullMsg>) -> Element<'a, PullMsg> {
+        ui.column([]).height(40)
+    }
+}
+
+impl Screen for Puller {}
+
+fn puller(puller: Puller) -> Tree {
+    let mut tree = Tree::new(puller, SCREEN, Caps::INTERNAL, theme());
+    run(&mut tree);
+    tree
+}
+
+fn pull_list(tree: &mut Tree, by: i16, at: u32) {
+    let r = rect_of(tree, "list");
+    let (x, y) = (r.x + 10, r.y + 100);
+    for step in 0..=10 {
+        tree.touch(&[(0, (x, y + by * step / 10))], at + step as u32 * 16);
+    }
+    tree.touch(&[(0, (x, y + by))], at + 400);
+    tree.touch(&[], at + 410);
+}
+
+fn throw_list(tree: &mut Tree, at: u32) {
+    let r = rect_of(tree, "list");
+    let x = r.x + 10;
+    for (i, y) in [500, 460, 420, 380, 340].into_iter().enumerate() {
+        tree.touch(&[(0, (x, r.y + y))], at + i as u32 * 10);
+    }
+    tree.touch(&[], at + 45);
+}
+
+fn rest(tree: &mut Tree) -> Vec<i32> {
+    let mut seen = Vec::new();
+    for _ in 0..400 {
+        if !tree.animating() {
+            break;
+        }
+        tree.tick(16);
+        seen.push(offset_of(tree, "list"));
+    }
+    assert!(!tree.animating(), "still moving at {}", offset_of(tree, "list"));
+    run(tree);
+    seen
+}
+
+#[test]
+fn a_drag_past_the_start_stretches_and_springs_back() {
+    let mut tree = puller(Puller::new(100));
+    pull_list(&mut tree, 300, 0);
+    let past = offset_of(&tree, "list");
+    assert!(past < -60 && past > -300 * 55 / 100, "{past}");
+    assert!(tree.animating());
+    rest(&mut tree);
+    assert_eq!(offset_of(&tree, "list"), 0);
+}
+
+#[test]
+fn dragging_back_retraces_the_stretch() {
+    let path = |ys: &[i16]| {
+        let mut tree = puller(Puller::new(100));
+        let r = rect_of(&tree, "list");
+        for (i, &y) in ys.iter().enumerate() {
+            tree.touch(&[(0, (r.x + 10, r.y + 200 + y))], i as u32 * 16);
+        }
+        offset_of(&tree, "list")
+    };
+    assert_eq!(path(&[0, 200, 300, 200, 100, 50]), path(&[0, 50]));
+    assert!(path(&[0, 50]) < 0);
+    assert_eq!(path(&[0, 200, 300, 100, -100]), 100, "one to one again inside");
+}
+
+#[test]
+fn a_fling_into_the_end_overshoots_and_comes_back() {
+    let mut tree = puller(Puller::new(20));
+    throw_list(&mut tree, 0);
+    let seen = rest(&mut tree);
+    let end = 20 * 40 - 600;
+    assert!(seen.iter().any(|&o| o > end), "{seen:?}");
+    assert_eq!(offset_of(&tree, "list"), end);
+}
+
+#[test]
+fn without_bounce_the_ends_hold() {
+    let mut tree = puller(Puller { bounce: false, ..Puller::new(20) });
+    pull_list(&mut tree, 300, 0);
+    assert_eq!(offset_of(&tree, "list"), 0);
+    assert!(!tree.animating());
+    throw_list(&mut tree, 1000);
+    let seen = rest(&mut tree);
+    assert!(seen.iter().all(|&o| o <= 200), "{seen:?}");
+    assert_eq!(offset_of(&tree, "list"), 200);
+}
+
+#[test]
+fn content_that_fits_does_not_bounce() {
+    let mut tree = puller(Puller::new(5));
+    pull_list(&mut tree, 300, 0);
+    assert_eq!(offset_of(&tree, "list"), 0);
+    pull_list(&mut tree, -300, 1000);
+    assert_eq!(offset_of(&tree, "list"), 0);
+}
+
+#[test]
+fn a_press_catches_the_spring_and_a_lift_lets_it_go() {
+    let mut tree = puller(Puller::new(100));
+    pull_list(&mut tree, 300, 0);
+    tree.tick(16);
+    let r = rect_of(&tree, "list");
+    tree.touch(&[(0, (r.x + 10, r.y + 300))], 500);
+    let held = offset_of(&tree, "list");
+    assert!(held < 0);
+    tree.tick(16);
+    assert_eq!(offset_of(&tree, "list"), held);
+    tree.touch(&[], 600);
+    rest(&mut tree);
+    assert_eq!(offset_of(&tree, "list"), 0);
+}
+
+#[test]
+fn a_layout_while_springing_back_does_not_snap() {
+    let mut tree = puller(Puller::new(100));
+    pull_list(&mut tree, 300, 0);
+    tree.tick(16);
+    tree.post(tree.root_id, Erased::new(PullMsg::Grow));
+    run(&mut tree);
+    assert!(offset_of(&tree, "list") < -20);
+    rest(&mut tree);
+    assert_eq!(offset_of(&tree, "list"), 0);
+}
+
+#[test]
+fn rows_follow_past_the_start() {
+    let mut tree = puller(Puller::new(100));
+    let r = rect_of(&tree, "list");
+    tree.touch(&[(0, (r.x + 10, r.y + 100))], 0);
+    tree.touch(&[(0, (r.x + 10, r.y + 300))], 16);
+    tree.touch(&[(0, (r.x + 10, r.y + 400))], 32);
+    run(&mut tree);
+    let offset = offset_of(&tree, "list");
+    let NodeContent::List(list) = &tree.nodes[tree.find("list").unwrap() as usize].content else { panic!() };
+    let (index, row) = list.rows[0];
+    assert_eq!(index, 0);
+    assert_eq!(i32::from(tree.nodes[row as usize].screen.y), i32::from(r.y) - offset);
+    tree.touch(&[], 400);
+}
+
+#[test]
+fn a_pinch_taking_the_finger_springs_back() {
+    let mut tree = Tree::new(Photos { pinches: 0 }, SCREEN, Caps::INTERNAL, theme());
+    run(&mut tree);
+    let r = rect_of(&tree, "photos");
+    let x = r.x + 50;
+    tree.touch(&[(0, (x, r.y + 100))], 0);
+    tree.touch(&[(0, (x, r.y + 200))], 10);
+    tree.touch(&[(0, (x, r.y + 300))], 20);
+    assert!(offset_of(&tree, "photos") < 0);
+    tree.touch(&[(0, (x, r.y + 300)), (1, (x + 40, r.y + 300))], 30);
+    assert!(tree.animating());
+    for _ in 0..100 {
+        tree.tick(16);
+    }
+    assert_eq!(offset_of(&tree, "photos"), 0);
+    tree.touch(&[], 2000);
+}
+
+#[test]
+fn turning_the_screen_puts_a_stretched_list_back() {
+    let mut tree = puller(Puller::new(100));
+    let r = rect_of(&tree, "list");
+    tree.touch(&[(0, (r.x + 10, r.y + 100))], 0);
+    tree.touch(&[(0, (r.x + 10, r.y + 300))], 16);
+    tree.touch(&[(0, (r.x + 10, r.y + 400))], 32);
+    assert!(offset_of(&tree, "list") < 0);
+    tree.set_area(Rect::new(0, 0, 600, 400));
+    run(&mut tree);
+    assert_eq!(offset_of(&tree, "list"), 0);
+    tree.touch(&[], 400);
+}
+
+#[test]
+fn a_pull_past_its_height_refreshes_and_stays_open_until_done() {
+    let refreshes = Box::leak(Box::new(core::cell::Cell::new(0)));
+    let mut tree = puller(Puller { pull: true, refreshes, ..Puller::new(100) });
+    pull_list(&mut tree, 300, 0);
+    run(&mut tree);
+    assert_eq!(refreshes.get(), 1);
+    rest(&mut tree);
+    assert_eq!(offset_of(&tree, "list"), -60);
+    tree.post(tree.root_id, Erased::new(PullMsg::Grow));
+    run(&mut tree);
+    rest(&mut tree);
+    assert_eq!(offset_of(&tree, "list"), -60, "a rebuild still refreshing keeps it open");
+    tree.post(tree.root_id, Erased::new(PullMsg::Done));
+    run(&mut tree);
+    rest(&mut tree);
+    assert_eq!(offset_of(&tree, "list"), 0);
+    assert_eq!(refreshes.get(), 1);
+}
+
+#[test]
+fn a_short_pull_springs_back_without_refreshing() {
+    let refreshes = Box::leak(Box::new(core::cell::Cell::new(0)));
+    let mut tree = puller(Puller { pull: true, refreshes, ..Puller::new(100) });
+    pull_list(&mut tree, 80, 0);
+    run(&mut tree);
+    rest(&mut tree);
+    assert_eq!(refreshes.get(), 0);
+    assert_eq!(offset_of(&tree, "list"), 0);
+}
+
+#[test]
+fn an_empty_list_pulls_even_without_bounce() {
+    let refreshes = Box::leak(Box::new(core::cell::Cell::new(0)));
+    let mut tree = puller(Puller { pull: true, bounce: false, refreshes, ..Puller::new(0) });
+    pull_list(&mut tree, 300, 0);
+    run(&mut tree);
+    assert_eq!(refreshes.get(), 1);
+    rest(&mut tree);
+    assert_eq!(offset_of(&tree, "list"), -60);
+    pull_list(&mut tree, -300, 1000);
+    assert_eq!(offset_of(&tree, "list"), 0, "no stretch past the end without bounce");
+}
+
+#[test]
+fn refreshing_from_the_view_opens_at_the_start_only() {
+    let mut tree = puller(Puller { pull: true, ..Puller::new(100) });
+    tree.post(tree.root_id, Erased::new(PullMsg::Begin));
+    run(&mut tree);
+    rest(&mut tree);
+    assert_eq!(offset_of(&tree, "list"), -60);
+    tree.post(tree.root_id, Erased::new(PullMsg::Done));
+    run(&mut tree);
+    rest(&mut tree);
+    pull_list(&mut tree, -200, 1000);
+    rest(&mut tree);
+    let away = offset_of(&tree, "list");
+    tree.post(tree.root_id, Erased::new(PullMsg::Begin));
+    run(&mut tree);
+    assert!(!tree.animating());
+    assert_eq!(offset_of(&tree, "list"), away);
+}
+
+#[test]
+fn a_pull_is_lighter_up_to_its_height_and_retraces() {
+    let path = |pull: bool, ys: &[i16]| {
+        let mut tree = puller(Puller { pull, ..Puller::new(100) });
+        let r = rect_of(&tree, "list");
+        for (i, &y) in ys.iter().enumerate() {
+            tree.touch(&[(0, (r.x + 10, r.y + 200 + y))], i as u32 * 16);
+        }
+        -offset_of(&tree, "list")
+    };
+    assert!(path(true, &[0, 40]) > path(false, &[0, 40]));
+    let (near, far) = (path(true, &[0, 200]), path(true, &[0, 400]));
+    assert!(near > 60 && far - near < near, "{near} {far}");
+    assert_eq!(path(true, &[0, 300, 400, 100]), path(true, &[0, 100]));
 }

@@ -38,6 +38,14 @@ pub(crate) struct TextNode {
 }
 
 impl Node {
+    pub(crate) fn scroll_offset_mut(&mut self) -> Option<&mut i32> {
+        match &mut self.content {
+            NodeContent::Scroll(scroll) => Some(&mut scroll.offset),
+            NodeContent::List(list) => Some(&mut list.offset),
+            _ => None,
+        }
+    }
+
     pub(crate) fn scroll_offset(&self) -> Option<i32> {
         match &self.content {
             NodeContent::Scroll(scroll) => Some(scroll.offset),
@@ -65,6 +73,13 @@ impl TextNode {
         self.scroll.set(offset);
         offset
     }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct Pull {
+    pub(crate) height: i16,
+    pub(crate) refreshing: bool,
+    pub(crate) msg: Erased,
 }
 
 pub(crate) struct ScrollNode {
@@ -134,6 +149,8 @@ pub(crate) struct Node {
     pub(crate) tap: Option<Erased>,
     pub(crate) drag: Option<DragMap>,
     pub(crate) on_scroll: Option<ScrollMap>,
+    pub(crate) bounce: bool,
+    pub(crate) pull: Option<Pull>,
     pub(crate) gestures: Option<GestureMap>,
     pub(crate) size: Option<SizeMap>,
     pub(crate) input: Option<InputMap>,
@@ -184,6 +201,8 @@ impl Node {
             tap: None,
             drag: None,
             on_scroll: None,
+            bounce: true,
+            pull: None,
             gestures: None,
             size: None,
             input: None,

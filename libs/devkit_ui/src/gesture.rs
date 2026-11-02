@@ -202,12 +202,13 @@ impl Tree {
         self.flush(index);
         let Some(contact) = self.contacts.iter_mut().find(|c| c.track == first) else { return false };
         let from = contact.last;
-        let tap = contact.tap;
+        let (tap, scroller) = (contact.tap, contact.scroller);
         contact.tap = NONE;
         contact.scroller = NONE;
         contact.dragging = false;
         contact.passive = true;
         self.set_pressed(tap, false);
+        self.settle(scroller);
         if panning {
             let dx = from.0 - self.trackers[index].start.0;
             let dy = from.1 - self.trackers[index].start.1;

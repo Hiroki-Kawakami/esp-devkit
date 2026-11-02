@@ -52,9 +52,15 @@ app.run();
   keeps its state and rebuilds only when its props differ or it asks to.
 - Widgets are functions returning an `Element`; the primitives are boxes, text,
   images, `scroll` and `list`.
-- `on_scroll` reports a scroller's offset as it moves. `scroll_border(id)` shows
-  a divider under a node while the scroller named `id` is off its start, without
-  a message or a rebuild.
+- `on_scroll` reports a scroller's offset as it moves, below 0 or above the end
+  while it is stretched past one. `scroll_border(id)` shows a divider under a
+  node while the scroller named `id` is past its start, without a message or a
+  rebuild.
+- A scroller dragged past an end stretches and springs back, and a fling into
+  an end overshoots; `.bounce(false)` holds the ends, and content that fits
+  never bounces. `.pull(height, refreshing, msg)` sends `msg` when let go
+  `height` past the start and stays that far open until a view gives
+  `refreshing` false; the indicator is the app's, drawn from `on_scroll`.
 - `list` builds only the rows in view, through `Component::list_row`. Scrolling
   moves the rows without running `view`. A rebuild of the owner rebuilds them,
   unless `revision` is given and did not change.

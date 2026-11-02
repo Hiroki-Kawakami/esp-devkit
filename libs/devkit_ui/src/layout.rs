@@ -163,28 +163,17 @@ impl Tree {
                     let (_, h) = self.measure(child, content.w, UNBOUNDED);
                     self.arrange(child, Rect::new(0, 0, content.w, h));
                     if let NodeContent::Scroll(scroll) = &mut self.nodes[id as usize].content {
-                        let before = scroll.offset;
                         scroll.content = i32::from(h);
-                        scroll.offset = before.min((i32::from(h) - i32::from(content.h)).max(0));
-                        if scroll.offset != before {
-                            self.scroll_moved(id, before);
-                        }
                     }
+                    self.keep_in_range(id);
                 }
             }
             NodeContent::List(list) => {
                 let (row_height, rows) = (list.row_height, list.rows.clone());
-                let end = list.count as i32 * i32::from(row_height) - i32::from(content.h);
                 for (_, row) in rows {
                     self.arrange(row, Rect::new(0, 0, content.w, row_height));
                 }
-                if let NodeContent::List(list) = &mut self.nodes[id as usize].content {
-                    let before = list.offset;
-                    list.offset = before.min(end.max(0));
-                    if list.offset != before {
-                        self.scroll_moved(id, before);
-                    }
-                }
+                self.keep_in_range(id);
             }
             NodeContent::Text(_) => {
                 let _ = self.measure_text(id, content.w);

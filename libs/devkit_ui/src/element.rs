@@ -19,6 +19,7 @@ use crate::erased::Erased;
 use crate::style::{Align, Animated, Direction, Inset, Insets, Justify, Part, Prop, Role, ScreenStyle, Shadow, State, StateStyle, Style};
 use crate::canvas::CanvasId;
 use crate::external::ExternalSurface;
+use crate::node::Pull;
 use crate::nav::{DetailMap, SplitRole, SplitSpec, call_detail_map};
 use crate::gesture::{Gesture, GestureMap, Gestures, call_gesture_map};
 use crate::keyboard::{InputKind, Keyboard};
@@ -205,6 +206,8 @@ pub struct ElementData<'a, M: Copy> {
     pub(crate) tap: Option<Erased>,
     pub(crate) drag: Option<DragMap>,
     pub(crate) on_scroll: Option<ScrollMap>,
+    pub(crate) bounce: bool,
+    pub(crate) pull: Option<Pull>,
     pub(crate) gestures: Option<GestureMap>,
     pub(crate) size: Option<SizeMap>,
     pub(crate) input: Option<InputMap>,
@@ -219,7 +222,7 @@ pub struct ElementData<'a, M: Copy> {
 
 impl<'a, M: Copy> Element<'a, M> {
     fn new(bump: NonNull<Bump>, content: Content<'a>, children: &'a mut [Element<'a, M>]) -> Self {
-        let data = ElementData { bump, content, children: NonNull::from(children), style: Style::default(), when: &[], inherit: State::empty(), state_source: false, key: None, id: None, part: None, role: Role::None, tap: None, drag: None, on_scroll: None, gestures: None, size: None, input: None, focusable: false, keep_focus: false, keyboard: None, input_kind: InputKind::Text, repeat: false, state: State::empty(), _msg: PhantomData };
+        let data = ElementData { bump, content, children: NonNull::from(children), style: Style::default(), when: &[], inherit: State::empty(), state_source: false, key: None, id: None, part: None, role: Role::None, tap: None, drag: None, on_scroll: None, bounce: true, pull: None, gestures: None, size: None, input: None, focusable: false, keep_focus: false, keyboard: None, input_kind: InputKind::Text, repeat: false, state: State::empty(), _msg: PhantomData };
         Self { data: unsafe { NonNull::new_unchecked(bump.as_ref().alloc(data)) } }
     }
 
@@ -320,9 +323,26 @@ impl<'a, M: Copy> Element<'a, M> {
     }
 
     /// On a `scroll` or `list`: the offset, every time it moves. Comes as often
-    /// as frames do, so rebuild only for what changes the view.
+    /// as frames do, so rebuild only for what changes the view. Past the start
+    /// it is negative, past the end above the end.
     pub fn on_scroll(mut self, on_scroll: fn(i32) -> M) -> Self {
         self.on_scroll = Some(ScrollMap { function: on_scroll as *const (), call: call_scroll_map::<M> });
+        self
+    }
+
+    /// On a `scroll` or `list`: whether a drag stretches it past its ends and
+    /// it springs back. On by default; content that fits never bounces.
+    pub fn bounce(mut self, bounce: bool) -> Self {
+        self.bounce = bounce;
+        self
+    }
+
+    /// On a `scroll` or `list`: let go `height` past its start, it sends `msg`
+    /// and stays `height` open until a view gives `refreshing` false; a view
+    /// giving true at the start opens it. The start stretches even without
+    /// `bounce`.
+    pub fn pull(mut self, height: i16, refreshing: bool, msg: M) -> Self {
+        self.pull = Some(Pull { height, refreshing, msg: Erased::new(msg) });
         self
     }
 

@@ -29,7 +29,7 @@ use crate::external::ExternalSurface;
 use crate::keyboard::{InputKind, KeyboardMode, KeyboardPanel};
 use crate::erased::Erased;
 use crate::nav::{NavigatorNode, Overlay, Root, Saved};
-use crate::node::{CanvasNode, ListNode, NONE, Node, NodeContent, NodeId, ScrollNode, TextNode};
+use crate::node::{CanvasNode, ListNode, NONE, Node, NodeContent, NodeId, Pull, ScrollNode, TextNode};
 use crate::presenter::{ROW_GRID, Strips};
 use crate::style::{Dimension, Insets, Role, ScreenStyle, State, Style};
 use crate::text_buffer::TextInput;
@@ -45,6 +45,16 @@ const FLING_STALE_MS: u32 = 80;
 /// Share of the speed lost per millisecond.
 const FLING_DECAY: f32 = 0.0025;
 const MAX_FLING_STEP_MS: f32 = 32.0;
+/// How hard a drag past an end pulls, at the end itself.
+const STRETCH: f32 = 0.3;
+/// What a drag past an end approaches and never reaches, by the viewport.
+const STRETCH_LIMIT: f32 = 1.0 / 3.0;
+/// Of the resistance up to a pull's height; 1 is the same as without a pull.
+const PULL_RESISTANCE: f32 = 0.5;
+/// Per millisecond, of the critically damped spring back to an end.
+const SPRING_RATE: f32 = 0.015;
+const SETTLE_PX: f32 = 0.5;
+const SETTLE_SPEED: f32 = 0.01;
 const CARET_BLINK_MS: u32 = 500;
 const REPEAT_DELAY_MS: u32 = 400;
 const REPEAT_EVERY_MS: u32 = 60;
@@ -74,6 +84,8 @@ pub(crate) struct Contact {
     /// Nothing nearer to the finger takes a pan.
     pub(crate) pan: bool,
     pub(crate) dragging: bool,
+    /// Of `scroller`, before rounding.
+    position: f32,
     velocity: f32,
     held_ms: u32,
     repeated: bool,
@@ -88,6 +100,93 @@ pub(crate) struct Hit {
 }
 
 const NO_HIT: Hit = Hit { tap: NONE, scroller: NONE, drag: NONE, gesture: NONE };
+
+/// A scroller moving by itself: thrown, or springing back to `anchor` or to
+/// the end it is past.
+#[derive(Clone, Copy)]
+struct Fling {
+    id: NodeId,
+    position: f32,
+    velocity: f32,
+    anchor: Option<f32>,
+}
+
+#[derive(Clone, Copy)]
+struct Bounds {
+    start: f32,
+    end: f32,
+    limit: f32,
+    /// Past the start, how far the resistance is `PULL_RESISTANCE`.
+    pull: f32,
+    past_start: bool,
+    past_end: bool,
+}
+
+impl Bounds {
+    /// The end `position` is past, and whether it may be.
+    fn past(&self, position: f32) -> Option<(f32, bool)> {
+        if position < self.start {
+            Some((self.start, self.past_start))
+        } else if position > self.end {
+            Some((self.end, self.past_end))
+        } else {
+            None
+        }
+    }
+
+    fn drag(&self, position: f32, delta: f32) -> f32 {
+        let raw = if position < self.start {
+            self.start - self.unstretch(self.start - position, self.pull)
+        } else if position > self.end {
+            self.end + self.unstretch(position - self.end, 0.0)
+        } else {
+            position
+        } + delta;
+        if raw < self.start {
+            if self.past_start { self.start - self.stretch(self.start - raw, self.pull) } else { self.start }
+        } else if raw > self.end {
+            if self.past_end { self.end + self.stretch(raw - self.end, 0.0) } else { self.end }
+        } else {
+            raw
+        }
+    }
+
+    fn stretch(&self, raw: f32, pull: f32) -> f32 {
+        let knee = PULL_RESISTANCE * unstretch(pull, self.limit);
+        if raw < knee {
+            stretch(raw / PULL_RESISTANCE, self.limit)
+        } else {
+            stretch(raw - knee + unstretch(pull, self.limit), self.limit)
+        }
+    }
+
+    fn unstretch(&self, past: f32, pull: f32) -> f32 {
+        if past < pull {
+            PULL_RESISTANCE * unstretch(past, self.limit)
+        } else {
+            (PULL_RESISTANCE - 1.0) * unstretch(pull, self.limit) + unstretch(past, self.limit)
+        }
+    }
+}
+
+fn stretch(raw: f32, limit: f32) -> f32 {
+    limit * (1.0 - 1.0 / (raw * STRETCH / limit + 1.0))
+}
+
+fn unstretch(past: f32, limit: f32) -> f32 {
+    let past = past.min(limit * 0.99);
+    limit / STRETCH * past / (limit - past)
+}
+
+fn nearest(x: f32) -> i32 {
+    (x + if x < 0.0 { -0.5 } else { 0.5 }) as i32
+}
+
+// `core` has no `exp`, and a call into libm would bring in `double`
+// arithmetic. Close enough for x up to the 0.5 a capped step gives.
+fn exp_neg(x: f32) -> f32 {
+    1.0 / (1.0 + x * (1.0 + x * (0.5 + x * (1.0 / 6.0 + x / 24.0))))
+}
 
 /// Everything below the display: components, nodes, layout and gestures.
 pub(crate) struct Tree {
@@ -145,7 +244,7 @@ pub(crate) struct Tree {
     pub(crate) damage: Vec<Rect>,
     pub(crate) contacts: Vec<Contact>,
     pub(crate) trackers: Vec<Tracker>,
-    flings: Vec<(NodeId, f32)>,
+    flings: Vec<Fling>,
 }
 
 fn shadow_extent(style: &Style) -> i16 {
@@ -406,7 +505,7 @@ impl Tree {
                 contact.drag = NONE;
             }
         }
-        self.flings.retain(|f| f.0 != id);
+        self.flings.retain(|f| f.id != id);
         self.forget_gestures(id);
         self.animations.retain(|a| a.0 != id);
         self.forget_fades(id);
@@ -607,6 +706,7 @@ impl Tree {
         node.tap = element.tap;
         node.drag = element.drag;
         node.on_scroll = element.on_scroll;
+        node.bounce = element.bounce;
         node.gestures = element.gestures;
         node.size = element.size;
         node.input = element.input;
@@ -625,6 +725,7 @@ impl Tree {
             node.when.extend_from_slice(element.when);
         }
         self.restyle(id, element.style);
+        self.sync_pull(id, element.pull);
     }
 
     fn update_node<M: Copy>(&mut self, owner: u16, id: NodeId, element: &Element<'_, M>) {
@@ -1263,25 +1364,148 @@ impl Tree {
         self.contacts.iter().any(|c| self.nodes.get(c.tap as usize).is_some_and(|n| n.repeat)) || self.gesture_timed()
     }
 
-    fn scroll_by(&mut self, id: NodeId, delta: i32) -> bool {
-        let viewport = i32::from(self.nodes[id as usize].rect.h);
-        let (offset, max) = match &mut self.nodes[id as usize].content {
-            NodeContent::Scroll(s) => (&mut s.offset, s.content - viewport),
-            NodeContent::List(l) => (&mut l.offset, l.count as i32 * i32::from(l.row_height) - viewport),
-            _ => return false,
-        };
-        let next = (*offset + delta).clamp(0, max.max(0));
-        let before = *offset;
-        let moved = next != before;
-        *offset = next;
-        if moved {
-            let node = &mut self.nodes[id as usize];
+    fn set_offset(&mut self, id: NodeId, offset: i32) {
+        let node = &mut self.nodes[id as usize];
+        let Some(at) = node.scroll_offset_mut() else { return };
+        let before = core::mem::replace(at, offset);
+        if offset != before {
             node.scrolled = true;
             let screen = node.screen;
             self.damage.push(screen);
             self.scroll_moved(id, before);
         }
-        moved
+    }
+
+    fn bounds(&self, id: NodeId) -> Bounds {
+        let node = &self.nodes[id as usize];
+        let span = i32::from(node.rect.h);
+        let content = match &node.content {
+            NodeContent::Scroll(s) => s.content,
+            NodeContent::List(l) => l.count as i32 * i32::from(l.row_height),
+            _ => 0,
+        };
+        let end = (content - span).max(0);
+        let start = node.pull.filter(|p| p.refreshing).map_or(0, |p| -i32::from(p.height));
+        let pull = node.pull.filter(|p| !p.refreshing).map_or(0, |p| p.height);
+        let bounce = node.bounce && end > 0;
+        Bounds { start: start as f32, end: end as f32, limit: span.max(1) as f32 * STRETCH_LIMIT, pull: f32::from(pull), past_start: bounce || node.pull.is_some(), past_end: bounce }
+    }
+
+    fn moving(&self, id: NodeId) -> bool {
+        self.flings.iter().any(|f| f.id == id) || self.contacts.iter().any(|c| c.scroller == id)
+    }
+
+    /// Puts a scroller nothing moves back between its ends.
+    pub(crate) fn keep_in_range(&mut self, id: NodeId) {
+        if self.moving(id) {
+            return;
+        }
+        let bounds = self.bounds(id);
+        let Some(at) = self.nodes[id as usize].scroll_offset_mut() else { return };
+        let before = *at;
+        *at = (before as f32).clamp(bounds.start, bounds.end) as i32;
+        if *at != before {
+            self.scroll_moved(id, before);
+        }
+    }
+
+    /// Springs a scroller nothing moves back if it is past an end.
+    pub(crate) fn settle(&mut self, id: NodeId) {
+        if id == NONE || self.moving(id) {
+            return;
+        }
+        let Some(offset) = self.nodes[id as usize].scroll_offset() else { return };
+        let position = offset as f32;
+        if self.bounds(id).past(position).is_some() {
+            self.flings.push(Fling { id, position, velocity: 0.0, anchor: None });
+        }
+    }
+
+    fn let_go(&mut self, contact: &Contact, now_ms: u32) {
+        let id = contact.scroller;
+        let position = contact.position;
+        let thrown = contact.dragging && now_ms.wrapping_sub(contact.last_ms) < FLING_STALE_MS;
+        let mut velocity = if thrown { contact.velocity } else { 0.0 };
+        let node = &mut self.nodes[id as usize];
+        if let Some(pull) = &mut node.pull
+            && !pull.refreshing
+            && position <= -f32::from(pull.height)
+        {
+            pull.refreshing = true;
+            let (owner, msg) = (node.owner, pull.msg);
+            self.queue.push_back((owner, msg, None));
+        }
+        match self.bounds(id).past(position) {
+            Some((edge, _)) => {
+                if (position - edge) * velocity > 0.0 {
+                    velocity = 0.0;
+                }
+                self.flings.push(Fling { id, position, velocity, anchor: None });
+            }
+            None if velocity.abs() > FLING_MIN => self.flings.push(Fling { id, position, velocity, anchor: None }),
+            None => {}
+        }
+    }
+
+    /// Moves `fling` on by `dt_ms`; `None` once it rests.
+    fn advance(&mut self, fling: Fling, dt_ms: u32) -> Option<Fling> {
+        let Fling { id, mut position, mut velocity, anchor } = fling;
+        let bounds = self.bounds(id);
+        let dt = (dt_ms as f32).min(MAX_FLING_STEP_MS);
+        let rest = match anchor.or_else(|| bounds.past(position).map(|p| p.0)) {
+            Some(target) => {
+                let past = position - target;
+                let push = velocity + SPRING_RATE * past;
+                let fade = exp_neg(SPRING_RATE * dt);
+                let next = (past + push * dt) * fade;
+                velocity = (velocity - SPRING_RATE * push * dt) * fade;
+                position = target + next;
+                let crossed = anchor.is_none() && next * past < 0.0;
+                let rest = if crossed { velocity.abs() <= FLING_MIN } else { next.abs() < SETTLE_PX && velocity.abs() < SETTLE_SPEED };
+                if rest {
+                    position = target;
+                }
+                rest
+            }
+            None => {
+                position += velocity * dt_ms as f32;
+                velocity *= 1.0 - FLING_DECAY * dt;
+                match bounds.past(position) {
+                    Some((edge, false)) => {
+                        position = edge;
+                        true
+                    }
+                    Some(_) => false,
+                    None => velocity.abs() <= FLING_MIN,
+                }
+            }
+        };
+        self.set_offset(id, nearest(position));
+        (!rest).then_some(Fling { id, position, velocity, anchor })
+    }
+
+    fn sync_pull(&mut self, id: NodeId, pull: Option<Pull>) {
+        let node = &mut self.nodes[id as usize];
+        let was = node.pull.is_some_and(|p| p.refreshing);
+        node.pull = pull;
+        let Some(offset) = node.scroll_offset() else { return };
+        match pull {
+            Some(p) if p.refreshing && !was && offset <= 0 && offset > -i32::from(p.height) => {
+                if self.contacts.iter().any(|c| c.scroller == id) {
+                    return;
+                }
+                self.flings.retain(|f| f.id != id);
+                self.flings.push(Fling { id, position: offset as f32, velocity: 0.0, anchor: Some(-f32::from(p.height)) });
+            }
+            Some(Pull { refreshing: true, .. }) => {}
+            _ if was => {
+                for fling in self.flings.iter_mut().filter(|f| f.id == id) {
+                    fling.anchor = None;
+                }
+                self.settle(id);
+            }
+            _ => {}
+        }
     }
 
     /// Tells what follows `id`, whose offset has just left `before`.
@@ -1293,7 +1517,7 @@ impl Tree {
             let msg = unsafe { (map.call)(map.function, offset) };
             self.queue.push_back((owner, msg, None));
         }
-        let Some(name) = name.filter(|_| (before == 0) != (offset == 0)) else { return };
+        let Some(name) = name.filter(|_| (before > 0) != (offset > 0)) else { return };
         let mut bars = Vec::new();
         self.walk(self.root, &mut |_, node| {
             if node.owner == owner && node.style.scroll_border == Some(name) {
@@ -1416,6 +1640,7 @@ impl Tree {
             gesture,
             pan: hit.scroller == NONE && hit.drag == NONE,
             dragging: false,
+            position: 0.0,
             velocity: 0.0,
             held_ms: 0,
             repeated: false,
@@ -1432,12 +1657,13 @@ impl Tree {
         let passive = held(hit.scroller, |c| c.scroller) || held(hit.tap, |c| c.tap) || held(hit.drag, |c| c.drag);
         let hit = if passive { NO_HIT } else { hit };
         let gesture = if passive { NONE } else { gesture };
-        self.flings.retain(|f| f.0 != hit.scroller);
+        self.flings.retain(|f| f.id != hit.scroller);
+        let position = self.nodes.get(hit.scroller as usize).and_then(|n| n.scroll_offset()).unwrap_or(0) as f32;
         self.set_pressed(hit.tap, true);
         self.set_pressed(hit.drag, true);
         self.send_drag(hit.drag, p, false);
         self.gesture_pressed(gesture, track, p, now_ms);
-        self.contacts.push(Contact { passive, tap: hit.tap, scroller: hit.scroller, drag: hit.drag, gesture, ..contact });
+        self.contacts.push(Contact { passive, tap: hit.tap, scroller: hit.scroller, drag: hit.drag, gesture, position, ..contact });
     }
 
     fn contact_moved(&mut self, index: usize, p: (i16, i16), now_ms: u32) {
@@ -1454,7 +1680,8 @@ impl Tree {
         if !contact.dragging {
             contact.last_ms = now_ms;
         } else if delta != 0 && contact.scroller != NONE {
-            self.scroll_by(contact.scroller, delta);
+            contact.position = self.bounds(contact.scroller).drag(contact.position, delta as f32);
+            self.set_offset(contact.scroller, nearest(contact.position));
             let dt = now_ms.wrapping_sub(contact.last_ms).max(1) as f32;
             let speed = delta as f32 / dt;
             let weight = if starting { 1.0 } else { dt / (dt + VELOCITY_TAU_MS) };
@@ -1471,12 +1698,10 @@ impl Tree {
         self.set_pressed(contact.drag, false);
         self.send_drag(contact.drag, contact.last, true);
         let consumed = self.gesture_released(&contact, now_ms);
-        if contact.dragging {
-            let rest = now_ms.wrapping_sub(contact.last_ms);
-            if rest < FLING_STALE_MS && contact.velocity.abs() > FLING_MIN && contact.scroller != NONE {
-                self.flings.push((contact.scroller, contact.velocity));
-            }
-        } else if consumed {
+        if contact.scroller != NONE {
+            self.let_go(&contact, now_ms);
+        }
+        if contact.dragging || consumed {
         } else if contact.tap != NONE {
             self.finish_tap(contact.tap, contact.last, contact.repeated);
         } else if contact.drag == NONE && !contact.passive {
@@ -1561,17 +1786,16 @@ impl Tree {
         self.tick_repeat(dt_ms);
         self.tick_gestures(dt_ms);
         self.tick_caret(dt_ms);
-        let dt = (dt_ms as f32).min(MAX_FLING_STEP_MS);
         let mut i = 0;
-        while let Some(&(id, velocity)) = self.flings.get(i) {
-            let step = (velocity * dt_ms as f32) as i32;
-            let at_end = !self.scroll_by(id, step) && step != 0;
-            let velocity = velocity * (1.0 - FLING_DECAY * dt);
-            if at_end || velocity.abs() <= FLING_MIN {
-                self.flings.swap_remove(i);
-            } else {
-                self.flings[i].1 = velocity;
-                i += 1;
+        while let Some(&fling) = self.flings.get(i) {
+            match self.advance(fling, dt_ms) {
+                Some(fling) => {
+                    self.flings[i] = fling;
+                    i += 1;
+                }
+                None => {
+                    self.flings.swap_remove(i);
+                }
             }
         }
     }
