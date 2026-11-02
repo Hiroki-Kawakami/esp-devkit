@@ -60,8 +60,9 @@ pub struct Config {
     /// The presenter's own lists. Memory that may stay on one heap for the whole
     /// UI; the default fits boards with PSRAM.
     pub data_caps: Caps,
-    /// `None` is internal RAM.
-    pub lane_stack_caps: Option<Caps>,
+    /// Never memory that can be RTC RAM, as `INTERNAL` alone can: lanes run PIE
+    /// code, whose saved registers RTC RAM cannot take. `SIMD` alone avoids it.
+    pub lane_stack_caps: Caps,
 }
 
 impl Default for Config {
@@ -75,7 +76,7 @@ impl Default for Config {
             strip_bytes: 4 * 64 * 1024,
             strip_caps: Caps::DMA | Caps::INTERNAL,
             data_caps: Caps::SPIRAM,
-            lane_stack_caps: None,
+            lane_stack_caps: Caps::SIMD,
         }
     }
 }
@@ -329,14 +330,12 @@ impl Presenter {
                 clips: ClipStore::new_in(Caps::INTERNAL),
             };
             let shared = shared.clone();
-            let mut builder = thread::Builder::new()
+            let builder = thread::Builder::new()
                 .name("ui_lane")
                 .stack_size(LANE_STACK)
                 .priority(config.priority)
-                .core(Some(id as u32));
-            if let Some(caps) = config.lane_stack_caps {
-                builder = builder.stack_caps(caps);
-            }
+                .core(Some(id as u32))
+                .stack_caps(config.lane_stack_caps);
             builder.spawn(move || lane.run(shared))?;
         }
         let (_, buffer_bytes) = strips.buffers(config.lanes);
@@ -619,6 +618,11 @@ impl Presenter {
             return Err(Error::TIMEOUT);
         }
         Ok(Overlay { _memory: memory, pixels: turned, rect })
+    }
+
+    /// The framebuffer with the last frame.
+    pub(crate) fn shown(&self) -> Option<FrameBuffer> {
+        self.display.frame_buffer(self.latest() % self.frame_buffers())
     }
 
     /// Blocks until the last rendered frame is on the panel.

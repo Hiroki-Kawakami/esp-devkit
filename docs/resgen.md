@@ -341,7 +341,8 @@ let config = AppConfig::new(&resources::TOUCH);
   What the entry sets replaces the base key by key, inside styles too.
 - `vars` are names of the theme's own, for any value, and never reach the
   firmware. One that nothing uses gives a warning.
-- `motion` has the fields of `Motion`.
+- `motion` has the fields of `Motion`: `transition`, and a duration for each
+  kind of transition. What it leaves out keeps `Motion::DEFAULT`.
 - `keyboards` has the keyboards of the theme, described below.
 - Values in `vars`, `widgets` and `motion` are:
 

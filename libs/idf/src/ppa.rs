@@ -56,12 +56,19 @@ impl Rotation {
     }
 }
 
-/// A whole `src_width` x `src_height` picture copied to (`dst_x`, `dst_y`).
-/// The destination's address and size must be cache-line aligned.
+/// A `block_width` x `block_height` block at (`src_x`, `src_y`) of a
+/// `src_width` x `src_height` picture, scaled, turned and copied to
+/// (`dst_x`, `dst_y`). The destination's address and size must be cache-line
+/// aligned. The engine scales in steps of 1/16.
 pub struct SrmOp {
     pub src: *const u8,
     pub src_width: u32,
     pub src_height: u32,
+    pub src_x: u32,
+    pub src_y: u32,
+    pub block_width: u32,
+    pub block_height: u32,
+    pub src_format: ColorMode,
     pub dst: *mut u8,
     pub dst_size: u32,
     pub dst_width: u32,
@@ -70,6 +77,7 @@ pub struct SrmOp {
     pub dst_y: u32,
     pub format: ColorMode,
     pub rotation: Rotation,
+    pub scale: f32,
 }
 
 pub struct Srm {
@@ -116,9 +124,11 @@ impl Srm {
         cfg.in_.buffer = op.src.cast();
         cfg.in_.pic_w = op.src_width;
         cfg.in_.pic_h = op.src_height;
-        cfg.in_.block_w = op.src_width;
-        cfg.in_.block_h = op.src_height;
-        cfg.in_.__bindgen_anon_1.srm_cm = op.format.raw();
+        cfg.in_.block_w = op.block_width;
+        cfg.in_.block_h = op.block_height;
+        cfg.in_.block_offset_x = op.src_x;
+        cfg.in_.block_offset_y = op.src_y;
+        cfg.in_.__bindgen_anon_1.srm_cm = op.src_format.raw();
         cfg.out.buffer = op.dst.cast();
         cfg.out.buffer_size = op.dst_size;
         cfg.out.pic_w = op.dst_width;
@@ -127,8 +137,8 @@ impl Srm {
         cfg.out.block_offset_y = op.dst_y;
         cfg.out.__bindgen_anon_1.srm_cm = op.format.raw();
         cfg.rotation_angle = op.rotation.raw();
-        cfg.scale_x = 1.0;
-        cfg.scale_y = 1.0;
+        cfg.scale_x = op.scale;
+        cfg.scale_y = op.scale;
         cfg.mode = sys::ppa_trans_mode_t_PPA_TRANS_MODE_NON_BLOCKING;
         cfg.user_data = self.done.raw().cast();
         Error::check(unsafe { sys::ppa_do_scale_rotate_mirror(self.client, &cfg) })?;
@@ -260,6 +270,11 @@ mod tests {
             src: src.as_ptr().cast(),
             src_width: 2,
             src_height: 1,
+            src_x: 0,
+            src_y: 0,
+            block_width: 2,
+            block_height: 1,
+            src_format: ColorMode::Rgb565,
             dst: dst.as_mut_ptr().cast(),
             dst_size: 4,
             dst_width: 1,
@@ -268,6 +283,7 @@ mod tests {
             dst_y: 0,
             format: ColorMode::Rgb565,
             rotation: Rotation::R90,
+            scale: 1.0,
         };
         unsafe { srm.start(&op) }.unwrap();
         assert_eq!(srm.pending(), 1);

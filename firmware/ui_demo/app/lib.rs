@@ -177,7 +177,7 @@ fn run_demo(board: &Board, display: &'static Display, settings: &Settings) {
         config.presenter.data_caps = Caps::INTERNAL;
     }
     if settings.stack_psram {
-        config.presenter.lane_stack_caps = Some(Caps::SPIRAM);
+        config.presenter.lane_stack_caps = Caps::SPIRAM;
     }
     config.presenter.strip_bytes = VIDEO_STRIP_BYTES;
     config.presenter.strip_caps = Caps::SPIRAM;

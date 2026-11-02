@@ -638,7 +638,6 @@
     }
   },
   "motion": {
-    "transition": "Transition.Slide",
-    "duration_ms": 200
+    "transition": "Transition.Slide"
   }
 }

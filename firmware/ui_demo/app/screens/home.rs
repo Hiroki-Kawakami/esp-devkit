@@ -12,11 +12,19 @@ use super::canvas::CanvasDemo;
 use super::files::FileManager;
 use super::gestures::GestureDemo;
 use super::settings::Settings;
+use super::transitions::TransitionDemo;
 use super::video::VideoDemo;
 
 /// The root screen: pages fill the screen when upright, and sit next to the
 /// storage list when wide.
-const DEMOS: [(&str, &str); 5] = [("Files", "open-files"), ("Settings", "open-settings"), ("Gestures", "open-gestures"), ("Canvas", "open-canvas"), ("Video", "open-video")];
+const DEMOS: [(&str, &str); 6] = [
+    ("Files", "open-files"),
+    ("Settings", "open-settings"),
+    ("Gestures", "open-gestures"),
+    ("Canvas", "open-canvas"),
+    ("Video", "open-video"),
+    ("Transitions", "open-transitions"),
+];
 
 /// The way into each demo.
 pub struct Home;
@@ -31,7 +39,8 @@ impl Component for Home {
             1 => nav.push(Settings::new()),
             2 => nav.push(GestureDemo::new()),
             3 => nav.push(CanvasDemo::new()),
-            _ => nav.push(VideoDemo::new()),
+            4 => nav.push(VideoDemo::new()),
+            _ => nav.push(TransitionDemo::new()),
         }
     }
 

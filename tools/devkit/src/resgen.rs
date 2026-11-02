@@ -778,9 +778,6 @@ fn merge_themes(definition: &mut Definition, base: &Path, fonts_dir: &Path) -> R
             }
             keyboards.insert(keyboard.clone(), resolver.keyboard(&format!("keyboards.{keyboard}"), value, &keys)?);
         }
-        if merged.motion.is_empty() {
-            return Err(format!("theme.{name}.motion: missing"));
-        }
         let mut motion = BTreeMap::new();
         for (field, value) in &merged.motion {
             motion.insert(field.clone(), resolver.value(&format!("motion.{field}"), value)?);
@@ -960,7 +957,7 @@ fn theme_code(context: &Context, name: &str, theme: &Theme) -> String {
         .map(|icon| format!("{icon}: {}", icon_code(context, theme, icon)))
         .collect();
     let dark = theme.dark.as_ref().map_or("None".to_string(), |d| format!("Some({})", palette_code(d)));
-    let motion: Vec<String> = theme.motion.iter().map(|(field, token)| format!("{field}: {}", token.code(&symbol))).collect();
+    let motion: String = theme.motion.iter().map(|(field, token)| format!("{field}: {}, ", token.code(&symbol))).collect();
     text += &format!(
         "pub static {symbol}: devkit_ui::Theme = devkit_ui::Theme {{\n    \
          light: {},\n    dark: {dark},\n    \
@@ -968,7 +965,7 @@ fn theme_code(context: &Context, name: &str, theme: &Theme) -> String {
          icons: devkit_ui::Icons {{ {} }},\n    \
          widgets: devkit_ui::Widgets {{ {} }},\n    \
          keyboards: devkit_ui::Keyboards {{ text: &{}, number: &{} }},\n    \
-         motion: devkit_ui::Motion {{ {} }},\n}};\n\n",
+         motion: devkit_ui::Motion {{ {}..devkit_ui::Motion::DEFAULT }},\n}};\n\n",
         palette_code(&theme.light),
         chain_symbol(&symbol, "title"),
         chain_symbol(&symbol, "body"),
@@ -977,7 +974,7 @@ fn theme_code(context: &Context, name: &str, theme: &Theme) -> String {
         widgets.join(", "),
         keyboard_symbol(&symbol, "text"),
         keyboard_symbol(&symbol, "number"),
-        motion.join(", "),
+        motion,
     );
     text
 }

@@ -21,7 +21,7 @@ use crate::node::NodeId;
 use crate::presenter::Strips;
 use crate::style::ScreenStyle;
 use crate::text_buffer::TextInput;
-use crate::theme::Theme;
+use crate::theme::{Theme, Transition};
 use crate::tree::Tree;
 
 /// Which `Ui::list` of a component a row belongs to.
@@ -179,13 +179,13 @@ impl<C: Component> Cx<C> {
 
     /// The nearest navigator.
     pub fn nav(&mut self) -> Nav<'_> {
-        Nav { requests: &mut self.requests, target: None }
+        Nav { requests: &mut self.requests, target: None, transition: None }
     }
 
     /// The navigator of marker type `K`: the nearest above this component, then
     /// inside it, then anywhere.
     pub fn nav_of<K: 'static>(&mut self) -> Nav<'_> {
-        Nav { requests: &mut self.requests, target: Some(TypeId::of::<K>()) }
+        Nav { requests: &mut self.requests, target: Some(TypeId::of::<K>()), transition: None }
     }
 
     /// Where the node tapped for this message is on the screen, through `send`
@@ -251,11 +251,20 @@ impl<C: Component> Cx<C> {
 pub struct Nav<'a> {
     requests: &'a mut Requests,
     target: Option<TypeId>,
+    transition: Option<Transition>,
 }
 
 impl Nav<'_> {
     fn add(&mut self, action: Action) {
-        self.requests.nav.push(NavOp { target: self.target, action });
+        self.requests.nav.push(NavOp { target: self.target, action, transition: self.transition });
+    }
+
+    /// For the moves after this, over the navigator's default. A `pop` without
+    /// one plays what the screen came with backwards. `replace`, and `show`
+    /// beside a split main screen, change at once unless asked.
+    pub fn transition(mut self, transition: Transition) -> Self {
+        self.transition = Some(transition);
+        self
     }
 
     pub fn push<S: Screen>(&mut self, screen: S) {

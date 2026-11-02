@@ -143,6 +143,11 @@ impl Blitter {
             src,
             src_width: u32::from(area.width),
             src_height: u32::from(area.height),
+            src_x: 0,
+            src_y: 0,
+            block_width: u32::from(area.width),
+            block_height: u32::from(area.height),
+            src_format: format,
             dst: fb.as_ptr(),
             dst_size: fb.len() as u32,
             dst_width: u32::from(size.width),
@@ -151,6 +156,51 @@ impl Blitter {
             dst_y,
             format,
             rotation: rotation.into(),
+            scale: 1.0,
+        };
+        unsafe { self.srm.start(&op) }
+    }
+
+    /// Queues `area` of the logical picture in `fb`, as the panel shows it,
+    /// scaled by `scale` into `dst` at `at`. `scale` goes in steps of 1/16.
+    pub unsafe fn start_from(&mut self, fb: &FrameBuffer, rotation: Rotation, area: Rect, scale: f32, dst: Picture, at: (u16, u16)) -> Result<()> {
+        let size = fb.size();
+        let (x, y) = panel_origin(size, rotation, area).ok_or(Error::INVALID_ARG)?;
+        let (width, height) = match rotation {
+            Rotation::R0 | Rotation::R180 => (u32::from(area.width), u32::from(area.height)),
+            Rotation::R90 | Rotation::R270 => (u32::from(area.height), u32::from(area.width)),
+        };
+        let back = match rotation {
+            Rotation::R0 => Rotation::R0,
+            Rotation::R90 => Rotation::R270,
+            Rotation::R180 => Rotation::R180,
+            Rotation::R270 => Rotation::R90,
+        };
+        let source = Picture { ptr: fb.as_ptr(), size, format: fb.format(), len: fb.len() };
+        unsafe { self.start_scaled(source, Rect { x: x as u16, y: y as u16, width: width as u16, height: height as u16 }, back, scale, dst, at) }
+    }
+
+    /// Queues `block` of `src`, scaled by `scale` and turned as `rotation`
+    /// says, into `dst` at `at`. `scale` goes in steps of 1/16.
+    pub unsafe fn start_scaled(&mut self, src: Picture, block: Rect, rotation: Rotation, scale: f32, dst: Picture, at: (u16, u16)) -> Result<()> {
+        let op = SrmOp {
+            src: src.ptr,
+            src_width: u32::from(src.size.width),
+            src_height: u32::from(src.size.height),
+            src_x: u32::from(block.x),
+            src_y: u32::from(block.y),
+            block_width: u32::from(block.width),
+            block_height: u32::from(block.height),
+            src_format: color_mode(src.format)?,
+            dst: dst.ptr,
+            dst_size: dst.len as u32,
+            dst_width: u32::from(dst.size.width),
+            dst_height: u32::from(dst.size.height),
+            dst_x: u32::from(at.0),
+            dst_y: u32::from(at.1),
+            format: color_mode(dst.format)?,
+            rotation: rotation.into(),
+            scale,
         };
         unsafe { self.srm.start(&op) }
     }
@@ -167,6 +217,11 @@ impl Blitter {
             src,
             src_width: u32::from(width),
             src_height: u32::from(height),
+            src_x: 0,
+            src_y: 0,
+            block_width: u32::from(width),
+            block_height: u32::from(height),
+            src_format: ppa::ColorMode::Argb8888,
             dst,
             dst_size: dst_width * dst_height * 4,
             dst_width,
@@ -175,6 +230,7 @@ impl Blitter {
             dst_y: 0,
             format: ppa::ColorMode::Argb8888,
             rotation: rotation.into(),
+            scale: 1.0,
         };
         unsafe { self.srm.start(&op) }
     }
@@ -186,6 +242,25 @@ impl Blitter {
     /// `false` on timeout, with the copy still pending.
     pub fn wait_timeout(&mut self, timeout: Duration) -> bool {
         self.srm.wait_timeout(timeout)
+    }
+}
+
+/// Pixels the 2D engine reads or writes: `len` bytes from `ptr`, holding a
+/// picture of `size`. A destination is cache-line aligned in address and `len`.
+#[derive(Clone, Copy)]
+pub struct Picture {
+    pub ptr: *mut u8,
+    pub size: Size,
+    pub format: PixelFormat,
+    pub len: usize,
+}
+
+#[cfg(any(not(target_os = "none"), CONFIG_SOC_PPA_SUPPORTED))]
+fn color_mode(format: PixelFormat) -> Result<ppa::ColorMode> {
+    match format {
+        PixelFormat::Rgb565 => Ok(ppa::ColorMode::Rgb565),
+        PixelFormat::Rgb888 => Ok(ppa::ColorMode::Rgb888),
+        PixelFormat::L8 => Err(Error::NOT_SUPPORTED),
     }
 }
 

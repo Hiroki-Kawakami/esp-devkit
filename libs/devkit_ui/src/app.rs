@@ -27,7 +27,7 @@ use crate::erased::Erased;
 use crate::external::{ExternalSurface, Policy};
 use crate::keyboard::KeyboardMode;
 use crate::plugin::{Plugin, PluginContext, PluginInit, Store, UiEvent};
-use crate::paint::Effects;
+use crate::paint::{Effects, Engine};
 use crate::presenter::{Config, Presenter, ROW_GRID, Strips};
 use crate::style::Insets;
 use crate::text_buffer::TextInput;
@@ -330,6 +330,8 @@ pub struct AppState<C: Screen> {
     rotated: bool,
     plugins: Vec<Box<dyn Plugin>>,
     context: PluginContext,
+    zprobe: (u32, u32, u32, u32, u32, Instant, u32, u32),
+    zstats: crate::presenter::Stats,
     _root: PhantomData<fn(C)>,
 }
 
@@ -429,6 +431,8 @@ impl<C: Screen> AppState<C> {
             rotated: false,
             plugins: config.plugins,
             context,
+            zprobe: (0, 0, 0, 0, 0, Instant::now(), 0, 0),
+            zstats: Default::default(),
             _root: PhantomData,
         };
         let _ = app.tree.link.set(app.shared.clone());
@@ -529,7 +533,7 @@ impl<C: Screen> AppState<C> {
     }
 
     fn follow_rotation(&mut self) {
-        if self.tree.sliding() {
+        if self.tree.transiting() {
             return;
         }
         let size = self.shared.display.size();
@@ -607,6 +611,30 @@ impl<C: Screen> AppState<C> {
         self.tree.update();
         self.follow_rotation();
         self.apply_render_mode();
+        let zt = Instant::now();
+        if self.tree.zoom_pending() {
+            match self.shared.display.blitter(2) {
+                Ok(mut blitter) => {
+                    let shown = self.presenter.shown().map(|fb| (fb, self.rotation));
+                    let mut engine = Engine { blitter: &mut blitter, shown };
+                    self.tree.capture_zooms(&mut self.effects, &mut self.cache, Some(&mut engine));
+                }
+                Err(err) => {
+                    error!(TAG, "blitter: {err}");
+                    self.tree.capture_zooms(&mut self.effects, &mut self.cache, None);
+                }
+            }
+        }
+        let zooming = self.tree.zooming();
+        if zooming && self.zprobe.0 == 0 && self.zprobe.4 == 0 {
+            self.zprobe.4 = zt.elapsed().as_micros() as u32;
+            self.zprobe.5 = Instant::now();
+        }
+        if !zooming && self.zprobe.0 > 0 {
+            let z = self.zprobe;
+            idf::log::info!(TAG, "ZPROBE {:?} frames={} capture={}us wall={}ms render avg={} max={} raster/lane avg={} draw avg={}", self.shared.display.pixel_format(), z.0, z.4, z.5.elapsed().as_millis(), z.1 / z.0, z.2, z.3 / z.0 / self.zprobe.7.max(1), z.6 / z.0);
+            self.zprobe = (0, 0, 0, 0, 0, Instant::now(), 0, 0);
+        }
         let mut update = (0, 0);
         let updated = note(&mut update, start);
         let damage = self.tree.take_damage();
@@ -675,7 +703,11 @@ impl<C: Screen> AppState<C> {
             }
         }
         let painted = note(&mut self.timing.paint, updated);
-        match self.presenter.render(&list, &mut self.cache) {
+        let rendered = self.presenter.render(&list, &mut self.cache);
+        if let Ok(stats) = &rendered {
+            self.zstats = *stats;
+        }
+        match rendered {
             Ok(stats) if stats.glyphs_missing > 0 => {
                 error!(TAG, "{} glyphs did not fit the cache", stats.glyphs_missing);
             }
@@ -683,6 +715,15 @@ impl<C: Screen> AppState<C> {
             Err(err) => error!(TAG, "render: {err}"),
         }
         note(&mut self.timing.render, painted);
+        if zooming {
+            let us = self.timing.render.0;
+            self.zprobe.0 += 1;
+            self.zprobe.1 += us;
+            self.zprobe.2 = self.zprobe.2.max(us);
+            self.zprobe.3 += self.zstats.raster_us;
+            self.zprobe.6 += self.zstats.draw_us;
+            self.zprobe.7 = 2;
+        }
         if let Some((surface, _)) = &shown {
             let changed = overlap != self.overlay || overlap.is_some_and(|o| damage.iter().any(|d| d.intersects(&o)));
             if changed {

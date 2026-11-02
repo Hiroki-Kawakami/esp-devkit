@@ -23,7 +23,7 @@ use crate::nav::{DetailMap, SplitRole, SplitSpec, call_detail_map};
 use crate::gesture::{Gesture, GestureMap, Gestures, call_gesture_map};
 use crate::keyboard::{InputKind, Keyboard};
 use crate::text_buffer::TextInput;
-use crate::theme::{ColorMode, ColorRole, Icon, Palette, Theme};
+use crate::theme::{ColorMode, ColorRole, Icon, Palette, Theme, Transition};
 
 /// Creates or updates a child component during reconciliation.
 pub(crate) trait ChildSpec {
@@ -75,7 +75,7 @@ pub(crate) enum Content<'a> {
     Canvas(CanvasId),
     External(&'a ExternalSurface),
     Child(&'a dyn ChildSpec),
-    Navigator { key: TypeId, initial: Option<&'a dyn ChildSpec>, split: SplitSpec },
+    Navigator { key: TypeId, initial: Option<&'a dyn ChildSpec>, split: SplitSpec, transition: Option<Transition> },
 }
 
 #[derive(Clone, Copy)]
@@ -361,6 +361,15 @@ impl<'a, M: Copy> Element<'a, M> {
     pub fn split(mut self, on: bool, width: i16) -> Self {
         if let Content::Navigator { split, .. } = &mut self.content {
             split.width = on.then_some(width);
+        }
+        self
+    }
+
+    /// Of a navigator: how its screens change unless a move asks otherwise,
+    /// over the theme's default.
+    pub fn transition(mut self, transition: Transition) -> Self {
+        if let Content::Navigator { transition: own, .. } = &mut self.content {
+            *own = Some(transition);
         }
         self
     }
@@ -822,7 +831,7 @@ impl<M: Copy> Ui<M> {
     pub fn navigator<'a, K: 'static, S: Child + Screen>(&'a self, props: S::Props) -> Element<'a, M> {
         let spec = self.bump().alloc(ScreenElement::<S> { props });
         let spec: &'a ScreenElement<S> = unsafe { &*spec };
-        Element::new(self.bump, Content::Navigator { key: TypeId::of::<K>(), initial: Some(spec), split: SplitSpec::default() }, &mut []).clip()
+        Element::new(self.bump, Content::Navigator { key: TypeId::of::<K>(), initial: Some(spec), split: SplitSpec::default(), transition: None }, &mut []).clip()
     }
 
     /// A child component, kept across rebuilds by position or key.

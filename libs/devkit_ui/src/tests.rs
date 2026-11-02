@@ -172,7 +172,7 @@ fn theme() -> &'static Theme {
         icons,
         widgets: WIDGETS,
         keyboards: Keyboards { text: &TEXT_KEYS, number: &NUMBER_KEYS },
-        motion: Motion { transition: Transition::Slide, duration_ms: 200 },
+        motion: Motion::DEFAULT,
     }))
 }
 
@@ -2710,7 +2710,7 @@ fn a_split_shows_both_ends_of_one_stack() {
     assert!(tree.find("depth0").is_none(), "the right stays empty");
 
     tap(&mut tree, "listing");
-    assert!(!tree.sliding(), "showing beside the main screen does not slide");
+    assert!(!tree.transiting(), "showing beside the main screen does not slide");
     settle(&mut tree);
     assert_eq!(text_of(&tree, "listing"), "main-open");
     assert_eq!(rect_of(&tree, "depth0").x, 100);
@@ -2802,4 +2802,199 @@ fn strips_give_back_the_lent_memory() {
     drop(lease);
     assert!(SRAM.take().is_some());
     assert!(Strips::allocate(128, Caps::INTERNAL).unwrap().into_inner::<Lease<'static, Sram>>().is_none());
+}
+
+thread_local! {
+    static MOVER: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
+}
+
+const MOVER_NAMES: [&str; 4] = ["m0", "m1", "m2", "m3"];
+
+#[derive(Clone, Copy)]
+enum MoveMsg {
+    Push(Option<Transition>),
+    Pop(Option<Transition>),
+    Replace(Option<Transition>),
+    Modal(Option<Transition>),
+}
+
+fn asking(nav: Nav<'_>, transition: Option<Transition>) -> Nav<'_> {
+    match transition {
+        Some(transition) => nav.transition(transition),
+        None => nav,
+    }
+}
+
+struct Mover(usize);
+
+impl Component for Mover {
+    type Msg = MoveMsg;
+
+    fn update(&mut self, msg: MoveMsg, cx: &mut Cx<Self>) {
+        let next = Mover(self.0 + 1);
+        match msg {
+            MoveMsg::Push(t) => asking(cx.nav(), t).push(next),
+            MoveMsg::Pop(t) => asking(cx.nav(), t).pop(),
+            MoveMsg::Replace(t) => asking(cx.nav(), t).replace(next),
+            MoveMsg::Modal(t) => asking(cx.nav_of::<Overlay>(), t).push(next),
+        }
+    }
+
+    fn view<'a>(&'a self, ui: &'a Ui<MoveMsg>) -> Element<'a, MoveMsg> {
+        let color = if self.0 % 2 == 0 { RED } else { WHITE };
+        ui.column([]).grow(1).background(ColorRole::Fixed(color)).id(MOVER_NAMES[self.0])
+    }
+}
+
+impl Child for Mover {
+    fn create(_: &()) -> Self {
+        Self(0)
+    }
+
+    fn set_props(&mut self, _: &()) {}
+}
+
+impl Screen for Mover {
+    fn on_appear(&mut self, cx: &mut Cx<Self>) {
+        MOVER.with(|m| m.set(cx.handle().id()));
+    }
+}
+
+fn send_shown(tree: &mut Tree, msg: MoveMsg) {
+    tree.post(MOVER.with(|m| m.get()), Erased::new(msg));
+    tree.update();
+}
+
+#[test]
+fn a_move_takes_the_asked_transition_and_pop_plays_it_backwards() {
+    let mut tree = Tree::new(Mover(0), SCREEN, Caps::INTERNAL, theme());
+    settle(&mut tree);
+    send_shown(&mut tree, MoveMsg::Push(Some(Transition::SlideUp)));
+    tree.tick(16);
+    tree.update();
+    let (entering, leaving) = (rect_of(&tree, "m1"), rect_of(&tree, "m0"));
+    assert!(entering.x == 0 && entering.y > 0, "comes from below: {entering:?}");
+    assert_eq!((leaving.x, leaving.y), (0, 0), "the covered screen stays");
+
+    settle(&mut tree);
+    send_shown(&mut tree, MoveMsg::Pop(None));
+    tree.tick(16);
+    tree.update();
+    let (going, back) = (rect_of(&tree, "m1"), rect_of(&tree, "m0"));
+    assert!(going.x == 0 && going.y > 0, "goes down again: {going:?}");
+    assert_eq!((back.x, back.y), (0, 0));
+    settle(&mut tree);
+    assert!(tree.find("m1").is_none());
+
+    send_shown(&mut tree, MoveMsg::Push(None));
+    tree.tick(16);
+    tree.update();
+    assert!(rect_of(&tree, "m1").x > 0, "without one, the theme's slide");
+}
+
+struct Inner;
+
+struct Holder;
+
+impl Component for Holder {
+    type Msg = ();
+
+    fn update(&mut self, _: (), _: &mut Cx<Self>) {}
+
+    fn view<'a>(&'a self, ui: &'a Ui<()>) -> Element<'a, ()> {
+        ui.navigator::<Inner, Mover>(()).transition(Transition::None).grow(1)
+    }
+}
+
+impl Screen for Holder {}
+
+#[test]
+fn a_navigator_default_and_replace_change_at_once_unless_asked() {
+    let mut tree = Tree::new(Holder, SCREEN, Caps::INTERNAL, theme());
+    settle(&mut tree);
+    send_shown(&mut tree, MoveMsg::Push(None));
+    assert!(!tree.transiting(), "the navigator's default");
+    assert!(tree.find("m0").is_none());
+
+    send_shown(&mut tree, MoveMsg::Push(Some(Transition::Slide)));
+    assert!(tree.transiting(), "asked over the default");
+    settle(&mut tree);
+
+    send_shown(&mut tree, MoveMsg::Replace(None));
+    assert!(!tree.transiting(), "replace changes at once");
+    assert!(tree.find("m3").is_some() && tree.find("m2").is_none());
+
+    send_shown(&mut tree, MoveMsg::Pop(None));
+    assert!(tree.transiting(), "the replaced screen came with a slide");
+    settle(&mut tree);
+    assert!(tree.find("m1").is_some());
+
+    send_shown(&mut tree, MoveMsg::Replace(Some(Transition::SlideUp)));
+    assert!(tree.transiting());
+    settle(&mut tree);
+    assert!(tree.find("m2").is_some() && tree.find("m1").is_none());
+}
+
+#[test]
+fn modals_change_at_once_whatever_is_asked() {
+    let mut tree = Tree::new(Mover(0), SCREEN, Caps::INTERNAL, theme());
+    settle(&mut tree);
+    send_shown(&mut tree, MoveMsg::Modal(Some(Transition::Slide)));
+    send_shown(&mut tree, MoveMsg::Modal(Some(Transition::Slide)));
+    assert!(!tree.transiting());
+    assert!(tree.find("m2").is_some());
+}
+
+fn zoom_frame(tree: &mut Tree, cache: &mut devkit_gfx::GlyphCache<Caps>) -> Vec<u16> {
+    let mut effects = crate::paint::Effects::new(Caps::INTERNAL);
+    tree.update();
+    tree.capture_zooms(&mut effects, cache, None);
+    let mut list = devkit_gfx::DisplayList::new_in(Caps::INTERNAL);
+    tree.paint(&mut effects, &[SCREEN], &mut list);
+    let mut pixels = vec![0u16; SCREEN.area() as usize];
+    let mut prepared = devkit_gfx::Prepared::new_in(Caps::INTERNAL);
+    prepared.prepare(&list, &[SCREEN], cache);
+    let surface = unsafe { devkit_gfx::Surface::new(pixels.as_mut_ptr().cast(), SCREEN.w as usize * 2, SCREEN) };
+    devkit_gfx::draw::<devkit_gfx::Rgb565, _, _, _>(&list, &prepared, &mut devkit_gfx::ClipStore::new_in(Caps::INTERNAL), &surface);
+    pixels
+}
+
+#[test]
+fn a_zoom_draws_pictures_from_the_old_screen_to_the_new_one() {
+    const RED_565: u16 = 0xf800;
+    const WHITE_565: u16 = 0xffff;
+    let mut cache = devkit_gfx::GlyphCache::new_in(16 * 1024, Caps::INTERNAL);
+    let mut tree = Tree::new(Mover(0), SCREEN, Caps::INTERNAL, theme());
+    settle(&mut tree);
+    send_shown(&mut tree, MoveMsg::Push(Some(Transition::Zoom)));
+    let at = |pixels: &[u16], x: i16, y: i16| pixels[y as usize * SCREEN.w as usize + x as usize];
+    let first = zoom_frame(&mut tree, &mut cache);
+    assert_eq!(at(&first, 200, 300), RED_565, "the old screen first, in front");
+    assert_eq!(at(&first, 0, 0), RED_565, "covering the pane");
+
+    tree.tick(1000);
+    assert!(tree.transiting(), "taking the pictures is not part of the time");
+    tree.tick(150);
+    let middle = zoom_frame(&mut tree, &mut cache);
+    let center = at(&middle, 200, 300);
+    assert!(center != RED_565 && center != WHITE_565, "both show through: {center:04x}");
+    assert_ne!(at(&middle, 0, 0), center, "the new screen is not in the corner yet");
+    let edge = at(&middle, 10, 2);
+    assert!(edge >> 5 & 0x3f > 0, "the background, not black, shows through above the new screen: {edge:04x}");
+
+    tree.tick(140);
+    let late = zoom_frame(&mut tree, &mut cache);
+    assert_eq!(at(&late, 200, 300) & 0x07e0, WHITE_565 & 0x07e0, "the new screen in the end");
+    settle(&mut tree);
+    assert!(tree.find("m0").is_none() && tree.find("m1").is_some());
+}
+
+#[test]
+fn a_picture_takes_every_other_pixel_at_half_size() {
+    let mut picture = crate::zoom::Picture::allocate(Rect::new(0, 0, 4, 2)).unwrap();
+    let band = [1, 2, 3, 4, 5, 6, 7, 8];
+    picture.sample(&band, 4, 2, 0);
+    assert_eq!((picture.width, picture.height), (2, 1));
+    let pixels = unsafe { core::slice::from_raw_parts(picture.as_mut_ptr(), 2) };
+    assert_eq!(pixels, [6, 8], "the pixel each output centre falls on");
 }

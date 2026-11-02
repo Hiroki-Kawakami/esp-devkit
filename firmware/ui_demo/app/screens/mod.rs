@@ -14,6 +14,7 @@ mod gestures;
 mod home;
 mod settings;
 mod status_bar;
+mod transitions;
 mod video;
 
 pub use files::set_card_present;

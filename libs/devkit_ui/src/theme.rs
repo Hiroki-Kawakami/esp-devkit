@@ -97,12 +97,32 @@ pub enum Transition {
     /// Screens replace each other at once, as a slow panel needs.
     None,
     Slide,
+    /// The new screen covers the old one from below, which stays still.
+    SlideUp,
+    /// The old screen grows and fades in front of the new one, which grows
+    /// into place. Without memory for pictures of both, screens change at once.
+    Zoom,
 }
 
 #[derive(Clone, Copy)]
 pub struct Motion {
     pub transition: Transition,
-    pub duration_ms: u16,
+    pub slide_ms: u16,
+    pub slide_up_ms: u16,
+    pub zoom_ms: u16,
+}
+
+impl Motion {
+    pub const DEFAULT: Self = Self { transition: Transition::Slide, slide_ms: 200, slide_up_ms: 250, zoom_ms: 200 };
+
+    pub fn duration_ms(&self, transition: Transition) -> u16 {
+        match transition {
+            Transition::None => 0,
+            Transition::Slide => self.slide_ms,
+            Transition::SlideUp => self.slide_up_ms,
+            Transition::Zoom => self.zoom_ms,
+        }
+    }
 }
 
 /// Base values, for widgets and apps alike; no widget of its own.

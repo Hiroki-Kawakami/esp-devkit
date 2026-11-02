@@ -100,6 +100,8 @@ pub(crate) struct Tree {
     canvases: Vec<NodeId>,
     external: NodeId,
     pub(crate) external_split: Cell<usize>,
+    /// A navigator, and where the display list is once it is painted.
+    pub(crate) zoom_split: Cell<(NodeId, usize)>,
     pending_redraw: Vec<(&'static str, Option<Rect>)>,
     format: ImageFormat,
     pub(crate) navigators: Vec<NodeId>,
@@ -197,6 +199,7 @@ impl Tree {
             canvases: Vec::new(),
             external: NONE,
             external_split: Cell::new(0),
+            zoom_split: Cell::new((NONE, 0)),
             pending_redraw: Vec::new(),
             format: ImageFormat::Rgb565,
             contacts: Vec::new(),
@@ -691,8 +694,9 @@ impl Tree {
                 }
                 list.id = *list_id;
             }
-            (NodeContent::Navigator(nav), Content::Navigator { split, .. }) => {
+            (NodeContent::Navigator(nav), Content::Navigator { split, transition, .. }) => {
                 nav.wanted = *split;
+                nav.transition = *transition;
                 return;
             }
             (NodeContent::Child(slot), Content::Child(spec)) => {
@@ -735,9 +739,10 @@ impl Tree {
             Content::Canvas(id) => NodeContent::Canvas(CanvasNode { id, reported: (0, 0) }),
             Content::External(surface) => NodeContent::External(surface.clone()),
             Content::Child(_) => NodeContent::Box,
-            Content::Navigator { key, split, .. } => {
+            Content::Navigator { key, split, transition, .. } => {
                 let mut navigator = NavigatorNode::new(key);
                 navigator.wanted = split;
+                navigator.transition = transition;
                 NodeContent::Navigator(navigator)
             }
         };
@@ -1238,7 +1243,7 @@ impl Tree {
         self.queue.is_empty()
             && self.dirty.is_empty()
             && self.flings.is_empty()
-            && !self.sliding()
+            && !self.transiting()
             && self.animations.is_empty()
             && self.fading.is_empty()
             && !self.keyboard_changed
@@ -1250,7 +1255,7 @@ impl Tree {
     }
 
     pub(crate) fn animating(&self) -> bool {
-        !self.flings.is_empty() || self.sliding() || !self.animations.is_empty() || !self.fading.is_empty()
+        !self.flings.is_empty() || self.transiting() || !self.animations.is_empty() || !self.fading.is_empty()
     }
 
     /// Something happens after a delay, without an event to wake for.
@@ -1321,7 +1326,7 @@ impl Tree {
         if inside && node.state.contains(State::DISABLED) {
             return Some(NO_HIT);
         }
-        if matches!(&node.content, NodeContent::Navigator(nav) if nav.slide.is_some()) {
+        if matches!(&node.content, NodeContent::Navigator(nav) if nav.transit.is_some()) {
             return None;
         }
         let [pad_left, pad_top, _, _] = node.style.padding;
@@ -1550,7 +1555,7 @@ impl Tree {
 
     /// Advances what moves by itself.
     pub(crate) fn tick(&mut self, dt_ms: u32) {
-        self.tick_slides(dt_ms);
+        self.tick_transits(dt_ms);
         self.tick_animations(dt_ms);
         self.tick_fades(dt_ms);
         self.tick_repeat(dt_ms);

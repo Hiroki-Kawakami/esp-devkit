@@ -12,10 +12,12 @@ use crate::component::{AnyHost, Hook, Requests, Screen, screen_host};
 use crate::erased::Erased;
 use crate::node::{NONE, Node, NodeContent, NodeId};
 use crate::presenter::Strips;
+use devkit_gfx::Rect;
 use crate::style::{Dimension, Style};
 use crate::animate::ease_out;
 use crate::theme::{Theme, Transition};
 use crate::tree::Tree;
+use crate::zoom::Zoom;
 
 /// The whole-screen navigator `App` owns.
 pub struct Root;
@@ -35,15 +37,30 @@ pub(crate) struct Entry {
     pub(crate) host: Option<Box<dyn AnyHost>>,
     pub(crate) node: NodeId,
     pub(crate) saved: Saved,
+    /// Asked for when it came, and played backwards when it goes.
+    pub(crate) transition: Option<Transition>,
 }
 
-pub(crate) struct Slide {
+impl Entry {
+    fn shown(node: NodeId, transition: Option<Transition>) -> Self {
+        Self { host: None, node, saved: Saved::default(), transition }
+    }
+}
+
+pub(crate) struct Transit {
+    pub(crate) kind: Transition,
     pub(crate) leaving: NodeId,
     /// The leaving screen is gone for good, as after `pop`.
     pub(crate) drop_leaving: bool,
     pub(crate) elapsed: u32,
     pub(crate) duration: u32,
     pub(crate) forward: bool,
+    /// Pictures of a zoom, taken before its first frame.
+    pub(crate) zoom: Option<Box<Zoom>>,
+    /// Taking the pictures held up the frame; that time is not part of it.
+    pub(crate) skip_tick: bool,
+    /// Where the panel may not show the leaving screen as it is.
+    pub(crate) stale: Vec<Rect>,
 }
 
 /// What a screen is to the split navigator around it.
@@ -81,7 +98,8 @@ pub(crate) struct SplitSpec {
 pub(crate) struct NavigatorNode {
     pub(crate) key: TypeId,
     pub(crate) stack: Vec<Entry>,
-    pub(crate) slide: Option<Slide>,
+    pub(crate) transit: Option<Transit>,
+    pub(crate) transition: Option<Transition>,
     /// Width of the main screen while split.
     pub(crate) split: Option<i16>,
     pub(crate) wanted: SplitSpec,
@@ -94,15 +112,15 @@ pub(crate) struct NavigatorNode {
 
 impl NavigatorNode {
     pub(crate) fn new(key: TypeId) -> Self {
-        Self { key, stack: Vec::new(), slide: None, split: None, wanted: SplitSpec::default(), spare: NONE, promoted: false }
+        Self { key, stack: Vec::new(), transit: None, transition: None, split: None, wanted: SplitSpec::default(), spare: NONE, promoted: false }
     }
 
     pub(crate) fn main(&self) -> NodeId {
         self.stack.first().map_or(NONE, |e| e.node)
     }
 
-    /// The screen a slide moves: the one on the right while split.
-    fn shown(&self) -> NodeId {
+    /// The screen a transition moves: the one on the right while split.
+    pub(crate) fn shown(&self) -> NodeId {
         if self.split.is_some() && self.stack.len() == 1 {
             return self.spare;
         }
@@ -125,6 +143,7 @@ pub(crate) enum Action {
 pub(crate) struct NavOp {
     pub(crate) target: Option<TypeId>,
     pub(crate) action: Action,
+    pub(crate) transition: Option<Transition>,
 }
 
 /// Finds `id` in `stack` and in what its screens keep of the navigators inside
@@ -214,16 +233,18 @@ impl Tree {
             idf::log::error!(c"ui", "no navigator for this operation");
             return;
         };
-        self.finish_slide(nav);
+        let pane = self.nodes[nav as usize].screen;
+        let stale: Vec<Rect> = if self.finish_transit(nav) { Vec::from([pane]) } else { self.damage.iter().filter(|r| r.intersects(&pane)).copied().collect() };
+        let asked = op.transition;
         match op.action {
-            Action::Push(host) => self.push_screen(nav, host),
-            Action::Pop => self.pop_screen(nav),
-            Action::Replace(host) => {
-                self.leave_top(nav);
-                self.show_top_replaced(nav, host);
-            }
-            Action::Show(host) => self.show_screen(nav, host),
-            Action::Root => self.pop_to_root(nav),
+            Action::Push(host) => self.push_screen(nav, host, asked),
+            Action::Pop => self.pop_screen(nav, asked),
+            Action::Replace(host) => self.replace_screen(nav, host, asked),
+            Action::Show(host) => self.show_screen(nav, host, asked),
+            Action::Root => self.pop_to_root(nav, asked),
+        }
+        if let Some(transit) = self.navigator(nav).and_then(|n| n.transit.as_mut()) {
+            transit.stale = stale;
         }
         self.style_changed(nav);
         self.refresh_shown(nav);
@@ -275,7 +296,7 @@ impl Tree {
             if width == was {
                 continue;
             }
-            self.finish_slide(nav);
+            self.finish_transit(nav);
             if let Some(navigator) = self.navigator(nav) {
                 navigator.split = width;
             }
@@ -523,19 +544,31 @@ impl Tree {
         }
     }
 
-    fn begin_slide(&mut self, nav: NodeId, leaving: NodeId, drop_leaving: bool, forward: bool) {
-        let theme = self.theme;
-        if leaving == NONE || theme.motion.transition == Transition::None {
+    /// What a move shows: `asked`, then what the screen came with, then the
+    /// navigator's and the theme's defaults. Without `defaulted`, only `asked`.
+    fn pick(&self, nav: NodeId, asked: Option<Transition>, came_with: Option<Transition>, defaulted: bool) -> Transition {
+        let NodeContent::Navigator(navigator) = &self.nodes[nav as usize].content else { return Transition::None };
+        if navigator.key == TypeId::of::<Overlay>() {
+            return Transition::None;
+        }
+        if !defaulted {
+            return asked.unwrap_or(Transition::None);
+        }
+        asked.or(came_with).or(navigator.transition).unwrap_or(self.theme.motion.transition)
+    }
+
+    fn begin_transit(&mut self, nav: NodeId, leaving: NodeId, drop_leaving: bool, forward: bool, kind: Transition) {
+        if leaving == NONE || kind == Transition::None {
             if leaving != NONE {
                 self.retire(nav, leaving, drop_leaving);
             }
             return;
         }
-        let duration = u32::from(theme.motion.duration_ms);
+        let duration = u32::from(self.theme.motion.duration_ms(kind)).max(1);
         if let Some(navigator) = self.navigator(nav) {
-            navigator.slide = Some(Slide { leaving, drop_leaving, elapsed: 0, duration, forward });
+            navigator.transit = Some(Transit { kind, leaving, drop_leaving, elapsed: 0, duration, forward, zoom: None, skip_tick: false, stale: Vec::new() });
         }
-        self.step_slide(nav, 0);
+        self.step_transit(nav, 0);
     }
 
     fn retire(&mut self, nav: NodeId, leaving: NodeId, drop_leaving: bool) {
@@ -551,14 +584,16 @@ impl Tree {
         }
     }
 
-    pub(crate) fn finish_slide(&mut self, nav: NodeId) {
-        let Some(slide) = self.navigator(nav).and_then(|n| n.slide.take()) else { return };
+    /// `false` when none was running.
+    pub(crate) fn finish_transit(&mut self, nav: NodeId) -> bool {
+        let Some(transit) = self.navigator(nav).and_then(|n| n.transit.take()) else { return false };
         let top = self.navigator(nav).map_or(NONE, |n| n.shown());
         if top != NONE {
             self.nodes[top as usize].translate = (0, 0);
         }
-        self.retire(nav, slide.leaving, slide.drop_leaving);
+        self.retire(nav, transit.leaving, transit.drop_leaving);
         self.mark_dirty_rect(nav);
+        true
     }
 
     fn mark_dirty_rect(&mut self, nav: NodeId) {
@@ -567,58 +602,72 @@ impl Tree {
         self.nodes[nav as usize].scrolled = true;
     }
 
-    fn step_slide(&mut self, nav: NodeId, dt_ms: u32) {
+    fn step_transit(&mut self, nav: NodeId, dt_ms: u32) {
         let top = self.navigator(nav).map_or(NONE, |n| n.shown());
         let side = self.navigator(nav).and_then(|n| n.split).unwrap_or(0);
-        let width = self.nodes[nav as usize].rect.w - side;
-        let Some(slide) = self.navigator(nav).and_then(|n| n.slide.as_mut()) else { return };
-        slide.elapsed = (slide.elapsed + dt_ms).min(slide.duration);
-        let (elapsed, duration, forward, leaving) = (slide.elapsed, slide.duration, slide.forward, slide.leaving);
-        let t = elapsed as f32 / duration as f32;
-        let shift = (f32::from(width) * ease_out(t)) as i16;
-        let (entering, departing) = if forward { (width - shift, -shift / 3) } else { (-(width - shift) / 3, shift) };
-        self.nodes[top as usize].translate = (entering, 0);
-        self.nodes[leaving as usize].translate = (departing, 0);
+        let (width, height) = (self.nodes[nav as usize].rect.w - side, self.nodes[nav as usize].rect.h);
+        let Some(transit) = self.navigator(nav).and_then(|n| n.transit.as_mut()) else { return };
+        let dt_ms = if core::mem::take(&mut transit.skip_tick) { 0 } else { dt_ms };
+        transit.elapsed = (transit.elapsed + dt_ms).min(transit.duration);
+        let (elapsed, duration, forward, leaving, kind) = (transit.elapsed, transit.duration, transit.forward, transit.leaving, transit.kind);
+        let eased = ease_out(elapsed as f32 / duration as f32);
+        if let Some(zoom) = &mut transit.zoom {
+            zoom.set_progress(eased);
+        }
+        let (entering, departing) = match kind {
+            Transition::Slide => {
+                let shift = (f32::from(width) * eased) as i16;
+                if forward { ((width - shift, 0), (-shift / 3, 0)) } else { ((-(width - shift) / 3, 0), (shift, 0)) }
+            }
+            Transition::SlideUp => {
+                let shift = (f32::from(height) * eased) as i16;
+                if forward { ((0, height - shift), (0, 0)) } else { ((0, 0), (0, shift)) }
+            }
+            Transition::None | Transition::Zoom => ((0, 0), (0, 0)),
+        };
+        self.nodes[top as usize].translate = entering;
+        self.nodes[leaving as usize].translate = departing;
         self.mark_dirty_rect(nav);
         if elapsed >= duration {
-            self.finish_slide(nav);
+            self.finish_transit(nav);
         }
     }
 
-    pub(crate) fn tick_slides(&mut self, dt_ms: u32) {
-        // Finishing a slide can remove navigators inside the screen it hid.
+    pub(crate) fn tick_transits(&mut self, dt_ms: u32) {
+        // Finishing a transition can remove navigators inside the screen it hid.
         let mut i = 0;
         while let Some(&nav) = self.navigators.get(i) {
-            self.step_slide(nav, dt_ms);
+            self.step_transit(nav, dt_ms);
             i += 1;
         }
     }
 
-    pub(crate) fn sliding(&self) -> bool {
-        self.navigators.iter().any(|&nav| matches!(&self.nodes[nav as usize].content, NodeContent::Navigator(n) if n.slide.is_some()))
+    pub(crate) fn transiting(&self) -> bool {
+        self.navigators.iter().any(|&nav| matches!(&self.nodes[nav as usize].content, NodeContent::Navigator(n) if n.transit.is_some()))
     }
 
-    fn push_screen(&mut self, nav: NodeId, host: Box<dyn AnyHost>) {
+    fn push_screen(&mut self, nav: NodeId, host: Box<dyn AnyHost>, asked: Option<Transition>) {
         // Pushing from the default detail keeps it to come back to.
         if let Some(navigator) = self.navigator(nav)
             && navigator.spare != NONE
         {
             let node = core::mem::replace(&mut navigator.spare, NONE);
-            navigator.stack.push(Entry { host: None, node, saved: Saved::default() });
+            navigator.stack.push(Entry::shown(node, None));
             navigator.promoted = true;
         }
         let leaving = self.navigator(nav).map_or(NONE, |n| n.shown());
         self.hook(leaving, Hook::Disappear);
         let node = self.mount(nav, host, Saved::default());
         if let Some(navigator) = self.navigator(nav) {
-            navigator.stack.push(Entry { host: None, node, saved: Saved::default() });
+            navigator.stack.push(Entry::shown(node, asked));
         }
         self.hook(node, Hook::Enter);
         self.hook(node, Hook::Appear);
-        self.begin_slide(nav, leaving, false, true);
+        let kind = self.pick(nav, asked, None, true);
+        self.begin_transit(nav, leaving, false, true, kind);
     }
 
-    fn pop_screen(&mut self, nav: NodeId) {
+    fn pop_screen(&mut self, nav: NodeId, asked: Option<Transition>) {
         let Some(navigator) = self.navigator(nav) else { return };
         let empties = navigator.key == TypeId::of::<Overlay>();
         if navigator.stack.len() < 2 && !empties {
@@ -644,7 +693,8 @@ impl Tree {
         // The leaving screen paints above the one coming back.
         self.unlink(nav, top);
         self.link_before(nav, top, leaving);
-        self.begin_slide(nav, leaving, true, false);
+        let kind = self.pick(nav, asked, entry.transition, true);
+        self.begin_transit(nav, leaving, true, false, kind);
     }
 
     fn link_before(&mut self, parent: NodeId, node: NodeId, before: NodeId) {
@@ -663,7 +713,7 @@ impl Tree {
     }
 
     /// Replaces everything above the bottom of the stack with `host`.
-    fn show_screen(&mut self, nav: NodeId, host: Box<dyn AnyHost>) {
+    fn show_screen(&mut self, nav: NodeId, host: Box<dyn AnyHost>, asked: Option<Transition>) {
         let link = self.link.clone();
         let Some(navigator) = self.navigator(nav) else { return };
         let (main, leaving, split) = (navigator.main(), navigator.shown(), navigator.split.is_some());
@@ -679,16 +729,13 @@ impl Tree {
         }
         let node = self.mount(nav, host, Saved::default());
         if let Some(navigator) = self.navigator(nav) {
-            navigator.stack.push(Entry { host: None, node, saved: Saved::default() });
+            navigator.stack.push(Entry::shown(node, asked));
         }
         self.hook(node, Hook::Enter);
         self.hook(node, Hook::Appear);
         // Next to the main screen this changes what is shown, not where we are.
-        if !split {
-            self.begin_slide(nav, leaving, dropped, true);
-        } else if leaving != NONE {
-            self.retire(nav, leaving, true);
-        }
+        let kind = self.pick(nav, asked, None, !split);
+        self.begin_transit(nav, leaving, dropped || split, true, kind);
     }
 
     fn show_top(&mut self, nav: NodeId) -> NodeId {
@@ -704,28 +751,25 @@ impl Tree {
         node
     }
 
-    fn leave_top(&mut self, nav: NodeId) {
+    fn replace_screen(&mut self, nav: NodeId, host: Box<dyn AnyHost>, asked: Option<Transition>) {
         let leaving = self.top(nav);
         self.hook(leaving, Hook::Disappear);
         self.hook(leaving, Hook::Exit);
-        if leaving != NONE {
-            self.unmount(nav, leaving);
-        }
-        if let Some(navigator) = self.navigator(nav) {
-            navigator.stack.pop();
-        }
-    }
-
-    fn show_top_replaced(&mut self, nav: NodeId, host: Box<dyn AnyHost>) {
+        let Some(navigator) = self.navigator(nav) else { return };
+        let main = navigator.split.is_some() && leaving == navigator.main();
+        let came_with = navigator.stack.pop().and_then(|e| e.transition);
         let node = self.mount(nav, host, Saved::default());
         if let Some(navigator) = self.navigator(nav) {
-            navigator.stack.push(Entry { host: None, node, saved: Saved::default() });
+            navigator.stack.push(Entry::shown(node, came_with));
         }
         self.hook(node, Hook::Enter);
         self.hook(node, Hook::Appear);
+        // The main screen of a split navigator does not move.
+        let kind = if main { Transition::None } else { self.pick(nav, asked, None, false) };
+        self.begin_transit(nav, leaving, true, true, kind);
     }
 
-    fn pop_to_root(&mut self, nav: NodeId) {
+    fn pop_to_root(&mut self, nav: NodeId, asked: Option<Transition>) {
         let Some(navigator) = self.navigator(nav) else { return };
         if navigator.stack.len() < 2 {
             return;
@@ -733,7 +777,7 @@ impl Tree {
         let shown = navigator.stack.len() - 1;
         navigator.stack.drain(1..shown);
         navigator.promoted = false;
-        self.pop_screen(nav);
+        self.pop_screen(nav, asked);
     }
 
     /// Fills `area` with a navigator node owned by `owner`.
@@ -748,7 +792,7 @@ impl Tree {
     pub(crate) fn seed_navigator(&mut self, nav: NodeId, host: Box<dyn AnyHost>) {
         let node = self.mount(nav, host, Saved::default());
         if let Some(navigator) = self.navigator(nav) {
-            navigator.stack.push(Entry { host: None, node, saved: Saved::default() });
+            navigator.stack.push(Entry::shown(node, None));
         }
         self.hook(node, Hook::Enter);
         self.hook(node, Hook::Appear);

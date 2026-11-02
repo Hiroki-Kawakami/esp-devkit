@@ -125,7 +125,20 @@ app.run();
   places one, marked by a type `K`, anywhere in a view; `App` adds `Root`, and
   `Overlay` above the chrome for modals. `cx.nav()` acts on the nearest one,
   `cx.nav_of::<K>()` on the nearest above, then inside, then anywhere. Moves
-  slide inside the navigator's own area; full screens and panes work alike.
+  play inside the navigator's own area; full screens and panes work alike.
+- A move plays `cx.nav().transition(t)` if asked, else the navigator's
+  `.transition(t)`, else the theme's `motion.transition`. A `pop` without one
+  plays what the screen came with backwards. `replace`, and `show` beside a
+  split main screen, change at once unless asked; `Overlay` always does.
+
+  ```rust
+  ui.navigator::<Pane, Storages>(()).transition(Transition::None)
+  cx.nav().transition(Transition::Zoom).push(Detail::new())
+  ```
+
+- `Transition::Zoom` draws RGB565 pictures of both screens taken when it
+  starts, the old one at half size, so neither changes while it plays. Without
+  memory for them the screens change at once, with a warning.
 - `.split(on, width)` shows a navigator in two panes: the bottom of the stack on
   the left and the rest on the right. One stack serves both layouts, so a turn
   loses nothing. The main screen opens things with `cx.nav().show(screen)`,
@@ -143,7 +156,7 @@ app.run();
 - `ui.can_pop()` says whether a back button means anything here: not on the first
   screen on the right, which `cx.nav().root()` closes. `ui.split_role()` says
   whether this screen is the main one, with something open on the right, or a
-  detail. `show` changes the right at once, without a slide.
+  detail. `show` changes the right at once unless asked.
 - A covered screen keeps its state and loses its nodes. List positions and
   nested navigators come back with it; state of its child components does not.
 - `App::chrome` adds a component above the screens that stays across navigation,
@@ -162,7 +175,7 @@ app.run();
   ```rust
   let config = AppConfig::new(&resources::TOUCH);
 
-  static STILL_TOUCH: Theme = Theme { motion: STILL, ..resources::TOUCH };
+  static STILL_TOUCH: Theme = Theme { motion: Motion { transition: Transition::None, ..Motion::DEFAULT }, ..resources::TOUCH };
   ```
 
 - `theme.widgets` has one struct per widget: a `StateStyle` for each of its pieces,
@@ -238,7 +251,7 @@ rotation.set_locked(true);
   panel's, so which is upright differs by board; `PORTRAIT` and `LANDSCAPE` mean
   the shape on any board, and `CURRENT` keeps the turn the screen found. The turn
   asked for comes back when a screen allows it.
-- A turn waits for a slide to end. Fingers on the screen act on nothing until
+- A turn waits for a transition to end. Fingers on the screen act on nothing until
   they lift, flings stop, and an `ExternalSurface` is asked to write again, with
   `frame.rotation` and `frame.area` new from the next frame.
 - A strip buffer must hold 16 rows of the longer side; otherwise the turn is

@@ -3,16 +3,25 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
+use alloc::boxed::Box;
 use alloc::vec::Vec;
+use core::alloc::Allocator;
 
-use devkit_gfx::{Color, CornerMask, DisplayList, Rect, ShadowMask};
+use core::time::Duration;
+
+use bsp_rs::display::{self, Blitter, FrameBuffer, PixelFormat, Rotation, Size};
+use devkit_gfx::{ClipStore, Color, CornerMask, DisplayList, GlyphCache, Prepared, Rect, Rgb565, ShadowMask, Surface, draw};
 use idf::heap::Caps;
 
 use crate::animate::faded;
 use crate::canvas::Canvas;
 use crate::node::{NONE, NodeContent, NodeId};
 use crate::style::Shadow;
+use crate::theme::Transition;
 use crate::tree::Tree;
+use crate::zoom::{PICTURE_SCALE, Picture, Zoom, scaled};
+
+const BAND_ROWS: i16 = 32;
 
 /// Corner and shadow masks by size; a UI has a handful of each.
 pub(crate) struct Effects {
@@ -178,6 +187,18 @@ impl Tree {
                 }
                 list.pop_clip();
             }
+            NodeContent::Navigator(nav) if nav.transit.as_ref().is_some_and(|t| t.zoom.is_some()) => {
+                let viewport = rect.intersect(&clip);
+                list.push_clip(viewport);
+                let main = nav.main();
+                if nav.split.is_some() && main != NONE {
+                    self.paint_node(main, x, y, viewport, down, effects, regions, list);
+                }
+                if let Some(zoom) = nav.transit.as_ref().and_then(|t| t.zoom.as_deref()) {
+                    list.raster(zoom.area, (zoom.area.x, zoom.area.y), zoom);
+                }
+                list.pop_clip();
+            }
             NodeContent::Navigator(nav) if nav.split.is_some() => {
                 let side = nav.split.unwrap_or(0);
                 let main = nav.main();
@@ -216,6 +237,9 @@ impl Tree {
             }
             _ => self.paint_children(id, x, y, clip, down, effects, regions, list),
         }
+        if self.zoom_split.get().0 == id {
+            self.zoom_split.set((id, list.ops().len()));
+        }
     }
 
     fn paint_children<'a>(&'a self, id: NodeId, dx: i32, dy: i32, clip: Rect, inherited: Inherited, effects: &mut Effects, regions: &[Rect], list: &mut DisplayList<'a, Caps>) {
@@ -230,5 +254,189 @@ impl Tree {
     pub(crate) fn paint<'a>(&'a self, effects: &mut Effects, regions: &[Rect], list: &mut DisplayList<'a, Caps>) {
         list.reserve(self.nodes.len());
         self.paint_node(self.root, 0, 0, self.area, Inherited { opacity: 255, foreground: None }, effects, regions, list);
+    }
+
+    pub(crate) fn zooming(&self) -> bool {
+        self.navigators.iter().any(|&nav| matches!(&self.nodes[nav as usize].content, NodeContent::Navigator(n) if n.transit.as_ref().is_some_and(|t| t.zoom.is_some())))
+    }
+
+    pub(crate) fn zoom_pending(&self) -> bool {
+        self.navigators.iter().any(|&nav| matches!(&self.nodes[nav as usize].content, NodeContent::Navigator(n) if n.transit.as_ref().is_some_and(|t| t.kind == Transition::Zoom && t.zoom.is_none())))
+    }
+
+    /// Takes the pictures of zooms starting this frame; without `engine`, on
+    /// this task alone. One that gets no pictures changes screens at once.
+    pub(crate) fn capture_zooms<C: Allocator + Clone>(&mut self, effects: &mut Effects, cache: &mut GlyphCache<C>, mut engine: Option<&mut Engine<'_>>) {
+        for nav in self.navigators.clone() {
+            let NodeContent::Navigator(navigator) = &self.nodes[nav as usize].content else { continue };
+            if !navigator.transit.as_ref().is_some_and(|t| t.kind == Transition::Zoom && t.zoom.is_none()) {
+                continue;
+            }
+            let Some(zoom) = self.zoom_pictures(nav, effects, cache, engine.as_deref_mut()) else {
+                idf::log::warn!(c"ui", "no pictures for a zoom, changing screens at once");
+                self.finish_transit(nav);
+                continue;
+            };
+            if let NodeContent::Navigator(navigator) = &mut self.nodes[nav as usize].content
+                && let Some(transit) = &mut navigator.transit
+            {
+                transit.zoom = Some(Box::new(zoom));
+                transit.skip_tick = true;
+            }
+        }
+    }
+
+    fn zoom_pictures<C: Allocator + Clone>(&self, nav: NodeId, effects: &mut Effects, cache: &mut GlyphCache<C>, mut engine: Option<&mut Engine<'_>>) -> Option<Zoom> {
+        let node = &self.nodes[nav as usize];
+        let NodeContent::Navigator(navigator) = &node.content else { return None };
+        let transit = navigator.transit.as_ref()?;
+        let side = navigator.split.unwrap_or(0);
+        let area = Rect::new(node.screen.x + side, node.screen.y, node.screen.w - side, node.screen.h).intersect(&self.area);
+        if area.is_empty() {
+            return None;
+        }
+        let background = self.slots[usize::from(node.owner)].theme.palette(self.color_mode).background;
+        let mut entering = Picture::allocate(area)?;
+        let mut leaving = Picture::allocate(area)?;
+        let shown = self.shown_bands(nav, area, &transit.stale, effects);
+        let t0 = idf::time::Instant::now();
+        self.take_picture(navigator.shown(), area, background, effects, cache, &mut entering, engine.as_deref_mut(), &[])?;
+        let t1 = idf::time::Instant::now();
+        self.take_picture(transit.leaving, area, background, effects, cache, &mut leaving, engine, &shown)?;
+        idf::log::info!(c"ui", "ZPROBE capture entering={}us leaving={}us", t1.duration_since(t0).as_micros(), t1.elapsed().as_micros());
+        Zoom::new(area, entering, leaving, background, transit.forward)
+    }
+
+    /// Which bands of `area` the panel shows as the screens of `nav` drew
+    /// them: nothing painted over them, and not in `stale`.
+    fn shown_bands(&self, nav: NodeId, area: Rect, stale: &[Rect], effects: &mut Effects) -> Vec<bool> {
+        self.zoom_split.set((nav, usize::MAX));
+        let mut list = DisplayList::new_in(self.caps);
+        self.paint(effects, &[area], &mut list);
+        let (_, split) = self.zoom_split.replace((NONE, 0));
+        let mut shown = Vec::new();
+        let mut y = 0;
+        while y < area.h {
+            let band = Rect::new(area.x, area.y + y, area.w, BAND_ROWS.min(area.h - y));
+            let covered = split == usize::MAX || devkit_gfx::overlap(list.ops(), split, &band).is_some() || stale.iter().any(|r| r.intersects(&band));
+            shown.push(!covered);
+            y += BAND_ROWS;
+        }
+        shown
+    }
+
+    /// Bands `shown` comes from the panel through `engine`, the rest is drawn.
+    #[allow(clippy::too_many_arguments)]
+    fn take_picture<C: Allocator + Clone>(
+        &self,
+        id: NodeId,
+        area: Rect,
+        background: Color,
+        effects: &mut Effects,
+        cache: &mut GlyphCache<C>,
+        picture: &mut Picture,
+        mut engine: Option<&mut Engine<'_>>,
+        shown: &[bool],
+    ) -> Option<()> {
+        let node = &self.nodes[id as usize];
+        let dx = i32::from(node.screen.x) - i32::from(node.rect.x) - i32::from(node.translate.0);
+        let dy = i32::from(node.screen.y) - i32::from(node.rect.y) - i32::from(node.translate.1);
+        let mut list = DisplayList::new_in(self.caps);
+        list.fill(area, background);
+        self.paint_node(id, dx, dy, area, Inherited { opacity: 255, foreground: None }, effects, &[area], &mut list);
+        let mut prepared = Prepared::new_in(self.caps);
+        prepared.prepare(&list, &[area], cache);
+        let mut clips = ClipStore::new_in(self.caps);
+        let count = area.w as usize * BAND_ROWS as usize;
+        let mut bands = [band_memory(count)?, band_memory(count)?];
+        let stride = area.w as usize * size_of::<u16>();
+        let target = display::Picture {
+            ptr: picture.as_mut_ptr().cast(),
+            size: Size { width: picture.width as u16, height: picture.height as u16 },
+            format: PixelFormat::Rgb565,
+            len: picture.bytes(),
+        };
+        let (mut y, mut turn) = (0, 0);
+        while y < area.h {
+            let band = (y / BAND_ROWS) as usize;
+            let at = (0, scaled(y) as u16);
+            if let Some(engine) = engine.as_deref_mut()
+                && let Some((fb, rotation)) = engine.shown
+                && shown.get(band).copied().unwrap_or(false)
+            {
+                let mut end = band + 1;
+                while shown.get(end).copied().unwrap_or(false) {
+                    end += 1;
+                }
+                let bottom = (end as i16 * BAND_ROWS).min(area.h);
+                let block = display::Rect { x: area.x as u16, y: (area.y + y) as u16, width: area.w as u16, height: (bottom - y) as u16 };
+                while engine.blitter.pending() > 1 {
+                    wait(engine.blitter);
+                }
+                if let Err(err) = unsafe { engine.blitter.start_from(&fb, rotation, block, PICTURE_SCALE, target, at) } {
+                    idf::log::error!(c"ui", "zoom picture from the panel: {err}");
+                    return None;
+                }
+                y = bottom;
+                continue;
+            }
+            let rows = BAND_ROWS.min(area.h - y);
+            if let Some(engine) = engine.as_deref_mut() {
+                while engine.blitter.pending() > 1 {
+                    wait(engine.blitter);
+                }
+            }
+            let memory = &mut bands[turn];
+            let surface = unsafe { Surface::new(memory.as_mut_ptr().cast(), stride, Rect::new(area.x, area.y + y, area.w, rows)) };
+            draw::<Rgb565, _, _, _>(&list, &prepared, &mut clips, &surface);
+            match engine.as_deref_mut() {
+                Some(engine) => {
+                    let source = display::Picture {
+                        ptr: memory.as_mut_ptr().cast(),
+                        size: Size { width: area.w as u16, height: rows as u16 },
+                        format: PixelFormat::Rgb565,
+                        len: count * size_of::<u16>(),
+                    };
+                    let block = display::Rect { x: 0, y: 0, width: area.w as u16, height: rows as u16 };
+                    if let Err(err) = unsafe { engine.blitter.start_scaled(source, block, Rotation::R0, PICTURE_SCALE, target, at) } {
+                        idf::log::error!(c"ui", "zoom picture: {err}");
+                        return None;
+                    }
+                    turn ^= 1;
+                }
+                None => picture.sample(memory, area.w as usize, rows as usize, y as usize),
+            }
+            y += rows;
+        }
+        if let Some(engine) = engine {
+            while engine.blitter.pending() > 0 {
+                wait(engine.blitter);
+            }
+        }
+        Some(())
+    }
+}
+
+/// The 2D engine, and the framebuffer on the panel with its turn.
+pub(crate) struct Engine<'a> {
+    pub(crate) blitter: &'a mut Blitter,
+    pub(crate) shown: Option<(FrameBuffer, Rotation)>,
+}
+
+fn band_memory(count: usize) -> Option<Vec<u16, Caps>> {
+    for caps in [Caps::DMA | Caps::INTERNAL, Caps::SPIRAM] {
+        let mut band = Vec::new_in(caps);
+        if band.try_reserve_exact(count).is_ok() {
+            band.resize(count, 0);
+            return Some(band);
+        }
+    }
+    None
+}
+
+/// The pixels stay in use until it returns, so it waits for good.
+fn wait(blitter: &mut Blitter) {
+    while !blitter.wait_timeout(Duration::from_secs(1)) {
+        idf::log::error!(c"ui", "zoom picture stalled");
     }
 }
