@@ -12,6 +12,7 @@ mod canvas;
 mod files;
 mod gestures;
 mod home;
+mod presence;
 mod settings;
 mod status_bar;
 mod transitions;

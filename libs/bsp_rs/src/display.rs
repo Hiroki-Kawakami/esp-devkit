@@ -84,6 +84,12 @@ impl FrameBuffer {
         Self { ptr, size, stride, format }
     }
 
+    /// `picture` to draw into as into a framebuffer of its size and format.
+    pub unsafe fn of(picture: Picture) -> Option<Self> {
+        let fb = unsafe { Self::new(NonNull::new(picture.ptr)?, picture.size, picture.format) };
+        (fb.len() <= picture.len).then_some(fb)
+    }
+
     pub fn as_ptr(&self) -> *mut u8 {
         self.ptr.as_ptr()
     }
@@ -304,8 +310,72 @@ pub struct Blender {
 
 #[cfg(any(not(target_os = "none"), CONFIG_SOC_PPA_SUPPORTED))]
 impl Blender {
-    pub fn new() -> Result<Self> {
-        Ok(Self { blend: ppa::Blend::new()? })
+    /// `max_pending` tints may be in flight at once.
+    pub fn new(max_pending: u32) -> Result<Self> {
+        Ok(Self { blend: ppa::Blend::new(max_pending)? })
+    }
+
+    /// Queues `area` of the logical picture from `backdrop`, a picture of the
+    /// panel as it shows it, under `color` at `alpha` into the same place in
+    /// `fb`, and returns. The engine reads `mask`, one byte per pixel of `area`,
+    /// and ignores what they hold. All stay in use until
+    /// [`Self::wait_timeout`] has returned for it.
+    pub unsafe fn start_tint(&mut self, backdrop: &FrameBuffer, fb: &FrameBuffer, rotation: Rotation, area: Rect, color: [u8; 3], alpha: u8, mask: *const u8) -> Result<()> {
+        if backdrop.size() != fb.size() {
+            return Err(Error::INVALID_ARG);
+        }
+        let out = Picture { ptr: fb.as_ptr(), size: fb.size(), format: fb.format(), len: fb.len() };
+        let (x, y) = panel_origin(fb.size(), rotation, area).ok_or(Error::INVALID_ARG)?;
+        unsafe { self.tint(backdrop, rotation, area, out, (x, y), color, alpha, mask) }
+    }
+
+    /// The same into `out` at its corner, as the panel shows it: turned
+    /// against the logical picture unless `rotation` is `R0`.
+    pub unsafe fn start_tint_to(&mut self, backdrop: &FrameBuffer, rotation: Rotation, area: Rect, out: Picture, color: [u8; 3], alpha: u8, mask: *const u8) -> Result<()> {
+        unsafe { self.tint(backdrop, rotation, area, out, (0, 0), color, alpha, mask) }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn tint(&mut self, backdrop: &FrameBuffer, rotation: Rotation, area: Rect, out: Picture, at: (u32, u32), color: [u8; 3], alpha: u8, mask: *const u8) -> Result<()> {
+        let format = color_mode(backdrop.format())?;
+        if out.format != backdrop.format() {
+            return Err(Error::INVALID_ARG);
+        }
+        let size = backdrop.size();
+        let (x, y) = panel_origin(size, rotation, area).ok_or(Error::INVALID_ARG)?;
+        let (width, height) = match rotation {
+            Rotation::R0 | Rotation::R180 => (u32::from(area.width), u32::from(area.height)),
+            Rotation::R90 | Rotation::R270 => (u32::from(area.height), u32::from(area.width)),
+        };
+        let op = ppa::TintOp {
+            backdrop: backdrop.as_ptr(),
+            backdrop_width: u32::from(size.width),
+            backdrop_height: u32::from(size.height),
+            x,
+            y,
+            out: out.ptr,
+            out_size: out.len as u32,
+            out_width: u32::from(out.size.width),
+            out_height: u32::from(out.size.height),
+            out_x: at.0,
+            out_y: at.1,
+            width,
+            height,
+            format,
+            color,
+            alpha,
+            mask,
+        };
+        unsafe { self.blend.start_tint(&op) }
+    }
+
+    pub fn pending(&self) -> u32 {
+        self.blend.pending()
+    }
+
+    /// `false` on timeout, with the tint still pending.
+    pub fn wait_timeout(&mut self, timeout: Duration) -> bool {
+        self.blend.wait_timeout(timeout)
     }
 
     /// Blocks until done. `src` holds `area` of the logical picture, already

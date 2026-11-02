@@ -14,6 +14,7 @@ use devkit_gfx::Rect;
 use crate::app::Handle;
 use crate::component::{Component, Cx};
 use crate::element::{Children, Drag, Element, Ui};
+use crate::presence::Presence;
 use crate::keyboard::{Keyboard, KeyboardPanel, KeyboardProps};
 use crate::text_buffer::{TextBuffer, TextInput};
 use crate::style::{Align, Justify, Part, Role, State, StateStyle};
@@ -155,15 +156,12 @@ pub fn dropdown<'a, M: Copy>(ui: &'a Ui<M>, label: &'a str, on_open: M) -> Eleme
 }
 
 /// `panel`, of `size`, touching `anchor`: under it or else above it, from its
-/// left edge or else to its right one. A tap outside sends `on_close`.
-fn anchored<'a, M: Copy>(ui: &'a Ui<M>, anchor: Rect, (width, height): (i16, i16), panel: Element<'a, M>, on_close: M) -> Element<'a, M> {
+/// left edge or else to its right one.
+fn anchored<'a, M: Copy>(ui: &'a Ui<M>, anchor: Rect, (width, height): (i16, i16), panel: Element<'a, M>) -> Element<'a, M> {
     let (screen_w, screen_h) = ui.screen_size();
     let left = if anchor.x + width > screen_w { anchor.right() - width } else { anchor.x };
     let top = if anchor.bottom() + height > screen_h { anchor.y - height } else { anchor.bottom() };
-    ui.column([
-        ui.column([]).absolute(Some(0), Some(0), Some(0), Some(0)).id("menu-backdrop").on_tap(on_close),
-        panel.absolute(Some(left.min(screen_w - width).max(0)), Some(top.min(screen_h - height).max(0)), None, None),
-    ])
+    ui.column([panel.absolute(Some(left.min(screen_w - width).max(0)), Some(top.min(screen_h - height).max(0)), None, None)])
 }
 
 /// A popup by `anchor`, as wide as it.
@@ -184,21 +182,19 @@ impl<M: Copy + 'static> DropdownMenu<M> {
 }
 
 impl<M: Copy + 'static> Component for DropdownMenu<M> {
-    type Msg = Option<usize>;
+    type Msg = usize;
 
-    fn update(&mut self, msg: Option<usize>, cx: &mut Cx<Self>) {
-        if let Some(index) = msg {
-            cx.send_to(&self.target, (self.on_select)(index));
-        }
+    fn update(&mut self, index: usize, cx: &mut Cx<Self>) {
+        cx.send_to(&self.target, (self.on_select)(index));
         cx.close_popup();
     }
 
-    fn view<'a>(&'a self, ui: &'a Ui<Option<usize>>) -> Element<'a, Option<usize>> {
+    fn view<'a>(&'a self, ui: &'a Ui<usize>) -> Element<'a, usize> {
         let widgets = &ui.theme().widgets;
         let t = &widgets.dropdown_menu;
         let height = self.options.len() as i16 * widgets.dropdown.height;
-        let rows: Vec<_> = self.options.iter().enumerate().map(|(i, label)| dropdown_row(ui, label, t.item, ui.empty()).selected(i == self.selected).on_tap(Some(i))).collect();
-        anchored(ui, self.anchor, (self.anchor.w, height), ui.column(rows).style(t.root).width(self.anchor.w).clip().id("dropdown-menu"), None)
+        let rows: Vec<_> = self.options.iter().enumerate().map(|(i, label)| dropdown_row(ui, label, t.item, ui.empty()).selected(i == self.selected).on_tap(i)).collect();
+        anchored(ui, self.anchor, (self.anchor.w, height), ui.column(rows).style(t.root).width(self.anchor.w).clip().id("dropdown-menu"))
     }
 }
 
@@ -274,33 +270,35 @@ impl<M: Copy + 'static> Menu<M> {
 }
 
 impl<M: Copy + 'static> Component for Menu<M> {
-    type Msg = Option<M>;
+    type Msg = M;
 
-    fn update(&mut self, msg: Option<M>, cx: &mut Cx<Self>) {
-        if let Some(msg) = msg {
-            cx.send_to(&self.target, msg);
-        }
+    fn update(&mut self, msg: M, cx: &mut Cx<Self>) {
+        cx.send_to(&self.target, msg);
         cx.close_popup();
     }
 
-    fn view<'a>(&'a self, ui: &'a Ui<Option<M>>) -> Element<'a, Option<M>> {
+    fn view<'a>(&'a self, ui: &'a Ui<M>) -> Element<'a, M> {
         let widgets = &ui.theme().widgets;
         let t = &widgets.menu;
         let height = self.items.len() as i16 * widgets.menu_item.height + 2 * t.padding_y;
-        let rows: Vec<_> = self.items.iter().map(|(label, msg)| menu_item(ui, label, Some(*msg))).collect();
-        anchored(ui, self.anchor, (t.width, height), ui.column(rows).style(t.panel).part_of(Part::Panel).id("menu"), None)
+        let rows: Vec<_> = self.items.iter().map(|(label, msg)| menu_item(ui, label, *msg)).collect();
+        anchored(ui, self.anchor, (t.width, height), ui.column(rows).style(t.panel).part_of(Part::Panel).id("menu"))
     }
 }
 
-/// A dialog over a scrim, closing on a tap outside.
-pub fn modal<'a, M: Copy>(ui: &'a Ui<M>, content: Element<'a, M>, on_close: M) -> Element<'a, M> {
+/// A dialog for a screen on the `Overlay`.
+pub fn modal<'a, M: Copy>(ui: &'a Ui<M>, content: Element<'a, M>) -> Element<'a, M> {
     let t = &ui.theme().widgets.modal;
     let (width, height) = ui.screen_size();
     let left = (width - t.width) / 2;
-    ui.column([
-        ui.column([]).style(t.scrim).absolute(Some(0), Some(0), Some(0), Some(0)).id("modal-scrim").on_tap(on_close).part_of(Part::Scrim),
-        ui.column([content]).style(t.panel).width(t.width).absolute(Some(left), Some(height / 3), None, None).part_of(Part::Panel),
-    ])
+    ui.column([ui
+        .column([content])
+        .style(t.panel)
+        .width(t.width)
+        .absolute(Some(left), Some(height / 3), None, None)
+        .appear(Presence::fade().scale(1.2).ms(150))
+        .disappear(Presence::fade().ms(100))
+        .part_of(Part::Panel)])
     .absolute(Some(0), Some(0), Some(0), Some(0))
 }
 

@@ -169,9 +169,20 @@ app.run();
   with the `Insets` it covers. Screens read them with `ui.insets()` and can avoid
   them or draw beneath. `ScreenStyle` tells the chrome what the top root screen
   wants. `Handle`s from `App::chrome` post to that component.
+- `Overlay` holds one screen over a scrim, `widgets.overlay.scrim`. The scrim
+  fades with the first node in the screen that has a presence, and keeps
+  touches from what is below; `Screen::scrim_tap` says what a tap on it sends.
+  A push replaces what shows at once, and a pop empties the overlay once the
+  screen's `.disappear` ends. A scrim with alpha 0 draws and damages nothing,
+  for a panel that should not repaint.
+- While the scrim moves, what is below it is drawn once into a picture of the
+  panel and does not change until the scrim stops; the 2D engine lays the
+  scrim over that picture, so the cost of a frame does not depend on what is
+  below. Not while an external surface shows.
 - `cx.popup(component)` shows a component above everything, the keyboard
   included, and works from any screen, a modal too. What is under it stays;
-  `cx.close_popup()` closes it, and so does a turn of the screen. It fills the
+  `cx.close_popup()` closes it, and so do a tap outside, which goes no
+  further, and a turn of the screen. It fills the
   screen and places itself, by `cx.tap_rect()`: where the node tapped for the
   message is, on any node. `Menu` and `DropdownMenu` are two.
 - A `Theme` is what resgen generates from a definition: colors, fonts, icons,
@@ -212,7 +223,7 @@ app.run();
   | `top_bar` | `Back`, `Title` |
   | `segmented` | `Item`, `Label` |
   | `menu` | `Panel` |
-  | `modal` | `Panel`, `Scrim` |
+  | `modal` | `Panel` |
 
   It reaches every match below the element, and not into child components.
 
@@ -226,7 +237,25 @@ app.run();
   that moment and without running a view or layout: `Animated::COLOR`, `OPACITY`
   and `POSITION`, the last being where layout puts the node in its parent. The
   value of the state being entered counts, so `pressed` can go at once and
-  fade back. Size does not ease, nor does a node appearing or going away.
+  fade back. Size does not ease; a node coming or going plays `.appear` and
+  `.disappear`.
+- `.appear(presence)` plays once the node is placed, from how `Presence` says it
+  looks while absent. `.disappear` plays when the view drops it or its screen
+  leaves the `Overlay`, and the node stays out of layout and touches until it
+  ends. Without `.disappear` the node goes as it came, backwards.
+
+  ```rust
+  .appear(Presence::fade().scale(0.9)).disappear(Presence::fade())
+  .appear(Presence::from_edge(Edge::Bottom))
+  .appear(Presence::fade().offset(0, 24).ms(150))
+  ```
+
+  `from_edge` starts just past that edge of the screen wherever the node is.
+  `Presence::none()` comes or goes at once, and 200 ms is the default length.
+  Siblings without a `key` match by place, so one that comes and goes among
+  them needs a `key`. `scale` draws an RGB565 picture of the node at half its
+  size, taken when it starts; without memory for it the node moves unscaled,
+  with a warning.
 
 ## Rotation
 

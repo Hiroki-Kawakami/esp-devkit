@@ -70,6 +70,12 @@ pub trait Screen: Component + Sized {
         None
     }
 
+    /// Sent when the scrim around it on an `Overlay` is tapped; `None` only
+    /// keeps the tap from what is below.
+    fn scrim_tap(&self) -> Option<Self::Msg> {
+        None
+    }
+
     /// Pushed onto a stack.
     fn on_enter(&mut self, _cx: &mut Cx<Self>) {}
 
@@ -327,6 +333,10 @@ pub(crate) trait AnyHost {
     fn theme(&self) -> Option<&'static Theme> {
         None
     }
+
+    fn scrim_tap(&self) -> Option<Erased> {
+        None
+    }
 }
 
 static NEXT_ID: AtomicU32 = AtomicU32::new(1);
@@ -422,5 +432,9 @@ impl<S: Screen> AnyHost for ScreenHost<S> {
 
     fn theme(&self) -> Option<&'static Theme> {
         self.inner.component.theme()
+    }
+
+    fn scrim_tap(&self) -> Option<Erased> {
+        self.inner.component.scrim_tap().map(Erased::new)
     }
 }

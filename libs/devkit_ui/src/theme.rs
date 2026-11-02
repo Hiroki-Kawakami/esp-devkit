@@ -262,8 +262,12 @@ pub struct MenuItemTheme {
 #[derive(Clone, Copy)]
 pub struct ModalTheme {
     pub width: i16,
-    pub scrim: &'static StateStyle,
     pub panel: &'static StateStyle,
+}
+
+#[derive(Clone, Copy)]
+pub struct OverlayTheme {
+    pub scrim: ColorRole,
 }
 
 #[derive(Clone, Copy)]
@@ -313,6 +317,7 @@ pub struct Widgets {
     pub menu: MenuTheme,
     pub menu_item: MenuItemTheme,
     pub modal: ModalTheme,
+    pub overlay: OverlayTheme,
     pub toast: ToastTheme,
     pub text_field: TextFieldTheme,
     pub keyboard: KeyboardTheme,

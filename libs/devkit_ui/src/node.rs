@@ -19,6 +19,7 @@ use crate::erased::Erased;
 use crate::gesture::GestureMap;
 use crate::keyboard::{InputKind, Keyboard};
 use crate::nav::NavigatorNode;
+use crate::presence::{Pose, Presence};
 use crate::style::{Prop, Role, State, Style};
 
 const CARET_WIDTH: i16 = 2;
@@ -164,6 +165,11 @@ pub(crate) struct Node {
     /// An animated opacity, over the style's.
     pub(crate) opacity: Option<u8>,
     pub(crate) fades: Option<Box<Fades, Caps>>,
+    pub(crate) appear: Option<Presence>,
+    pub(crate) disappear: Option<Presence>,
+    pub(crate) pose: Option<Pose>,
+    /// Out of the view, kept until its disappearance ends.
+    pub(crate) leaving: bool,
     /// Relative to the parent's origin.
     pub(crate) rect: Rect,
     /// Where it was last painted.
@@ -185,6 +191,12 @@ pub(crate) struct Node {
 }
 
 impl Node {
+    /// Where it is moved from its place, without layout.
+    pub(crate) fn shift(&self) -> (i16, i16) {
+        let (x, y) = self.pose.map_or((0, 0), |p| p.offset);
+        (self.translate.0 + x, self.translate.1 + y)
+    }
+
     pub(crate) fn new(content: NodeContent, owner: u16, caps: Caps) -> Self {
         Self {
             content,
@@ -214,6 +226,10 @@ impl Node {
             translate: (0, 0),
             opacity: None,
             fades: None,
+            appear: None,
+            disappear: None,
+            pose: None,
+            leaving: false,
             rect: Rect::default(),
             screen: Rect::default(),
             paint_dirty: true,

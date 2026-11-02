@@ -22,7 +22,9 @@ use crate::zoom::Zoom;
 /// The whole-screen navigator `App` owns.
 pub struct Root;
 
-/// A navigator above the chrome, for modals. Empty unless something is shown.
+/// A navigator above the chrome, over a scrim that keeps touches from what is
+/// below. Holds one screen: a push replaces what shows at once, and a pop
+/// empties it once the screen's `.disappear` ends.
 pub struct Overlay;
 
 /// A list's scroll position and a nested navigator, kept while hidden.
@@ -108,11 +110,13 @@ pub(crate) struct NavigatorNode {
     pub(crate) spare: NodeId,
     /// The screen above the main one started as the default detail.
     pub(crate) promoted: bool,
+    /// Popped, and kept until what is in it disappears.
+    pub(crate) departing: NodeId,
 }
 
 impl NavigatorNode {
     pub(crate) fn new(key: TypeId) -> Self {
-        Self { key, stack: Vec::new(), transit: None, transition: None, split: None, wanted: SplitSpec::default(), spare: NONE, promoted: false }
+        Self { key, stack: Vec::new(), transit: None, transition: None, split: None, wanted: SplitSpec::default(), spare: NONE, promoted: false, departing: NONE }
     }
 
     pub(crate) fn main(&self) -> NodeId {
@@ -233,6 +237,9 @@ impl Tree {
             idf::log::error!(c"ui", "no navigator for this operation");
             return;
         };
+        if nav == self.overlay && !popping {
+            self.clear_overlay(nav);
+        }
         let pane = self.nodes[nav as usize].screen;
         let stale: Vec<Rect> = if self.finish_transit(nav) { Vec::from([pane]) } else { self.damage.iter().filter(|r| r.intersects(&pane)).copied().collect() };
         let asked = op.transition;
@@ -461,6 +468,75 @@ impl Tree {
         self.unmount(self.popups, node);
     }
 
+    pub(crate) fn close_last_popup(&mut self) {
+        let mut popup = self.nodes[self.popups as usize].first_child;
+        while popup != NONE && self.nodes[popup as usize].next != NONE {
+            popup = self.nodes[popup as usize].next;
+        }
+        if popup != NONE {
+            self.unmount(self.popups, popup);
+        }
+    }
+
+    /// Whether `id` takes the touches nothing in it takes.
+    pub(crate) fn covers(&self, id: NodeId) -> bool {
+        if id == self.popups {
+            return self.nodes[id as usize].first_child != NONE;
+        }
+        id == self.overlay && matches!(&self.nodes[id as usize].content, NodeContent::Navigator(n) if !n.stack.is_empty() || n.departing != NONE)
+    }
+
+    pub(crate) fn tap_scrim(&mut self) {
+        let NodeContent::Navigator(navigator) = &self.nodes[self.overlay as usize].content else { return };
+        let shown = navigator.shown();
+        if shown == NONE {
+            return;
+        }
+        let NodeContent::Child(slot) = self.nodes[shown as usize].content else { return };
+        if let Some(msg) = self.slots[usize::from(slot)].host.as_ref().and_then(|host| host.scrim_tap()) {
+            self.queue.push_back((slot, msg, None));
+        }
+    }
+
+    /// Takes everything off the overlay at once.
+    fn clear_overlay(&mut self, nav: NodeId) {
+        let Some(navigator) = self.navigator(nav) else { return };
+        let departing = core::mem::replace(&mut navigator.departing, NONE);
+        let stack = core::mem::take(&mut navigator.stack);
+        if departing != NONE {
+            self.retire(nav, departing, true);
+        }
+        for entry in stack.into_iter().filter(|e| e.node != NONE) {
+            self.hook(entry.node, Hook::Disappear);
+            self.hook(entry.node, Hook::Exit);
+            self.unmount(nav, entry.node);
+        }
+    }
+
+    /// Removes a popped screen once what is in it has disappeared.
+    fn depart(&mut self, nav: NodeId, leaving: NodeId) {
+        if !self.disappear_within(leaving) {
+            self.retire(nav, leaving, true);
+            return;
+        }
+        self.nodes[leaving as usize].leaving = true;
+        if let Some(navigator) = self.navigator(nav) {
+            navigator.departing = leaving;
+        }
+    }
+
+    pub(crate) fn finish_departures(&mut self) {
+        let nav = self.overlay;
+        let Some(departing) = self.navigator(nav).map(|n| n.departing) else { return };
+        if departing == NONE || self.presence_within(departing) {
+            return;
+        }
+        if let Some(navigator) = self.navigator(nav) {
+            navigator.departing = NONE;
+        }
+        self.retire(nav, departing, true);
+    }
+
     pub(crate) fn close_popups(&mut self) {
         loop {
             let popup = self.nodes[self.popups as usize].first_child;
@@ -483,7 +559,7 @@ impl Tree {
         self.nodes[child as usize].next = node;
     }
 
-    fn unlink(&mut self, parent: NodeId, node: NodeId) {
+    pub(crate) fn unlink(&mut self, parent: NodeId, node: NodeId) {
         let next = self.nodes[node as usize].next;
         let mut child = self.nodes[parent as usize].first_child;
         if child == node {
@@ -530,7 +606,7 @@ impl Tree {
             }
         }
         let host = self.take_host(node);
-        self.damage.push(self.nodes[node as usize].screen);
+        self.damage_painted(node);
         self.unlink(nav, node);
         self.free_subtree(node);
         self.layout_dirty = true;
@@ -687,7 +763,7 @@ impl Tree {
         self.hook(leaving, Hook::Exit);
         let top = if emptied { self.show_spare(nav) } else { self.show_top(nav) };
         if top == NONE {
-            self.retire(nav, leaving, true);
+            self.depart(nav, leaving);
             return;
         }
         // The leaving screen paints above the one coming back.

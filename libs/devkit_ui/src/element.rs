@@ -21,6 +21,7 @@ use crate::canvas::CanvasId;
 use crate::external::ExternalSurface;
 use crate::node::Pull;
 use crate::nav::{DetailMap, SplitRole, SplitSpec, call_detail_map};
+use crate::presence::Presence;
 use crate::gesture::{Gesture, GestureMap, Gestures, call_gesture_map};
 use crate::keyboard::{InputKind, Keyboard};
 use crate::text_buffer::TextInput;
@@ -217,12 +218,14 @@ pub struct ElementData<'a, M: Copy> {
     pub(crate) input_kind: InputKind,
     pub(crate) repeat: bool,
     pub(crate) state: State,
+    pub(crate) appear: Option<Presence>,
+    pub(crate) disappear: Option<Presence>,
     _msg: PhantomData<fn() -> M>,
 }
 
 impl<'a, M: Copy> Element<'a, M> {
     fn new(bump: NonNull<Bump>, content: Content<'a>, children: &'a mut [Element<'a, M>]) -> Self {
-        let data = ElementData { bump, content, children: NonNull::from(children), style: Style::default(), when: &[], inherit: State::empty(), state_source: false, key: None, id: None, part: None, role: Role::None, tap: None, drag: None, on_scroll: None, bounce: true, pull: None, gestures: None, size: None, input: None, focusable: false, keep_focus: false, keyboard: None, input_kind: InputKind::Text, repeat: false, state: State::empty(), _msg: PhantomData };
+        let data = ElementData { bump, content, children: NonNull::from(children), style: Style::default(), when: &[], inherit: State::empty(), state_source: false, key: None, id: None, part: None, role: Role::None, tap: None, drag: None, on_scroll: None, bounce: true, pull: None, gestures: None, size: None, input: None, focusable: false, keep_focus: false, keyboard: None, input_kind: InputKind::Text, repeat: false, state: State::empty(), appear: None, disappear: None, _msg: PhantomData };
         Self { data: unsafe { NonNull::new_unchecked(bump.as_ref().alloc(data)) } }
     }
 
@@ -611,6 +614,20 @@ impl<'a, M: Copy> Element<'a, M> {
     /// Eases what `animated` names when the style changes to this one.
     pub fn animate(self, animated: Animated, ms: u16) -> Self {
         self.prop(Prop::Animate(animated, ms))
+    }
+
+    /// Comes in from `presence` once placed. Without `disappear`, goes the
+    /// same way backwards.
+    pub fn appear(mut self, presence: Presence) -> Self {
+        self.appear = Some(presence);
+        self
+    }
+
+    /// Goes to `presence` when taken out of the view, or with an `Overlay`'s
+    /// screen.
+    pub fn disappear(mut self, presence: Presence) -> Self {
+        self.disappear = Some(presence);
+        self
     }
 
     /// Clips what is inside, to the `radius` too. The inside of a scroller or

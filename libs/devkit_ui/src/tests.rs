@@ -145,7 +145,8 @@ static WIDGETS: Widgets = Widgets {
     table_row: TableRowTheme { root: &TABLE_ROW, label: &EMPTY, value: &EMPTY, chevron: &EMPTY },
     menu: MenuTheme { width: 200, padding_y: 8, panel: &MENU_PANEL },
     menu_item: MenuItemTheme { height: 50, root: &MENU_ITEM, label: &EMPTY },
-    modal: ModalTheme { width: 360, scrim: &EMPTY, panel: &EMPTY },
+    modal: ModalTheme { width: 360, panel: &EMPTY },
+    overlay: OverlayTheme { scrim: ColorRole::Fixed(Color::rgba(0, 0, 0, 128)) },
     toast: ToastTheme { root: &EMPTY, label: &EMPTY },
     text_field: TextFieldTheme { placeholder_color: ColorRole::Custom(2), caret_color: ColorRole::Primary, underline_color: ColorRole::Primary, area_min_height: 160, root: &EMPTY },
     keyboard: KeyboardTheme { gap: 8, root: &EMPTY, label: &EMPTY, key: &KEY, special: &KEY, primary: &KEY },
@@ -188,6 +189,10 @@ fn rect_of(tree: &Tree, id: &str) -> Rect {
 
 fn tap(tree: &mut Tree, id: &str) {
     let point = tree.tap_point(id).unwrap();
+    tap_at(tree, point);
+}
+
+fn tap_at(tree: &mut Tree, point: (i16, i16)) {
     tree.touch(&[(0, point)], 0);
     tree.touch(&[], 10);
     tree.update();
@@ -573,7 +578,7 @@ fn a_menu_item_reports_to_the_target_and_closes_the_menu() {
     assert_eq!(chosen.load(Relaxed), 2);
     assert!(tree.find("menu").is_none());
     tap(&mut tree, "left");
-    tap(&mut tree, "menu-backdrop");
+    tap_at(&mut tree, (SCREEN.w - 10, SCREEN.h - 10));
     assert!(tree.find("menu").is_none());
     assert_eq!(chosen.load(Relaxed), 2);
 }
@@ -585,7 +590,7 @@ fn a_dropdown_menu_touches_the_dropdown_and_opens_upward_at_the_bottom() {
     let open = rect_of(&tree, "open");
     assert_eq!(rect_of(&tree, "dropdown-menu").bottom(), open.y);
     assert_eq!(rect_of(&tree, "dropdown-menu").x, open.x);
-    tap(&mut tree, "menu-backdrop");
+    tap_at(&mut tree, (SCREEN.w - 10, 10));
     assert!(tree.find("dropdown-menu").is_none());
     tree.touch(&[(0, (100, 300))], 0);
     tree.touch(&[(0, (100, 0))], 16);
@@ -3299,4 +3304,228 @@ fn a_pull_is_lighter_up_to_its_height_and_retraces() {
     let (near, far) = (path(true, &[0, 200]), path(true, &[0, 400]));
     assert!(near > 60 && far - near < near, "{near} {far}");
     assert_eq!(path(true, &[0, 300, 400, 100]), path(true, &[0, 100]));
+}
+
+thread_local! {
+    static CARD: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
+}
+
+struct Below {
+    taps: &'static AtomicU32,
+}
+
+#[derive(Clone, Copy)]
+enum BelowMsg {
+    Tap,
+    Open(bool),
+}
+
+impl Screen for Below {}
+
+impl Component for Below {
+    type Msg = BelowMsg;
+
+    fn update(&mut self, msg: BelowMsg, cx: &mut Cx<Self>) {
+        match msg {
+            BelowMsg::Tap => {
+                self.taps.fetch_add(1, Relaxed);
+            }
+            BelowMsg::Open(dismiss) => cx.nav_of::<Overlay>().push(Card { dismiss, inner: true }),
+        }
+    }
+
+    fn view<'a>(&'a self, ui: &'a Ui<BelowMsg>) -> Element<'a, BelowMsg> {
+        ui.column([
+            ui.row([]).size(400, 300).id("below").on_tap(BelowMsg::Tap),
+            ui.row([]).size(40, 40).id("open").on_tap(BelowMsg::Open(true)),
+            ui.row([]).size(40, 40).id("open-kept").on_tap(BelowMsg::Open(false)),
+        ])
+    }
+}
+
+struct Card {
+    dismiss: bool,
+    inner: bool,
+}
+
+#[derive(Clone, Copy)]
+enum CardMsg {
+    Close,
+    Drop,
+    Again,
+}
+
+impl Component for Card {
+    type Msg = CardMsg;
+
+    fn update(&mut self, msg: CardMsg, cx: &mut Cx<Self>) {
+        match msg {
+            CardMsg::Close => cx.nav_of::<Overlay>().pop(),
+            CardMsg::Drop => self.inner = false,
+            CardMsg::Again => cx.nav_of::<Overlay>().push(Card { dismiss: self.dismiss, inner: true }),
+        }
+        cx.rebuild();
+    }
+
+    fn view<'a>(&'a self, ui: &'a Ui<CardMsg>) -> Element<'a, CardMsg> {
+        let inner = if self.inner { ui.row([]).size(40, 40).background(RED).key(1).id("inner").appear(Presence::fade()) } else { ui.empty() };
+        ui.column([ui
+            .column([inner, ui.row([]).size(200, 40).id("in-card")])
+            .background(WHITE)
+            .absolute(Some(100), Some(400), None, None)
+            .id("card")
+            .appear(Presence::from_edge(Edge::Bottom))
+            .disappear(Presence::fade())])
+    }
+}
+
+impl Screen for Card {
+    fn on_appear(&mut self, cx: &mut Cx<Self>) {
+        CARD.with(|c| c.set(cx.handle().id()));
+    }
+
+    fn scrim_tap(&self) -> Option<CardMsg> {
+        self.dismiss.then_some(CardMsg::Close)
+    }
+}
+
+fn send_card(tree: &mut Tree, msg: CardMsg) {
+    tree.post(CARD.with(|c| c.get()), Erased::new(msg));
+    tree.update();
+}
+
+fn card_tree(theme: &'static Theme) -> (Tree, &'static AtomicU32) {
+    let taps = Box::leak(Box::new(AtomicU32::new(0)));
+    let mut tree = Tree::new(Below { taps }, SCREEN, Caps::INTERNAL, theme);
+    settle(&mut tree);
+    (tree, taps)
+}
+
+/// Finds what `tree.find` skips: nodes off the screen.
+fn node_of(tree: &Tree, from: NodeId, id: &str) -> Option<NodeId> {
+    let node = &tree.nodes[from as usize];
+    if node.id == Some(id) {
+        return Some(from);
+    }
+    let mut child = node.first_child;
+    while child != NONE {
+        if let Some(found) = node_of(tree, child, id) {
+            return Some(found);
+        }
+        child = tree.nodes[child as usize].next;
+    }
+    None
+}
+
+fn count(tree: &Tree, from: NodeId, id: &str) -> usize {
+    let node = &tree.nodes[from as usize];
+    let mut found = usize::from(node.id == Some(id));
+    let mut child = node.first_child;
+    while child != NONE {
+        found += count(tree, child, id);
+        child = tree.nodes[child as usize].next;
+    }
+    found
+}
+
+#[test]
+fn a_screen_on_the_overlay_comes_from_its_edge_over_a_scrim_that_follows_it() {
+    let (mut tree, _) = card_tree(theme());
+    tap(&mut tree, "open");
+    let card = node_of(&tree, tree.root, "card").unwrap();
+    assert_eq!(tree.nodes[card as usize].pose.unwrap().offset, (0, 200), "just below the screen");
+    assert_eq!(tree.scrim, 0);
+    tree.tick(100);
+    tree.update();
+    let (offset, scrim) = (tree.nodes[card as usize].pose.unwrap().offset.1, tree.scrim);
+    assert!(offset > 0 && offset < 200, "{offset}");
+    assert!(scrim > 0 && scrim < 128, "{scrim}");
+    settle(&mut tree);
+    assert!(tree.nodes[card as usize].pose.is_none());
+    assert_eq!(rect_of(&tree, "card").y, 400);
+    assert_eq!(tree.scrim, 128);
+}
+
+#[test]
+fn the_scrim_keeps_touches_from_below_and_sends_what_the_screen_asks() {
+    let (mut tree, taps) = card_tree(theme());
+    tap(&mut tree, "open-kept");
+    settle(&mut tree);
+    tap_at(&mut tree, (10, 10));
+    settle(&mut tree);
+    assert_eq!(taps.load(Relaxed), 0);
+    assert!(tree.find("card").is_some(), "no scrim_tap, nothing closes");
+
+    send_card(&mut tree, CardMsg::Close);
+    settle(&mut tree);
+    tap(&mut tree, "open");
+    settle(&mut tree);
+    tap_at(&mut tree, (10, 10));
+    assert!(tree.find("card").is_some(), "kept while it disappears");
+    tree.tick(100);
+    tree.update();
+    assert!(tree.scrim > 0 && tree.scrim < 128, "{}", tree.scrim);
+    tap_at(&mut tree, (10, 10));
+    assert_eq!(taps.load(Relaxed), 0, "still covered");
+    settle(&mut tree);
+    assert!(tree.find("card").is_none());
+    assert_eq!(tree.scrim, 0);
+    tap_at(&mut tree, (10, 10));
+    assert_eq!(taps.load(Relaxed), 1);
+}
+
+#[test]
+fn a_push_on_the_overlay_replaces_what_shows_at_once() {
+    let (mut tree, _) = card_tree(theme());
+    tap(&mut tree, "open");
+    settle(&mut tree);
+    send_card(&mut tree, CardMsg::Again);
+    assert_eq!(count(&tree, tree.root, "card"), 1);
+    assert_eq!(tree.scrim, 0, "the scrim comes again with the new screen");
+    settle(&mut tree);
+    assert_eq!(tree.scrim, 128);
+}
+
+#[test]
+fn an_element_taken_out_stays_until_it_disappears_out_of_the_flow() {
+    let (mut tree, _) = card_tree(theme());
+    tap(&mut tree, "open");
+    settle(&mut tree);
+    let inner = rect_of(&tree, "inner");
+    assert_eq!(rect_of(&tree, "in-card").y, inner.bottom());
+    send_card(&mut tree, CardMsg::Drop);
+    let left = tree.find("inner").unwrap();
+    assert!(tree.nodes[left as usize].leaving);
+    assert_eq!(rect_of(&tree, "inner"), inner);
+    assert_eq!(rect_of(&tree, "in-card").y, inner.y);
+    tree.tick(100);
+    tree.update();
+    let opacity = tree.nodes[left as usize].pose.unwrap().opacity;
+    assert!(opacity > 0 && opacity < 255, "{opacity}");
+    settle(&mut tree);
+    assert!(tree.find("inner").is_none());
+}
+
+#[test]
+fn a_clear_scrim_damages_only_what_draws() {
+    let clear: &'static Theme = Box::leak(Box::new(Theme { widgets: Widgets { overlay: OverlayTheme { scrim: ColorRole::Fixed(Color::rgba(0, 0, 0, 0)) }, ..theme().widgets }, ..*theme() }));
+    let (mut tree, _) = card_tree(clear);
+    let mut damage = Vec::new();
+    let mut play = |tree: &mut Tree| {
+        for _ in 0..40 {
+            tree.update();
+            damage.extend(tree.take_damage());
+            tree.tick(16);
+        }
+    };
+    tap(&mut tree, "open");
+    play(&mut tree);
+    send_card(&mut tree, CardMsg::Close);
+    play(&mut tree);
+    assert!(tree.find("card").is_none());
+    assert!(!damage.is_empty());
+    for rect in damage.iter().filter(|r| !r.is_empty()) {
+        assert!(rect.w <= 200 && rect.y >= 300, "{rect:?} in {damage:?}");
+    }
+    assert_eq!(tree.scrim, 0);
 }

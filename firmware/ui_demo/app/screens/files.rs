@@ -311,8 +311,12 @@ impl Component for Confirm {
                 button(ui, "Cancel", theme.widgets.button.secondary, ConfirmMsg::Close).id("cancel"),
             ])
             .gap(theme.widgets.unit.padding);
-        modal(ui, content, ConfirmMsg::Close)
+        modal(ui, content)
     }
 }
 
-impl Screen for Confirm {}
+impl Screen for Confirm {
+    fn scrim_tap(&self) -> Option<ConfirmMsg> {
+        Some(ConfirmMsg::Close)
+    }
+}

@@ -55,7 +55,6 @@ pub enum Part {
     Mark,
     Meta,
     Panel,
-    Scrim,
     Thumb,
     Title,
     Track,

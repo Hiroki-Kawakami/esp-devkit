@@ -15,7 +15,7 @@ const FRONT_SCALE: f32 = 1.1;
 const OUTSIDE: u16 = u16::MAX;
 /// Size of both pictures against the pane, in the 2D engine's steps of 1/16.
 pub(crate) const PICTURE_SCALE: f32 = 0.5;
-const CHUNK: usize = 128;
+pub(crate) const CHUNK: usize = 128;
 
 mod p4 {
     unsafe extern "C" {
@@ -24,7 +24,7 @@ mod p4 {
 }
 
 #[repr(C, align(16))]
-struct Line([u16; CHUNK]);
+pub(crate) struct Line(pub(crate) [u16; CHUNK]);
 
 #[repr(C, align(64))]
 #[derive(Clone, Copy)]
@@ -92,7 +92,7 @@ fn spread(v: u16) -> u32 {
 
 /// `front` over `back` by `a5` of 32.
 #[inline(always)]
-fn blend(back: u16, front: u16, a5: u32) -> u16 {
+pub(crate) fn blend(back: u16, front: u16, a5: u32) -> u16 {
     let b = spread(back);
     let difference = spread(front).wrapping_sub(b).wrapping_mul(a5).wrapping_add(SPREAD_ROUND);
     let out = b.wrapping_add(difference >> 5) & SPREAD;
@@ -251,7 +251,7 @@ unsafe fn fill(out: *mut u16, n: usize, value: u16) {
 
 /// The pixels at byte `offsets`, all inside the row `source`.
 #[inline(always)]
-unsafe fn gather(out: *mut u16, source: *const u16, offsets: &[u16]) {
+pub(crate) unsafe fn gather(out: *mut u16, source: *const u16, offsets: &[u16]) {
     let (n, offsets, source) = (offsets.len(), offsets.as_ptr(), source.cast::<u8>());
     let at = |i: usize| unsafe { source.add(usize::from(offsets.add(i).read())).cast::<u16>().read() };
     let mut i = 0;

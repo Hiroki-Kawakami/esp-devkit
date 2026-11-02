@@ -15,7 +15,7 @@ use core::fmt::Write;
 use core::ptr::NonNull;
 use core::slice;
 
-use devkit_gfx::{ImageFormat, Rect};
+use devkit_gfx::{Color, ImageFormat, Rect};
 use idf::heap::Caps;
 use idf::sync::OnceLock;
 
@@ -30,6 +30,7 @@ use crate::keyboard::{InputKind, KeyboardMode, KeyboardPanel};
 use crate::erased::Erased;
 use crate::nav::{NavigatorNode, Overlay, Root, Saved};
 use crate::node::{CanvasNode, ListNode, NONE, Node, NodeContent, NodeId, Pull, ScrollNode, TextNode};
+use crate::presence::Running;
 use crate::presenter::{ROW_GRID, Strips};
 use crate::style::{Dimension, Insets, Role, ScreenStyle, State, Style};
 use crate::text_buffer::TextInput;
@@ -207,6 +208,19 @@ pub(crate) struct Tree {
     pub(crate) root_navigator: NodeId,
     pub(crate) chrome: Vec<u16>,
     pub(crate) popups: NodeId,
+    pub(crate) overlay: NodeId,
+    /// The scrim's alpha as last painted.
+    pub(crate) scrim: u8,
+    pub(crate) presences: Vec<Running>,
+    /// Created with `.appear`, waiting to be placed.
+    pub(crate) presence_pending: Vec<NodeId>,
+    /// Painted for a picture, as if shown.
+    pub(crate) capturing: Cell<NodeId>,
+    /// What is below the overlay shows from a backdrop instead of being painted.
+    pub(crate) backdrop_on: bool,
+    /// Where the display list paints above the scrim.
+    pub(crate) backdrop_split: Cell<usize>,
+
     pub(crate) restoring: Vec<Saved>,
     pub(crate) theme: &'static Theme,
     pub(crate) screen_style: ScreenStyle,
@@ -247,7 +261,7 @@ pub(crate) struct Tree {
     flings: Vec<Fling>,
 }
 
-fn shadow_extent(style: &Style) -> i16 {
+pub(crate) fn shadow_extent(style: &Style) -> i16 {
     style.shadow.map_or(0, |s| i16::from(s.blur) + i16::from(s.y.unsigned_abs()))
 }
 
@@ -264,6 +278,14 @@ impl Tree {
             root_navigator: NONE,
             chrome: Vec::new(),
             popups: NONE,
+            overlay: NONE,
+            scrim: 0,
+            presences: Vec::new(),
+            presence_pending: Vec::new(),
+            capturing: Cell::new(NONE),
+            backdrop_on: false,
+            backdrop_split: Cell::new(0),
+
             restoring: Vec::new(),
             theme,
             screen_style: ScreenStyle::default(),
@@ -313,6 +335,7 @@ impl Tree {
         tree.root_id = root.id();
         tree.seed_navigator(nav, root);
         let overlay = tree.new_navigator(TypeId::of::<Overlay>(), 0);
+        tree.overlay = overlay;
         tree.add_plane(overlay);
         tree.popups = tree.alloc_node(Node::new(NodeContent::Box, 0, tree.caps));
         tree.add_plane(tree.popups);
@@ -509,6 +532,7 @@ impl Tree {
         self.forget_gestures(id);
         self.animations.retain(|a| a.0 != id);
         self.forget_fades(id);
+        self.forget_presence(id);
         if self.focus == id {
             self.focus = NONE;
             self.keyboard_changed = true;
@@ -538,7 +562,7 @@ impl Tree {
 
     fn matches<M: Copy>(&mut self, id: NodeId, element: &Element<'_, M>) -> bool {
         let node = &self.nodes[id as usize];
-        if node.key != element.key {
+        if node.key != element.key || node.leaving {
             return false;
         }
         match (&node.content, &element.content) {
@@ -574,13 +598,14 @@ impl Tree {
         if self.reconcile_in_place(owner, parent, elements) {
             return;
         }
-        let mut old = Vec::new();
+        let (mut old, mut left) = (Vec::new(), Vec::new());
         let mut child = self.nodes[parent as usize].first_child;
         while child != NONE {
-            old.push(child);
+            if self.nodes[child as usize].leaving { left.push(child) } else { old.push(child) }
             child = self.nodes[child as usize].next;
         }
-        let was = old.clone();
+        let mut was = old.clone();
+        was.extend_from_slice(&left);
         let mut cursor = 0;
         let mut new = Vec::with_capacity(elements.len());
         for element in elements.iter().filter(|e| !e.is_empty()) {
@@ -606,9 +631,14 @@ impl Tree {
             new.push(id);
         }
         for id in old.into_iter().filter(|id| *id != NONE) {
-            self.damage.push(self.nodes[id as usize].screen);
-            self.free_subtree(id);
+            if self.leave(id) {
+                left.push(id);
+            } else {
+                self.damage_painted(id);
+                self.free_subtree(id);
+            }
         }
+        new.extend_from_slice(&left);
         for pair in new.windows(2) {
             self.nodes[pair[0] as usize].next = pair[1];
         }
@@ -715,6 +745,8 @@ impl Tree {
         node.keyboard = element.keyboard;
         node.input_kind = element.input_kind;
         node.repeat = element.repeat;
+        node.appear = element.appear;
+        node.disappear = element.disappear;
         node.own_state = (node.own_state & (State::PRESSED | State::HOVERED | State::FOCUSED)) | element.state;
         node.source_state = source & element.inherit;
         node.state = node.own_state | node.source_state;
@@ -855,6 +887,9 @@ impl Tree {
 
     fn create_node<M: Copy>(&mut self, owner: u16, element: &Element<'_, M>) -> NodeId {
         let id = self.new_node(owner, element);
+        if element.appear.is_some_and(|p| p.moves()) {
+            self.presence_pending.push(id);
+        }
         match element.content {
             Content::Canvas(_) => self.canvases.push(id),
             Content::External(_) => {
@@ -1067,11 +1102,84 @@ impl Tree {
             self.update();
             return;
         }
-        if !self.pending_animations.is_empty() {
+        let appearing = self.start_appearing();
+        let animating = !self.pending_animations.is_empty();
+        if animating {
             self.start_animations();
+        }
+        if appearing || animating {
             self.sync_screen(self.root, 0, 0, self.area, false);
         }
         self.fading.append(&mut self.starting);
+        self.sync_scrim();
+    }
+
+    fn sync_scrim(&mut self) {
+        let alpha = self.scrim_alpha();
+        let was = core::mem::replace(&mut self.scrim, alpha);
+        if alpha != was {
+            self.damage.push(self.nodes[self.overlay as usize].screen);
+        }
+    }
+
+    /// While the scrim moves, what is below the overlay does not change but
+    /// takes the whole screen to repaint.
+    pub(crate) fn backdrop_wanted(&self) -> bool {
+        let NodeContent::Navigator(navigator) = &self.nodes[self.overlay as usize].content else { return false };
+        let screen = if navigator.departing != NONE { navigator.departing } else { navigator.shown() };
+        screen != NONE && self.scrim_color().a > 0 && self.presence_within(screen)
+    }
+
+    pub(crate) fn scrim_color(&self) -> Color {
+        self.theme.palette(self.color_mode).color(self.theme.widgets.overlay.scrim)
+    }
+
+    /// Follows how shown the overlay's screen is; 0 paints nothing.
+    fn scrim_alpha(&self) -> u8 {
+        let NodeContent::Navigator(navigator) = &self.nodes[self.overlay as usize].content else { return 0 };
+        let screen = if navigator.departing != NONE { navigator.departing } else { navigator.shown() };
+        let alpha = self.scrim_color().a;
+        if screen == NONE || alpha == 0 {
+            return 0;
+        }
+        (f32::from(alpha) * self.presence_level(screen)) as u8
+    }
+
+    /// Whether the node itself draws anything, apart from what is in it.
+    fn paints(&self, id: NodeId) -> bool {
+        let node = &self.nodes[id as usize];
+        let style = &node.style;
+        style.background.is_some()
+            || node.fades.as_ref().is_some_and(|f| f.background.is_some())
+            || (style.border_color.is_some() && style.border_width > 0)
+            || style.border_top.is_some()
+            || style.border_bottom.is_some()
+            || style.scroll_border.is_some()
+            || style.shadow.is_some()
+            || node.pose.is_some()
+            || matches!(node.content, NodeContent::Text(_) | NodeContent::Image { .. } | NodeContent::Canvas(_) | NodeContent::External(_))
+    }
+
+    fn damage_extent(node: &Node) -> i16 {
+        shadow_extent(&node.style) + node.pose.map_or(0, |p| p.reach)
+    }
+
+    /// Damages what `id` and what is in it drew, and nothing else.
+    pub(crate) fn damage_painted(&mut self, id: NodeId) {
+        let node = &self.nodes[id as usize];
+        if !node.screen.is_empty() && self.paints(id) {
+            self.damage.push(node.screen.expand(Self::damage_extent(node)));
+        }
+        if let NodeContent::List(list) = &self.nodes[id as usize].content {
+            for (_, row) in list.rows.clone() {
+                self.damage_painted(row);
+            }
+        }
+        let mut child = self.nodes[id as usize].first_child;
+        while child != NONE {
+            self.damage_painted(child);
+            child = self.nodes[child as usize].next;
+        }
     }
 
     #[cfg(test)]
@@ -1290,15 +1398,19 @@ impl Tree {
     }
 
     fn sync_screen(&mut self, id: NodeId, dx: i32, dy: i32, clip: Rect, quiet: bool) {
+        let paints = self.paints(id);
         let node = &mut self.nodes[id as usize];
-        let x = dx + i32::from(node.rect.x) + i32::from(node.translate.0);
-        let y = dy + i32::from(node.rect.y) + i32::from(node.translate.1);
+        let (shift_x, shift_y) = node.shift();
+        let x = dx + i32::from(node.rect.x) + i32::from(shift_x);
+        let y = dy + i32::from(node.rect.y) + i32::from(shift_y);
         let visible = y < i32::from(clip.bottom()) && y + i32::from(node.rect.h) > i32::from(clip.y);
         let screen = if visible { Rect::new(x as i16, y as i16, node.rect.w, node.rect.h) } else { Rect::default() };
         let quiet = quiet || core::mem::take(&mut node.scrolled);
         let moved = node.screen != screen;
-        if !quiet && (moved || node.paint_dirty) {
-            let extent = shadow_extent(&node.style);
+        // Nothing of its own shows where it is placed; what is in it damages itself.
+        let unseen = node.screen.is_empty() && !paints;
+        if !quiet && !unseen && (moved || node.paint_dirty) {
+            let extent = Self::damage_extent(node);
             let old = node.screen.expand(extent);
             let new = screen.expand(extent);
             self.damage.push(old);
@@ -1347,6 +1459,8 @@ impl Tree {
             && !self.transiting()
             && self.animations.is_empty()
             && self.fading.is_empty()
+            && self.presences.is_empty()
+            && self.presence_pending.is_empty()
             && !self.keyboard_changed
             && self.contacts.is_empty()
             && self.trackers.is_empty()
@@ -1356,7 +1470,7 @@ impl Tree {
     }
 
     pub(crate) fn animating(&self) -> bool {
-        !self.flings.is_empty() || self.transiting() || !self.animations.is_empty() || !self.fading.is_empty()
+        !self.flings.is_empty() || self.transiting() || !self.animations.is_empty() || !self.fading.is_empty() || !self.presences.is_empty()
     }
 
     /// Something happens after a delay, without an event to wake for.
@@ -1538,8 +1652,12 @@ impl Tree {
 
     fn hit(&self, id: NodeId, dx: i32, dy: i32, x: i32, y: i32) -> Option<Hit> {
         let node = &self.nodes[id as usize];
-        let left = dx + i32::from(node.rect.x) + i32::from(node.translate.0);
-        let top = dy + i32::from(node.rect.y) + i32::from(node.translate.1);
+        if node.leaving {
+            return None;
+        }
+        let (shift_x, shift_y) = node.shift();
+        let left = dx + i32::from(node.rect.x) + i32::from(shift_x);
+        let top = dy + i32::from(node.rect.y) + i32::from(shift_y);
         let right = left + i32::from(node.rect.w);
         let bottom = top + i32::from(node.rect.h);
         let inside = x >= left && x < right && y >= top && y < bottom;
@@ -1584,6 +1702,9 @@ impl Tree {
                     hit.gesture = id;
                 }
             }
+        }
+        if found.is_none() && self.covers(id) {
+            found = Some(Hit { tap: id, ..NO_HIT });
         }
         found
     }
@@ -1710,6 +1831,14 @@ impl Tree {
     }
 
     pub(crate) fn finish_tap(&mut self, id: NodeId, point: (i16, i16), repeated: bool) {
+        if id == self.overlay {
+            self.tap_scrim();
+            return;
+        }
+        if id == self.popups {
+            self.close_last_popup();
+            return;
+        }
         let node = &self.nodes[id as usize];
         let (tap, owner, rect) = (node.tap, node.owner, node.screen);
         if node.input.is_some() || node.focusable {
@@ -1781,6 +1910,8 @@ impl Tree {
     /// Advances what moves by itself.
     pub(crate) fn tick(&mut self, dt_ms: u32) {
         self.tick_transits(dt_ms);
+        self.tick_presences(dt_ms);
+        self.finish_departures();
         self.tick_animations(dt_ms);
         self.tick_fades(dt_ms);
         self.tick_repeat(dt_ms);

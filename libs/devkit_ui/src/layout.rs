@@ -36,7 +36,7 @@ fn offer(limit: i16, max: i16) -> i16 {
 impl Tree {
     /// The next child after `child` that is in the flow.
     fn flow(&self, mut child: NodeId) -> NodeId {
-        while child != NONE && self.nodes[child as usize].style.absolute.is_some() {
+        while child != NONE && (self.nodes[child as usize].style.absolute.is_some() || self.nodes[child as usize].leaving) {
             child = self.nodes[child as usize].next;
         }
         child
@@ -188,7 +188,7 @@ impl Tree {
         while child != NONE {
             let node = &self.nodes[child as usize];
             let next = node.next;
-            if let Some(inset) = node.style.absolute {
+            if let Some(inset) = node.style.absolute.filter(|_| !node.leaving) {
                 let avail_w = match (inset.left, inset.right) {
                     (Some(l), Some(r)) => parent.w - l - r,
                     _ => parent.w,

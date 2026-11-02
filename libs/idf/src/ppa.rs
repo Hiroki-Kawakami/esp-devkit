@@ -187,19 +187,45 @@ pub struct BlendOp {
     pub format: ColorMode,
 }
 
+/// A `width` x `height` block of `backdrop` under `color` at `alpha`, written
+/// to a block of `out` in the same format. The engine reads `mask`, one A8
+/// byte per pixel of the block, and ignores what they hold. `out`'s address and
+/// size must be cache-line aligned.
+pub struct TintOp {
+    pub backdrop: *const u8,
+    pub backdrop_width: u32,
+    pub backdrop_height: u32,
+    pub x: u32,
+    pub y: u32,
+    pub out: *mut u8,
+    pub out_size: u32,
+    pub out_width: u32,
+    pub out_height: u32,
+    pub out_x: u32,
+    pub out_y: u32,
+    pub width: u32,
+    pub height: u32,
+    pub format: ColorMode,
+    pub color: [u8; 3],
+    pub alpha: u8,
+    pub mask: *const u8,
+}
+
 pub struct Blend {
     client: sys::ppa_client_handle_t,
     done: Semaphore,
+    pending: u32,
 }
 
 unsafe impl Send for Blend {}
 
 impl Blend {
-    pub fn new() -> Result<Self> {
-        let done = Semaphore::try_new(0, 1)?;
+    /// `max_pending` transactions may be in flight at once.
+    pub fn new(max_pending: u32) -> Result<Self> {
+        let done = Semaphore::try_new(0, max_pending)?;
         let mut cfg: sys::ppa_client_config_t = unsafe { mem::zeroed() };
         cfg.oper_type = sys::ppa_operation_t_PPA_OPERATION_BLEND;
-        cfg.max_pending_trans_num = 1;
+        cfg.max_pending_trans_num = max_pending;
         let mut client = ptr::null_mut();
         Error::check(unsafe { sys::ppa_register_client(&cfg, &mut client) })?;
         let cbs = sys::ppa_event_callbacks_t { on_trans_done: Some(trans_done) };
@@ -207,7 +233,60 @@ impl Blend {
             unsafe { sys::ppa_unregister_client(client) };
             return Err(err);
         }
-        Ok(Self { client, done })
+        Ok(Self { client, done, pending: 0 })
+    }
+
+    /// Returns once queued. The pixels must stay valid until
+    /// [`Self::wait_timeout`] has returned for this transaction.
+    pub unsafe fn start_tint(&mut self, op: &TintOp) -> Result<()> {
+        let mut cfg: sys::ppa_blend_oper_config_t = unsafe { mem::zeroed() };
+        cfg.in_bg.buffer = op.backdrop.cast();
+        cfg.in_bg.pic_w = op.backdrop_width;
+        cfg.in_bg.pic_h = op.backdrop_height;
+        cfg.in_bg.block_w = op.width;
+        cfg.in_bg.block_h = op.height;
+        cfg.in_bg.block_offset_x = op.x;
+        cfg.in_bg.block_offset_y = op.y;
+        cfg.in_bg.__bindgen_anon_1.blend_cm = op.format.blend();
+        cfg.in_fg.buffer = op.mask.cast();
+        cfg.in_fg.pic_w = op.width;
+        cfg.in_fg.pic_h = op.height;
+        cfg.in_fg.block_w = op.width;
+        cfg.in_fg.block_h = op.height;
+        cfg.in_fg.__bindgen_anon_1.blend_cm = sys::ppa_blend_color_mode_t_PPA_BLEND_COLOR_MODE_A8;
+        cfg.fg_alpha_update_mode = sys::ppa_alpha_update_mode_t_PPA_ALPHA_FIX_VALUE;
+        cfg.__bindgen_anon_2.fg_alpha_fix_val = u32::from(op.alpha);
+        let [r, g, b] = op.color;
+        cfg.fg_fix_rgb_val.val = (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b);
+        cfg.out.buffer = op.out.cast();
+        cfg.out.buffer_size = op.out_size;
+        cfg.out.pic_w = op.out_width;
+        cfg.out.pic_h = op.out_height;
+        cfg.out.block_offset_x = op.out_x;
+        cfg.out.block_offset_y = op.out_y;
+        cfg.out.__bindgen_anon_1.blend_cm = op.format.blend();
+        cfg.mode = sys::ppa_trans_mode_t_PPA_TRANS_MODE_NON_BLOCKING;
+        cfg.user_data = self.done.raw().cast();
+        Error::check(unsafe { sys::ppa_do_blend(self.client, &cfg) })?;
+        self.pending += 1;
+        Ok(())
+    }
+
+    pub fn pending(&self) -> u32 {
+        self.pending
+    }
+
+    /// Blocks until the oldest transaction in flight has finished; `false` on
+    /// timeout, with the transaction still counted as in flight.
+    pub fn wait_timeout(&mut self, timeout: Duration) -> bool {
+        if self.pending == 0 {
+            return true;
+        }
+        if !self.done.take_timeout(timeout) {
+            return false;
+        }
+        self.pending -= 1;
+        true
     }
 
     /// Blocks until done, or for `timeout`, after which `false` leaves the
@@ -244,6 +323,7 @@ impl Blend {
 
 impl Drop for Blend {
     fn drop(&mut self) {
+        while self.pending > 0 && self.wait_timeout(Duration::from_secs(1)) {}
         unsafe { sys::ppa_unregister_client(self.client) };
     }
 }

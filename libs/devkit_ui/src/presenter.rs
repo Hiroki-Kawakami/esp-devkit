@@ -13,7 +13,7 @@ use core::ffi::CStr;
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use core::time::Duration;
 
-use bsp_rs::display::{self, Blitter, Display, FrameBuffer, PixelFormat, Rotation};
+use bsp_rs::display::{self, Blender, Blitter, Display, FrameBuffer, PixelFormat, Rotation};
 use devkit::Lease;
 use devkit_gfx::{Argb8888, Bgr888, ClipStore, Damage, DisplayList, GlyphCache, Pixel, Prepared, Rect, Rgb565, Surface, draw, draw_from};
 use idf::heap::Caps;
@@ -174,9 +174,25 @@ impl Strips {
     }
 }
 
+/// Strips the 2D engine fills from a backdrop under the scrim, instead of
+/// drawing them.
+#[derive(Clone, Copy)]
+pub(crate) struct Tint {
+    pub(crate) backdrop: FrameBuffer,
+    pub(crate) color: [u8; 3],
+    pub(crate) alpha: u8,
+    /// Where the display list paints above the scrim.
+    pub(crate) split: usize,
+}
+
 struct Job {
     list: *const DisplayList<'static, Caps>,
     strips: Vec<Rect, Caps>,
+    tinted: Vec<bool, Caps>,
+    tint: Option<(Tint, *const u8)>,
+    buffer_bytes: usize,
+    /// Where a lane turns a tinted strip to the logical picture.
+    turns: [*mut u8; MAX_LANES],
     fb: Option<FrameBuffer>,
     rotation: Rotation,
     buffers: [[*mut u8; STRIPS_PER_LANE]; MAX_LANES],
@@ -199,6 +215,7 @@ unsafe impl Sync for Shared {}
 struct Lane {
     id: usize,
     blitter: Blitter,
+    blender: Blender,
     turn: usize,
     last: Rect,
     before: Rect,
@@ -222,6 +239,9 @@ impl Lane {
             }
             while self.blitter.pending() > 0 {
                 self.wait_blit(&shared, job);
+            }
+            while self.blender.pending() > 0 {
+                self.wait_tint(&shared);
             }
             shared.raster_us[self.id].store(self.raster, Ordering::Relaxed);
             shared.stall_us[self.id].store(self.stall, Ordering::Relaxed);
@@ -248,11 +268,64 @@ impl Lane {
         self.stall += t.elapsed().as_micros() as u32;
     }
 
+    fn wait_tint(&mut self, shared: &Shared) {
+        let t = Instant::now();
+        while !self.blender.wait_timeout(STALL_TIMEOUT) {
+            error!(TAG, "lane {}: tint stalled, pending {}, frame {}", self.id, self.blender.pending(), shared.frame.load(Ordering::Relaxed));
+        }
+        self.stall += t.elapsed().as_micros() as u32;
+    }
+
+    /// Fills `buffer` with the backdrop under the scrim for `strip`, all by the
+    /// 2D engine: what it blends elsewhere is then the same to the bit.
+    #[allow(clippy::too_many_arguments)]
+    fn tint_under(&mut self, shared: &Shared, job: &Job, tint: &Tint, mask: *const u8, strip: Rect, buffer: *mut u8, format: PixelFormat) -> Result<()> {
+        let area = display::Rect { x: strip.x as u16, y: strip.y as u16, width: strip.w as u16, height: strip.h as u16 };
+        let logical = display::Size { width: area.width, height: area.height };
+        let out = display::Picture { ptr: buffer, size: logical, format, len: job.buffer_bytes };
+        while self.blender.pending() == STRIPS_PER_LANE as u32 {
+            self.wait_tint(shared);
+        }
+        if job.rotation == Rotation::R0 {
+            unsafe { self.blender.start_tint_to(&tint.backdrop, job.rotation, area, out, tint.color, tint.alpha, mask) }?;
+            while self.blender.pending() > 0 {
+                self.wait_tint(shared);
+            }
+            return Ok(());
+        }
+        let (turned, back) = match job.rotation {
+            Rotation::R90 => (display::Size { width: area.height, height: area.width }, Rotation::R270),
+            Rotation::R270 => (display::Size { width: area.height, height: area.width }, Rotation::R90),
+            _ => (logical, Rotation::R180),
+        };
+        let temp = display::Picture { ptr: job.turns[self.id], size: turned, format, len: job.buffer_bytes };
+        unsafe { self.blender.start_tint_to(&tint.backdrop, job.rotation, area, temp, tint.color, tint.alpha, mask) }?;
+        while self.blender.pending() > 0 {
+            self.wait_tint(shared);
+        }
+        let block = display::Rect { x: 0, y: 0, width: turned.width, height: turned.height };
+        unsafe { self.blitter.start_scaled(temp, block, back, 1.0, out, (0, 0)) }?;
+        while self.blitter.pending() > 0 {
+            self.wait_blit(shared, job);
+        }
+        Ok(())
+    }
+
     fn strips<P: Pixel>(&mut self, shared: &Shared, job: &Job, list: &DisplayList<'static, Caps>, prepared: &Prepared<Caps>) {
         let Some(fb) = job.fb else { return };
         loop {
             let index = shared.next.fetch_add(1, Ordering::Relaxed);
             let Some(strip) = job.strips.get(index) else { return };
+            if let (Some((tint, mask)), true) = (job.tint, job.tinted[index]) {
+                if self.blender.pending() == STRIPS_PER_LANE as u32 {
+                    self.wait_tint(shared);
+                }
+                let area = display::Rect { x: strip.x as u16, y: strip.y as u16, width: strip.w as u16, height: strip.h as u16 };
+                if let Err(err) = unsafe { self.blender.start_tint(&tint.backdrop, &fb, job.rotation, area, tint.color, tint.alpha, mask) } {
+                    error!(TAG, "tint {strip:?}: {err}");
+                }
+                continue;
+            }
             if self.blitter.pending() == STRIPS_PER_LANE as u32 {
                 self.wait_blit(shared, job);
             }
@@ -262,7 +335,15 @@ impl Lane {
             self.before = self.last;
             self.last = *strip;
             let surface = unsafe { Surface::new(buffer, strip.w as usize * P::BYTES, *strip) };
-            draw::<P, _, _, _>(list, prepared, &mut self.clips, &surface);
+            match job.tint {
+                Some((tint, mask)) => {
+                    if let Err(err) = self.tint_under(shared, job, &tint, mask, *strip, buffer, fb.format()) {
+                        error!(TAG, "tint under {strip:?}: {err}");
+                    }
+                    draw_from::<P, _, _, _>(list, tint.split, prepared, &mut self.clips, &surface);
+                }
+                None => draw::<P, _, _, _>(list, prepared, &mut self.clips, &surface),
+            }
             self.raster += t.elapsed().as_micros() as u32;
             let area = display::Rect {
                 x: strip.x as u16,
@@ -275,6 +356,13 @@ impl Lane {
             }
         }
     }
+}
+
+/// A picture of the panel as it shows it, taken in `rotation`.
+pub(crate) struct Backdrop {
+    _memory: Vec<Line, Caps>,
+    pub(crate) fb: FrameBuffer,
+    pub(crate) rotation: Rotation,
 }
 
 /// Puts display lists on the panel: damaged rows are drawn into internal RAM
@@ -294,6 +382,10 @@ pub struct Presenter {
     hold: bool,
     target: Option<usize>,
     fresh: bool,
+    tint: Option<Tint>,
+    /// What tinted strips give the engine to read as their foreground.
+    mask: Option<Strips>,
+    turns: Option<Strips>,
 }
 
 impl Presenter {
@@ -312,6 +404,10 @@ impl Presenter {
             job: UnsafeCell::new(Job {
                 list: core::ptr::null(),
                 strips: Vec::with_capacity_in(64, config.data_caps),
+                tinted: Vec::with_capacity_in(64, config.data_caps),
+                tint: None,
+                buffer_bytes: 0,
+                turns: [core::ptr::null_mut(); MAX_LANES],
                 fb: None,
                 rotation: Rotation::R0,
                 buffers: [[core::ptr::null_mut(); STRIPS_PER_LANE]; MAX_LANES],
@@ -322,6 +418,7 @@ impl Presenter {
             let lane = Lane {
                 id,
                 blitter: display.blitter(STRIPS_PER_LANE as u32)?,
+                blender: Blender::new(STRIPS_PER_LANE as u32)?,
                 turn: 0,
                 last: Rect::default(),
                 before: Rect::default(),
@@ -358,6 +455,9 @@ impl Presenter {
             hold: false,
             target: None,
             fresh: true,
+            tint: None,
+            mask: None,
+            turns: None,
         };
         presenter.reset()?;
         Ok(presenter)
@@ -439,6 +539,8 @@ impl Presenter {
         }
         self.lanes = lanes;
         self.buffer_bytes = buffer_bytes;
+        self.mask = None;
+        self.turns = None;
         Ok(core::mem::replace(&mut self.strips, strips))
     }
 
@@ -528,28 +630,61 @@ impl Presenter {
         self.acquire()?;
         self.fresh = false;
         let target = self.target.take().ok_or(Error::INVALID_STATE)?;
-        let mut stats = Stats::default();
         if self.damage[target].is_empty() {
-            return Ok(stats);
+            return Ok(Stats::default());
         }
         let fb = self.display.frame_buffer(target).ok_or(Error::INVALID_STATE)?;
-        let shared = &*self.shared;
+        let regions: Vec<Rect> = self.damage[target].regions().to_vec();
+        let mut stats = self.draw(list, cache, fb, &regions, self.hole.unwrap_or_default(), self.tint)?;
+        self.damage[target].clear();
+        let t2 = Instant::now();
+        if !self.in_place() && !self.hold && self.frame_buffers() >= 2 {
+            self.wait_flip()?;
+            self.display.present(target)?;
+            self.buffers.latest.store(target, Ordering::Release);
+        }
+        stats.flip_us = t2.elapsed().as_micros() as u32;
+        Ok(stats)
+    }
+
+    /// Draws `regions` of `list`, but `hole`, into `fb` with the lanes.
+    fn draw<C: Allocator + Clone>(&mut self, list: &DisplayList<'_, Caps>, cache: &mut GlyphCache<C>, fb: FrameBuffer, regions: &[Rect], hole: Rect, tint: Option<Tint>) -> Result<Stats> {
+        let mut stats = Stats::default();
         let t0 = Instant::now();
+        let shared = &*self.shared;
         let prepared = unsafe { &mut *shared.prepared.get() };
         let decoded = cache.decoded();
-        prepared.prepare(list, self.damage[target].regions(), cache);
+        prepared.prepare(list, regions, cache);
         stats.glyphs_decoded = cache.decoded() - decoded;
         stats.glyphs_missing = prepared.missing();
         let t1 = Instant::now();
 
+        let mask = match tint {
+            Some(_) if self.mask.is_none() => {
+                // In PSRAM, which bounds a tint, reading it would slow every one.
+                let bytes = self.buffer_bytes / fb.format().bytes();
+                let mask = Strips::allocate(bytes, Caps::DMA | Caps::INTERNAL).or_else(|_| Strips::allocate(bytes, Caps::SPIRAM))?;
+                self.mask = Some(mask);
+                self.mask.as_ref().map(|m| m.ptr.cast_const())
+            }
+            Some(_) => self.mask.as_ref().map(|m| m.ptr.cast_const()),
+            None => None,
+        };
+        if tint.is_some() && self.rotation != Rotation::R0 && self.turns.is_none() {
+            self.turns = Some(Strips::allocate(self.buffer_bytes * MAX_LANES, Caps::SPIRAM)?);
+        }
+        let turns = self.turns.as_ref().map_or([core::ptr::null_mut(); MAX_LANES], |t| core::array::from_fn(|lane| unsafe { t.ptr.add(lane * self.buffer_bytes) }));
         let job = unsafe { &mut *shared.job.get() };
         job.list = core::ptr::from_ref(list).cast();
         job.fb = Some(fb);
         job.rotation = self.rotation;
         job.buffers = self.strips.buffers(self.lanes).0;
+        job.tint = tint.zip(mask);
+        job.buffer_bytes = self.buffer_bytes;
+        job.turns = turns;
         job.strips.clear();
-        let hole = self.hole.unwrap_or_default();
-        for area in self.damage[target].regions().iter().flat_map(|r| r.subtract(&hole)) {
+        job.tinted.clear();
+        for area in regions.iter().flat_map(|r| r.subtract(&hole)) {
             let stride = area.w as usize * fb.format().bytes();
             let rows = (self.buffer_bytes / stride).min(i16::MAX as usize) as i16 / ROW_GRID * ROW_GRID;
             if rows == 0 {
@@ -558,7 +693,9 @@ impl Presenter {
             let mut y = area.y;
             while y < area.bottom() {
                 let h = rows.min(area.bottom() - y);
-                job.strips.push(Rect::new(area.x, y, area.w, h));
+                let strip = Rect::new(area.x, y, area.w, h);
+                job.strips.push(strip);
+                job.tinted.push(tint.is_some_and(|t| devkit_gfx::overlap(list.ops(), t.split, &strip).is_none()));
                 y += h;
             }
         }
@@ -572,23 +709,36 @@ impl Presenter {
         for _ in 0..self.lanes {
             shared.done.take();
         }
-        self.damage[target].clear();
         for lane in 0..self.lanes {
             stats.raster_us += shared.raster_us[lane].load(Ordering::Relaxed);
             stats.stall_us += shared.stall_us[lane].load(Ordering::Relaxed);
         }
-        let t2 = Instant::now();
-
-        if !self.in_place() && !self.hold && self.frame_buffers() >= 2 {
-            self.wait_flip()?;
-            self.display.present(target)?;
-            self.buffers.latest.store(target, Ordering::Release);
-        }
-        let t3 = Instant::now();
         stats.prepare_us = t1.duration_since(t0).as_micros() as u32;
-        stats.draw_us = t2.duration_since(t1).as_micros() as u32;
-        stats.flip_us = t3.duration_since(t2).as_micros() as u32;
+        stats.draw_us = t1.elapsed().as_micros() as u32;
         Ok(stats)
+    }
+
+    /// Memory for a picture of the panel; what it holds is undefined.
+    pub(crate) fn backdrop(&self) -> Result<Backdrop> {
+        let fb = self.display.frame_buffer(0).ok_or(Error::INVALID_STATE)?;
+        let lines = fb.len().div_ceil(size_of::<Line>());
+        let mut memory: Vec<Line, Caps> = Vec::new_in(Caps::SPIRAM);
+        memory.try_reserve_exact(lines).map_err(|_| Error::NO_MEM)?;
+        unsafe { memory.set_len(lines) };
+        let picture = display::Picture { ptr: memory.as_mut_ptr().cast(), size: fb.size(), format: fb.format(), len: lines * size_of::<Line>() };
+        let fb = unsafe { FrameBuffer::of(picture) }.ok_or(Error::INVALID_SIZE)?;
+        Ok(Backdrop { _memory: memory, fb, rotation: self.rotation })
+    }
+
+    /// Draws all of `list` into `backdrop`.
+    pub(crate) fn render_into<C: Allocator + Clone>(&mut self, list: &DisplayList<'_, Caps>, cache: &mut GlyphCache<C>, backdrop: &Backdrop) -> Result<()> {
+        self.draw(list, cache, backdrop.fb, &[self.area()], Rect::default(), None).map(|_| ())
+    }
+
+    /// Fills the strips nothing above the scrim covers from the backdrop, from
+    /// the next `render` on.
+    pub(crate) fn set_tint(&mut self, tint: Option<Tint>) {
+        self.tint = tint;
     }
 
     /// Draws what `list` paints from `first` on inside `rect` into a picture to

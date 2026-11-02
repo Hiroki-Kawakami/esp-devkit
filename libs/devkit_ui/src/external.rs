@@ -229,7 +229,7 @@ impl ExternalSurface {
         if let (Some(overlay), false) = (overlay, exclusive) {
             let mut blender = self.0.blender.lock();
             if blender.is_none() {
-                *blender = Some(Blender::new()?);
+                *blender = Some(Blender::new(1)?);
             }
             let blender = blender.as_mut().ok_or(Error::INVALID_STATE)?;
             let area = area_of(overlay.rect);

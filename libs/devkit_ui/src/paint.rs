@@ -10,15 +10,16 @@ use core::alloc::Allocator;
 use core::time::Duration;
 
 use bsp_rs::display::{self, Blitter, FrameBuffer, PixelFormat, Rotation, Size};
-use devkit_gfx::{ClipStore, Color, CornerMask, DisplayList, GlyphCache, Prepared, Rect, Rgb565, ShadowMask, Surface, draw};
+use devkit_gfx::{Argb8888, ClipStore, Color, CornerMask, DisplayList, GlyphCache, Prepared, Rect, Rgb565, ShadowMask, Surface, draw};
 use idf::heap::Caps;
 
 use crate::animate::faded;
 use crate::canvas::Canvas;
 use crate::node::{NONE, NodeContent, NodeId};
+use crate::presence::Snapshot;
 use crate::style::Shadow;
 use crate::theme::Transition;
-use crate::tree::Tree;
+use crate::tree::{Tree, shadow_extent};
 use crate::zoom::{PICTURE_SCALE, Picture, Zoom, scaled};
 
 const BAND_ROWS: i16 = 32;
@@ -79,9 +80,15 @@ impl Tree {
     /// `(dx, dy)` is the origin of `id`'s parent content on the screen.
     fn paint_node<'a>(&'a self, id: NodeId, dx: i32, dy: i32, clip: Rect, inherited: Inherited, effects: &mut Effects, regions: &[Rect], list: &mut DisplayList<'a, Caps>) {
         let node = &self.nodes[id as usize];
-        let x = dx + i32::from(node.rect.x) + i32::from(node.translate.0);
-        let y = dy + i32::from(node.rect.y) + i32::from(node.translate.1);
-        if y >= i32::from(clip.bottom()) || y + i32::from(node.rect.h) + 64 <= i32::from(clip.y) {
+        let pose = node.pose.filter(|_| self.capturing.get() != id);
+        let (shift_x, shift_y) = match pose {
+            Some(_) => node.shift(),
+            None => node.translate,
+        };
+        let x = dx + i32::from(node.rect.x) + i32::from(shift_x);
+        let y = dy + i32::from(node.rect.y) + i32::from(shift_y);
+        let reach = pose.map_or(0, |p| i32::from(p.reach));
+        if y - reach >= i32::from(clip.bottom()) || y + i32::from(node.rect.h) + 64 + reach <= i32::from(clip.y) {
             return;
         }
         let (sx, sy) = (x as i16, y as i16);
@@ -93,6 +100,19 @@ impl Tree {
         let styled = fades.and_then(|f| f.opacity.as_ref()).map(|fade| fade.opacity(style.opacity.unwrap_or(255))).or(style.opacity);
         let own = node.opacity.or(styled);
         let opacity = own.map_or(inherited.opacity, |o| Color::rgba(0, 0, 0, inherited.opacity).with_opacity(o).a);
+        let opacity = pose.map_or(opacity, |p| Color::rgba(0, 0, 0, opacity).with_opacity(p.opacity).a);
+        if let Some(pose) = pose
+            && pose.scale != 1.0
+            && let Some(snapshot) = self.snapshot_of(id)
+        {
+            let margin = shadow_extent(style);
+            let (w, h) = snapshot.size();
+            let (sw, sh) = ((f32::from(w) * pose.scale) as i16, (f32::from(h) * pose.scale) as i16);
+            let at = (sx - margin + (w - sw) / 2, sy - margin + (h - sh) / 2);
+            snapshot.set(pose.scale, opacity);
+            list.raster(Rect::new(at.0, at.1, sw, sh).intersect(&clip), at, snapshot);
+            return;
+        }
         let foreground = faded(fades.and_then(|f| f.foreground.as_ref()), style.foreground.map(|role| palette.color(role)));
         let down = Inherited { opacity, foreground: foreground.or(inherited.foreground) };
 
@@ -123,6 +143,13 @@ impl Tree {
         }
         if style.scroll_border.is_some_and(|name| self.scrolled_away(node.owner, name)) {
             list.fill(Rect::new(sx, rect.bottom() - 1, rect.w, 1), dim(palette.divider, opacity));
+        }
+
+        if id == self.overlay {
+            if self.scrim > 0 {
+                list.fill(rect.intersect(&clip), Color { a: self.scrim, ..self.scrim_color() });
+            }
+            self.backdrop_split.set(list.ops().len());
         }
 
         let [left, top, right, bottom] = style.padding;
@@ -250,10 +277,29 @@ impl Tree {
         }
     }
 
-    /// `regions` are what the frame repaints.
+    /// `regions` are what the frame repaints. With `backdrop_on`, what is below
+    /// the overlay is left to the backdrop.
     pub(crate) fn paint<'a>(&'a self, effects: &mut Effects, regions: &[Rect], list: &mut DisplayList<'a, Caps>) {
         list.reserve(self.nodes.len());
-        self.paint_node(self.root, 0, 0, self.area, Inherited { opacity: 255, foreground: None }, effects, regions, list);
+        match self.backdrop_on {
+            true => self.paint_planes(self.overlay, NONE, effects, regions, list),
+            false => self.paint_node(self.root, 0, 0, self.area, Inherited { opacity: 255, foreground: None }, effects, regions, list),
+        }
+    }
+
+    /// What is below the overlay, for a backdrop.
+    pub(crate) fn paint_below<'a>(&'a self, effects: &mut Effects, list: &mut DisplayList<'a, Caps>) {
+        let first = self.nodes[self.root as usize].first_child;
+        self.paint_planes(first, self.overlay, effects, &[self.area], list);
+    }
+
+    /// The root's children from `first` up to `end`.
+    fn paint_planes<'a>(&'a self, first: NodeId, end: NodeId, effects: &mut Effects, regions: &[Rect], list: &mut DisplayList<'a, Caps>) {
+        let mut child = first;
+        while child != end && child != NONE {
+            self.paint_node(child, 0, 0, self.area, Inherited { opacity: 255, foreground: None }, effects, regions, list);
+            child = self.nodes[child as usize].next;
+        }
     }
 
     pub(crate) fn zooming(&self) -> bool {
@@ -415,6 +461,49 @@ impl Tree {
         }
         Some(())
     }
+}
+
+impl Tree {
+    /// `id` as shown at `shown`, without what moves it in or out.
+    pub(crate) fn snapshot<C: Allocator + Clone>(&self, id: NodeId, shown: Rect, effects: &mut Effects, cache: &mut GlyphCache<C>) -> Option<Snapshot> {
+        if shown.is_empty() {
+            return None;
+        }
+        let node = &self.nodes[id as usize];
+        let area = shown.expand(shadow_extent(&node.style));
+        let dx = i32::from(shown.x) - i32::from(node.rect.x) - i32::from(node.translate.0);
+        let dy = i32::from(shown.y) - i32::from(node.rect.y) - i32::from(node.translate.1);
+        let mut list = DisplayList::new_in(self.caps);
+        self.capturing.set(id);
+        self.paint_node(id, dx, dy, area, Inherited { opacity: 255, foreground: None }, effects, &[area], &mut list);
+        self.capturing.set(NONE);
+        let mut snapshot = Snapshot::allocate(area.w, area.h)?;
+        let mut prepared = Prepared::new_in(self.caps);
+        prepared.prepare(&list, &[area], cache);
+        let mut clips = ClipStore::new_in(self.caps);
+        let mut band = argb_band(area.w as usize * BAND_ROWS as usize)?;
+        let mut y = 0;
+        while y < area.h {
+            let rows = BAND_ROWS.min(area.h - y);
+            band.fill(0);
+            let surface = unsafe { Surface::new(band.as_mut_ptr().cast(), area.w as usize * size_of::<u32>(), Rect::new(area.x, area.y + y, area.w, rows)) };
+            draw::<Argb8888, _, _, _>(&list, &prepared, &mut clips, &surface);
+            snapshot.store(&band, rows as usize)?;
+            y += rows;
+        }
+        Some(snapshot)
+    }
+}
+
+fn argb_band(count: usize) -> Option<Vec<u32, Caps>> {
+    for caps in [Caps::INTERNAL, Caps::SPIRAM] {
+        let mut band = Vec::new_in(caps);
+        if band.try_reserve_exact(count).is_ok() {
+            band.resize(count, 0);
+            return Some(band);
+        }
+    }
+    None
 }
 
 /// The 2D engine, and the framebuffer on the panel with its turn.

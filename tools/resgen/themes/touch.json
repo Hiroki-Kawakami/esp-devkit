@@ -479,14 +479,14 @@
     },
     "modal": {
       "width": 560,
-      "scrim": {
-        "background": "color.scrim"
-      },
       "panel": {
         "padding": "widgets.unit.padding",
         "radius": 20,
         "background": "color.surface"
       }
+    },
+    "overlay": {
+      "scrim": "color.scrim"
     },
     "toast": {
       "root": {
