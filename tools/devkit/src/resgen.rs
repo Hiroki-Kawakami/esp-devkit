@@ -119,10 +119,7 @@ impl FontChoice {
 const THEME_DIR: &str = "themes";
 const THEME_FONTS: [&str; 3] = ["title", "body", "caption"];
 const THEME_ICONS: [&str; 9] = ["back", "more", "close", "check", "chevron", "expand", "shift", "backspace", "enter"];
-const THEME_COLORS: [&str; 14] = [
-    "surface", "background", "on_surface", "muted", "primary", "on_primary", "primary_pressed", "destructive",
-    "on_destructive", "divider", "pressed", "selected", "scrim", "shadow",
-];
+const THEME_COLORS: [&str; 5] = ["text", "primary", "surface", "background", "divider"];
 const THEME_KEYBOARDS: [&str; 2] = ["text", "number"];
 const THEME_ANIMATED: [&str; 3] = ["color", "opacity", "position"];
 const THEME_STATES: [&str; 6] = ["pressed", "hovered", "focused", "selected", "disabled", "checked"];
@@ -281,6 +278,7 @@ struct Resolver<'a> {
     theme: &'a str,
     symbol: String,
     root: Value,
+    colors: &'a BTreeMap<String, String>,
     styles: BTreeMap<String, String>,
     used_vars: BTreeSet<String>,
     used_fonts: BTreeSet<String>,
@@ -309,10 +307,13 @@ impl Resolver<'_> {
             return Ok(Token::Color(format!("devkit_ui::ColorRole::Fixed(devkit_gfx::Color::rgba({r}, {g}, {b}, {a}))")));
         }
         if let Some(color) = text.strip_prefix("color.") {
-            if !THEME_COLORS.contains(&color) {
+            if THEME_COLORS.contains(&color) {
+                return Ok(Token::Color(format!("devkit_ui::ColorRole::{}", type_name(color))));
+            }
+            if !self.colors.contains_key(color) {
                 return Err(self.error(path, format!("no color {color}")));
             }
-            return Ok(Token::Color(format!("devkit_ui::ColorRole::{}", type_name(color))));
+            return Ok(Token::Color(format!("colors::{}", color.to_uppercase())));
         }
         if let Some(font) = text.strip_prefix("font.") {
             self.used_fonts.insert(font.to_string());
@@ -729,10 +730,22 @@ fn merge_themes(definition: &mut Definition, base: &Path, fonts_dir: &Path) -> R
             return Err(format!("theme.{name}.font: fonts go in the top level 'font'"));
         }
 
+        let light = merged.colors.remove("light").ok_or_else(|| format!("theme.{name}.colors.light: missing"))?;
+        let dark = merged.colors.remove("dark");
+        if let Some(mode) = merged.colors.keys().next() {
+            return Err(format!("theme.{name}.colors.{mode}: only light and dark exist"));
+        }
+        check_palette(&name, &light)?;
+        if let Some(dark) = &dark {
+            check_palette(&name, dark)?;
+            check_same_colors(&format!("theme.{name}.colors.dark"), &light, dark)?;
+        }
+
         let mut resolver = Resolver {
             theme: &name,
             symbol: name.to_uppercase(),
             root: json!({ "vars": merged.vars, "widgets": merged.widgets }),
+            colors: &light,
             styles: BTreeMap::new(),
             used_vars: BTreeSet::new(),
             used_fonts: BTreeSet::new(),
@@ -818,26 +831,43 @@ fn merge_themes(definition: &mut Definition, base: &Path, fonts_dir: &Path) -> R
             definition.font.insert(format!("{lower}_icons_{size}"), font);
         }
 
-        let light = merged.colors.remove("light").ok_or_else(|| format!("theme.{name}.colors.light: missing"))?;
-        let dark = merged.colors.remove("dark");
-        if let Some(mode) = merged.colors.keys().next() {
-            return Err(format!("theme.{name}.colors.{mode}: only light and dark exist"));
-        }
-        check_palette(&name, &light)?;
-        if let Some(dark) = &dark {
-            check_palette(&name, dark)?;
-        }
         themes.insert(name, Theme { fonts, icons, light, dark, widgets, styles, keyboards, motion, unused_vars, unused_keys });
+    }
+    if let Some((_, first)) = themes.first_key_value() {
+        for (name, theme) in &themes {
+            check_same_colors(&format!("theme.{name}.colors.light"), &first.light, &theme.light)?;
+        }
     }
     Ok((themes, files))
 }
 
+fn custom_colors(colors: &BTreeMap<String, String>) -> impl Iterator<Item = &String> {
+    colors.keys().filter(|color| !THEME_COLORS.contains(&color.as_str()))
+}
+
 fn check_palette(theme: &str, colors: &BTreeMap<String, String>) -> Result<(), String> {
     for color in THEME_COLORS {
-        let value = colors.get(color).ok_or_else(|| format!("theme.{theme}.colors.{color}: missing"))?;
+        if !colors.contains_key(color) {
+            return Err(format!("theme.{theme}.colors.{color}: missing"));
+        }
+    }
+    for (color, value) in colors {
+        if !is_ident(color) {
+            return Err(format!("theme.{theme}.colors.{color}: not an identifier"));
+        }
         parse_color(value).ok_or_else(|| format!("theme.{theme}.colors.{color}: {value} is not #rrggbb or #rrggbbaa"))?;
     }
+    if custom_colors(colors).count() > usize::from(u8::MAX) + 1 {
+        return Err(format!("theme.{theme}.colors: too many colors"));
+    }
     Ok(())
+}
+
+fn check_same_colors(path: &str, expected: &BTreeMap<String, String>, colors: &BTreeMap<String, String>) -> Result<(), String> {
+    match expected.keys().chain(colors.keys()).find(|color| !expected.contains_key(*color) || !colors.contains_key(*color)) {
+        Some(color) => Err(format!("{path}.{color}: every palette needs the same colors")),
+        None => Ok(()),
+    }
 }
 
 fn parse_color(text: &str) -> Option<[u8; 4]> {
@@ -851,14 +881,13 @@ fn parse_color(text: &str) -> Option<[u8; 4]> {
 }
 
 fn palette_code(colors: &BTreeMap<String, String>) -> String {
-    let fields: Vec<String> = THEME_COLORS
-        .iter()
-        .map(|color| {
-            let [r, g, b, a] = parse_color(&colors[*color]).unwrap_or([0; 4]);
-            format!("{color}: devkit_gfx::Color::rgba({r}, {g}, {b}, {a})")
-        })
-        .collect();
-    format!("devkit_ui::Palette {{ {} }}", fields.join(", "))
+    let code = |color: &str| {
+        let [r, g, b, a] = parse_color(&colors[color]).unwrap_or([0; 4]);
+        format!("devkit_gfx::Color::rgba({r}, {g}, {b}, {a})")
+    };
+    let fields: Vec<String> = THEME_COLORS.iter().map(|color| format!("{color}: {}", code(color))).collect();
+    let custom: Vec<String> = custom_colors(colors).map(|color| code(color)).collect();
+    format!("devkit_ui::Palette {{ {}, custom: &[{}] }}", fields.join(", "), custom.join(", "))
 }
 
 fn icon_code(context: &Context, theme: &Theme, icon: &str) -> String {
@@ -1021,6 +1050,13 @@ fn write_index(context: &Context, out: &Path) -> Result<(), String> {
             eprintln!("warning: theme.{name}.keyboards.keys.{key}: not used");
         }
         text += &theme_code(context, name, theme);
+    }
+    if let Some(theme) = context.themes.values().next() {
+        text += "pub mod colors {\n";
+        for (index, color) in custom_colors(&theme.light).enumerate() {
+            text += &format!("    pub const {}: devkit_ui::ColorRole = devkit_ui::ColorRole::Custom({index});\n", color.to_uppercase());
+        }
+        text += "}\n";
     }
     text += "pub mod icons {\n";
     for (icon, codepoint) in &context.icons {

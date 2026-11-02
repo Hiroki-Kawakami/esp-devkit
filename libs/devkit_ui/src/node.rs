@@ -14,7 +14,7 @@ use crate::animate::Fades;
 use crate::component::ListId;
 use crate::canvas::CanvasId;
 use crate::external::ExternalSurface;
-use crate::element::{DragMap, Edit, InputMap, ScrollMap, SizeMap, TapMap};
+use crate::element::{DragMap, Edit, InputMap, ScrollMap, SizeMap};
 use crate::erased::Erased;
 use crate::gesture::GestureMap;
 use crate::keyboard::{InputKind, Keyboard};
@@ -133,7 +133,6 @@ pub(crate) struct Node {
     pub(crate) owner: u16,
     pub(crate) tap: Option<Erased>,
     pub(crate) drag: Option<DragMap>,
-    pub(crate) tap_at: Option<TapMap>,
     pub(crate) on_scroll: Option<ScrollMap>,
     pub(crate) gestures: Option<GestureMap>,
     pub(crate) size: Option<SizeMap>,
@@ -184,7 +183,6 @@ impl Node {
             owner,
             tap: None,
             drag: None,
-            tap_at: None,
             on_scroll: None,
             gestures: None,
             size: None,

@@ -11,7 +11,7 @@ use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
 use core::ptr::{self, NonNull};
 
-use devkit_gfx::{Align as TextAlign, Color, FontChain, Image, ImageFormat, Overflow, Rect, TextOptions};
+use devkit_gfx::{Align as TextAlign, Color, FontChain, Image, ImageFormat, Overflow, TextOptions};
 
 use crate::bump::Bump;
 use crate::component::{AnyHost, Child, EventMap, Host, ListId, Screen, call_event_map, screen_host};
@@ -129,17 +129,6 @@ unsafe fn call_drag_map<M: Copy>(function: *const (), drag: Drag) -> Erased {
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct TapMap {
-    pub(crate) function: *const (),
-    pub(crate) call: unsafe fn(*const (), Rect) -> Erased,
-}
-
-unsafe fn call_tap_map<M: Copy>(function: *const (), rect: Rect) -> Erased {
-    let function: fn(Rect) -> M = unsafe { core::mem::transmute(function) };
-    Erased::new(function(rect))
-}
-
-#[derive(Clone, Copy)]
 pub(crate) struct ScrollMap {
     pub(crate) function: *const (),
     pub(crate) call: unsafe fn(*const (), i32) -> Erased,
@@ -215,7 +204,6 @@ pub struct ElementData<'a, M: Copy> {
     pub(crate) role: Role,
     pub(crate) tap: Option<Erased>,
     pub(crate) drag: Option<DragMap>,
-    pub(crate) tap_at: Option<TapMap>,
     pub(crate) on_scroll: Option<ScrollMap>,
     pub(crate) gestures: Option<GestureMap>,
     pub(crate) size: Option<SizeMap>,
@@ -231,7 +219,7 @@ pub struct ElementData<'a, M: Copy> {
 
 impl<'a, M: Copy> Element<'a, M> {
     fn new(bump: NonNull<Bump>, content: Content<'a>, children: &'a mut [Element<'a, M>]) -> Self {
-        let data = ElementData { bump, content, children: NonNull::from(children), style: Style::default(), when: &[], inherit: State::empty(), state_source: false, key: None, id: None, part: None, role: Role::None, tap: None, drag: None, tap_at: None, on_scroll: None, gestures: None, size: None, input: None, focusable: false, keep_focus: false, keyboard: None, input_kind: InputKind::Text, repeat: false, state: State::empty(), _msg: PhantomData };
+        let data = ElementData { bump, content, children: NonNull::from(children), style: Style::default(), when: &[], inherit: State::empty(), state_source: false, key: None, id: None, part: None, role: Role::None, tap: None, drag: None, on_scroll: None, gestures: None, size: None, input: None, focusable: false, keep_focus: false, keyboard: None, input_kind: InputKind::Text, repeat: false, state: State::empty(), _msg: PhantomData };
         Self { data: unsafe { NonNull::new_unchecked(bump.as_ref().alloc(data)) } }
     }
 
@@ -328,12 +316,6 @@ impl<'a, M: Copy> Element<'a, M> {
 
     pub fn on_tap(mut self, msg: M) -> Self {
         self.tap = Some(Erased::new(msg));
-        self
-    }
-
-    /// A tap that tells where this node is on the screen, to place a popup by it.
-    pub fn on_tap_at(mut self, on_tap: fn(Rect) -> M) -> Self {
-        self.tap_at = Some(TapMap { function: on_tap as *const (), call: call_tap_map::<M> });
         self
     }
 

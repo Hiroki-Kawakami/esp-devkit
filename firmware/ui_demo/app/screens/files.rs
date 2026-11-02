@@ -6,12 +6,12 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use devkit_ui::widgets::{button, checkbox, icon_button, list_item, menu, menu_item, modal, slider, slider_value, switch, top_bar};
+use devkit_ui::widgets::{Menu, button, checkbox, icon_button, list_item, modal, slider, slider_value, switch, top_bar};
 use devkit_ui::{Align, Child, Component, Cx, Element, Handle, ListId, Overlay, RenderMode, Root, Screen, SplitRole, Strips, Ui};
 use idf::heap::Caps;
 use idf::sync::{LazyLock, Mutex};
 
-use crate::resources::icons;
+use crate::resources::{colors, icons};
 use super::{SPARE_STRIPS, icon};
 
 const FILES: ListId = 0;
@@ -130,20 +130,20 @@ impl Child for Storages {
 pub enum Msg {
     Open(u16),
     Back,
-    ToggleMenu,
+    OpenMenu,
+    Compact,
 }
 
 pub struct Browser {
     names: Vec<String>,
     selected: Option<u16>,
-    menu: bool,
     revision: u32,
 }
 
 impl Browser {
     fn new() -> Self {
         let names = (0..FILE_COUNT).map(|i| alloc::format!("{:03} {}", i, NAMES[i % NAMES.len()])).collect();
-        Self { names, selected: None, menu: false, revision: 0 }
+        Self { names, selected: None, revision: 0 }
     }
 }
 
@@ -158,7 +158,12 @@ impl Component for Browser {
                 cx.nav().push(Detail::new(&self.names[usize::from(i)]));
             }
             Msg::Back => cx.nav().pop(),
-            Msg::ToggleMenu => self.menu = !self.menu,
+            Msg::OpenMenu => {
+                if let Some(anchor) = cx.tap_rect() {
+                    cx.popup(Menu::new(anchor, &[("Compact", Msg::Compact)], cx.handle()));
+                }
+            }
+            Msg::Compact => {}
         }
         cx.rebuild();
     }
@@ -166,21 +171,15 @@ impl Component for Browser {
     fn view<'a>(&'a self, ui: &'a Ui<Msg>) -> Element<'a, Msg> {
         let theme = ui.theme();
         let back = ui.can_pop().then_some(Msg::Back);
-        let more = icon_button(ui, ui.theme().icons.more, Msg::ToggleMenu).id("more");
-        let popup = if self.menu {
-            menu(ui, 124, [menu_item(ui, "Compact", Msg::ToggleMenu)], Msg::ToggleMenu)
-        } else {
-            ui.empty()
-        };
+        let more = icon_button(ui, ui.theme().icons.more, Msg::OpenMenu).id("more");
         ui.column([
             top_bar(ui, back, "Download", more),
             ui.text(theme.fonts.caption, "Internal Storage › Download")
-                .foreground(ui.colors().muted)
+                .foreground(colors::MUTED)
                 .height(48)
                 .padding_each(24, 13, 24, 0)
                 .border_top(ui.colors().divider),
             ui.list(FILES, self.names.len(), theme.widgets.list.row_height).revision(self.revision).id("files").grow(1).background(ui.colors().surface),
-            popup,
         ])
         .padding_each(0, ui.insets().top, 0, 0)
         .background(ui.colors().surface)
@@ -266,17 +265,17 @@ impl Component for Detail {
         ui.column([
             top_bar(ui, Some(DetailMsg::Back), &self.name, ui.empty()),
             ui.column([
-                ui.row([ui.text(theme.fonts.body, "Keep").foreground(c.on_surface).grow(1), switch(ui, self.keep, DetailMsg::Keep).id("keep")]).align(Align::Center),
-                ui.row([ui.text(theme.fonts.body, "Starred").foreground(c.on_surface).grow(1), checkbox(ui, self.star, DetailMsg::Star).id("star")]).align(Align::Center),
-                ui.row([ui.text(theme.fonts.body, "Video mode").foreground(c.on_surface).grow(1), switch(ui, self.video, DetailMsg::Video).id("video")]).align(Align::Center),
-                ui.text(theme.fonts.caption, ui.format(format_args!("Volume {}", self.volume))).foreground(c.muted),
+                ui.row([ui.text(theme.fonts.body, "Keep").foreground(c.text).grow(1), switch(ui, self.keep, DetailMsg::Keep).id("keep")]).align(Align::Center),
+                ui.row([ui.text(theme.fonts.body, "Starred").foreground(c.text).grow(1), checkbox(ui, self.star, DetailMsg::Star).id("star")]).align(Align::Center),
+                ui.row([ui.text(theme.fonts.body, "Video mode").foreground(c.text).grow(1), switch(ui, self.video, DetailMsg::Video).id("video")]).align(Align::Center),
+                ui.text(theme.fonts.caption, ui.format(format_args!("Volume {}", self.volume))).foreground(colors::MUTED),
                 slider(ui, self.volume, |d| DetailMsg::Volume(slider_value(d))).id("volume"),
                 ui.row([
                     button(ui, "Rename", theme.widgets.button.secondary, DetailMsg::Back).grow(1).disabled(!self.keep).id("rename"),
                     button(ui, "Delete", theme.widgets.button.primary, DetailMsg::Ask).grow(1).id("delete"),
                 ])
                 .gap(m.gap),
-                ui.text(theme.fonts.caption, "This note is long enough to wrap, and what follows it moves down with its height.").foreground(c.muted).wrap().id("note"),
+                ui.text(theme.fonts.caption, "This note is long enough to wrap, and what follows it moves down with its height.").foreground(colors::MUTED).wrap().id("note"),
             ])
             .padding(m.padding)
             .gap(m.padding)
@@ -307,8 +306,8 @@ impl Component for Confirm {
         let theme = ui.theme();
         let content = ui
             .column([
-                ui.text(theme.fonts.title, "Delete this file?").foreground(ui.colors().on_surface),
-                ui.text(theme.fonts.body, "This cannot be undone.").foreground(ui.colors().muted),
+                ui.text(theme.fonts.title, "Delete this file?").foreground(ui.colors().text),
+                ui.text(theme.fonts.body, "This cannot be undone.").foreground(colors::MUTED),
                 button(ui, "Cancel", theme.widgets.button.secondary, ConfirmMsg::Close).id("cancel"),
             ])
             .gap(theme.widgets.unit.padding);

@@ -4,10 +4,10 @@
  */
 
 use devkit_ui::widgets::{DropdownMenu, dropdown, segmented, slider, slider_value, switch, table, table_chevron, table_header, table_label, table_row, table_section, table_value, top_bar};
-use devkit_ui::{Align, AutoRotation, ColorMode, Component, Cx, Drag, Element, Input, Rect, Screen, Ui};
+use devkit_ui::{Align, AutoRotation, ColorMode, Component, Cx, Drag, Element, Input, Screen, Ui};
 use idf::sync::OnceLock;
 
-use crate::resources::icons;
+use crate::resources::{colors, icons};
 use super::icon;
 
 static ROTATION: OnceLock<AutoRotation> = OnceLock::new();
@@ -31,7 +31,7 @@ pub enum SettingsMsg {
     RotationLock,
     Volume(u8),
     Equalizer(bool),
-    OpenOutput(Rect),
+    OpenOutput,
     Output(usize),
 }
 
@@ -53,7 +53,7 @@ impl Settings {
 
 fn slider_row<'a, M: Copy>(ui: &'a Ui<M>, label: &'a str, text: &'a str, value: u8, on_drag: fn(Drag) -> M) -> Element<'a, M> {
     let theme = ui.theme();
-    let header = ui.row([table_label(ui, label), ui.text(theme.fonts.caption, text).foreground(ui.colors().muted)]).align(Align::Center);
+    let header = ui.row([table_label(ui, label), ui.text(theme.fonts.caption, text).foreground(colors::MUTED)]).align(Align::Center);
     table_row(ui, [ui.column([header, slider(ui, value, on_drag)]).padding_each(0, theme.widgets.unit.padding, 0, theme.widgets.unit.gap).grow(1)])
 }
 
@@ -78,7 +78,11 @@ impl Component for Settings {
             }
             SettingsMsg::Volume(value) => self.volume = value,
             SettingsMsg::Equalizer(on) => self.equalizer = on,
-            SettingsMsg::OpenOutput(anchor) => cx.popup(DropdownMenu::new(anchor, &OUTPUTS, self.output, cx.handle(), SettingsMsg::Output)),
+            SettingsMsg::OpenOutput => {
+                if let Some(anchor) = cx.tap_rect() {
+                    cx.popup(DropdownMenu::new(anchor, &OUTPUTS, self.output, cx.handle(), SettingsMsg::Output));
+                }
+            }
             SettingsMsg::Output(index) => self.output = index,
         }
         cx.rebuild();

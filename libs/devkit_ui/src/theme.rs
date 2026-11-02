@@ -10,39 +10,23 @@ use crate::style::StateStyle;
 
 #[derive(Clone, Copy)]
 pub struct Palette {
+    pub text: Color,
+    pub primary: Color,
     pub surface: Color,
     pub background: Color,
-    pub on_surface: Color,
-    pub muted: Color,
-    pub primary: Color,
-    pub on_primary: Color,
-    pub primary_pressed: Color,
-    pub destructive: Color,
-    pub on_destructive: Color,
     pub divider: Color,
-    pub pressed: Color,
-    pub selected: Color,
-    pub scrim: Color,
-    pub shadow: Color,
+    pub custom: &'static [Color],
 }
 
 /// A color by what it is for, so styles work with any palette.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ColorRole {
+    Text,
+    Primary,
     Surface,
     Background,
-    OnSurface,
-    Muted,
-    Primary,
-    OnPrimary,
-    PrimaryPressed,
-    Destructive,
-    OnDestructive,
     Divider,
-    Pressed,
-    Selected,
-    Scrim,
-    Shadow,
+    Custom(u8),
     Fixed(Color),
 }
 
@@ -55,20 +39,12 @@ impl From<Color> for ColorRole {
 impl Palette {
     pub const fn color(&self, role: ColorRole) -> Color {
         match role {
+            ColorRole::Text => self.text,
+            ColorRole::Primary => self.primary,
             ColorRole::Surface => self.surface,
             ColorRole::Background => self.background,
-            ColorRole::OnSurface => self.on_surface,
-            ColorRole::Muted => self.muted,
-            ColorRole::Primary => self.primary,
-            ColorRole::OnPrimary => self.on_primary,
-            ColorRole::PrimaryPressed => self.primary_pressed,
-            ColorRole::Destructive => self.destructive,
-            ColorRole::OnDestructive => self.on_destructive,
             ColorRole::Divider => self.divider,
-            ColorRole::Pressed => self.pressed,
-            ColorRole::Selected => self.selected,
-            ColorRole::Scrim => self.scrim,
-            ColorRole::Shadow => self.shadow,
+            ColorRole::Custom(index) => self.custom[index as usize],
             ColorRole::Fixed(color) => color,
         }
     }
@@ -195,6 +171,8 @@ pub struct CheckboxTheme {
 
 #[derive(Clone, Copy)]
 pub struct SliderTheme {
+    pub inset: i16,
+    pub track_inset: i16,
     pub root: &'static StateStyle,
     pub track: &'static StateStyle,
     pub fill: &'static StateStyle,
@@ -249,11 +227,14 @@ pub struct TableRowTheme {
 
 #[derive(Clone, Copy)]
 pub struct MenuTheme {
+    pub width: i16,
+    pub padding_y: i16,
     pub panel: &'static StateStyle,
 }
 
 #[derive(Clone, Copy)]
 pub struct MenuItemTheme {
+    pub height: i16,
     pub root: &'static StateStyle,
     pub label: &'static StateStyle,
 }
@@ -274,6 +255,8 @@ pub struct ToastTheme {
 #[derive(Clone, Copy)]
 pub struct TextFieldTheme {
     pub placeholder_color: ColorRole,
+    pub caret_color: ColorRole,
+    pub underline_color: ColorRole,
     pub area_min_height: i16,
     pub root: &'static StateStyle,
 }

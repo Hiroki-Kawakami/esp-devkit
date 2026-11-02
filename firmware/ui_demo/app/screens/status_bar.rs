@@ -36,7 +36,7 @@ impl Component for StatusBar {
         if ui.screen_style().bars == Bars::Hidden {
             return ui.empty();
         }
-        let color = ui.colors().on_surface;
+        let color = ui.colors().text;
         let time = ui.format(format_args!("{:02}:{:02}:{:02}", self.seconds / 3600, self.seconds / 60 % 60, self.seconds % 60));
         ui.row([
             ui.text(&CAPTION, time).foreground(color).id("clock").grow(1),

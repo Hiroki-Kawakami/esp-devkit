@@ -331,8 +331,10 @@ let config = AppConfig::new(&resources::TOUCH);
 - `icons` maps the names of `Icons` to SVG files, and `icon_size` their sizes in
   pixels, 40 by default. Icons of one size share a font, and a replaced file is
   left out.
-- `colors` has `light` and optionally `dark`, each the names of `Palette` as
-  `#rrggbb` or `#rrggbbaa`.
+- `colors` has `light` and optionally `dark`, each names as `#rrggbb` or
+  `#rrggbbaa`. The names of `Palette` are required, and any other name adds a
+  color, `resources::colors::MUTED` for `muted`. `light` and `dark` of every
+  theme have the same names.
 - `widgets` maps a widget to the fields of its type: `list_item` is
   `ListItemTheme`, `unit` is `UnitTheme`, the base values with no widget of their
   own. The compiler checks the names and types in the generated `resources.rs`.
@@ -347,7 +349,7 @@ let config = AppConfig::new(&resources::TOUCH);
   |---|---|
   | `12`, `true` | a number, a bool |
   | `"#rrggbb"`, `"#rrggbbaa"` | a color for both modes (`ColorRole::Fixed`) |
-  | `"color.x"` | a name of `Palette` (a `ColorRole`) |
+  | `"color.x"` | a name of `colors` (a `ColorRole`) |
   | `"font.x"` | a name of `fonts` |
   | `"Align.Center"` | a value of a `devkit_ui` enum |
   | `"vars.x"`, `"widgets.y.z"` | that value |

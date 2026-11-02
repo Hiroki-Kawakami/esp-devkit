@@ -134,7 +134,7 @@ fn deliver(stack: &mut [Entry], id: u32, msg: Erased, replaced: &mut Option<Stri
         if let Some(host) = &mut entry.host
             && host.id() == id
         {
-            return Some(host.dispatch(msg, replaced.take(), link));
+            return Some(host.dispatch(msg, replaced.take(), None, link));
         }
         for (key, nested) in &mut entry.saved.navigators {
             if let Some(mut requests) = deliver(nested, id, msg, replaced, link) {
@@ -343,7 +343,7 @@ impl Tree {
     /// nodes to rebuild or animate: its next view shows what the message did.
     pub(crate) fn post(&mut self, id: u32, msg: Erased) {
         if let Some(slot) = self.slots.iter().position(|s| s.host.as_ref().is_some_and(|host| host.id() == id)) {
-            self.dispatch(slot as u16, msg);
+            self.dispatch(slot as u16, msg, None);
             return;
         }
         let mut replaced = self.parked_strips.take();

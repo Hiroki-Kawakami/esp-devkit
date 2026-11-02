@@ -5,7 +5,7 @@ working example.
 
 ```rust
 #[derive(Clone, Copy)]
-enum Msg { Open(u16), ToggleMenu }
+enum Msg { Open(u16), OpenMenu, Sort }
 
 impl Component for FileBrowser {
     type Msg = Msg;
@@ -13,7 +13,12 @@ impl Component for FileBrowser {
     fn update(&mut self, msg: Msg, cx: &mut Cx<Self>) {
         match msg {
             Msg::Open(i) => self.selected = Some(i),
-            Msg::ToggleMenu => self.menu = !self.menu,
+            Msg::OpenMenu => {
+                if let Some(anchor) = cx.tap_rect() {
+                    cx.popup(Menu::new(anchor, &[("Sort", Msg::Sort)], cx.handle()));
+                }
+            }
+            Msg::Sort => self.names.sort(),
         }
         cx.rebuild();
     }
@@ -22,7 +27,7 @@ impl Component for FileBrowser {
         ui.column([
             ui.row([
                 ui.text(&TITLE, "Download").foreground(INK).grow(1),
-                ui.icon(&ICONS, icons::MORE).id("more").on_tap(Msg::ToggleMenu),
+                ui.icon(&ICONS, icons::MORE).id("more").on_tap(Msg::OpenMenu),
             ]).height(80).align(Align::Center),
             ui.list(0, self.names.len(), 80).grow(1),
         ])
@@ -84,7 +89,7 @@ app.run();
   ```rust
   static DANGER: StateStyle = StateStyle {
       font: None,
-      base: &[Prop::Background(ColorRole::Destructive), Prop::Foreground(ColorRole::OnDestructive)],
+      base: &[Prop::Background(colors::DESTRUCTIVE), Prop::Foreground(colors::ON_DESTRUCTIVE)],
       states: &[(State::PRESSED, &[Prop::Opacity(200)])],
   };
 
@@ -148,8 +153,8 @@ app.run();
 - `cx.popup(component)` shows a component above everything, the keyboard
   included, and works from any screen, a modal too. What is under it stays;
   `cx.close_popup()` closes it, and so does a turn of the screen. It fills the
-  screen and places itself, by a rectangle from `on_tap_at`. `DropdownMenu` is
-  one.
+  screen and places itself, by `cx.tap_rect()`: where the node tapped for the
+  message is, on any node. `Menu` and `DropdownMenu` are two.
 - A `Theme` is what resgen generates from a definition: colors, fonts, icons,
   each widget's values, keyboards and motion, so a theme replaces any of them
   without the rest of it reaching the firmware.
@@ -167,6 +172,8 @@ app.run();
   `Input::set_color_mode` swaps the palette and repaints; a theme without
   dark colors stays light. `ui.colors()` gives the palette in use and
   `ui.color_mode()` the mode. `SavedColorMode` keeps it across restarts.
+- `Palette` names the colors every theme has. What a theme adds is a
+  `ColorRole::Custom` in `resources::colors`, and `ui.color()` gives its value.
 - `cx.set_theme` changes the theme, `Screen::theme` replaces it for a screen.
 
 - `devkit_ui::widgets` are functions over the theme. State stays with the caller.

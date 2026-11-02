@@ -135,7 +135,7 @@ pub(crate) struct Tree {
     bump: Box<Bump>,
     pub(crate) caps: Caps,
     depth: u32,
-    pub(crate) queue: VecDeque<(u16, Erased)>,
+    pub(crate) queue: VecDeque<(u16, Erased, Option<Rect>)>,
     dirty: Vec<u16>,
     pub(crate) layout_dirty: bool,
     /// The state of the nearest `state_source` around what is being reconciled.
@@ -603,7 +603,6 @@ impl Tree {
         node.role = element.role;
         node.tap = element.tap;
         node.drag = element.drag;
-        node.tap_at = element.tap_at;
         node.on_scroll = element.on_scroll;
         node.gestures = element.gestures;
         node.size = element.size;
@@ -858,14 +857,15 @@ impl Tree {
         if requests.rebuild {
             self.mark_slot_dirty(slot);
         }
-        self.queue.extend(requests.sends.into_iter().map(|m| (slot, m)));
+        let tap_rect = requests.tap_rect;
+        self.queue.extend(requests.sends.into_iter().map(|m| (slot, m, tap_rect)));
         for (id, msg) in requests.posts {
             self.post(id, msg);
         }
         if let Some(map) = &self.slots[usize::from(slot)].events {
             for event in requests.events {
                 let parent = unsafe { (map.call)(map.function, event) };
-                self.queue.push_back((map.parent, parent));
+                self.queue.push_back((map.parent, parent, tap_rect));
             }
         }
         if let Some(theme) = requests.theme {
@@ -906,10 +906,10 @@ impl Tree {
         self.mark_all_dirty();
     }
 
-    pub(crate) fn dispatch(&mut self, slot: u16, msg: Erased) {
+    pub(crate) fn dispatch(&mut self, slot: u16, msg: Erased, tap_rect: Option<Rect>) {
         let index = usize::from(slot);
         let Some(mut host) = self.slots[index].host.take() else { return };
-        let requests = host.dispatch(msg, self.parked_strips.take(), &self.link);
+        let requests = host.dispatch(msg, self.parked_strips.take(), tap_rect, &self.link);
         self.slots[index].host = Some(host);
         self.apply_requests(slot, requests);
     }
@@ -918,15 +918,15 @@ impl Tree {
     pub(crate) fn render_done(&mut self, slot: u16, done: Option<Erased>, strips: Strips) {
         self.parked_strips = Some(strips);
         if let Some(done) = done {
-            self.queue.push_back((slot, done));
+            self.queue.push_back((slot, done, None));
         }
     }
 
     /// Applies what happened since the last call, leaving the damage to take.
     pub(crate) fn update(&mut self) {
         self.flush_gestures();
-        while let Some((slot, msg)) = self.queue.pop_front() {
-            self.dispatch(slot, msg);
+        while let Some((slot, msg, tap_rect)) = self.queue.pop_front() {
+            self.dispatch(slot, msg, tap_rect);
         }
         while let Some(slot) = self.dirty.pop() {
             self.build_component(slot);
@@ -1060,7 +1060,7 @@ impl Tree {
             canvas.reported = size;
             if let Some(map) = node.size {
                 let msg = unsafe { (map.call)(map.function, size.0, size.1) };
-                self.queue.push_back((node.owner, msg));
+                self.queue.push_back((node.owner, msg, None));
                 reported = true;
             }
         }
@@ -1113,7 +1113,7 @@ impl Tree {
         let node = &self.nodes[self.focus as usize];
         let Some(map) = node.input else { return };
         let msg = unsafe { (map.call)(map.function, input) };
-        self.queue.push_back((node.owner, msg));
+        self.queue.push_back((node.owner, msg, None));
         self.caret_on = true;
         self.caret_ms = 0;
     }
@@ -1286,7 +1286,7 @@ impl Tree {
         let (owner, name) = (node.owner, node.id);
         if let Some(map) = node.on_scroll {
             let msg = unsafe { (map.call)(map.function, offset) };
-            self.queue.push_back((owner, msg));
+            self.queue.push_back((owner, msg, None));
         }
         let Some(name) = name.filter(|_| (before == 0) != (offset == 0)) else { return };
         let mut bars = Vec::new();
@@ -1344,7 +1344,7 @@ impl Tree {
                 }
             } else if node.drag.is_some() {
                 found = Some(Hit { drag: id, ..NO_HIT });
-            } else if node.tap.is_some() || node.tap_at.is_some() || node.input.is_some() || node.focusable {
+            } else if node.tap.is_some() || node.input.is_some() || node.focusable {
                 found = Some(Hit { tap: id, scroller: if scrollable { id } else { NONE }, ..NO_HIT });
             } else if scrollable {
                 found = Some(Hit { scroller: id, ..NO_HIT });
@@ -1479,16 +1479,9 @@ impl Tree {
         }
     }
 
-    fn tap_msg(&self, id: NodeId) -> Option<Erased> {
-        let node = &self.nodes[id as usize];
-        let Some(map) = node.tap_at else { return node.tap };
-        Some(unsafe { (map.call)(map.function, node.screen) })
-    }
-
     pub(crate) fn finish_tap(&mut self, id: NodeId, point: (i16, i16), repeated: bool) {
-        let tap = self.tap_msg(id);
         let node = &self.nodes[id as usize];
-        let owner = node.owner;
+        let (tap, owner, rect) = (node.tap, node.owner, node.screen);
         if node.input.is_some() || node.focusable {
             let place = match &node.content {
                 NodeContent::Text(text) if node.input.is_some() => {
@@ -1508,7 +1501,7 @@ impl Tree {
         if !repeated
             && let Some(msg) = tap
         {
-            self.queue.push_back((owner, msg));
+            self.queue.push_back((owner, msg, Some(rect)));
         }
     }
 
@@ -1523,7 +1516,7 @@ impl Tree {
             let node = &self.nodes[contact.tap as usize];
             if let Some(msg) = node.tap {
                 for _ in steps(before)..steps(contact.held_ms) {
-                    self.queue.push_back((node.owner, msg));
+                    self.queue.push_back((node.owner, msg, Some(node.screen)));
                     contact.repeated = true;
                 }
             }
@@ -1552,7 +1545,7 @@ impl Tree {
         let [left, top, right, _] = node.style.padding;
         let drag = Drag { x: point.0 - screen.x - left, y: point.1 - screen.y - top, width: screen.w - left - right, ended };
         let msg = unsafe { (map.call)(map.function, drag) };
-        self.queue.push_back((node.owner, msg));
+        self.queue.push_back((node.owner, msg, None));
     }
 
     /// Advances what moves by itself.
@@ -1650,9 +1643,8 @@ impl Tree {
         if node.state.contains(State::DISABLED) {
             return Err(format!("{name} is disabled"));
         }
-        let owner = node.owner;
-        let msg = self.tap_msg(id).ok_or_else(|| format!("{name} takes no taps"))?;
-        self.queue.push_back((owner, msg));
+        let msg = node.tap.ok_or_else(|| format!("{name} takes no taps"))?;
+        self.queue.push_back((node.owner, msg, Some(node.screen)));
         Ok(())
     }
 

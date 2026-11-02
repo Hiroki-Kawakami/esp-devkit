@@ -19,7 +19,7 @@ use crate::nav::SplitRole;
 use crate::rotation::Rotations;
 use crate::gesture::{Gesture, Gestures};
 use crate::keyboard::{InputKind, Key, KeyAction, KeyLabel, Keyboard, Layer};
-use crate::node::{NONE, Node, NodeContent};
+use crate::node::{NONE, Node, NodeContent, NodeId};
 use crate::tree::Tree;
 use crate::widgets;
 
@@ -68,17 +68,19 @@ fn chain() -> &'static FontChain {
 
 static EMPTY: StateStyle = StateStyle::EMPTY;
 static SLIDER_ROOT: StateStyle = StateStyle { base: &[Prop::Height(48), Prop::PaddingX(14)], ..StateStyle::EMPTY };
-static SLIDER_TRACK: StateStyle = StateStyle { base: &[Prop::Height(8), Prop::Background(ColorRole::Selected)], ..StateStyle::EMPTY };
-static SLIDER_FILL: StateStyle = StateStyle { base: &[Prop::MinWidth(8), Prop::Background(ColorRole::Primary)], ..StateStyle::EMPTY };
+static SLIDER_TRACK: StateStyle = StateStyle { base: &[Prop::Height(8), Prop::Background(ColorRole::Custom(0))], ..StateStyle::EMPTY };
+static SLIDER_FILL: StateStyle = StateStyle { base: &[Prop::Background(ColorRole::Primary)], ..StateStyle::EMPTY };
 static SLIDER_THUMB: StateStyle = StateStyle { base: &[Prop::Width(28), Prop::Height(28)], ..StateStyle::EMPTY };
 static ICON_BUTTON: StateStyle = StateStyle { base: &[Prop::Width(64), Prop::Height(64)], ..StateStyle::EMPTY };
 static TOP_BAR: StateStyle = StateStyle { base: &[Prop::Height(80), Prop::PaddingX(8), Prop::Gap(12)], ..StateStyle::EMPTY };
 static TOP_BAR_BACK: StateStyle = StateStyle { base: &[Prop::Height(64), Prop::Gap(12)], ..StateStyle::EMPTY };
 static DROPDOWN_ITEM: StateStyle = StateStyle { base: &[Prop::Height(56)], ..StateStyle::EMPTY };
 static DROPDOWN_MENU: StateStyle = StateStyle { base: &[Prop::Radius(14), Prop::Border(ColorRole::Divider, 2)], ..StateStyle::EMPTY };
+static MENU_PANEL: StateStyle = StateStyle { base: &[Prop::Width(200), Prop::PaddingY(8)], ..StateStyle::EMPTY };
+static MENU_ITEM: StateStyle = StateStyle { base: &[Prop::Height(50)], ..StateStyle::EMPTY };
 static TABLE_ROW: StateStyle = StateStyle { base: &[Prop::MinHeight(88), Prop::PaddingX(24), Prop::Gap(12)], ..StateStyle::EMPTY };
 static TABLE_LINE: StateStyle = StateStyle { base: &[Prop::Height(1)], ..StateStyle::EMPTY };
-static KEY: StateStyle = StateStyle { states: &[(State::PRESSED, &[Prop::Background(ColorRole::Pressed)])], ..StateStyle::EMPTY };
+static KEY: StateStyle = StateStyle { states: &[(State::PRESSED, &[Prop::Background(ColorRole::Custom(1))])], ..StateStyle::EMPTY };
 
 const KEY_PITCH: i16 = 88;
 const TEXT_KEYS_HEIGHT: i16 = 4 * KEY_PITCH + 8;
@@ -133,7 +135,7 @@ static WIDGETS: Widgets = Widgets {
     top_bar: TopBarTheme { back_height: 64, padding_x: 8, root: &TOP_BAR, title: &EMPTY, back: &TOP_BAR_BACK },
     switch: SwitchTheme { root: &EMPTY, thumb: &EMPTY },
     checkbox: CheckboxTheme { root: &EMPTY, mark: &EMPTY },
-    slider: SliderTheme { root: &SLIDER_ROOT, track: &SLIDER_TRACK, fill: &SLIDER_FILL, thumb: &SLIDER_THUMB },
+    slider: SliderTheme { inset: 14, track_inset: 4, root: &SLIDER_ROOT, track: &SLIDER_TRACK, fill: &SLIDER_FILL, thumb: &SLIDER_THUMB },
     segmented: SegmentedTheme { root: &EMPTY, item: &EMPTY, label: &EMPTY },
     dropdown: DropdownTheme { height: 56, root: &DROPDOWN_ITEM, label: &EMPTY, icon: &EMPTY },
     dropdown_menu: DropdownMenuTheme { root: &DROPDOWN_MENU, item: &DROPDOWN_ITEM },
@@ -141,33 +143,27 @@ static WIDGETS: Widgets = Widgets {
     table_header: TableHeaderTheme { root: &EMPTY },
     table_section: TableSectionTheme { root: &EMPTY, divider: &EMPTY, line: &TABLE_LINE },
     table_row: TableRowTheme { root: &TABLE_ROW, label: &EMPTY, value: &EMPTY, chevron: &EMPTY },
-    menu: MenuTheme { panel: &EMPTY },
-    menu_item: MenuItemTheme { root: &EMPTY, label: &EMPTY },
+    menu: MenuTheme { width: 200, padding_y: 8, panel: &MENU_PANEL },
+    menu_item: MenuItemTheme { height: 50, root: &MENU_ITEM, label: &EMPTY },
     modal: ModalTheme { width: 360, scrim: &EMPTY, panel: &EMPTY },
     toast: ToastTheme { root: &EMPTY, label: &EMPTY },
-    text_field: TextFieldTheme { placeholder_color: ColorRole::Muted, area_min_height: 160, root: &EMPTY },
+    text_field: TextFieldTheme { placeholder_color: ColorRole::Custom(2), caret_color: ColorRole::Primary, underline_color: ColorRole::Primary, area_min_height: 160, root: &EMPTY },
     keyboard: KeyboardTheme { gap: 8, root: &EMPTY, label: &EMPTY, key: &KEY, special: &KEY, primary: &KEY },
 };
+
+static CUSTOM_COLORS: [Color; 3] = [Color::rgb(227, 242, 253), Color::rgb(223, 227, 230), Color::rgb(120, 144, 156)];
 
 fn theme() -> &'static Theme {
     let chain = chain();
     let icon = Icon { font: chain, glyph: 'A' };
     let icons = Icons { back: icon, more: icon, close: icon, check: icon, chevron: icon, expand: icon, shift: icon, backspace: icon, enter: icon };
     let colors = Palette {
+        text: Color::rgb(29, 33, 38),
+        primary: Color::rgb(33, 150, 243),
         surface: Color::rgb(255, 255, 255),
         background: Color::rgb(233, 234, 236),
-        on_surface: Color::rgb(29, 33, 38),
-        muted: Color::rgb(120, 144, 156),
-        primary: Color::rgb(33, 150, 243),
-        on_primary: Color::rgb(255, 255, 255),
-        primary_pressed: Color::rgb(25, 118, 210),
-        destructive: Color::rgb(211, 47, 47),
-        on_destructive: Color::rgb(255, 255, 255),
         divider: Color::rgb(217, 221, 224),
-        pressed: Color::rgb(223, 227, 230),
-        selected: Color::rgb(227, 242, 253),
-        scrim: Color::rgba(0, 0, 0, 128),
-        shadow: Color::rgba(17, 20, 24, 56),
+        custom: &CUSTOM_COLORS,
     };
     Box::leak(Box::new(Theme {
         light: colors,
@@ -472,7 +468,7 @@ impl Component for Dropdowns {
 
     fn update(&mut self, msg: DropdownMsg, cx: &mut Cx<Self>) {
         match msg {
-            DropdownMsg::Open(anchor) => cx.popup(widgets::DropdownMenu::new(anchor, &["One", "Two"], 1, cx.handle(), DropdownMsg::Chosen)),
+            DropdownMsg::Open => cx.popup(widgets::DropdownMenu::new(cx.tap_rect().unwrap(), &["One", "Two"], 1, cx.handle(), DropdownMsg::Chosen)),
             DropdownMsg::Chosen(index) => self.chosen.store(index as u32 + 1, Relaxed),
             DropdownMsg::Modal => cx.nav_of::<Overlay>().push(Dropdowns { chosen: self.chosen }),
         }
@@ -486,7 +482,7 @@ impl Component for Dropdowns {
 
 #[derive(Clone, Copy)]
 enum DropdownMsg {
-    Open(Rect),
+    Open,
     Chosen(usize),
     Modal,
 }
@@ -496,6 +492,90 @@ fn dropdown_tree() -> (Tree, &'static AtomicU32) {
     let mut tree = Tree::new(Dropdowns { chosen }, SCREEN, Caps::INTERNAL, theme());
     run(&mut tree);
     (tree, chosen)
+}
+
+struct Menus {
+    chosen: &'static AtomicU32,
+}
+
+impl Screen for Menus {}
+
+impl Component for Menus {
+    type Msg = MenuMsg;
+
+    fn update(&mut self, msg: MenuMsg, cx: &mut Cx<Self>) {
+        match msg {
+            MenuMsg::Open => cx.popup(widgets::Menu::new(cx.tap_rect().unwrap(), &[("One", MenuMsg::Chosen(1)), ("Two", MenuMsg::Chosen(2))], cx.handle())),
+            MenuMsg::Forward => cx.send(MenuMsg::Open),
+            MenuMsg::Chosen(value) => {
+                assert!(cx.tap_rect().is_none());
+                self.chosen.store(value, Relaxed);
+            }
+        }
+    }
+
+    fn view<'a>(&'a self, ui: &'a Ui<MenuMsg>) -> Element<'a, MenuMsg> {
+        ui.column([
+            ui.row([]).size(60, 60).absolute(Some(20), Some(20), None, None).id("left").on_tap(MenuMsg::Open),
+            ui.row([]).size(60, 60).absolute(None, Some(20), Some(20), None).id("right").on_tap(MenuMsg::Open),
+            ui.row([]).size(60, 60).absolute(Some(20), None, None, Some(20)).id("bottom").on_tap(MenuMsg::Forward),
+        ])
+    }
+}
+
+#[derive(Clone, Copy)]
+enum MenuMsg {
+    Open,
+    Forward,
+    Chosen(u32),
+}
+
+fn menu_tree() -> (Tree, &'static AtomicU32) {
+    let chosen = Box::leak(Box::new(AtomicU32::new(0)));
+    let mut tree = Tree::new(Menus { chosen }, SCREEN, Caps::INTERNAL, theme());
+    run(&mut tree);
+    (tree, chosen)
+}
+
+#[test]
+fn a_menu_opens_under_its_anchor_from_the_left_edge() {
+    let (mut tree, _) = menu_tree();
+    tap(&mut tree, "left");
+    let (left, menu) = (rect_of(&tree, "left"), rect_of(&tree, "menu"));
+    assert_eq!((menu.x, menu.y), (left.x, left.bottom()));
+    assert_eq!((menu.w, menu.h), (200, 116));
+}
+
+#[test]
+fn a_menu_keeps_to_the_right_edge_of_its_anchor_where_it_would_not_fit() {
+    let (mut tree, _) = menu_tree();
+    tap(&mut tree, "right");
+    let (right, menu) = (rect_of(&tree, "right"), rect_of(&tree, "menu"));
+    assert_eq!((menu.right(), menu.y), (right.right(), right.bottom()));
+}
+
+#[test]
+fn a_menu_opens_above_its_anchor_at_the_bottom_with_the_tap_through_a_send() {
+    let (mut tree, _) = menu_tree();
+    tap(&mut tree, "bottom");
+    let (bottom, menu) = (rect_of(&tree, "bottom"), rect_of(&tree, "menu"));
+    assert_eq!((menu.x, menu.bottom()), (bottom.x, bottom.y));
+}
+
+#[test]
+fn a_menu_item_reports_to_the_target_and_closes_the_menu() {
+    let (mut tree, chosen) = menu_tree();
+    tap(&mut tree, "left");
+    let menu = rect_of(&tree, "menu");
+    tree.touch(&[(0, (menu.x + 10, menu.bottom() - 20))], 20);
+    tree.touch(&[], 30);
+    run(&mut tree);
+    assert_eq!(chosen.load(Relaxed), 2);
+    assert!(tree.find("menu").is_none());
+    tap(&mut tree, "left");
+    tap(&mut tree, "menu-backdrop");
+    assert!(tree.find("menu").is_none());
+    assert_eq!(chosen.load(Relaxed), 2);
 }
 
 #[test]
@@ -1096,6 +1176,18 @@ impl Screen for PageRoot {
     }
 }
 
+fn slider_nodes(tree: &Tree) -> [NodeId; 3] {
+    let bar = tree.nodes[tree.find("slider").unwrap() as usize].first_child;
+    let track = tree.nodes[bar as usize].first_child;
+    let stop = tree.nodes[track as usize].first_child;
+    [track, stop, tree.nodes[stop as usize].first_child]
+}
+
+fn slider_thumb(tree: &Tree, fill: NodeId) -> Rect {
+    let end = tree.nodes[fill as usize].first_child;
+    tree.nodes[tree.nodes[end as usize].first_child as usize].screen
+}
+
 #[test]
 fn a_drag_follows_the_contact_without_a_tap_slop() {
     let log = Box::leak(Box::new(core::cell::RefCell::new(Vec::new())));
@@ -1104,15 +1196,33 @@ fn a_drag_follows_the_contact_without_a_tap_slop() {
     let slider = rect_of(&tree, "slider");
     tree.touch(&[(0, (slider.x + 100, slider.y + 10))], 0);
     tree.update();
-    let track = tree.nodes[tree.find("slider").unwrap() as usize].first_child;
-    let fill = tree.nodes[track as usize].first_child;
-    assert_eq!(tree.nodes[fill as usize].rect.w, 85);
+    let [_, stop, fill] = slider_nodes(&tree);
+    assert_eq!(tree.nodes[stop as usize].rect.w, 85);
     tree.touch(&[(0, (slider.x + 150, slider.y + 10))], 16);
     tree.update();
-    assert_eq!(tree.nodes[fill as usize].rect.w, 135);
-    let end = tree.nodes[fill as usize].first_child;
-    let thumb = tree.nodes[tree.nodes[end as usize].first_child as usize].screen;
+    assert_eq!(tree.nodes[stop as usize].rect.w, 135);
+    let thumb = slider_thumb(&tree, fill);
     assert_eq!(thumb.x + thumb.w / 2, tree.nodes[fill as usize].screen.right());
+    tree.touch(&[], 32);
+    tree.update();
+}
+
+#[test]
+fn the_track_keeps_its_inset_and_the_thumb_stays_on_the_slider() {
+    let log = Box::leak(Box::new(core::cell::RefCell::new(Vec::new())));
+    let mut tree = Tree::new(PageRoot(Page::new("first", log)), SCREEN, Caps::INTERNAL, theme());
+    settle(&mut tree);
+    let slider = rect_of(&tree, "slider");
+    let [track, _, fill] = slider_nodes(&tree);
+    let track = tree.nodes[track as usize].screen;
+    assert_eq!((track.x, track.w), (slider.x + 4, slider.w - 8));
+    tree.touch(&[(0, (slider.x, slider.y + 10))], 0);
+    tree.update();
+    assert_eq!(slider_thumb(&tree, fill).x, slider.x);
+    assert_eq!(tree.nodes[fill as usize].screen.x, track.x);
+    tree.touch(&[(0, (slider.right() - 1, slider.y + 10))], 16);
+    tree.update();
+    assert_eq!(slider_thumb(&tree, fill).right(), slider.right());
     tree.touch(&[], 32);
     tree.update();
 }
@@ -2670,6 +2780,7 @@ fn a_color_mode_swaps_the_palette_under_the_same_looks() {
     assert_eq!(theme().palette(ColorMode::Dark).surface, theme().light.surface, "no dark colors stays light");
 
     assert_eq!(dark.palette(ColorMode::Dark).color(ColorRole::Surface), Color::rgb(1, 2, 3));
+    assert_eq!(theme().light.color(ColorRole::Custom(2)), Color::rgb(120, 144, 156));
 }
 
 #[test]

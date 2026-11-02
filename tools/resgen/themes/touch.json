@@ -58,7 +58,7 @@
     "light": {
       "surface": "#ffffff",
       "background": "#e9eaec",
-      "on_surface": "#1d2126",
+      "text": "#1d2126",
       "muted": "#78909c",
       "primary": "#2196f3",
       "on_primary": "#ffffff",
@@ -74,7 +74,7 @@
     "dark": {
       "surface": "#1b1e22",
       "background": "#101214",
-      "on_surface": "#e8eaed",
+      "text": "#e8eaed",
       "muted": "#90a4ae",
       "primary": "#2196f3",
       "on_primary": "#ffffff",
@@ -101,7 +101,7 @@
     },
     "framed": {
       "background": "color.surface",
-      "foreground": "color.on_surface",
+      "foreground": "color.text",
       "border": [
         "color.divider",
         2
@@ -119,7 +119,7 @@
       }
     },
     "plain": {
-      "foreground": "color.on_surface",
+      "foreground": "color.text",
       "states": {
         "pressed": "vars.pressed",
         "disabled": "vars.dimmed"
@@ -196,8 +196,8 @@
           "widgets.button.root",
           "vars.outline"
         ],
-        "border_color": "color.on_surface",
-        "foreground": "color.on_surface"
+        "border_color": "color.text",
+        "foreground": "color.text"
       },
       "destructive_outline": {
         "extends": [
@@ -213,7 +213,7 @@
           "vars.outline"
         ],
         "border_color": "color.divider",
-        "foreground": "color.on_surface"
+        "foreground": "color.text"
       }
     },
     "icon_button": {
@@ -233,7 +233,7 @@
         "padding_x": "widgets.unit.padding",
         "gap": "widgets.unit.padding",
         "background": "color.surface",
-        "foreground": "color.on_surface",
+        "foreground": "color.text",
         "border_bottom": "color.divider",
         "states": {
           "selected": {
@@ -280,9 +280,9 @@
     },
     "switch": {
       "root": {
-        "width": 64,
-        "height": 36,
-        "radius": 18,
+        "width": 72,
+        "height": 44,
+        "radius": 22,
         "padding_x": 4,
         "background": "color.divider",
         "animate": "vars.toggle_color",
@@ -293,9 +293,9 @@
         }
       },
       "thumb": {
-        "width": 28,
-        "height": 28,
-        "radius": 14,
+        "width": 36,
+        "height": 36,
+        "radius": 18,
         "background": "color.surface",
         "animate": "vars.toggle_position"
       }
@@ -320,9 +320,11 @@
       }
     },
     "slider": {
+      "inset": 14,
+      "track_inset": 4,
       "root": {
         "height": 48,
-        "padding_x": 14
+        "padding_x": "widgets.slider.inset"
       },
       "track": {
         "height": 8,
@@ -330,7 +332,6 @@
         "background": "color.selected"
       },
       "fill": {
-        "min_width": 8,
         "radius": 4,
         "background": "color.primary"
       },
@@ -351,7 +352,7 @@
         "height": 48,
         "padding_x": 20,
         "radius": 10,
-        "foreground": "color.on_surface",
+        "foreground": "color.text",
         "states": {
           "pressed": "vars.pressed",
           "selected": {
@@ -394,7 +395,7 @@
         "height": "widgets.dropdown.height",
         "padding_x": "widgets.unit.gap",
         "gap": "widgets.unit.gap",
-        "foreground": "color.on_surface",
+        "foreground": "color.text",
         "states": {
           "selected": {
             "background": "color.selected"
@@ -451,23 +452,25 @@
       }
     },
     "menu": {
+      "width": 380,
+      "padding_y": "widgets.unit.gap",
       "panel": {
-        "width": 380,
-        "padding_y": "widgets.unit.gap",
+        "width": "widgets.menu.width",
+        "padding_y": "widgets.menu.padding_y",
         "radius": 20,
-        "right": 16,
         "background": "color.surface",
         "shadow": [
+          6,
           12,
-          32,
           "color.shadow"
         ]
       }
     },
     "menu_item": {
+      "height": 72,
       "root": {
         "extends": "vars.plain",
-        "height": 72,
+        "height": "widgets.menu_item.height",
         "padding_x": "widgets.unit.padding"
       },
       "label": {
@@ -492,7 +495,7 @@
         "radius": "widgets.unit.radius",
         "right": "widgets.unit.padding",
         "bottom": "widgets.unit.padding",
-        "background": "color.on_surface",
+        "background": "color.text",
         "foreground": "color.surface"
       },
       "label": {
@@ -501,6 +504,8 @@
     },
     "text_field": {
       "placeholder_color": "vars.text_secondary",
+      "caret_color": "color.primary",
+      "underline_color": "color.primary",
       "area_min_height": 160,
       "root": {
         "font": "font.body",
@@ -508,7 +513,7 @@
         "padding_y": "widgets.unit.gap",
         "radius": "widgets.unit.radius",
         "background": "color.surface",
-        "foreground": "color.on_surface",
+        "foreground": "color.text",
         "border": [
           "color.divider",
           2
@@ -532,7 +537,7 @@
       "key": {
         "radius": 7,
         "background": "color.surface",
-        "foreground": "color.on_surface",
+        "foreground": "color.text",
         "states": {
           "pressed": "vars.pressed"
         }
@@ -540,7 +545,7 @@
       "special": {
         "radius": 7,
         "background": "color.divider",
-        "foreground": "color.on_surface",
+        "foreground": "color.text",
         "states": {
           "pressed": "vars.pressed"
         }

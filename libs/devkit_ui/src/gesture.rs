@@ -144,7 +144,7 @@ impl Tree {
         let node = &self.nodes[node as usize];
         let Some(map) = node.gestures else { return };
         let msg = unsafe { (map.call)(map.function, gesture) };
-        self.queue.push_back((node.owner, msg));
+        self.queue.push_back((node.owner, msg, None));
     }
 
     fn flush(&mut self, index: usize) {

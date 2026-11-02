@@ -115,6 +115,7 @@ pub(crate) struct Requests {
     pub(crate) render: Option<RenderRequest>,
     pub(crate) theme: Option<&'static Theme>,
     pub(crate) replaced: Option<Strips>,
+    pub(crate) tap_rect: Option<Rect>,
     pub(crate) animations: Vec<(&'static str, Animation)>,
     pub(crate) focus: Option<&'static str>,
     pub(crate) input: Vec<TextInput>,
@@ -147,8 +148,8 @@ pub struct Cx<C: Component> {
 }
 
 impl<C: Component> Cx<C> {
-    pub(crate) fn new(replaced: Option<Strips>, id: u32, link: &Link) -> Self {
-        Self { requests: Requests { replaced, ..Requests::default() }, id, link: link.clone(), _component: PhantomData }
+    pub(crate) fn new(replaced: Option<Strips>, tap_rect: Option<Rect>, id: u32, link: &Link) -> Self {
+        Self { requests: Requests { replaced, tap_rect, ..Requests::default() }, id, link: link.clone(), _component: PhantomData }
     }
 
     /// Reaches this component from any task, for as long as it lives, whether
@@ -185,6 +186,12 @@ impl<C: Component> Cx<C> {
     /// inside it, then anywhere.
     pub fn nav_of<K: 'static>(&mut self) -> Nav<'_> {
         Nav { requests: &mut self.requests, target: Some(TypeId::of::<K>()) }
+    }
+
+    /// Where the node tapped for this message is on the screen, through `send`
+    /// and `emit` too. `None` for what no tap led to.
+    pub fn tap_rect(&self) -> Option<Rect> {
+        self.requests.tap_rect
     }
 
     /// Shows `component` above everything, keeping what is under it. It fills
@@ -294,7 +301,7 @@ pub(crate) unsafe fn call_event_map<E: Copy, M: Copy>(function: *const (), event
 /// A component without its type.
 pub(crate) trait AnyHost {
     fn id(&self) -> u32;
-    fn dispatch(&mut self, msg: Erased, replaced: Option<Strips>, link: &Link) -> Requests;
+    fn dispatch(&mut self, msg: Erased, replaced: Option<Strips>, tap_rect: Option<Rect>, link: &Link) -> Requests;
     fn build(&self, tree: &mut Tree, id: u16, node: NodeId);
     fn build_row(&self, tree: &mut Tree, id: u16, list: ListId, index: usize, row: NodeId);
     fn draw<'a>(&'a self, id: CanvasId, canvas: &mut Canvas<'a, '_>);
@@ -332,8 +339,8 @@ impl<C: Component> AnyHost for Host<C> {
         self.id
     }
 
-    fn dispatch(&mut self, msg: Erased, replaced: Option<Strips>, link: &Link) -> Requests {
-        let mut cx = Cx::<C>::new(replaced, self.id, link);
+    fn dispatch(&mut self, msg: Erased, replaced: Option<Strips>, tap_rect: Option<Rect>, link: &Link) -> Requests {
+        let mut cx = Cx::<C>::new(replaced, tap_rect, self.id, link);
         self.component.update(unsafe { msg.get::<C::Msg>() }, &mut cx);
         cx.requests
     }
@@ -368,8 +375,8 @@ impl<S: Screen> AnyHost for ScreenHost<S> {
         self.inner.id()
     }
 
-    fn dispatch(&mut self, msg: Erased, replaced: Option<Strips>, link: &Link) -> Requests {
-        self.inner.dispatch(msg, replaced, link)
+    fn dispatch(&mut self, msg: Erased, replaced: Option<Strips>, tap_rect: Option<Rect>, link: &Link) -> Requests {
+        self.inner.dispatch(msg, replaced, tap_rect, link)
     }
 
     fn draw<'a>(&'a self, id: CanvasId, canvas: &mut Canvas<'a, '_>) {
@@ -389,7 +396,7 @@ impl<S: Screen> AnyHost for ScreenHost<S> {
     }
 
     fn hook(&mut self, hook: Hook, link: &Link) -> Requests {
-        let mut cx = Cx::<S>::new(None, self.inner.id(), link);
+        let mut cx = Cx::<S>::new(None, None, self.inner.id(), link);
         let screen = &mut self.inner.component;
         match hook {
             Hook::Enter => screen.on_enter(&mut cx),

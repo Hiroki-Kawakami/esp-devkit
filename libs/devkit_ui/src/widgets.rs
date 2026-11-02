@@ -109,12 +109,16 @@ pub fn slider_value(drag: Drag) -> u8 {
 /// `value` is 0..=255. Takes the width it is given.
 pub fn slider<'a, M: Copy>(ui: &'a Ui<M>, value: u8, on_drag: fn(Drag) -> M) -> Element<'a, M> {
     let t = &ui.theme().widgets.slider;
+    let overhang = t.inset - t.track_inset;
     let thumb = ui.column([]).style(t.thumb).inherit_state(PART_STATES).part_of(Part::Thumb);
     // No width, so the thumb stays centered on the end of the fill at any size.
     let end = ui.column([thumb]).width(0).align(Align::Center).justify(Justify::Center).absolute(None, Some(0), Some(0), Some(0));
-    let fill = ui.column([end]).style(t.fill).width_fraction(u16::from(value), VALUE_RANGE).absolute(Some(0), Some(0), None, Some(0)).inherit_state(PART_STATES).part_of(Part::Fill);
-    let track = ui.column([fill]).style(t.track).inherit_state(PART_STATES).part_of(Part::Track);
-    ui.column([track]).style(t.root).justify(Justify::Center).state_source().on_drag(on_drag)
+    let fill = ui.column([end]).style(t.fill).absolute(Some(-overhang), Some(0), Some(0), Some(0)).inherit_state(PART_STATES).part_of(Part::Fill);
+    let stop = ui.column([fill]).width_fraction(u16::from(value), VALUE_RANGE);
+    let track = ui.row([stop]).style(t.track).padding_x(overhang).inherit_state(PART_STATES).part_of(Part::Track);
+    // The track reaches past the root's padding, which the thumb and a drag keep to.
+    let bar = ui.column([track]).padding_x(t.track_inset).justify(Justify::Center).absolute(Some(0), Some(0), Some(0), Some(0));
+    ui.column([bar]).style(t.root).state_source().on_drag(on_drag)
 }
 
 /// One choice out of `options`, which pair a label with what tapping it sends.
@@ -143,14 +147,26 @@ fn dropdown_row<'a, M: Copy>(ui: &'a Ui<M>, label: &'a str, style: &'static Stat
     ui.row([ui.text(theme.fonts.caption, label).style(theme.widgets.dropdown.label).ellipsis().grow(1), trailing]).style(style).align(Align::Center).role(Role::Button)
 }
 
-/// Shows `label`; `on_open` says where it is, for a `DropdownMenu`.
-pub fn dropdown<'a, M: Copy>(ui: &'a Ui<M>, label: &'a str, on_open: fn(Rect) -> M) -> Element<'a, M> {
+/// Shows `label`; `on_open` is the tap opening a `DropdownMenu`.
+pub fn dropdown<'a, M: Copy>(ui: &'a Ui<M>, label: &'a str, on_open: M) -> Element<'a, M> {
     let theme = ui.theme();
     let t = &theme.widgets.dropdown;
-    dropdown_row(ui, label, t.root, ui.icon(theme.icons.expand).style(t.icon).shrink(0)).on_tap_at(on_open)
+    dropdown_row(ui, label, t.root, ui.icon(theme.icons.expand).style(t.icon).shrink(0)).on_tap(on_open)
 }
 
-/// A popup touching `anchor`: under it, or above it where it would not fit.
+/// `panel`, of `size`, touching `anchor`: under it or else above it, from its
+/// left edge or else to its right one. A tap outside sends `on_close`.
+fn anchored<'a, M: Copy>(ui: &'a Ui<M>, anchor: Rect, (width, height): (i16, i16), panel: Element<'a, M>, on_close: M) -> Element<'a, M> {
+    let (screen_w, screen_h) = ui.screen_size();
+    let left = if anchor.x + width > screen_w { anchor.right() - width } else { anchor.x };
+    let top = if anchor.bottom() + height > screen_h { anchor.y - height } else { anchor.bottom() };
+    ui.column([
+        ui.column([]).absolute(Some(0), Some(0), Some(0), Some(0)).id("menu-backdrop").on_tap(on_close),
+        panel.absolute(Some(left.min(screen_w - width).max(0)), Some(top.min(screen_h - height).max(0)), None, None),
+    ])
+}
+
+/// A popup by `anchor`, as wide as it.
 /// Sends `on_select` of the chosen option to `target`, and closes then or on a
 /// tap outside.
 pub struct DropdownMenu<M: Copy + 'static> {
@@ -180,14 +196,9 @@ impl<M: Copy + 'static> Component for DropdownMenu<M> {
     fn view<'a>(&'a self, ui: &'a Ui<Option<usize>>) -> Element<'a, Option<usize>> {
         let widgets = &ui.theme().widgets;
         let t = &widgets.dropdown_menu;
-        let anchor = self.anchor;
         let height = self.options.len() as i16 * widgets.dropdown.height;
-        let top = if anchor.bottom() + height > ui.screen_size().1 { anchor.y - height } else { anchor.bottom() };
         let rows: Vec<_> = self.options.iter().enumerate().map(|(i, label)| dropdown_row(ui, label, t.item, ui.empty()).selected(i == self.selected).on_tap(Some(i))).collect();
-        ui.column([
-            ui.column([]).absolute(Some(0), Some(0), Some(0), Some(0)).id("menu-backdrop").on_tap(None),
-            ui.column(rows).style(t.root).width(anchor.w).clip().absolute(Some(anchor.x), Some(top), None, None).id("dropdown-menu"),
-        ])
+        anchored(ui, self.anchor, (self.anchor.w, height), ui.column(rows).style(t.root).width(self.anchor.w).clip().id("dropdown-menu"), None)
     }
 }
 
@@ -238,7 +249,7 @@ pub fn table_chevron<'a, M: Copy>(ui: &'a Ui<M>) -> Element<'a, M> {
     ui.icon(theme.icons.chevron).style(theme.widgets.table_row.chevron).shrink(0)
 }
 
-pub fn menu_item<'a, M: Copy>(ui: &'a Ui<M>, label: &'a str, on_tap: M) -> Element<'a, M> {
+fn menu_item<'a, M: Copy>(ui: &'a Ui<M>, label: &'a str, on_tap: M) -> Element<'a, M> {
     let theme = ui.theme();
     let t = &theme.widgets.menu_item;
     ui.row([ui.text(theme.fonts.body, label).style(t.label).grow(1)])
@@ -248,13 +259,37 @@ pub fn menu_item<'a, M: Copy>(ui: &'a Ui<M>, label: &'a str, on_tap: M) -> Eleme
         .on_tap(on_tap)
 }
 
-/// A panel near the top right, closing on a tap outside.
-pub fn menu<'a, M: Copy>(ui: &'a Ui<M>, top: i16, items: impl Children<'a, M>, on_close: M) -> Element<'a, M> {
-    ui.column([
-        ui.column([]).absolute(Some(0), Some(0), Some(0), Some(0)).id("menu-backdrop").on_tap(on_close),
-        ui.column(items).absolute(None, Some(top), None, None).style(ui.theme().widgets.menu.panel).part_of(Part::Panel),
-    ])
-    .absolute(Some(0), Some(0), Some(0), Some(0))
+/// A popup by `anchor` of `items`, which pair a label with what tapping it sends
+/// to `target`. Closes then or on a tap outside.
+pub struct Menu<M: Copy + 'static> {
+    anchor: Rect,
+    items: Vec<(String, M)>,
+    target: Handle<M>,
+}
+
+impl<M: Copy + 'static> Menu<M> {
+    pub fn new(anchor: Rect, items: &[(&str, M)], target: Handle<M>) -> Self {
+        Self { anchor, items: items.iter().map(|&(label, msg)| (String::from(label), msg)).collect(), target }
+    }
+}
+
+impl<M: Copy + 'static> Component for Menu<M> {
+    type Msg = Option<M>;
+
+    fn update(&mut self, msg: Option<M>, cx: &mut Cx<Self>) {
+        if let Some(msg) = msg {
+            cx.send_to(&self.target, msg);
+        }
+        cx.close_popup();
+    }
+
+    fn view<'a>(&'a self, ui: &'a Ui<Option<M>>) -> Element<'a, Option<M>> {
+        let widgets = &ui.theme().widgets;
+        let t = &widgets.menu;
+        let height = self.items.len() as i16 * widgets.menu_item.height + 2 * t.padding_y;
+        let rows: Vec<_> = self.items.iter().map(|(label, msg)| menu_item(ui, label, Some(*msg))).collect();
+        anchored(ui, self.anchor, (t.width, height), ui.column(rows).style(t.panel).part_of(Part::Panel).id("menu"), None)
+    }
 }
 
 /// A dialog over a scrim, closing on a tap outside.
