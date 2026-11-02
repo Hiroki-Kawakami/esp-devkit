@@ -5,10 +5,9 @@
 
 use alloc::vec::Vec;
 
+use devkit_gfx::simd::blend565;
 use devkit_gfx::{Argb8888, Bgr888, Color, ImageFormat, Pixel, Raster, RasterTarget, Rect, Rgb565};
 use idf::heap::Caps;
-
-use crate::HAVE_PIE;
 
 const BACK_SCALE: f32 = 0.9;
 const FRONT_SCALE: f32 = 1.1;
@@ -16,12 +15,6 @@ const OUTSIDE: u16 = u16::MAX;
 /// Size of both pictures against the pane, in the 2D engine's steps of 1/16.
 pub(crate) const PICTURE_SCALE: f32 = 0.5;
 pub(crate) const CHUNK: usize = 128;
-
-mod p4 {
-    unsafe extern "C" {
-        pub fn zoom_k_blend565(out: *mut u16, back: *const u16, front: *const u16, n8: i32, a5: i32);
-    }
-}
 
 #[repr(C, align(16))]
 pub(crate) struct Line(pub(crate) [u16; CHUNK]);
@@ -82,22 +75,6 @@ impl Picture {
     }
 }
 
-const SPREAD: u32 = 0x07E0_F81F;
-const SPREAD_ROUND: u32 = 0x0200_8010;
-
-#[inline(always)]
-fn spread(v: u16) -> u32 {
-    (u32::from(v) | u32::from(v) << 16) & SPREAD
-}
-
-/// `front` over `back` by `a5` of 32.
-#[inline(always)]
-pub(crate) fn blend(back: u16, front: u16, a5: u32) -> u16 {
-    let b = spread(back);
-    let difference = spread(front).wrapping_sub(b).wrapping_mul(a5).wrapping_add(SPREAD_ROUND);
-    let out = b.wrapping_add(difference >> 5) & SPREAD;
-    (out | out >> 16) as u16
-}
 
 /// Where each pane row and column reads from a picture: `OUTSIDE` past its edge.
 struct Layer {
@@ -227,7 +204,7 @@ impl Zoom {
                         }
                         Some(_) => {
                             core::ptr::copy_nonoverlapping(backs.0.as_ptr(), buffer, lo);
-                            blend_line(buffer.add(lo), backs.0.as_ptr().add(lo), fronts.0.as_ptr(), hi - lo, self.a5);
+                            blend565(buffer.add(lo), backs.0.as_ptr().add(lo), fronts.0.as_ptr(), hi - lo, self.a5);
                             core::ptr::copy_nonoverlapping(backs.0.as_ptr().add(hi), buffer.add(hi), count - hi);
                         }
                         None => core::ptr::copy_nonoverlapping(backs.0.as_ptr(), buffer, count),
@@ -271,17 +248,6 @@ pub(crate) unsafe fn gather(out: *mut u16, source: *const u16, offsets: &[u16]) 
     }
 }
 
-/// `front` over `back` into `out`, `n` pixels. PIE stores to `out`, so it is
-/// never in RTC memory.
-pub(crate) unsafe fn blend_line(out: *mut u16, back: *const u16, front: *const u16, n: usize, a5: u32) {
-    let groups = if HAVE_PIE { n / 8 } else { 0 };
-    if groups > 0 {
-        unsafe { p4::zoom_k_blend565(out, back, front, groups as i32, a5 as i32) };
-    }
-    for i in groups * 8..n {
-        unsafe { out.add(i).write(blend(back.add(i).read(), front.add(i).read(), a5)) };
-    }
-}
 
 unsafe fn store<P: Pixel>(out: *mut u8, line: &[u16]) {
     for (i, &v) in line.iter().enumerate() {

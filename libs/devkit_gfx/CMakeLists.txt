@@ -1,3 +1,11 @@
 # IDF-independent 2D rendering.
-idf_component_register(SRCS "/dev/null" PRIV_REQUIRES rust_rt)
+set(srcs "/dev/null")
+set(simd "None")
+if(IDF_TARGET STREQUAL "esp32p4")
+    set(srcs "src/simd/p4.S")
+    set(simd "P4")
+endif()
+idf_component_register(SRCS ${srcs} PRIV_REQUIRES rust_rt)
+devkit_rust_out_dir(out_dir)
+file(CONFIGURE OUTPUT "${out_dir}/simd.rs" CONTENT "pub(crate) const UNIT: Unit = Unit::@simd@;\n" @ONLY)
 devkit_rust_crate(ROOT "src/lib.rs" TESTS)

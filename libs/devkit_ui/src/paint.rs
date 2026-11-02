@@ -145,11 +145,8 @@ impl Tree {
             list.fill(Rect::new(sx, rect.bottom() - 1, rect.w, 1), dim(palette.divider, opacity));
         }
 
-        if id == self.overlay {
-            if self.scrim > 0 {
-                list.fill(rect.intersect(&clip), Color { a: self.scrim, ..self.scrim_color() });
-            }
-            self.backdrop_split.set(list.ops().len());
+        if id == self.overlay && self.scrim > 0 {
+            list.fill(rect.intersect(&clip), Color { a: self.scrim, ..self.scrim_color() });
         }
 
         let [left, top, right, bottom] = style.padding;
@@ -277,29 +274,10 @@ impl Tree {
         }
     }
 
-    /// `regions` are what the frame repaints. With `backdrop_on`, what is below
-    /// the overlay is left to the backdrop.
+    /// `regions` are what the frame repaints.
     pub(crate) fn paint<'a>(&'a self, effects: &mut Effects, regions: &[Rect], list: &mut DisplayList<'a, Caps>) {
         list.reserve(self.nodes.len());
-        match self.backdrop_on {
-            true => self.paint_planes(self.overlay, NONE, effects, regions, list),
-            false => self.paint_node(self.root, 0, 0, self.area, Inherited { opacity: 255, foreground: None }, effects, regions, list),
-        }
-    }
-
-    /// What is below the overlay, for a backdrop.
-    pub(crate) fn paint_below<'a>(&'a self, effects: &mut Effects, list: &mut DisplayList<'a, Caps>) {
-        let first = self.nodes[self.root as usize].first_child;
-        self.paint_planes(first, self.overlay, effects, &[self.area], list);
-    }
-
-    /// The root's children from `first` up to `end`.
-    fn paint_planes<'a>(&'a self, first: NodeId, end: NodeId, effects: &mut Effects, regions: &[Rect], list: &mut DisplayList<'a, Caps>) {
-        let mut child = first;
-        while child != end && child != NONE {
-            self.paint_node(child, 0, 0, self.area, Inherited { opacity: 255, foreground: None }, effects, regions, list);
-            child = self.nodes[child as usize].next;
-        }
+        self.paint_node(self.root, 0, 0, self.area, Inherited { opacity: 255, foreground: None }, effects, regions, list);
     }
 
     pub(crate) fn zooming(&self) -> bool {

@@ -33,8 +33,6 @@ mod tree;
 pub mod widgets;
 mod zoom;
 
-include!(concat!(env!("OUT_DIR"), "/pie.rs"));
-
 #[cfg(test)]
 mod tests;
 

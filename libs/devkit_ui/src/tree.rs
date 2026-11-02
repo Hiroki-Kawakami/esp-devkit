@@ -216,10 +216,6 @@ pub(crate) struct Tree {
     pub(crate) presence_pending: Vec<NodeId>,
     /// Painted for a picture, as if shown.
     pub(crate) capturing: Cell<NodeId>,
-    /// What is below the overlay shows from a backdrop instead of being painted.
-    pub(crate) backdrop_on: bool,
-    /// Where the display list paints above the scrim.
-    pub(crate) backdrop_split: Cell<usize>,
 
     pub(crate) restoring: Vec<Saved>,
     pub(crate) theme: &'static Theme,
@@ -283,8 +279,6 @@ impl Tree {
             presences: Vec::new(),
             presence_pending: Vec::new(),
             capturing: Cell::new(NONE),
-            backdrop_on: false,
-            backdrop_split: Cell::new(0),
 
             restoring: Vec::new(),
             theme,
@@ -1120,14 +1114,6 @@ impl Tree {
         if alpha != was {
             self.damage.push(self.nodes[self.overlay as usize].screen);
         }
-    }
-
-    /// While the scrim moves, what is below the overlay does not change but
-    /// takes the whole screen to repaint.
-    pub(crate) fn backdrop_wanted(&self) -> bool {
-        let NodeContent::Navigator(navigator) = &self.nodes[self.overlay as usize].content else { return false };
-        let screen = if navigator.departing != NONE { navigator.departing } else { navigator.shown() };
-        screen != NONE && self.scrim_color().a > 0 && self.presence_within(screen)
     }
 
     pub(crate) fn scrim_color(&self) -> Color {

@@ -19,6 +19,7 @@ mod list;
 mod pixel;
 mod raster;
 mod render;
+pub mod simd;
 mod surface;
 mod text;
 

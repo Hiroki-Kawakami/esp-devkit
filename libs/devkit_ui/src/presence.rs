@@ -8,13 +8,14 @@ use alloc::vec::Vec;
 use core::alloc::Allocator;
 use core::sync::atomic::{AtomicU8, AtomicU32, Ordering::Relaxed};
 
+use devkit_gfx::simd::{blend565, mix565};
 use devkit_gfx::{Argb8888, Bgr888, GlyphCache, ImageFormat, Pixel, Raster, RasterTarget, Rect, Rgb565};
 use idf::heap::Caps;
 
 use crate::animate::ease_out;
 use crate::node::{NONE, NodeContent, NodeId};
 use crate::paint::Effects;
-use crate::zoom::{CHUNK, Line, blend_line, gather};
+use crate::zoom::{CHUNK, Line, gather};
 use crate::tree::Tree;
 
 const DEFAULT_MS: u16 = 200;
@@ -229,7 +230,7 @@ impl Snapshot {
                         if a5 >= 32 {
                             core::ptr::copy_nonoverlapping(fronts.0.as_ptr(), at, chunk.len());
                         } else {
-                            blend_line(at, at, fronts.0.as_ptr(), chunk.len(), a5);
+                            blend565(at, at, fronts.0.as_ptr(), chunk.len(), a5);
                         }
                     }
                 } else if start == OPAQUE {
@@ -278,7 +279,7 @@ fn average(pixels: [u32; 4]) -> (u16, u8) {
 unsafe fn blend_one<P: Pixel>(out: *mut u8, v: u16, a: u32) {
     if P::BYTES == 2 {
         let out = out.cast::<u16>();
-        let mixed = if a >= 255 { v } else { crate::zoom::blend(unsafe { out.read_unaligned() }, v, a.wrapping_add(4) >> 3) };
+        let mixed = if a >= 255 { v } else { mix565(unsafe { out.read_unaligned() }, v, a.wrapping_add(4) >> 3) };
         unsafe { out.write_unaligned(mixed) };
         return;
     }

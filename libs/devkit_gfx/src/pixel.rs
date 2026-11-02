@@ -7,6 +7,7 @@ use core::ptr;
 
 use crate::color::{Color, mul8};
 use crate::format::ImageFormat;
+use crate::simd::{self, SPREAD, SPREAD_ROUND, spread};
 
 /// A framebuffer pixel format. `dst` and `mask` hold `n` pixels, `dst` aligned
 /// for the format's unit.
@@ -34,16 +35,6 @@ pub trait Pixel: Copy + Send + Sync + 'static {
 
 #[derive(Clone, Copy)]
 pub struct Rgb565(u16);
-
-const SPREAD: u32 = 0x07E0_F81F;
-// Half of a 5 bit alpha step in each field; without it layers darken by a level
-// each, as the shift floors negative differences.
-const SPREAD_ROUND: u32 = 0x0200_8010;
-
-#[inline(always)]
-const fn spread(v: u16) -> u32 {
-    (v as u32 | (v as u32) << 16) & SPREAD
-}
 
 #[inline(always)]
 fn blend565(d: *mut u16, src: u32, a5: u32) {
@@ -85,12 +76,7 @@ impl Pixel for Rgb565 {
 
     #[inline]
     unsafe fn blend(dst: *mut u8, n: usize, c: Self, alpha: u8) {
-        let dst = dst.cast::<u16>();
-        let src = spread(c.0);
-        let a5 = (u32::from(alpha) + 4) >> 3;
-        for i in 0..n {
-            blend565(unsafe { dst.add(i) }, src, a5);
-        }
+        unsafe { simd::tint565(dst.cast(), n, c.0, (u32::from(alpha) + 4) >> 3) };
     }
 
     #[inline]
@@ -169,9 +155,7 @@ impl Pixel for Bgr888 {
 
     #[inline]
     unsafe fn blend(dst: *mut u8, n: usize, c: Self, alpha: u8) {
-        for i in 0..n {
-            blend888(unsafe { dst.add(i * 3) }, c.0, u32::from(alpha));
-        }
+        unsafe { simd::tint888(dst, n, c.0, alpha) };
     }
 
     #[inline]

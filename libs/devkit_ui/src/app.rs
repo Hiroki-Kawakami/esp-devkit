@@ -28,7 +28,7 @@ use crate::external::{ExternalSurface, Policy};
 use crate::keyboard::KeyboardMode;
 use crate::plugin::{Plugin, PluginContext, PluginInit, Store, UiEvent};
 use crate::paint::{Effects, Engine};
-use crate::presenter::{Backdrop, Config, Presenter, ROW_GRID, Strips, Tint};
+use crate::presenter::{Config, Presenter, ROW_GRID, Strips};
 use crate::style::Insets;
 use crate::text_buffer::TextInput;
 use crate::theme::{ColorMode, Theme};
@@ -321,9 +321,6 @@ pub struct AppState<C: Screen> {
     data_caps: Caps,
     timing: Timing,
     surface: Option<ExternalSurface>,
-    backdrop: Option<Backdrop>,
-    /// No backdrop could be had for this movement of the scrim.
-    backdrop_failed: bool,
     hole: Option<Rect>,
     overlay: Option<Rect>,
     exclusive: bool,
@@ -425,8 +422,6 @@ impl<C: Screen> AppState<C> {
             data_caps: config.presenter.data_caps,
             timing: Timing::default(),
             surface: None,
-            backdrop: None,
-            backdrop_failed: false,
             hole: None,
             overlay: None,
             exclusive: false,
@@ -611,46 +606,6 @@ impl<C: Screen> AppState<C> {
         false
     }
 
-    /// Takes a backdrop while the scrim moves, and lets it go after.
-    fn sync_backdrop(&mut self, allowed: bool) {
-        let wanted = allowed && self.tree.backdrop_wanted() && !self.tree.zooming();
-        let stale = self.backdrop.as_ref().is_some_and(|b| b.rotation != self.rotation);
-        if self.backdrop.is_some() && (!wanted || stale) {
-            self.backdrop = None;
-            self.tree.backdrop_on = false;
-            self.presenter.set_tint(None);
-            self.presenter.invalidate_all();
-        }
-        if !wanted {
-            self.backdrop_failed = false;
-            return;
-        }
-        if self.backdrop.is_some() || self.backdrop_failed {
-            return;
-        }
-        match self.capture_backdrop() {
-            Ok(backdrop) => {
-                self.backdrop = Some(backdrop);
-                self.tree.backdrop_on = true;
-                self.presenter.invalidate_all();
-            }
-            Err(err) => {
-                idf::log::warn!(TAG, "backdrop: {err}, repainting what is below the scrim");
-                self.backdrop_failed = true;
-            }
-        }
-    }
-
-    /// What is below the scrim, drawn anew: copying the panel with the 2D
-    /// engine takes longer.
-    fn capture_backdrop(&mut self) -> idf::Result<Backdrop> {
-        let backdrop = self.presenter.backdrop()?;
-        let mut list = DisplayList::new_in(self.data_caps);
-        self.tree.paint_below(&mut self.effects, &mut list);
-        self.presenter.render_into(&list, &mut self.cache, &backdrop)?;
-        Ok(backdrop)
-    }
-
     fn frame(&mut self) {
         let start = Instant::now();
         self.tree.update();
@@ -716,7 +671,6 @@ impl<C: Screen> AppState<C> {
                 surface.request_refresh(*hole);
             }
         }
-        self.sync_backdrop(shown.is_none());
         if damage.is_empty() && !self.presenter.has_new_damage() && !waited && !self.presenter.behind() {
             return;
         }
@@ -734,9 +688,6 @@ impl<C: Screen> AppState<C> {
             }
         };
         self.tree.paint(&mut self.effects, regions, &mut list);
-        let scrim = self.tree.scrim_color();
-        let tint = self.backdrop.as_ref().map(|b| Tint { backdrop: b.fb, color: [scrim.r, scrim.g, scrim.b], alpha: self.tree.scrim, split: self.tree.backdrop_split.get() });
-        self.presenter.set_tint(tint);
         let mut overlap = None;
         if let Some((surface, hole)) = &shown {
             overlap = hole.and_then(|h| devkit_gfx::overlap(list.ops(), self.tree.external_split.get(), &h).map(|o| grid_rows(o).intersect(&h)));

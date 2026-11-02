@@ -296,7 +296,7 @@ pub fn modal<'a, M: Copy>(ui: &'a Ui<M>, content: Element<'a, M>) -> Element<'a,
         .style(t.panel)
         .width(t.width)
         .absolute(Some(left), Some(height / 3), None, None)
-        .appear(Presence::fade().scale(1.2).ms(150))
+        .appear(Presence::fade().offset(0, 24).ms(150))
         .disappear(Presence::fade().ms(100))
         .part_of(Part::Panel)])
     .absolute(Some(0), Some(0), Some(0), Some(0))

@@ -38,3 +38,9 @@ draw::<Rgb565, _, _>(&list, &prepared, &surface);
   its own part of the picture.
 - `draw_from` draws from an operation on, in the clips open there. `overlap`
   finds what those operations paint inside a rectangle.
+- `simd` runs pixel loops on the chip's vector unit, built in for the chips
+  that have one (`src/simd/<chip>.S` and `.rs`); scalar loops give the same
+  pixels elsewhere. On ESP32-P4 translucent `Rgb565` and `Bgr888` fills use it
+  too, so the pixels and the stack of a task drawing them stay out of RTC RAM:
+  allocate them with `Caps::SIMD` alone or from PSRAM, never `Caps::INTERNAL`
+  alone.

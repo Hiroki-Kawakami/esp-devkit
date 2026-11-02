@@ -175,10 +175,6 @@ app.run();
   A push replaces what shows at once, and a pop empties the overlay once the
   screen's `.disappear` ends. A scrim with alpha 0 draws and damages nothing,
   for a panel that should not repaint.
-- While the scrim moves, what is below it is drawn once into a picture of the
-  panel and does not change until the scrim stops; the 2D engine lays the
-  scrim over that picture, so the cost of a frame does not depend on what is
-  below. Not while an external surface shows.
 - `cx.popup(component)` shows a component above everything, the keyboard
   included, and works from any screen, a modal too. What is under it stays;
   `cx.close_popup()` closes it, and so do a tap outside, which goes no
