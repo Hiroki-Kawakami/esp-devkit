@@ -284,7 +284,12 @@ pub struct MenuItemTheme {
 #[derive(Clone, Copy)]
 pub struct ModalTheme {
     pub width: i16,
+    /// Kept clear on each side when the screen is narrower than `width`.
+    pub margin: i16,
     pub panel: &'static StateStyle,
+    pub title: &'static StateStyle,
+    pub message: &'static StateStyle,
+    pub actions: &'static StateStyle,
 }
 
 #[derive(Clone, Copy)]

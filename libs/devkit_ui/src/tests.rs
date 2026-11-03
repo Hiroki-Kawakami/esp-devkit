@@ -147,7 +147,7 @@ static WIDGETS: Widgets = Widgets {
     table_row: TableRowTheme { root: &TABLE_ROW, label: &EMPTY, value: &EMPTY, chevron: &EMPTY },
     menu: MenuTheme { width: 200, padding_y: 8, panel: &MENU_PANEL },
     menu_item: MenuItemTheme { height: 50, root: &MENU_ITEM, label: &EMPTY },
-    modal: ModalTheme { width: 360, panel: &EMPTY },
+    modal: ModalTheme { width: 360, margin: 24, panel: &EMPTY, title: &EMPTY, message: &EMPTY, actions: &EMPTY },
     overlay: OverlayTheme { scrim: ColorRole::Fixed(Color::rgba(0, 0, 0, 128)) },
     toast: ToastTheme { root: &EMPTY, label: &EMPTY },
     text_field: TextFieldTheme { placeholder_color: ColorRole::Custom(2), caret_color: ColorRole::Primary, underline_color: ColorRole::Primary, area_min_height: 160, root: &EMPTY },
@@ -3050,6 +3050,84 @@ fn a_navigator_default_and_replace_change_at_once_unless_asked() {
     assert!(tree.transiting());
     settle(&mut tree);
     assert!(tree.find("m2").is_some() && tree.find("m1").is_none());
+}
+
+struct Asking {
+    wide: bool,
+}
+
+impl Screen for Asking {}
+
+impl Component for Asking {
+    type Msg = ();
+
+    fn update(&mut self, _: (), cx: &mut Cx<Self>) {
+        cx.nav_of::<Overlay>().push(Dialog { wide: self.wide, name: TextBuffer::new() });
+    }
+
+    fn view<'a>(&'a self, ui: &'a Ui<()>) -> Element<'a, ()> {
+        ui.column([])
+    }
+}
+
+struct Dialog {
+    wide: bool,
+    name: TextBuffer,
+}
+
+impl Screen for Dialog {}
+
+impl Component for Dialog {
+    type Msg = TextInput;
+
+    fn update(&mut self, input: TextInput, cx: &mut Cx<Self>) {
+        self.name.apply(input);
+        cx.rebuild();
+    }
+
+    fn view<'a>(&'a self, ui: &'a Ui<TextInput>) -> Element<'a, TextInput> {
+        let modal = widgets::modal(ui, [
+            widgets::modal_title(ui, "Rename").id("title"),
+            widgets::text_field(ui, &self.name, |input| input).id("name"),
+            widgets::modal_actions(ui, [0, 1, 2].map(|i| ui.column([]).height(40).id(["a0", "a1", "a2"][i]))),
+        ]);
+        if self.wide { modal.part(Part::Panel, |panel| panel.width(200).id("panel")) } else { modal.part(Part::Panel, |panel| panel.id("panel")) }
+    }
+}
+
+fn asked(wide: bool) -> Tree {
+    let mut tree = Tree::new(Asking { wide }, SCREEN, Caps::INTERNAL, theme());
+    run(&mut tree);
+    tree.post(tree.root_id, Erased::new(()));
+    run(&mut tree);
+    tree.tick(1000);
+    run(&mut tree);
+    tree
+}
+
+#[test]
+fn a_modal_is_centered_and_keeps_its_margins() {
+    let tree = asked(false);
+    let panel = rect_of(&tree, "panel");
+    assert_eq!((panel.x, panel.w), (24, SCREEN.w - 48), "the theme's width does not fit, so the margins stay");
+    assert_eq!(panel.y + panel.h / 2, SCREEN.h / 2);
+    let actions = ["a0", "a1", "a2"].map(|id| rect_of(&tree, id));
+    assert!(actions.iter().all(|a| a.w == actions[0].w && a.y == actions[0].y), "{actions:?}");
+    let tree = asked(true);
+    let panel = rect_of(&tree, "panel");
+    assert_eq!((panel.x, panel.w), (100, 200), "a part sets its own width");
+}
+
+#[test]
+fn a_modal_moves_above_the_keyboard() {
+    let mut tree = asked(false);
+    tree.add_keyboard(crate::keyboard::KeyboardMode::Auto);
+    run(&mut tree);
+    tap(&mut tree, "name");
+    run(&mut tree);
+    let keyboard = TEXT_KEYS.height;
+    let panel = rect_of(&tree, "panel");
+    assert_eq!(panel.y + panel.h / 2, (SCREEN.h - keyboard) / 2, "centered in what the keyboard leaves");
 }
 
 #[test]

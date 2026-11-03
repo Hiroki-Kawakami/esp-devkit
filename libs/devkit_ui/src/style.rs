@@ -47,12 +47,14 @@ pub enum Justify {
 /// A piece of a widget, for `Element::part`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Part {
+    Actions,
     Back,
     Fill,
     Item,
     Label,
     Leading,
     Mark,
+    Message,
     Meta,
     Panel,
     Thumb,

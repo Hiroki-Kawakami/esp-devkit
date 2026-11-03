@@ -5,8 +5,8 @@
 
 use alloc::vec::Vec;
 
-use devkit_ui::widgets::{button, list_item, modal, toast, top_bar};
-use devkit_ui::{Component, Cx, Edge, Element, Overlay, Presence, Root, Screen, Ui};
+use devkit_ui::widgets::{button, list_item, modal, modal_actions, modal_message, modal_title, progress_bar, progress_indicator, text_field, toast, top_bar};
+use devkit_ui::{Align, Component, Cx, Edge, Element, Overlay, Part, Presence, Root, Screen, TextBuffer, TextInput, Ui};
 
 use crate::resources::colors;
 
@@ -18,15 +18,21 @@ pub enum Kind {
     ShrinkIn,
     Sheet,
     Side,
+    Input,
+    Progress,
+    Busy,
 }
 
-const KINDS: [(&str, &str, Kind); 6] = [
+const KINDS: [(&str, &str, Kind); 9] = [
     ("Modal", "open-modal", Kind::Modal),
     ("Modal: scrim does nothing", "open-kept", Kind::Kept),
     ("Modal: at once in, scale out", "open-scale-out", Kind::ScaleOut),
     ("Modal: shrink in", "open-shrink-in", Kind::ShrinkIn),
     ("Bottom sheet", "open-sheet", Kind::Sheet),
     ("Side panel", "open-side", Kind::Side),
+    ("Modal: text field", "open-input", Kind::Input),
+    ("Modal: progress", "open-progress", Kind::Progress),
+    ("Modal: busy", "open-busy", Kind::Busy),
 ];
 
 #[derive(Clone, Copy)]
@@ -52,7 +58,7 @@ impl Component for PresenceDemo {
     fn update(&mut self, msg: PresenceMsg, cx: &mut Cx<Self>) {
         match msg {
             PresenceMsg::Back => cx.nav_of::<Root>().pop(),
-            PresenceMsg::Open(kind) => cx.nav_of::<Overlay>().push(Shown { kind }),
+            PresenceMsg::Open(kind) => cx.nav_of::<Overlay>().push(Shown::new(kind)),
             PresenceMsg::Toast => {
                 self.toast = !self.toast;
                 cx.rebuild();
@@ -76,34 +82,43 @@ impl Screen for PresenceDemo {}
 pub enum ShownMsg {
     Close,
     Open(Kind),
+    Name(TextInput),
 }
 
 /// What a `Kind` puts on the overlay.
 pub struct Shown {
     kind: Kind,
+    name: TextBuffer,
 }
 
 impl Shown {
-    fn content<'a>(&self, ui: &'a Ui<ShownMsg>, title: &'a str, text: &'a str) -> Element<'a, ShownMsg> {
-        let theme = ui.theme();
-        let b = &theme.widgets.button;
+    fn new(kind: Kind) -> Self {
+        Self { kind, name: TextBuffer::new() }
+    }
+
+    fn content<'a>(&self, ui: &'a Ui<ShownMsg>, title: &'a str, text: &'a str) -> [Element<'a, ShownMsg>; 3] {
+        let b = &ui.theme().widgets.button;
         let next = match self.kind {
             Kind::Sheet => button(ui, "Open a modal", b.primary, ShownMsg::Open(Kind::Modal)).id("next"),
             _ => button(ui, "Open a sheet", b.primary, ShownMsg::Open(Kind::Sheet)).id("next"),
         };
-        ui.column([
-            ui.text(theme.fonts.title, title).foreground(ui.colors().text),
-            ui.text(theme.fonts.body, text).foreground(colors::MUTED).wrap(),
-            ui.row([button(ui, "Close", b.secondary, ShownMsg::Close).grow(1).id("close"), next.grow(1)]).gap(theme.widgets.unit.gap),
-        ])
-        .gap(theme.widgets.unit.padding)
+        [modal_title(ui, title), modal_message(ui, text), modal_actions(ui, [button(ui, "Close", b.secondary, ShownMsg::Close).id("close"), next])]
     }
 
-    fn dialog<'a>(&self, ui: &'a Ui<ShownMsg>, content: Element<'a, ShownMsg>, appear: Presence, disappear: Presence) -> Element<'a, ShownMsg> {
-        let t = &ui.theme().widgets.modal;
-        let (width, height) = ui.screen_size();
-        let panel = ui.column([content]).style(t.panel).width(t.width).absolute(Some((width - t.width) / 2), Some(height / 3), None, None);
-        ui.column([panel.appear(appear).disappear(disappear)]).absolute(Some(0), Some(0), Some(0), Some(0))
+    fn dialog<'a>(&self, ui: &'a Ui<ShownMsg>, title: &'a str, text: &'a str, appear: Presence, disappear: Presence) -> Element<'a, ShownMsg> {
+        modal(ui, self.content(ui, title, text)).part(Part::Panel, |panel| panel.appear(appear).disappear(disappear))
+    }
+
+    fn input<'a>(&'a self, ui: &'a Ui<ShownMsg>) -> Element<'a, ShownMsg> {
+        let b = &ui.theme().widgets.button;
+        let bad = self.name.as_str().contains('/');
+        let error = if bad { modal_message(ui, "A name can't contain /").foreground(colors::DESTRUCTIVE).id("error") } else { ui.empty() };
+        modal(ui, [
+            modal_title(ui, "Rename"),
+            text_field(ui, &self.name, ShownMsg::Name).placeholder("Name").id("name"),
+            error,
+            modal_actions(ui, [button(ui, "Cancel", b.secondary, ShownMsg::Close).id("close"), button(ui, "Rename", b.primary, ShownMsg::Close).disabled(bad)]),
+        ])
     }
 }
 
@@ -113,7 +128,11 @@ impl Component for Shown {
     fn update(&mut self, msg: ShownMsg, cx: &mut Cx<Self>) {
         match msg {
             ShownMsg::Close => cx.nav_of::<Overlay>().pop(),
-            ShownMsg::Open(kind) => cx.nav_of::<Overlay>().push(Shown { kind }),
+            ShownMsg::Open(kind) => cx.nav_of::<Overlay>().push(Shown::new(kind)),
+            ShownMsg::Name(input) => {
+                self.name.apply(input);
+                cx.rebuild();
+            }
         }
     }
 
@@ -123,11 +142,20 @@ impl Component for Shown {
         match self.kind {
             Kind::Modal => modal(ui, self.content(ui, "Modal", "Scales and fades in, fades out. A tap on the scrim closes it.")),
             Kind::Kept => modal(ui, self.content(ui, "Modal", "A tap on the scrim does nothing; only Close closes it.")),
-            Kind::ScaleOut => self.dialog(ui, self.content(ui, "At once in", "Shows at once, and scales down as it fades out."), Presence::none(), Presence::fade().scale(0.9)),
-            Kind::ShrinkIn => self.dialog(ui, self.content(ui, "Shrink in", "Comes from 1.1 times its size, and goes the same way."), Presence::fade().scale(1.1), Presence::fade().scale(1.1)),
+            Kind::ScaleOut => self.dialog(ui, "At once in", "Shows at once, and scales down as it fades out.", Presence::none(), Presence::fade().scale(0.9)),
+            Kind::ShrinkIn => self.dialog(ui, "Shrink in", "Comes from 1.1 times its size, and goes the same way.", Presence::fade().scale(1.1), Presence::fade().scale(1.1)),
+            Kind::Input => self.input(ui),
+            Kind::Progress => modal(ui, [
+                modal_title(ui, "Copying"),
+                modal_message(ui, "1/1 big.bin"),
+                progress_bar(ui, None),
+                modal_actions(ui, [button(ui, "Cancel", theme.widgets.button.secondary, ShownMsg::Close).id("close")]),
+            ]),
+            Kind::Busy => modal(ui, [ui.row([progress_indicator(ui, None), modal_message(ui, "Connecting...").grow(1)]).align(Align::Center).gap(m.padding)]),
             Kind::Sheet => {
                 let sheet = ui
-                    .column([self.content(ui, "Bottom sheet", "Comes from the bottom edge and goes back there. Open a modal to replace it at once.")])
+                    .column(self.content(ui, "Bottom sheet", "Comes from the bottom edge and goes back there. Open a modal to replace it at once."))
+                    .gap(m.padding)
                     .padding_each(m.padding, m.padding, m.padding, m.padding + ui.insets().bottom)
                     .radius(m.radius)
                     .background(c.surface)
@@ -138,7 +166,8 @@ impl Component for Shown {
             }
             Kind::Side => {
                 let side = ui
-                    .column([self.content(ui, "Side panel", "Comes from the right edge.")])
+                    .column(self.content(ui, "Side panel", "Comes from the right edge."))
+                    .gap(m.padding)
                     .padding_each(m.padding, m.padding + ui.insets().top, m.padding, m.padding)
                     .width(360)
                     .background(c.surface)

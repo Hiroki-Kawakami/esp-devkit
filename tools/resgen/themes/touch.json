@@ -502,11 +502,25 @@
       }
     },
     "modal": {
-      "width": 560,
+      "width": 640,
+      "margin": 48,
       "panel": {
         "padding": "widgets.unit.padding",
+        "gap": 16,
         "radius": 20,
-        "background": "color.surface"
+        "background": "color.surface",
+        "animate": ["position", 200]
+      },
+      "title": {
+        "font": "font.title",
+        "foreground": "color.text"
+      },
+      "message": {
+        "font": "font.body",
+        "foreground": "color.muted"
+      },
+      "actions": {
+        "gap": "widgets.unit.gap"
       }
     },
     "overlay": {

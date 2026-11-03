@@ -220,7 +220,7 @@ app.run();
   | `top_bar` | `Back`, `Title` |
   | `segmented` | `Item`, `Label` |
   | `menu` | `Panel` |
-  | `modal` | `Panel` |
+  | `modal` | `Panel`, `Title`, `Message`, `Actions` |
 
   It reaches every match below the element, and not into child components.
 
@@ -228,6 +228,21 @@ app.run();
   `table_header` the title above one. `table_row` holds any children, and
   `table_label`, `table_value` and `table_chevron` are the usual ones. Unlike
   `list`, every row exists.
+- `modal` is a dialog for a screen on the `Overlay`, centered in what
+  `ui.insets()` leave, so it moves above the keyboard. What it holds stacks as
+  it is: `modal_title`, `modal_message`, `modal_actions` with buttons side by
+  side at equal widths, or any other element. It is `widgets.modal.width` wide,
+  less where the screen keeps `margin` free on each side, and
+  `.part(Part::Panel, |panel| panel.width(w))` sets another width.
+
+  ```rust
+  modal(ui, [
+      modal_title(ui, "Delete this file?"),
+      modal_message(ui, "This cannot be undone."),
+      modal_actions(ui, [button(ui, "Cancel", b.secondary, Msg::Close), button(ui, "Delete", b.destructive, Msg::Delete)]),
+  ])
+  ```
+
 - `progress_bar` and `progress_indicator` show `Some(0.0..=1.0)`. With `None`
   they move until they know: a segment crosses the bar and comes back, an arc
   goes round, each fading toward its tail. Only they repaint while moving, and

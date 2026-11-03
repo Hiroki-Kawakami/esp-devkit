@@ -302,20 +302,41 @@ impl<M: Copy + 'static> Component for Menu<M> {
     }
 }
 
-/// A dialog for a screen on the `Overlay`.
-pub fn modal<'a, M: Copy>(ui: &'a Ui<M>, content: Element<'a, M>) -> Element<'a, M> {
+/// A dialog for a screen on the `Overlay`, centered in what the insets leave,
+/// the keyboard included. `children` stack in it as they are.
+pub fn modal<'a, M: Copy>(ui: &'a Ui<M>, children: impl Children<'a, M>) -> Element<'a, M> {
     let t = &ui.theme().widgets.modal;
-    let (width, height) = ui.screen_size();
-    let left = (width - t.width) / 2;
-    ui.column([ui
-        .column([content])
+    let (width, insets) = (ui.screen_size().0, ui.insets());
+    let room = width - insets.left - insets.right - t.margin * 2;
+    let panel = ui
+        .column(children)
         .style(t.panel)
         .width(t.width)
-        .absolute(Some(left), Some(height / 3), None, None)
+        .max_width(room)
         .appear(Presence::fade().offset(0, 24).ms(150))
         .disappear(Presence::fade().ms(100))
-        .part_of(Part::Panel)])
-    .absolute(Some(0), Some(0), Some(0), Some(0))
+        .part_of(Part::Panel);
+    ui.column([panel])
+        .padding_each(insets.left + t.margin, insets.top, insets.right + t.margin, insets.bottom)
+        .align(Align::Center)
+        .justify(Justify::Center)
+        .absolute(Some(0), Some(0), Some(0), Some(0))
+}
+
+pub fn modal_title<'a, M: Copy>(ui: &'a Ui<M>, text: &'a str) -> Element<'a, M> {
+    let theme = ui.theme();
+    ui.text(theme.fonts.title, text).wrap().style(theme.widgets.modal.title).part_of(Part::Title)
+}
+
+pub fn modal_message<'a, M: Copy>(ui: &'a Ui<M>, text: &'a str) -> Element<'a, M> {
+    let theme = ui.theme();
+    ui.text(theme.fonts.body, text).wrap().style(theme.widgets.modal.message).part_of(Part::Message)
+}
+
+/// Buttons side by side at equal widths.
+pub fn modal_actions<'a, M: Copy>(ui: &'a Ui<M>, buttons: impl IntoIterator<Item = Element<'a, M>>) -> Element<'a, M> {
+    let buttons: Vec<_> = buttons.into_iter().map(|button| button.grow(1)).collect();
+    ui.row(buttons).style(ui.theme().widgets.modal.actions).part_of(Part::Actions)
 }
 
 pub fn toast<'a, M: Copy>(ui: &'a Ui<M>, text: &'a str) -> Element<'a, M> {

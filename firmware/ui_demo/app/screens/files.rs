@@ -6,7 +6,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use devkit_ui::widgets::{Menu, button, checkbox, icon_button, list_item, modal, progress_bar, progress_indicator, slider, slider_value, switch, top_bar};
+use devkit_ui::widgets::{Menu, button, checkbox, icon_button, list_item, modal, modal_actions, modal_message, modal_title, progress_bar, progress_indicator, slider, slider_value, switch, top_bar};
 use devkit_ui::{Align, Child, Component, Cx, Element, Handle, ListId, Overlay, RenderMode, Root, Screen, SplitRole, Strips, Ui};
 use idf::heap::Caps;
 use idf::sync::{LazyLock, Mutex};
@@ -305,15 +305,12 @@ impl Component for Confirm {
     }
 
     fn view<'a>(&'a self, ui: &'a Ui<ConfirmMsg>) -> Element<'a, ConfirmMsg> {
-        let theme = ui.theme();
-        let content = ui
-            .column([
-                ui.text(theme.fonts.title, "Delete this file?").foreground(ui.colors().text),
-                ui.text(theme.fonts.body, "This cannot be undone.").foreground(colors::MUTED),
-                button(ui, "Cancel", theme.widgets.button.secondary, ConfirmMsg::Close).id("cancel"),
-            ])
-            .gap(theme.widgets.unit.padding);
-        modal(ui, content)
+        let b = &ui.theme().widgets.button;
+        modal(ui, [
+            modal_title(ui, "Delete this file?"),
+            modal_message(ui, "This cannot be undone."),
+            modal_actions(ui, [button(ui, "Cancel", b.secondary, ConfirmMsg::Close).id("cancel"), button(ui, "Delete", b.destructive, ConfirmMsg::Close).id("confirm-delete")]),
+        ])
     }
 }
 
