@@ -509,6 +509,29 @@ impl<D: Driver> Core<D> {
         None
     }
 
+    // Silences the output for a power transition, writing the hardware directly
+    // as the dispatch task may not run again before the power goes. Returns
+    // whether the amp was up, for `resume`.
+    fn quiesce(&self) -> bool {
+        let mut state = self.state.lock();
+        let armed = core::mem::replace(&mut state.armed, false);
+        if !matches!(self.driver.hw_mute(), HwMute::None) {
+            log_err("hardware mute", self.driver.set_hw_mute(true));
+        }
+        if self.driver.has_speaker() {
+            log_err("amp", self.driver.set_speaker_enabled(false));
+        }
+        armed
+    }
+
+    fn resume(&self, armed: bool) {
+        let mut state = self.state.lock();
+        state.armed = armed;
+        log_err("hardware output", self.apply_output(&state));
+        drop(state);
+        self.apply_speaker(self.headphone_inserted());
+    }
+
     fn apply_speaker(&self, headphone: bool) {
         if !self.driver.has_speaker() {
             return;
@@ -828,6 +851,14 @@ impl Audio {
     /// 200 ms. The previous callback may still run once after this returns.
     pub fn set_headphone_callback(&self, callback: Option<HeadphoneCallback>) -> Result<()> {
         self.0.set_headphone_callback(callback)
+    }
+
+    pub(crate) fn quiesce(&self) -> bool {
+        self.0.quiesce()
+    }
+
+    pub(crate) fn resume(&self, armed: bool) {
+        self.0.resume(armed)
     }
 }
 
@@ -1347,6 +1378,21 @@ mod tests {
         shared.take_samples();
         stream.write(Pcm::S16(&[1000, -1000])).unwrap();
         assert_eq!(shared.take_samples(), [1000, -1000]);
+    }
+
+    #[test]
+    fn quiesce_silences_and_resume_restores_a_playing_stream() {
+        let (driver, shared) = Stub::new(true, Mute::Ramp, false);
+        let audio = audio_with(driver, DspMode::Manual);
+        let mut stream = audio.open(STEREO).unwrap();
+        stream.write(Pcm::S16(&[0, 0])).unwrap();
+        shared.take_calls();
+
+        let armed = audio.quiesce();
+        assert!(armed);
+        assert_eq!(shared.take_calls(), [Call::Mute(true), Call::Amp(false)]);
+        audio.resume(armed);
+        assert_eq!(shared.take_calls(), [Call::Mute(false), Call::Amp(true)]);
     }
 
     #[test]

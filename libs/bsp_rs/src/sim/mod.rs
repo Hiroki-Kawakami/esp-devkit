@@ -9,6 +9,7 @@ pub(crate) mod protocol;
 pub(crate) mod audio;
 pub(crate) mod imu;
 pub(crate) mod panel;
+pub(crate) mod power;
 pub(crate) mod touch;
 
 use alloc::boxed::Box;
@@ -31,6 +32,7 @@ const TAG: &CStr = c"sim";
 pub(crate) type TouchListener = Box<dyn Fn(&[TouchPoint]) + Send + Sync>;
 pub(crate) type AudioListener = Box<dyn Fn(u32, u64) + Send + Sync>;
 pub(crate) type ImuListener = Box<dyn Fn([f32; 3], [f32; 3]) + Send + Sync>;
+pub(crate) type PowerListener = Box<dyn Fn(u8, bool, bool) + Send + Sync>;
 
 pub(crate) struct Host {
     fd: c_int,
@@ -43,6 +45,7 @@ static HOST: OnceLock<Option<Host>> = OnceLock::new();
 static TOUCH: OnceLock<TouchListener> = OnceLock::new();
 static AUDIO: OnceLock<AudioListener> = OnceLock::new();
 static IMU: OnceLock<ImuListener> = OnceLock::new();
+static POWER: OnceLock<PowerListener> = OnceLock::new();
 
 /// `None` when the firmware does not run under the simulator host.
 pub(crate) fn host() -> Option<&'static Host> {
@@ -111,6 +114,14 @@ impl Host {
             warn!(TAG, "imu listener already set");
         }
     }
+
+    /// Runs on the receiver task with the battery level, external power and
+    /// whether a battery is in. Only the first listener is kept.
+    pub(crate) fn set_power_listener(&self, listener: PowerListener) {
+        if POWER.set(listener).is_err() {
+            warn!(TAG, "power listener already set");
+        }
+    }
 }
 
 // The host closing its end means it went away, so the firmware goes too.
@@ -139,6 +150,11 @@ fn receive(fd: c_int) {
             Some(Event::Imu { accel, gyro }) => {
                 if let Some(listener) = IMU.get() {
                     listener(accel, gyro);
+                }
+            }
+            Some(Event::Power { level, external, battery }) => {
+                if let Some(listener) = POWER.get() {
+                    listener(level, external, battery);
                 }
             }
             Some(_) => {}

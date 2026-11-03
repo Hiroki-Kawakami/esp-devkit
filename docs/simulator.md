@@ -15,6 +15,9 @@ replaced by an emulator without changing the host.
 - The window's Rotation turns the simulated device clockwise: the IMU reports
   that resting pose, so orientation tracking follows it. `--headless` stays
   upright; the `imu` script command overrides it.
+- Power sets the battery level, external power and whether a battery is in.
+  The firmware reads them through `Power::read`; they survive restarts. A
+  firmware calling `Power::off` exits, and Power on starts it again.
 - Audio plays on the default output device, resampled to its rate. With
   `--headless`, or when no device opens, the host keeps the same time without
   sound, so firmware pacing does not change.
@@ -33,6 +36,7 @@ The host starts the firmware with:
 | `SIM_HOST_FD` | inherited Unix stream socket for events |
 | `SIM_PSRAM_PATH` | file to map as the PSRAM region |
 | `SIM_PSRAM_SIZE` | its size in bytes |
+| `SIM_POWER` | the power state to start with: `<level> <external> <battery>`, flags as 0 or 1 |
 
 - idf_compat maps the region and serves `MALLOC_CAP_SPIRAM` from it, so
   framebuffers land where the host can read them. Without the variables
@@ -60,6 +64,7 @@ compiled into the firmware and `tools/devkit`. Byte 0 is the tag, fields follow 
 | `AudioClose` | firmware → host | stream id |
 | `AudioMute` | firmware → host | play as silence, keeping time; outlives streams |
 | `AudioPlayed` | host → firmware | stream id, bytes played so far; the firmware's writes pace on it |
+| `Power` | host → firmware | battery level 0..=100, external power, battery in; sent at `Hello` and on every change |
 | `Imu` | host → firmware | accel and gyro in panel axes; sent at `Hello` and when the window's rotation changes |
 
 The host reads the presented frame straight from the region each refresh, so a

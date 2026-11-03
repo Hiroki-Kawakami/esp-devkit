@@ -258,6 +258,25 @@ impl Host {
         Err("firmware did not come up".into())
     }
 
+    fn power(&self, args: &[&str]) -> Result<String, String> {
+        let Link::Sim(device) = &self.link else { return Err("power: simulator only".into()) };
+        let supply = match args {
+            ["release"] => sim::DEFAULT_SUPPLY,
+            [level, source] => {
+                let level = level.parse().ok().filter(|&l: &u8| l <= 100);
+                match (level, *source) {
+                    (Some(level), "battery") => sim::Supply { level, external: false, battery: true },
+                    (Some(level), "external") => sim::Supply { level, external: true, battery: true },
+                    _ => return Err("usage: power <percent> battery|external | power none | power release".into()),
+                }
+            }
+            ["none"] => sim::Supply { battery: false, external: true, ..device.supply() },
+            _ => return Err("usage: power <percent> battery|external | power none | power release".into()),
+        };
+        device.set_supply(supply);
+        Ok("OK power".into())
+    }
+
     fn reset(&self) -> Result<(), String> {
         match &self.link {
             Link::Sim(d) => d.start().map_err(|e| e.to_string())?,
@@ -307,6 +326,7 @@ impl Host {
                 let args = pose.map(|(_, v)| v.to_string()).unwrap_or_else(|| rest.join(" "));
                 self.forward(&format!("imu {args}"))
             }
+            "power" => self.power(rest),
             "reset" => self.reset().map(|_| "OK reset".into()),
             "log" => match rest.first() {
                 Some(&"on") | Some(&"off") => {

@@ -63,6 +63,7 @@ One command per line, `#` starts a comment, blank lines are ignored.
 | `imu rot0\|rot90\|rot180\|rot270\|face-up\|face-down` | resting pose matching that `bsp_imu_orientation_t` |
 | `imu release` | back to the board's sensor (the view rotation on the simulator) |
 | `power <percent> battery\|external` | simulator only: battery level and external supply the power provider reports |
+| `power none` | simulator only, `bsp_rs`: take the battery out, on external power |
 | `power release` | simulator only: back to 76% on external power |
 | `reset` | reboot the board and wait until the harness answers again; on the simulator only under `--host` (docs/simulator.md), otherwise a no-op |
 | `quit` | stop the script (implicit at end of file) |

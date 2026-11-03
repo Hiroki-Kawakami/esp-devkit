@@ -11,6 +11,7 @@ use idf::sync::{Mutex, OnceLock};
 use idf::{Error, Result, gpio, thread};
 
 use super::audio::AudioDriver;
+use super::power::{self as tab5_power, PowerDriver};
 use super::{PANEL_SIZE, TAG, resolve_fb_num, resolve_pixel_format};
 use crate::audio::{self, Audio};
 use crate::devices::bmi270::{self, Bmi270};
@@ -21,6 +22,7 @@ use crate::devices::pi4io::{Pi4io, PinConfig};
 use crate::display;
 use crate::driver::mipi_dsi::MipiDsi;
 use crate::imu::{self, AxisMap, Imu};
+use crate::power;
 use crate::touch::{self, Touch};
 use crate::{Board, Config};
 
@@ -53,6 +55,7 @@ crate::display::driver_enum! {
 static I2C: OnceLock<MasterBus> = OnceLock::new();
 static DISPLAY: OnceLock<display::Display> = OnceLock::new();
 static PI4IOE1: OnceLock<Mutex<Pi4io<'static>>> = OnceLock::new();
+static PI4IOE2: OnceLock<Mutex<Pi4io<'static>>> = OnceLock::new();
 
 pub(crate) fn init(config: &Config) -> Result<Board> {
     let bus = I2C
@@ -67,16 +70,18 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
         })
         .inspect_err(|err| error!(TAG, "i2c bus: {err}"))?;
 
-    let (mut pi4ioe1, _pi4ioe2) =
+    let (mut pi4ioe1, pi4ioe2) =
         io_expanders_init(bus).inspect_err(|err| error!(TAG, "io expanders: {err}"))?;
     reset_panel_and_touch(&mut pi4ioe1)?;
     let pi4ioe1 = PI4IOE1.get_or_try_init(|| Mutex::try_new(pi4ioe1))?;
+    let pi4ioe2 = PI4IOE2.get_or_try_init(|| Mutex::try_new(pi4ioe2))?;
 
     let display = panel_init(config, bus)?;
     let touch = touch_init(bus, &display);
     let audio = audio_init(config, bus, pi4ioe1);
     let imu = imu_init(bus);
-    Ok(Board { audio, display: Some(DISPLAY.get_or_init(|| display::Display(display))), imu, touch })
+    let power = power::start(PowerDriver::new(bus, pi4ioe2), audio);
+    Ok(Board { audio, display: Some(DISPLAY.get_or_init(|| display::Display(display))), imu, power, touch })
 }
 
 // PI4IOE1 owns LCD_RST + TP_RST + SPK_EN + the headphone-detect input; PI4IOE2
@@ -95,11 +100,11 @@ fn io_expanders_init(bus: &'static MasterBus) -> Result<(Pi4io<'static>, Pi4io<'
 
     let mut pi4ioe2 = [PinConfig::default(); 8];
     pi4ioe2[0] = PinConfig::output(true); // WLAN_PWR_EN
-    pi4ioe2[3] = PinConfig::output(false); // USB5V_EN
-    pi4ioe2[4] = PinConfig::output(false); // PWROFF_PLUSE
-    pi4ioe2[5] = PinConfig::output(false); // nCHG_QC_EN
+    pi4ioe2[usize::from(tab5_power::USB5V_EN_PIN)] = PinConfig::output(false);
+    pi4ioe2[usize::from(tab5_power::PWROFF_PIN)] = PinConfig::output(false);
+    pi4ioe2[usize::from(tab5_power::CHG_QC_EN_N_PIN)] = PinConfig::output(false);
     pi4ioe2[6] = PinConfig::input(); // CHG_STAT
-    pi4ioe2[7] = PinConfig::output(true); // CHG_EN
+    pi4ioe2[usize::from(tab5_power::CHG_EN_PIN)] = PinConfig::output(true);
     let pi4ioe2 = Pi4io::new(bus, PI4IOE2_ADDR, &pi4ioe2)?;
     Ok((pi4ioe1, pi4ioe2))
 }

@@ -167,6 +167,19 @@ impl App {
         self.device.set_rotation(self.rotation);
         ui.add_space(12.0);
 
+        section(ui, "Power");
+        let mut supply = self.device.supply();
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut supply.battery, "Battery");
+            ui.checkbox(&mut supply.external, "External");
+        });
+        ui.add_enabled(supply.battery, egui::Slider::new(&mut supply.level, 0..=100).suffix("%"));
+        if !supply.battery {
+            supply.external = true;
+        }
+        self.device.set_supply(supply);
+        ui.add_space(12.0);
+
         section(ui, "Log");
         egui::Frame::new()
             .fill(ui.visuals().extreme_bg_color)

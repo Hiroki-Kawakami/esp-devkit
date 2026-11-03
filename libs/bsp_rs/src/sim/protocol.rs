@@ -6,7 +6,7 @@
  * this crate and tools/devkit. See docs/simulator.md.
  */
 
-pub const VERSION: u32 = 4;
+pub const VERSION: u32 = 5;
 pub const RECORD_SIZE: usize = 64;
 pub const MAX_TOUCH_POINTS: usize = 10;
 pub const MAX_NAME: usize = 48;
@@ -16,6 +16,16 @@ use core::ffi::CStr;
 pub const ENV_SOCKET_FD: &CStr = c"SIM_HOST_FD";
 pub const ENV_PSRAM_PATH: &CStr = c"SIM_PSRAM_PATH";
 pub const ENV_PSRAM_SIZE: &CStr = c"SIM_PSRAM_SIZE";
+/// The `Power` the firmware starts with, as `<level> <external> <battery>`
+/// with 0 or 1 for the flags.
+pub const ENV_POWER: &CStr = c"SIM_POWER";
+
+pub fn parse_power(value: &str) -> Option<(u8, bool, bool)> {
+    let mut fields = value.split_whitespace();
+    let mut next = || fields.next()?.parse::<u8>().ok();
+    let (level, external, battery) = (next()?, next()?, next()?);
+    (level <= 100).then_some((level, external != 0, battery != 0))
+}
 
 /// Exit status of a firmware process asking to be started again.
 pub const EXIT_RESTART: i32 = 75;
@@ -72,6 +82,8 @@ pub enum Event {
     AudioPlayed { stream: u32, bytes: u64 },
     /// Host to firmware: what the IMU reads from now on, in panel axes.
     Imu { accel: [f32; 3], gyro: [f32; 3] },
+    /// Host to firmware: battery level 0..=100, external power, battery in.
+    Power { level: u8, external: bool, battery: bool },
 }
 
 const TAG_HELLO: u8 = 1;
@@ -85,6 +97,7 @@ const TAG_AUDIO_CLOSE: u8 = 8;
 const TAG_AUDIO_MUTE: u8 = 9;
 const TAG_AUDIO_PLAYED: u8 = 10;
 const TAG_IMU: u8 = 11;
+const TAG_POWER: u8 = 12;
 
 struct Writer {
     buf: [u8; RECORD_SIZE],
@@ -192,6 +205,9 @@ impl Event {
                 }
                 w.buf
             }
+            Self::Power { level, external, battery } => {
+                Writer::new(TAG_POWER).put(&[level, u8::from(external), u8::from(battery)]).buf
+            }
         }
     }
 
@@ -234,6 +250,7 @@ impl Event {
             TAG_AUDIO_MUTE => Self::AudioMute { mute: r.u8() != 0 },
             TAG_AUDIO_PLAYED => Self::AudioPlayed { stream: r.u32(), bytes: r.u64() },
             TAG_IMU => Self::Imu { accel: r.vec3(), gyro: r.vec3() },
+            TAG_POWER => Self::Power { level: r.u8(), external: r.u8() != 0, battery: r.u8() != 0 },
             _ => return None,
         })
     }
@@ -260,9 +277,13 @@ mod tests {
             Event::AudioMute { mute: true },
             Event::AudioPlayed { stream: 7, bytes: 0x1_0000_0002 },
             Event::Imu { accel: [0.0, -1.0, 0.0], gyro: [1.5, -2.5, 3.5] },
+            Event::Power { level: 76, external: true, battery: false },
         ] {
             assert_eq!(Event::decode(&e.encode()), Some(e));
         }
         assert_eq!(Event::decode(&[0; super::RECORD_SIZE]), None);
+        assert_eq!(super::parse_power("76 1 0"), Some((76, true, false)));
+        assert_eq!(super::parse_power("101 1 1"), None);
+        assert_eq!(super::parse_power("76 1"), None);
     }
 }

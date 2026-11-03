@@ -44,6 +44,18 @@ waiting on the dispatch task, `set_event_cb` delivers each sample on that task,
 and `wait_interrupt` blocks until the controller signals. `inject` delivers
 points as if the controller had reported them, without waking `wait_interrupt`.
 
+## Power
+
+`board.power` is on every board, shared the same way.
+
+- `read` returns a `PowerState`: `source` is what the board runs on and
+  `battery` is `None` without one. A field the board cannot measure is `None`;
+  `level` is always there, a linear map of the voltage on most boards.
+- `off` cuts the power and returns only when it stays on, as external power
+  holds some boards up; the audio output is back as it was then. `restart` is
+  a soft reboot. Both silence the audio output first.
+- `set_charge` and `set_switch` return `NOT_SUPPORTED` for what the board lacks.
+
 ## IMU
 
 `board.imu` is shared the same way, in panel axes: +X right, +Y down, +Z into

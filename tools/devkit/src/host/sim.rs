@@ -16,9 +16,19 @@ use std::thread;
 
 use super::audio::{self, Player};
 use crate::protocol::{
-    ENV_PSRAM_PATH, ENV_PSRAM_SIZE, ENV_SOCKET_FD, EXIT_RESTART, Event, MAX_TOUCH_POINTS, PixelFormat,
+    ENV_POWER, ENV_PSRAM_PATH, ENV_PSRAM_SIZE, ENV_SOCKET_FD, EXIT_RESTART, Event, MAX_TOUCH_POINTS, PixelFormat,
     RECORD_SIZE, TouchPoint, VERSION,
 };
+
+/// What the simulated device runs on; kept across firmware restarts.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Supply {
+    pub level: u8,
+    pub external: bool,
+    pub battery: bool,
+}
+
+pub const DEFAULT_SUPPLY: Supply = Supply { level: 76, external: true, battery: true };
 
 // Gravity on the panel axes at each quarter turn clockwise, +1 g pointing up.
 const REST_ACCEL: [[f32; 3]; 4] = [[0.0, -1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]];
@@ -91,6 +101,7 @@ pub struct Device {
     muted: AtomicBool,
     silent: bool,
     rotation: AtomicU8,
+    supply: Mutex<Supply>,
 }
 
 impl Device {
@@ -116,6 +127,7 @@ impl Device {
             muted: AtomicBool::new(true),
             silent,
             rotation: AtomicU8::new(0),
+            supply: Mutex::new(DEFAULT_SUPPLY),
         }))
     }
 
@@ -152,6 +164,10 @@ impl Device {
             .env(ENV_SOCKET_FD.to_str().unwrap(), fw_fd.to_string())
             .env(ENV_PSRAM_PATH.to_str().unwrap(), &self.psram.path)
             .env(ENV_PSRAM_SIZE.to_str().unwrap(), self.psram.len.to_string())
+            .env(ENV_POWER.to_str().unwrap(), {
+                let Supply { level, external, battery } = self.supply();
+                format!("{level} {} {}", u8::from(external), u8::from(battery))
+            })
             .stdin(Stdio::piped())
             .stdout(Stdio::from(out_write))
             .stderr(Stdio::from(err_write))
@@ -234,6 +250,7 @@ impl Device {
                     state.ready = true;
                     drop(state);
                     self.send_pose();
+                    self.send_supply();
                     continue;
                 }
                 Some(Event::Present { offset, width, height, stride, format }) => {
@@ -265,7 +282,7 @@ impl Device {
                         player.set_muted(mute);
                     }
                 }
-                Some(Event::Touch { .. } | Event::AudioPlayed { .. } | Event::Imu { .. }) | None => {}
+                Some(Event::Touch { .. } | Event::AudioPlayed { .. } | Event::Imu { .. } | Event::Power { .. }) | None => {}
             }
         }
         unsafe { libc::close(fd) };
@@ -327,6 +344,21 @@ impl Device {
     fn send_pose(&self) {
         let accel = REST_ACCEL[usize::from(self.rotation.load(Ordering::Relaxed) % 4)];
         self.send(&Event::Imu { accel, gyro: [0.0; 3] });
+    }
+
+    pub fn supply(&self) -> Supply {
+        *self.supply.lock().unwrap()
+    }
+
+    pub fn set_supply(&self, supply: Supply) {
+        if std::mem::replace(&mut *self.supply.lock().unwrap(), supply) != supply {
+            self.send_supply();
+        }
+    }
+
+    fn send_supply(&self) {
+        let Supply { level, external, battery } = self.supply();
+        self.send(&Event::Power { level, external, battery });
     }
 
     pub fn status(&self) -> Status {

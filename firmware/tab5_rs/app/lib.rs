@@ -83,6 +83,10 @@ pub fn run() {
     if let Some(audio) = board.audio {
         play_tone(audio);
     }
+    match board.power.read() {
+        Ok(state) => info!(TAG, "power: {state:?}"),
+        Err(err) => error!(TAG, "power: {err}"),
+    }
     if let Some(imu) = board.imu {
         imu.set_orientation_cb(Some(Box::new(|pose| info!(TAG, "orientation: {pose:?}"))));
         imu.set_orientation_enabled(true);

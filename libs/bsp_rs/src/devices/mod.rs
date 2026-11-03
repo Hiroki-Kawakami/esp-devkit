@@ -11,6 +11,8 @@ mod bmi270_config;
 pub(crate) mod es8388;
 #[cfg(CONFIG_BSP_RS_DEVICE_GT911)]
 pub(crate) mod gt911;
+#[cfg(CONFIG_BSP_RS_DEVICE_INA226)]
+pub(crate) mod ina226;
 #[cfg(CONFIG_BSP_RS_DEVICE_ILI9881C)]
 pub(crate) mod ili9881c;
 #[cfg(CONFIG_BSP_RS_DEVICE_PI4IO)]
