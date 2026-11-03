@@ -5,18 +5,11 @@
 
 use core::f32::consts::{FRAC_PI_2, PI, TAU};
 
-// `core` has none of these.
-
 pub(crate) fn sqrt(x: f32) -> f32 {
-    if x <= 0.0 {
-        return 0.0;
-    }
-    let mut y = f32::from_bits((x.to_bits() >> 1) + 0x1fbd_1df5);
-    for _ in 0..3 {
-        y = 0.5 * (y + x / y);
-    }
-    y
+    if x <= 0.0 { 0.0 } else { core::intrinsics::sqrtf32(x) }
 }
+
+// `core` has none of these.
 
 fn atan_unit(z: f32) -> f32 {
     let z2 = z * z;

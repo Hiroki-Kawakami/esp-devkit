@@ -165,6 +165,8 @@ fn render_half<P: Pixel>(list: &DisplayList<'_>, cache: &mut GlyphCache, area: R
     out
 }
 
+static HALF_LINE: [(f32, f32); 4] = [(0.0, 60.0), (30.5, 10.0), (55.0, 50.25), (80.0, 5.0)];
+
 #[test]
 fn half_size_draws_the_pixels_at_odd_offsets() {
     fn picture<P: Pixel>() {
@@ -177,6 +179,7 @@ fn half_size_draws_the_pixels_at_odd_offsets() {
         list.gradient(Rect::new(70, 5, 27, 31), Some(scene.corner), Color::rgba(255, 0, 0, 40), Color::rgb(0, 0, 255), true);
         list.arc(72, 50, ArcMask::new_in(12, 3, Global), 30.0, 250.0, Color::rgb(0, 200, 0), Color::rgb(200, 0, 200));
         list.image(5, 30, Image::from_pixels(ImageFormat::A8, 10, 9, 10, &alpha), Color::rgb(90, 0, 0));
+        list.polyline((10, 4), &HALF_LINE, 2.5, Color::rgba(0, 40, 200, 200));
         list.push_round_clip(Rect::new(41, 3, 27, 25), scene.corner);
         list.fill(Rect::new(0, 0, 100, 80), Color::rgba(255, 200, 0, 180));
         list.raster(Rect::new(40, 10, 30, 13), (40, 10), &Stripes);
@@ -366,6 +369,59 @@ fn a_shadow_keeps_square_corners_square() {
         }
     }
     assert!(at(&round, 25, 74) > at(&square, 25, 74), "a square corner shades where a round one leaves out");
+}
+
+#[test]
+fn a_line_is_as_wide_as_asked() {
+    let mut list = DisplayList::new();
+    list.fill(Rect::new(0, 0, 64, 20), Color::rgb(0, 0, 0));
+    list.line((4.0, 10.0), (60.0, 10.0), 4.0, Color::rgb(255, 255, 255));
+    let out = render::<Bgr888>(&list, &mut GlyphCache::new(64), 64, 20, &[Rect::new(0, 0, 64, 20)]);
+    let at = |x: usize, y: usize| out[(y * 64 + x) * 3];
+    assert_eq!([at(30, 7), at(30, 8), at(30, 9), at(30, 10), at(30, 11), at(30, 12)], [0, 255, 255, 255, 255, 0]);
+    assert_eq!(at(1, 10), 0, "the round end stops two pixels out");
+    assert!(at(2, 10) > 200);
+    let thin = {
+        let mut list = DisplayList::new();
+        list.fill(Rect::new(0, 0, 64, 20), Color::rgb(0, 0, 0));
+        list.line((4.0, 10.25), (60.0, 10.25), 1.0, Color::rgb(255, 255, 255));
+        render::<Bgr888>(&list, &mut GlyphCache::new(64), 64, 20, &[Rect::new(0, 0, 64, 20)])
+    };
+    let (row9, row10) = (thin[(9 * 64 + 30) * 3], thin[(10 * 64 + 30) * 3]);
+    assert!(row9 > 40 && row10 > row9 && u32::from(row9) + u32::from(row10) > 230, "{row9} {row10}");
+}
+
+#[test]
+fn a_polyline_is_the_same_across_strips_and_paints_its_joins_once() {
+    static POINTS: [(f32, f32); 5] = [(2.0, 50.0), (20.0, 4.0), (21.0, 40.0), (45.5, 12.25), (60.0, 60.0)];
+    let mut list = DisplayList::new();
+    list.fill(Rect::new(0, 0, 64, 64), Color::rgb(0, 0, 0));
+    list.polyline((0, 0), &POINTS, 3.0, Color::rgba(255, 255, 255, 128));
+    let whole = render::<Bgr888>(&list, &mut GlyphCache::new(64), 64, 64, &[Rect::new(0, 0, 64, 64)]);
+    let strips = render::<Bgr888>(&list, &mut GlyphCache::new(64), 64, 64, &[Rect::new(0, 0, 64, 7), Rect::new(0, 7, 30, 21), Rect::new(30, 7, 34, 21), Rect::new(0, 28, 64, 36)]);
+    assert_eq!(whole, strips);
+    assert!(whole.iter().all(|&v| v <= 129), "a join is painted once");
+    assert!(whole[(4 * 64 + 20) * 3] >= 120, "the corner is reached");
+}
+
+#[test]
+fn a_dense_polyline_paints_its_start_the_same() {
+    let zigzag: &'static [(f32, f32)] = Vec::leak((0..80).map(|i| (i as f32 * 0.75 + 2.0, if i % 2 == 0 { 4.0 } else { 28.0 })).collect());
+    let draw = |points: &'static [(f32, f32)]| {
+        let mut list = DisplayList::new();
+        list.fill(Rect::new(0, 0, 64, 32), Color::rgb(0, 0, 0));
+        list.polyline((0, 0), points, 1.5, Color::rgba(255, 255, 255, 128));
+        render::<Bgr888>(&list, &mut GlyphCache::new(64), 64, 32, &[Rect::new(0, 0, 64, 32)])
+    };
+    let dense = draw(zigzag);
+    assert!(dense.iter().all(|&v| v <= 129));
+    assert!(dense[(16 * 64 + 30) * 3] >= 100);
+    let few = draw(&zigzag[..20]);
+    for y in 0..32 {
+        for x in 0..14 {
+            assert_eq!(dense[(y * 64 + x) * 3], few[(y * 64 + x) * 3], "{x},{y}");
+        }
+    }
 }
 
 #[test]

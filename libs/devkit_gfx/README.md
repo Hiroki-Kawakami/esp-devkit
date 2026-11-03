@@ -39,6 +39,9 @@ draw::<Rgb565, _, _>(&list, &prepared, &surface);
   75% promote to the full area.
 - `Pixel` implements a pixel format: `Rgb565`, `Bgr888` (B, G, R in memory) and
   `Argb8888` (B, G, R, A, not premultiplied, for pictures laid over others).
+- `line` and `polyline` stroke with round joins and ends; each pixel takes the
+  coverage of its nearest segment. `polyline` borrows its points, relative to an
+  origin, until the list is drawn.
 - A `Raster` writes pixels itself. It runs on every task that draws, each with
   its own part of the picture.
 - `Surface::half` draws at half size: each pixel is the logical pixel at odd

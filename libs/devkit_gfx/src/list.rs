@@ -25,6 +25,8 @@ pub enum Op<'a> {
     Shadow { rect: Rect, mask: ShadowMask, color: Color },
     Gradient { rect: Rect, corner: Option<CornerMask>, from: Color, to: Color, vertical: bool },
     Arc { rect: Rect, mask: ArcMask, start: f32, sweep: f32, from: Color, to: Color },
+    Line { from: (f32, f32), to: (f32, f32), width: f32, color: Color, bounds: Rect },
+    Polyline { origin: (i16, i16), points: &'a [(f32, f32)], width: f32, color: Color, bounds: Rect },
     Image { x: i16, y: i16, image: Image<'a>, tint: Color },
     Text { x: i16, y: i16, glyphs: &'a [PlacedGlyph], bounds: Rect, color: Color, slot: u32 },
     Raster { rect: Rect, origin: (i16, i16), raster: &'a dyn Raster },
@@ -40,7 +42,7 @@ impl Op<'_> {
             Self::Fill { rect, .. } | Self::RoundRect { rect, .. } | Self::Border { rect, .. } | Self::Gradient { rect, .. } | Self::Arc { rect, .. } | Self::Raster { rect, .. } => rect,
             Self::Shadow { rect, mask, .. } => rect.expand(mask.blur() as i16),
             Self::Image { x, y, image, .. } => Rect::new(x, y, image.width() as i16, image.height() as i16),
-            Self::Text { bounds, .. } => bounds,
+            Self::Text { bounds, .. } | Self::Line { bounds, .. } | Self::Polyline { bounds, .. } => bounds,
             Self::PushClip(rect) | Self::PushRoundClip { rect, .. } => rect,
             Self::PopClip | Self::PopRoundClip => Rect::default(),
         }
@@ -158,6 +160,20 @@ impl<'a, A: Allocator> DisplayList<'a, A> {
         self.ops.push(Op::Arc { rect: Rect::new(x, y, side, side), mask, start, sweep, from, to });
     }
 
+    /// A line `width` px wide with round ends. Pixel `(0, 0)` has its center
+    /// at `(0.5, 0.5)`.
+    pub fn line(&mut self, from: (f32, f32), to: (f32, f32), width: f32, color: Color) {
+        let bounds = stroke_bounds([from, to].into_iter(), (0, 0), width);
+        self.ops.push(Op::Line { from, to, width, color, bounds });
+    }
+
+    /// Lines joining `points`, which are relative to `origin`, with round
+    /// joins and ends; where they overlap, it is painted once.
+    pub fn polyline(&mut self, origin: (i16, i16), points: &'a [(f32, f32)], width: f32, color: Color) {
+        let bounds = stroke_bounds(points.iter().copied(), origin, width);
+        self.ops.push(Op::Polyline { origin, points, width, color, bounds });
+    }
+
     /// `tint`'s alpha is the opacity; an `A8` image takes its color too.
     pub fn image(&mut self, x: i16, y: i16, image: Image<'a>, tint: Color) {
         self.ops.push(Op::Image { x, y, image, tint });
@@ -200,4 +216,18 @@ impl<'a, A: Allocator> DisplayList<'a, A> {
         self.clips -= 1;
         self.ops.push(Op::PopRoundClip);
     }
+}
+
+fn stroke_bounds(points: impl Iterator<Item = (f32, f32)>, origin: (i16, i16), width: f32) -> Rect {
+    let reach = width / 2.0 + 1.0;
+    let (mut left, mut top, mut right, mut bottom) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+    for (x, y) in points {
+        (left, top, right, bottom) = (left.min(x), top.min(y), right.max(x), bottom.max(y));
+    }
+    if left > right {
+        return Rect::default();
+    }
+    let at = |v: f32| v.clamp(-16000.0, 16000.0) as i16;
+    let (x, y) = (at(left - reach), at(top - reach));
+    Rect::new(x + origin.0, y + origin.1, at(right + reach) + 2 - x, at(bottom + reach) + 2 - y)
 }

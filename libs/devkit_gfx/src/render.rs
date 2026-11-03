@@ -345,6 +345,108 @@ fn draw_gradient<P: Pixel>(s: &Surface, rect: &Rect, corner: Option<&CornerMask>
     });
 }
 
+const STROKE_ROW: usize = 1024;
+
+struct Segment {
+    ax: f32,
+    ay: f32,
+    dx: f32,
+    dy: f32,
+    inverse: f32,
+}
+
+struct Stroke {
+    outer: f32,
+    outer2: f32,
+    inner2: f32,
+    thin: u32,
+    alpha: u8,
+}
+
+impl Stroke {
+    fn across(&self, (ax, ay): (f32, f32), (bx, by): (f32, f32), py: f32) -> Option<(Segment, f32, f32)> {
+        if ay.min(by) - self.outer > py || ay.max(by) + self.outer < py {
+            return None;
+        }
+        let (dx, dy) = (bx - ax, by - ay);
+        let (mut from, mut to) = (0.0f32, 1.0f32);
+        if dy != 0.0 {
+            let inverse_dy = 1.0 / dy;
+            let (t0, t1) = ((py - self.outer - ay) * inverse_dy, (py + self.outer - ay) * inverse_dy);
+            (from, to) = (t0.min(t1).max(0.0), t0.max(t1).min(1.0));
+        }
+        let (x0, x1) = (ax + dx * from, ax + dx * to);
+        let length2 = dx * dx + dy * dy;
+        let inverse = if length2 > 0.0 { 1.0 / length2 } else { 0.0 };
+        Some((Segment { ax, ay, dx, dy, inverse }, x0.min(x1) - self.outer, x0.max(x1) + self.outer))
+    }
+
+    fn cover(&self, segment: &Segment, alphas: &mut [u8], from: usize, to: usize, x0: f32, step: f32, py: f32) {
+        let ey = py - segment.ay;
+        for (k, slot) in alphas[from..to].iter_mut().enumerate() {
+            let ex = x0 + (from + k) as f32 * step - segment.ax;
+            let t = ((ex * segment.dx + ey * segment.dy) * segment.inverse).clamp(0.0, 1.0);
+            let (qx, qy) = (segment.dx * t - ex, segment.dy * t - ey);
+            let distance2 = qx * qx + qy * qy;
+            if distance2 >= self.outer2 {
+                continue;
+            }
+            let coverage = if distance2 <= self.inner2 { 255 } else { ((self.outer - sqrt(distance2)).clamp(0.0, 1.0) * 255.0) as u32 };
+            *slot = (*slot).max(mul8(self.alpha, (coverage * self.thin / 255) as u8));
+        }
+    }
+}
+
+/// Each pixel takes the coverage of the nearest segment, so joins are not
+/// painted twice.
+fn draw_polyline<P: Pixel>(s: &Surface, origin: (i16, i16), points: &[(f32, f32)], width: f32, color: Color, bounds: &Rect, clip: &Rect) {
+    let r = bounds.intersect(clip);
+    if r.is_empty() || points.is_empty() || color.a == 0 {
+        return;
+    }
+    let half = width / 2.0;
+    let (outer, inner) = (half + 0.5, (half - 0.5).max(0.0));
+    let stroke = Stroke { outer, outer2: outer * outer, inner2: inner * inner, thin: (width.min(1.0) * 255.0) as u32, alpha: color.a };
+    let (ox, oy) = (f32::from(origin.0), f32::from(origin.1));
+    let at = |i: usize| {
+        let (x, y) = points[i.min(points.len() - 1)];
+        (x + ox, y + oy)
+    };
+    let count = points.len().saturating_sub(1).max(1);
+    let step = f32::from(1u8 << s.shift());
+    let packed = P::pack(color);
+    let mut alphas = [0u8; STROKE_ROW];
+    let cells = s.cells(&r);
+    let mut start = cells.x;
+    while start < cells.right() {
+        let n = (cells.right() - start).min(STROKE_ROW as i16) as usize;
+        let x0 = f32::from(s.logical_x(start)) + 0.5;
+        let (left, right) = (x0 - 0.5, x0 + (n - 1) as f32 * step + 0.5);
+        for v in cells.y..cells.bottom() {
+            let py = f32::from(s.logical_y(v)) + 0.5;
+            let (mut first, mut last) = (n, 0);
+            for i in 0..count {
+                let Some((segment, l, r)) = stroke.across(at(i), at(i + 1), py) else { continue };
+                if l > right || r < left {
+                    continue;
+                }
+                let from = ((l - left) / step).max(0.0) as usize;
+                let to = (((r - left) / step) as usize + 1).min(n);
+                if from >= to {
+                    continue;
+                }
+                stroke.cover(&segment, &mut alphas[..n], from, to, x0, step, py);
+                (first, last) = (first.min(from), last.max(to));
+            }
+            if first < last {
+                unsafe { P::blend_mask(s.at::<P>(start + first as i16, v), alphas[first..].as_ptr(), last - first, packed) };
+                alphas[first..last].fill(0);
+            }
+        }
+        start += n as i16;
+    }
+}
+
 fn draw_arc<P: Pixel>(s: &Surface, rect: &Rect, mask: &ArcMask, start: f32, sweep: f32, from: Color, to: Color, clip: &Rect) {
     let r = rect.intersect(clip);
     if r.is_empty() {
@@ -488,6 +590,8 @@ fn draw_ops<P: Pixel, A: Allocator, L: Allocator, S: Allocator>(list: &DisplayLi
             Op::Shadow { rect, mask, color } => draw_shadow::<P>(surface, &rect, &mask, &clip, color),
             Op::Gradient { rect, corner, from, to, vertical } => draw_gradient::<P>(surface, &rect, corner.as_ref(), from, to, vertical, &clip),
             Op::Arc { rect, mask, start, sweep, from, to } => draw_arc::<P>(surface, &rect, &mask, start, sweep, from, to, &clip),
+            Op::Line { from, to, width, color, bounds } => draw_polyline::<P>(surface, (0, 0), &[from, to], width, color, &bounds, &clip),
+            Op::Polyline { origin, points, width, color, bounds } => draw_polyline::<P>(surface, origin, points, width, color, &bounds, &clip),
             Op::Image { x, y, image, tint } => surface.image::<P>(x, y, &image, &clip, tint),
             Op::Text { x, y, glyphs, color, slot, .. } => {
                 let start = prepared.starts[slot as usize];

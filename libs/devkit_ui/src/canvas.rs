@@ -64,6 +64,19 @@ impl<'a> Canvas<'a, '_> {
         self.list.border(rect, ring, i16::from(stroke), Sides::ALL, dim(color, self.opacity));
     }
 
+    /// A line `width` px wide with round ends. Pixel `(0, 0)` has its center
+    /// at `(0.5, 0.5)`.
+    pub fn line(&mut self, from: (f32, f32), to: (f32, f32), width: f32, color: Color) {
+        let (x, y) = (f32::from(self.origin.0), f32::from(self.origin.1));
+        self.list.line((from.0 + x, from.1 + y), (to.0 + x, to.1 + y), width, dim(color, self.opacity));
+    }
+
+    /// Lines joining `points`, with round joins and ends, painted once where
+    /// they overlap.
+    pub fn polyline(&mut self, points: &'a [(f32, f32)], width: f32, color: Color) {
+        self.list.polyline(self.origin, points, width, dim(color, self.opacity));
+    }
+
     pub fn image(&mut self, x: i16, y: i16, image: Image<'a>, tint: Color) {
         self.list.image(x + self.origin.0, y + self.origin.1, image, dim(tint, self.opacity));
     }

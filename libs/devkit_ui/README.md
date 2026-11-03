@@ -457,6 +457,11 @@ config.plugins.push(Box::new(SavedColorMode::new()));
 - `.on_size(Msg)` comes with the first layout and whenever the size changes,
   before the canvas is drawn at that size. `draw` takes `&self`, so whatever
   depends on the size is made there. `canvas.size()` is enough to only draw.
+- `canvas.line(from, to, width, color)` and `canvas.polyline(&self.points,
+  width, color)` stroke with round joins and ends, antialiased, at `f32`
+  positions where pixel `(0, 0)` has its center at `(0.5, 0.5)`. A polyline paints
+  each pixel once, so a translucent one does not darken at its joins; its points
+  stay borrowed until the frame is drawn, like a `TextRun`.
 - `canvas.raster(rect, &self.plot)` writes pixels through a `Raster`. It runs on
   every drawing task at once, each with its own part of the picture, in the
   panel's format. Text is not available there.
