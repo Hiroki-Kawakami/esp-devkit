@@ -3312,7 +3312,7 @@ fn a_zoom_draws_pictures_from_the_old_screen_to_the_new_one() {
 
     tree.tick(1000);
     assert!(tree.transiting(), "taking the pictures is not part of the time");
-    tree.tick(150);
+    tree.tick(40);
     let middle = zoom_frame(&mut tree, &mut cache);
     let center = at(&middle, 200, 300);
     assert!(center != RED_565 && center != WHITE_565, "both show through: {center:04x}");
