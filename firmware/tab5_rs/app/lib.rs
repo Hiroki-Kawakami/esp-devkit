@@ -87,6 +87,12 @@ pub fn run() {
         Ok(state) => info!(TAG, "power: {state:?}"),
         Err(err) => error!(TAG, "power: {err}"),
     }
+    if let Some(rtc) = board.rtc {
+        match rtc.now().and_then(|now| Ok((now, rtc.is_valid()?))) {
+            Ok((now, valid)) => info!(TAG, "rtc: {now:?} valid {valid}"),
+            Err(err) => error!(TAG, "rtc: {err}"),
+        }
+    }
     if let Some(imu) = board.imu {
         imu.set_orientation_cb(Some(Box::new(|pose| info!(TAG, "orientation: {pose:?}"))));
         imu.set_orientation_enabled(true);

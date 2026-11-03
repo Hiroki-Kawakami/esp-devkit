@@ -16,7 +16,7 @@ use std::thread;
 
 use super::audio::{self, Player};
 use crate::protocol::{
-    ENV_POWER, ENV_PSRAM_PATH, ENV_PSRAM_SIZE, ENV_SOCKET_FD, EXIT_RESTART, Event, MAX_TOUCH_POINTS, PixelFormat,
+    ENV_POWER, ENV_PSRAM_PATH, ENV_RTC, ENV_PSRAM_SIZE, ENV_SOCKET_FD, EXIT_RESTART, Event, MAX_TOUCH_POINTS, PixelFormat,
     RECORD_SIZE, TouchPoint, VERSION,
 };
 
@@ -102,6 +102,20 @@ pub struct Device {
     silent: bool,
     rotation: AtomicU8,
     supply: Mutex<Supply>,
+    clock: Mutex<Clock>,
+}
+
+// The simulated RTC as an offset from the host's local wall clock.
+struct Clock {
+    offset: i64,
+    valid: bool,
+}
+
+fn local_seconds() -> i64 {
+    let now = unsafe { libc::time(std::ptr::null_mut()) };
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    unsafe { libc::localtime_r(&now, &mut tm) };
+    now + tm.tm_gmtoff
 }
 
 impl Device {
@@ -128,6 +142,7 @@ impl Device {
             silent,
             rotation: AtomicU8::new(0),
             supply: Mutex::new(DEFAULT_SUPPLY),
+            clock: Mutex::new(Clock { offset: 0, valid: std::env::var_os("SIMULATOR_RTC_INVALID").is_none_or(|v| v == "0") }),
         }))
     }
 
@@ -164,6 +179,10 @@ impl Device {
             .env(ENV_SOCKET_FD.to_str().unwrap(), fw_fd.to_string())
             .env(ENV_PSRAM_PATH.to_str().unwrap(), &self.psram.path)
             .env(ENV_PSRAM_SIZE.to_str().unwrap(), self.psram.len.to_string())
+            .env(ENV_RTC.to_str().unwrap(), {
+                let clock = self.clock.lock().unwrap();
+                format!("{} {}", local_seconds() + clock.offset, u8::from(clock.valid))
+            })
             .env(ENV_POWER.to_str().unwrap(), {
                 let Supply { level, external, battery } = self.supply();
                 format!("{level} {} {}", u8::from(external), u8::from(battery))
@@ -275,6 +294,9 @@ impl Device {
                     if player.as_ref().is_some_and(|p| p.stream == stream) {
                         *player = None;
                     }
+                }
+                Some(Event::Rtc { seconds, valid }) => {
+                    *self.clock.lock().unwrap() = Clock { offset: seconds - local_seconds(), valid };
                 }
                 Some(Event::AudioMute { mute }) => {
                     self.muted.store(mute, Ordering::Relaxed);

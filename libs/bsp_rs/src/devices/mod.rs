@@ -17,6 +17,8 @@ pub(crate) mod ina226;
 pub(crate) mod ili9881c;
 #[cfg(CONFIG_BSP_RS_DEVICE_PI4IO)]
 pub(crate) mod pi4io;
+#[cfg(CONFIG_BSP_RS_DEVICE_RX8130)]
+pub(crate) mod rx8130;
 #[cfg(CONFIG_BSP_RS_DEVICE_ST712X_TOUCH)]
 pub(crate) mod st712x_touch;
 #[cfg(CONFIG_BSP_RS_DEVICE_ST7121)]

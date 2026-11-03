@@ -56,6 +56,19 @@ points as if the controller had reported them, without waking `wait_interrupt`.
   a soft reboot. Both silence the audio output first.
 - `set_charge` and `set_switch` return `NOT_SUPPORTED` for what the board lacks.
 
+## RTC
+
+`board.rtc` is a battery-backed clock in local wall-clock time, shared the same
+way; `None` on a board without one.
+
+- `now` and `set` take a `DateTime`; the weekday comes from the date, and
+  `seconds` / `from_seconds` convert to seconds since 1970 on the same clock.
+  `set` refuses a date that does not exist or that the chip cannot hold.
+- `is_valid` is `false` once the clock lost power, until the next `set`.
+- `start_timer(period)` raises the chip's interrupt and expiry flag every
+  `period` until `stop_timer`; `timer_expired` and `clear_timer` read and clear
+  the flag, which survives deep sleep. A board may refuse short periods.
+
 ## IMU
 
 `board.imu` is shared the same way, in panel axes: +X right, +Y down, +Z into

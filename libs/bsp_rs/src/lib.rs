@@ -24,6 +24,8 @@ mod driver;
 #[cfg_attr(not(target_os = "none"), allow(dead_code))]
 pub mod imu;
 pub mod power;
+#[cfg_attr(not(target_os = "none"), allow(dead_code))]
+pub mod rtc;
 #[cfg(not(target_os = "none"))]
 mod sim;
 #[cfg_attr(not(target_os = "none"), allow(dead_code))]
@@ -40,6 +42,7 @@ pub struct Board {
     pub display: Option<&'static display::Display>,
     pub imu: Option<&'static imu::Imu>,
     pub power: &'static power::Power,
+    pub rtc: Option<&'static rtc::Rtc>,
     pub touch: Option<&'static touch::Touch>,
 }
 

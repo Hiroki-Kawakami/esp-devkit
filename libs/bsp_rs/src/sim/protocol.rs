@@ -6,7 +6,7 @@
  * this crate and tools/devkit. See docs/simulator.md.
  */
 
-pub const VERSION: u32 = 5;
+pub const VERSION: u32 = 6;
 pub const RECORD_SIZE: usize = 64;
 pub const MAX_TOUCH_POINTS: usize = 10;
 pub const MAX_NAME: usize = 48;
@@ -19,6 +19,17 @@ pub const ENV_PSRAM_SIZE: &CStr = c"SIM_PSRAM_SIZE";
 /// The `Power` the firmware starts with, as `<level> <external> <battery>`
 /// with 0 or 1 for the flags.
 pub const ENV_POWER: &CStr = c"SIM_POWER";
+
+/// The clock the firmware starts with, as `<seconds> <valid>`: local wall-clock
+/// seconds since 1970 and 0 or 1.
+pub const ENV_RTC: &CStr = c"SIM_RTC";
+
+pub fn parse_rtc(value: &str) -> Option<(i64, bool)> {
+    let mut fields = value.split_whitespace();
+    let seconds = fields.next()?.parse().ok()?;
+    let valid: u8 = fields.next()?.parse().ok()?;
+    Some((seconds, valid != 0))
+}
 
 pub fn parse_power(value: &str) -> Option<(u8, bool, bool)> {
     let mut fields = value.split_whitespace();
@@ -84,6 +95,9 @@ pub enum Event {
     Imu { accel: [f32; 3], gyro: [f32; 3] },
     /// Host to firmware: battery level 0..=100, external power, battery in.
     Power { level: u8, external: bool, battery: bool },
+    /// Firmware to host: the clock was set, to local wall-clock seconds since
+    /// 1970.
+    Rtc { seconds: i64, valid: bool },
 }
 
 const TAG_HELLO: u8 = 1;
@@ -98,6 +112,7 @@ const TAG_AUDIO_MUTE: u8 = 9;
 const TAG_AUDIO_PLAYED: u8 = 10;
 const TAG_IMU: u8 = 11;
 const TAG_POWER: u8 = 12;
+const TAG_RTC: u8 = 13;
 
 struct Writer {
     buf: [u8; RECORD_SIZE],
@@ -208,6 +223,7 @@ impl Event {
             Self::Power { level, external, battery } => {
                 Writer::new(TAG_POWER).put(&[level, u8::from(external), u8::from(battery)]).buf
             }
+            Self::Rtc { seconds, valid } => Writer::new(TAG_RTC).put(&seconds.to_le_bytes()).put(&[u8::from(valid)]).buf,
         }
     }
 
@@ -250,6 +266,7 @@ impl Event {
             TAG_AUDIO_MUTE => Self::AudioMute { mute: r.u8() != 0 },
             TAG_AUDIO_PLAYED => Self::AudioPlayed { stream: r.u32(), bytes: r.u64() },
             TAG_IMU => Self::Imu { accel: r.vec3(), gyro: r.vec3() },
+            TAG_RTC => Self::Rtc { seconds: r.u64() as i64, valid: r.u8() != 0 },
             TAG_POWER => Self::Power { level: r.u8(), external: r.u8() != 0, battery: r.u8() != 0 },
             _ => return None,
         })
@@ -278,6 +295,7 @@ mod tests {
             Event::AudioPlayed { stream: 7, bytes: 0x1_0000_0002 },
             Event::Imu { accel: [0.0, -1.0, 0.0], gyro: [1.5, -2.5, 3.5] },
             Event::Power { level: 76, external: true, battery: false },
+            Event::Rtc { seconds: -1, valid: true },
         ] {
             assert_eq!(Event::decode(&e.encode()), Some(e));
         }
@@ -285,5 +303,6 @@ mod tests {
         assert_eq!(super::parse_power("76 1 0"), Some((76, true, false)));
         assert_eq!(super::parse_power("101 1 1"), None);
         assert_eq!(super::parse_power("76 1"), None);
+        assert_eq!(super::parse_rtc("1700000000 0"), Some((1_700_000_000, false)));
     }
 }

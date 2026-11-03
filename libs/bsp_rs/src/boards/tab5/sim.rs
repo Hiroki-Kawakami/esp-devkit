@@ -11,10 +11,12 @@ use super::{PANEL_SIZE, TAG, resolve_fb_num, resolve_pixel_format};
 use crate::audio;
 use crate::display;
 use crate::power;
+use crate::rtc;
 use crate::sim::audio::SimAudio;
 use crate::sim::imu as sim_imu;
 use crate::sim::panel::SimPanel;
 use crate::sim::power::SimPower;
+use crate::sim::rtc::SimRtc;
 use crate::sim::protocol::Event;
 use crate::sim::{self, touch as sim_touch};
 use crate::touch;
@@ -30,7 +32,7 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
     let Some(host) = sim::host() else {
         info!(TAG, "board: Tab5 (simulator, no host)");
         let power = power::start(SimPower::new(None), None);
-        return Ok(Board { audio: None, display: None, imu: None, power, touch: None });
+        return Ok(Board { audio: None, display: None, imu: None, power, rtc: None, touch: None });
     };
     info!(TAG, "board: Tab5 (simulator)");
     host.send(&Event::device("M5Stack Tab5"));
@@ -51,5 +53,6 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
         .ok();
     let imu = sim_imu::start(host).inspect_err(|err| warn!(TAG, "imu unavailable: {err}")).ok();
     let power = power::start(SimPower::new(Some(host)), audio);
-    Ok(Board { audio, display: Some(DISPLAY.get_or_init(|| display::Display(panel))), imu, power, touch })
+    let rtc = SimRtc::new(host).and_then(|driver| rtc::start(driver).inspect_err(|err| warn!(TAG, "rtc unavailable: {err}")).ok());
+    Ok(Board { audio, display: Some(DISPLAY.get_or_init(|| display::Display(panel))), imu, power, rtc, touch })
 }

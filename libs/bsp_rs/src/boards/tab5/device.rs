@@ -19,10 +19,12 @@ use crate::devices::gt911::{self, Gt911};
 use crate::devices::st712x_touch::{self, St712xTouch};
 use crate::devices::{ili9881c, st7121, st7123};
 use crate::devices::pi4io::{Pi4io, PinConfig};
+use crate::devices::rx8130::{self, Rx8130};
 use crate::display;
 use crate::driver::mipi_dsi::MipiDsi;
 use crate::imu::{self, AxisMap, Imu};
 use crate::power;
+use crate::rtc::{self, Rtc};
 use crate::touch::{self, Touch};
 use crate::{Board, Config};
 
@@ -38,6 +40,11 @@ const PI4IOE1_TP_RST: u8 = 5;
 const TOUCH_PIN_INT: i32 = 23;
 
 const IMU_AXIS_MAP: AxisMap = AxisMap { x: -1, y: -2, z: 3 };
+
+// The RTC interrupt pulses the power key, so every timer expiry turns the board
+// off. A timer left running would do it again before the app could stop it;
+// the minimum keeps a boot-time window wide enough to recover by reflashing.
+const RTC_TIMER_MIN: Duration = Duration::from_secs(60);
 
 const LCD_PIN_BL: i32 = 22;
 // The backlight boost driver holds a fixed current floor while enabled;
@@ -80,8 +87,9 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
     let touch = touch_init(bus, &display);
     let audio = audio_init(config, bus, pi4ioe1);
     let imu = imu_init(bus);
+    let rtc = rtc_init(bus);
     let power = power::start(PowerDriver::new(bus, pi4ioe2), audio);
-    Ok(Board { audio, display: Some(DISPLAY.get_or_init(|| display::Display(display))), imu, power, touch })
+    Ok(Board { audio, display: Some(DISPLAY.get_or_init(|| display::Display(display))), imu, power, rtc, touch })
 }
 
 // PI4IOE1 owns LCD_RST + TP_RST + SPK_EN + the headphone-detect input; PI4IOE2
@@ -219,6 +227,19 @@ fn imu_init(bus: &'static MasterBus) -> Option<&'static Imu> {
         .and_then(|chip| imu::start(chip, IMU_AXIS_MAP))
         .inspect_err(|err| warn!(TAG, "imu unavailable: {err}"))
         .ok()
+}
+
+// Non-fatal: the board comes up without a clock.
+fn rtc_init(bus: &'static MasterBus) -> Option<&'static Rtc> {
+    let config = rx8130::Config { charge_backup: true, timer_min: RTC_TIMER_MIN };
+    let rtc = Rx8130::new(bus, rx8130::ADDR, &config)
+        .and_then(rtc::start)
+        .inspect_err(|err| warn!(TAG, "rtc unavailable: {err}"))
+        .ok()?;
+    if let Err(err) = rtc.stop_timer() {
+        error!(TAG, "rtc timer stop: {err}");
+    }
+    Some(rtc)
 }
 
 fn st712x_version(bus: &MasterBus) -> Option<u8> {
