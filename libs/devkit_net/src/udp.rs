@@ -10,7 +10,7 @@ use core::net::{Ipv4Addr, SocketAddrV4};
 use idf::heap::Caps;
 
 use crate::ring::Ring;
-use crate::stack::{SocketId, Stack, Tx};
+use crate::stack::{IfaceId, SocketId, Stack, Tx};
 use crate::time::Instant;
 use crate::wire::{Ipv4, PROTO_UDP, UDP_HEADER, be16, checksum, put16, sum};
 use crate::{Error, Result};
@@ -20,6 +20,7 @@ const MAX_QUEUED: usize = 64;
 
 pub(crate) struct Socket {
     local: SocketAddrV4,
+    iface: Option<IfaceId>,
     remote: Option<SocketAddrV4>,
     rx: Ring,
     queue: VecDeque<(SocketAddrV4, usize)>,
@@ -36,10 +37,11 @@ impl Sockets {
         self.slots[id].as_mut().unwrap()
     }
 
-    fn in_use(&self, addr: SocketAddrV4) -> bool {
+    fn in_use(&self, addr: SocketAddrV4, iface: Option<IfaceId>) -> bool {
         self.slots.iter().flatten().any(|s| {
             s.local.port() == addr.port()
                 && (s.local.ip().is_unspecified() || addr.ip().is_unspecified() || s.local.ip() == addr.ip())
+                && (s.iface.is_none() || iface.is_none() || s.iface == iface)
         })
     }
 
@@ -48,7 +50,7 @@ impl Sockets {
         for _ in 0..span {
             let port = EPHEMERAL_FIRST + self.next_port % span;
             self.next_port = self.next_port.wrapping_add(1);
-            if !self.in_use(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port)) {
+            if !self.in_use(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port), None) {
                 return Ok(port);
             }
         }
@@ -63,19 +65,28 @@ fn pseudo_sum(src: Ipv4Addr, dst: Ipv4Addr, len: usize) -> u32 {
 }
 
 impl Stack {
-    pub(crate) fn udp_bind(&mut self, addr: SocketAddrV4, rx_size: usize, caps: Caps) -> Result<usize> {
+    /// A socket on `iface` sends and receives only through it, also while the
+    /// interface has no address.
+    pub(crate) fn udp_bind(
+        &mut self,
+        addr: SocketAddrV4,
+        iface: Option<IfaceId>,
+        rx_size: usize,
+        caps: Caps,
+    ) -> Result<usize> {
         if !addr.ip().is_unspecified() && !self.is_own_address(*addr.ip()) {
             return Err(Error::AddrNotAvailable);
         }
         let port = if addr.port() == 0 {
             self.udp.ephemeral()?
-        } else if self.udp.in_use(addr) {
+        } else if self.udp.in_use(addr, iface) {
             return Err(Error::AddrInUse);
         } else {
             addr.port()
         };
         let socket = Socket {
             local: SocketAddrV4::new(*addr.ip(), port),
+            iface,
             remote: None,
             rx: Ring::new(rx_size, caps)?,
             queue: VecDeque::new(),
@@ -112,13 +123,20 @@ impl Stack {
     }
 
     pub(crate) fn udp_send(&mut self, id: usize, dst: SocketAddrV4, data: &[u8], now: Instant, tx: &mut Tx) -> Result<()> {
-        let local = self.udp.get(id).local;
-        if UDP_HEADER + data.len() > self.mtu_to(*dst.ip()).ok_or(Error::NoRoute)? {
-            return Err(Error::MessageTooLarge);
-        }
-        let src = (!local.ip().is_unspecified()).then_some(*local.ip());
+        let socket = self.udp.get(id);
+        let (local, iface) = (socket.local, socket.iface);
+        let mut src = (!local.ip().is_unspecified()).then_some(*local.ip());
+        let (via, next_hop) = match iface {
+            Some(iface) => {
+                if self.ipv4(iface).is_none() {
+                    src = Some(Ipv4Addr::UNSPECIFIED);
+                }
+                (iface, self.next_hop_on(iface, *dst.ip()).ok_or(Error::NoRoute)?)
+            }
+            None => self.route_v4(*dst.ip()).ok_or(Error::NoRoute)?,
+        };
         let len = UDP_HEADER + data.len();
-        self.send_ipv4(src, *dst.ip(), PROTO_UDP, len, now, tx, |out, src| {
+        self.send_ipv4_on(via, next_hop, src, *dst.ip(), PROTO_UDP, len, now, tx, |out, src| {
             put16(out, 0, local.port());
             put16(out, 2, dst.port());
             put16(out, 4, len as u16);
@@ -139,7 +157,7 @@ impl Stack {
         Some((socket.rx.pop(len, buf), from))
     }
 
-    pub(crate) fn udp_input(&mut self, ip: &Ipv4, p: &[u8]) {
+    pub(crate) fn udp_input(&mut self, arrived: IfaceId, ip: &Ipv4, p: &[u8]) {
         if p.len() < UDP_HEADER {
             return;
         }
@@ -157,6 +175,7 @@ impl Stack {
             s.as_ref().is_some_and(|s| {
                 s.local.port() == port
                     && (s.local.ip().is_unspecified() || *s.local.ip() == ip.dst)
+                    && s.iface.is_none_or(|i| i == arrived)
                     && s.remote.is_none_or(|r| r == from)
             })
         }) else {

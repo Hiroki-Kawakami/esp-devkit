@@ -3,6 +3,7 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
+mod dhcp;
 mod ipv4;
 mod link;
 mod tcp;
@@ -18,7 +19,7 @@ use idf::thread;
 
 use crate::net::{self, Net};
 use crate::wire::Mac;
-use crate::{Config, Ipv4Config, Link, LinkInfo, LinkRx, Medium, TxError};
+use crate::{Config, IfaceId, Ipv4Config, Link, LinkInfo, LinkRx, Medium, TxError};
 
 pub(super) const MAC_A: Mac = [0x02, 0, 0, 0, 0, 0x0a];
 pub(super) const MAC_B: Mac = [0x02, 0, 0, 0, 0, 0x0b];
@@ -55,20 +56,25 @@ impl Link for TestLink {
 pub(super) struct Live {
     pub a: &'static Net,
     pub b: &'static Net,
+    pub a_iface: IfaceId,
     stop: Arc<AtomicBool>,
     pump: Option<thread::JoinHandle<()>>,
 }
 
 impl Live {
     pub fn new() -> Self {
+        Self::with(config(IP_A), config(IP_B))
+    }
+
+    pub fn with(a: Option<Ipv4Config>, b: Option<Ipv4Config>) -> Self {
         let mut nets = Vec::new();
         let mut links = Vec::new();
-        for (mac, ip) in [(MAC_A, IP_A), (MAC_B, IP_B)] {
+        for (mac, ip) in [(MAC_A, a), (MAC_B, b)] {
             let net: &'static Net = Box::leak(Box::new(Net::new(Config::default())));
             let link = Arc::new(TestLink { info: eth(mac), out: Mutex::new(VecDeque::new()) });
             let id = net.add_link("eth", link.clone());
             let mut inner = net.lock();
-            inner.stack.set_ipv4(id, config(ip));
+            inner.stack.set_ipv4(id, ip);
             inner.stack.set_link_up(id, true);
             drop(inner);
             nets.push((net, id));
@@ -92,7 +98,7 @@ impl Live {
                 }
             })
         };
-        Self { a: nets[0].0, b: nets[1].0, stop, pump: Some(pump) }
+        Self { a: nets[0].0, b: nets[1].0, a_iface: nets[0].1, stop, pump: Some(pump) }
     }
 }
 

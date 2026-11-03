@@ -76,6 +76,7 @@ struct Iface {
     info: LinkInfo,
     up: bool,
     ipv4: Option<Ipv4Config>,
+    dns: Vec<Ipv4Addr>,
     stats: IfaceStats,
 }
 
@@ -129,7 +130,7 @@ impl Stack {
     /// The interface starts down, without an address.
     pub fn add_interface(&mut self, name: &'static str, info: LinkInfo) -> IfaceId {
         let id = IfaceId(u8::try_from(self.ifaces.len()).expect("too many interfaces"));
-        self.ifaces.push(Iface { name, info, up: false, ipv4: None, stats: IfaceStats::default() });
+        self.ifaces.push(Iface { name, info, up: false, ipv4: None, dns: Vec::new(), stats: IfaceStats::default() });
         id
     }
 
@@ -152,6 +153,16 @@ impl Stack {
 
     pub fn ipv4(&self, id: IfaceId) -> Option<Ipv4Config> {
         self.iface(id).ipv4
+    }
+
+    pub fn set_dns_servers(&mut self, id: IfaceId, servers: &[Ipv4Addr]) {
+        let dns = &mut self.iface_mut(id).dns;
+        dns.clear();
+        dns.extend_from_slice(servers);
+    }
+
+    pub fn dns_servers(&self, id: IfaceId) -> &[Ipv4Addr] {
+        &self.iface(id).dns
     }
 
     pub fn name(&self, id: IfaceId) -> &'static str {
@@ -219,6 +230,31 @@ impl Stack {
         fill: impl FnOnce(&mut [u8], Ipv4Addr),
     ) -> Result<(), Error> {
         let (id, next_hop) = self.route_v4(dst).ok_or(Error::NoRoute)?;
+        self.send_ipv4_on(id, next_hop, src, dst, protocol, len, now, tx, fill)
+    }
+
+    /// The next hop toward `dst` out of interface `id`.
+    pub(crate) fn next_hop_on(&self, id: IfaceId, dst: Ipv4Addr) -> Option<Ipv4Addr> {
+        if dst.is_broadcast() {
+            return Some(dst);
+        }
+        let config = self.iface(id).ipv4?;
+        if config.contains(dst) { Some(dst) } else { config.gateway }
+    }
+
+    /// `src` defaults to the interface's address.
+    pub(crate) fn send_ipv4_on(
+        &mut self,
+        id: IfaceId,
+        next_hop: Ipv4Addr,
+        src: Option<Ipv4Addr>,
+        dst: Ipv4Addr,
+        protocol: u8,
+        len: usize,
+        now: Instant,
+        tx: &mut Tx,
+        fill: impl FnOnce(&mut [u8], Ipv4Addr),
+    ) -> Result<(), Error> {
         let iface = self.iface(id);
         let src = match src {
             Some(src) => src,
@@ -303,7 +339,12 @@ impl Stack {
         if ip.fragmented {
             return;
         }
-        let Some(config) = self.iface(id).ipv4 else { return };
+        let Some(config) = self.iface(id).ipv4 else {
+            if ip.protocol == PROTO_UDP {
+                self.udp_input(id, &ip, payload);
+            }
+            return;
+        };
         let unicast = if id == IfaceId::LOOPBACK {
             ip.dst.is_loopback() || self.is_own_address(ip.dst)
         } else {
@@ -314,7 +355,7 @@ impl Stack {
         }
         match ip.protocol {
             PROTO_ICMP => self.icmp_input(&ip, unicast, payload, now, tx),
-            PROTO_UDP => self.udp_input(&ip, payload),
+            PROTO_UDP => self.udp_input(id, &ip, payload),
             PROTO_TCP => self.tcp_input(&ip, unicast, payload, now, tx),
             _ => {}
         }

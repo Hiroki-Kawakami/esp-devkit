@@ -34,7 +34,7 @@ fn pair() -> (Wires, End, End) {
 }
 
 fn bind(net: &mut Wires, end: End, ip: Ipv4Addr, port: u16, size: usize) -> usize {
-    net.stacks[end.0].udp_bind(SocketAddrV4::new(ip, port), size, Caps::DEFAULT).unwrap()
+    net.stacks[end.0].udp_bind(SocketAddrV4::new(ip, port), None, size, Caps::DEFAULT).unwrap()
 }
 
 fn send(net: &mut Wires, end: End, id: usize, to: SocketAddrV4, data: &[u8]) -> crate::Result<()> {
@@ -160,7 +160,7 @@ fn broadcast_reaches_unbound_address() {
 fn binding_rules() {
     let (mut net, _, b) = pair();
     let stack = &mut net.stacks[b.0];
-    let bind = |stack: &mut Stack, ip, port| stack.udp_bind(SocketAddrV4::new(ip, port), 64, Caps::DEFAULT);
+    let bind = |stack: &mut Stack, ip, port| stack.udp_bind(SocketAddrV4::new(ip, port), None, 64, Caps::DEFAULT);
     let s7 = bind(stack, IP_B, 7).unwrap();
     assert_eq!(bind(stack, IP_B, 7), Err(Error::AddrInUse));
     assert_eq!(bind(stack, ANY, 7), Err(Error::AddrInUse));

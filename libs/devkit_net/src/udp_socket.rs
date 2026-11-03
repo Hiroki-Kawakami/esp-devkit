@@ -10,7 +10,7 @@ use idf::executor;
 use idf::heap::Caps;
 
 use crate::net::{self, Net, wait_for};
-use crate::stack::SocketId;
+use crate::stack::{IfaceId, SocketId};
 use crate::{Error, Result};
 
 fn v4(addr: SocketAddr) -> Result<SocketAddrV4> {
@@ -24,6 +24,7 @@ fn v4(addr: SocketAddr) -> Result<SocketAddrV4> {
 pub struct UdpBuilder {
     rx_buffer: Option<usize>,
     caps: Option<Caps>,
+    iface: Option<IfaceId>,
 }
 
 impl UdpBuilder {
@@ -38,6 +39,11 @@ impl UdpBuilder {
         self
     }
 
+    pub(crate) fn interface(mut self, iface: IfaceId) -> Self {
+        self.iface = Some(iface);
+        self
+    }
+
     pub fn bind(self, addr: SocketAddr) -> Result<UdpSocket> {
         self.bind_in(net::global()?, addr)
     }
@@ -46,7 +52,7 @@ impl UdpBuilder {
         let addr = v4(addr)?;
         let size = self.rx_buffer.unwrap_or(net.config.udp_rx_buffer);
         let caps = self.caps.unwrap_or(net.config.caps);
-        let id = net.lock().stack.udp_bind(addr, size, caps)?;
+        let id = net.lock().stack.udp_bind(addr, self.iface, size, caps)?;
         Ok(UdpSocket { net, id })
     }
 }

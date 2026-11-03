@@ -8,6 +8,7 @@
 extern crate alloc;
 
 mod arp;
+mod dhcp;
 mod error;
 #[cfg(test)]
 mod harness;
