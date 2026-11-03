@@ -436,18 +436,30 @@ microsecond resolution, plus `since_boot()`. `idf::system::restart()` calls
 the core running the caller, which an unpinned task may leave right after the
 call.
 
-`idf::fs::File` is a file open for reading, over `open`/`read`/`lseek`/`fstat`:
+`idf::fs` follows `std::fs` over the POSIX calls, with `&CStr` paths:
 
 ```rust
 let file = File::open(c"/sdcard/a.mp4")?;
 let size = file.size()?;
 file.seek(offset)?;
 let n = file.read(&mut buf)?;
+
+File::create(c"/sdcard/cache.bin")?.write_all(&data)?;
+let log = OpenOptions::new().append(true).create(true).open(c"/sdcard/log.txt")?;
+for entry in fs::read_dir(c"/sdcard")? {
+    let dir = entry.is_dir();
+    let name = entry.file_name();
+}
+fs::rename(c"/sdcard/a.tmp", c"/sdcard/a.bin")?;
 ```
 
-- All methods take `&self`, and `read` and `seek` share one position, so tasks
-  sharing a `File` serialize a seek with its read. `read` may return less than
-  asked; 0 is the end of the file. Closed on drop.
+- `File` methods take `&self`, and `read`, `write` and `seek` share one
+  position, so tasks sharing a `File` serialize a seek with the access after
+  it. `read` and `write` may move less than asked; `read` returning 0 is the
+  end of the file. `sync` writes buffered data through. Closed on drop.
+- `metadata`, `create_dir`, `remove_file`, `remove_dir` and `rename` complete
+  the set; `read_dir` skips `.` and `..`. Failures are `FAIL`, without the
+  reason.
 
 `idf::heap::Caps` is the `MALLOC_CAP_*` bitflags and is itself a
 `core::alloc::Allocator` over `heap_caps_*`:

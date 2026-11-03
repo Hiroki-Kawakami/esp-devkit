@@ -20,6 +20,7 @@ choice BSP_RS_BOARD
         select BSP_RS_DEVICE_ST7121 if !DEVKIT_SIMULATOR
         select BSP_RS_DEVICE_ST7123 if !DEVKIT_SIMULATOR
         select BSP_RS_DEVICE_ST712X_TOUCH if !DEVKIT_SIMULATOR
+        select BSP_RS_DRIVER_SDMMC if !DEVKIT_SIMULATOR
 endchoice
 
 # Chip drivers and transports compiled into the crate; each board selects the
@@ -58,6 +59,9 @@ config BSP_RS_DEVICE_ST712X_TOUCH
     bool
 
 config BSP_RS_DRIVER_MIPI_DSI
+    bool
+
+config BSP_RS_DRIVER_SDMMC
     bool
 
 endmenu

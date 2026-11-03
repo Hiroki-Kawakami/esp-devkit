@@ -2,7 +2,7 @@
 if(ESP_PLATFORM)
     set(target_requires esp_psram)
 else()
-    set(sim_headers "simulator/sim_psram.h" "stdlib.h" "unistd.h" "sys/socket.h")
+    set(sim_headers "simulator/sim_psram.h" "simulator/path_redirect.h" "stdlib.h" "unistd.h" "sys/socket.h")
 endif()
 idf_component_register(
     SRCS "/dev/null"

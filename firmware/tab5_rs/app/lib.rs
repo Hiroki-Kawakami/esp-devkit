@@ -15,8 +15,10 @@ use alloc::vec::Vec;
 
 use bsp_rs::audio::{Audio, Format, Pcm, SampleFormat, SpeakerMode};
 use bsp_rs::display::{Display, FrameBuffer, PixelFormat};
+use bsp_rs::sd::MountConfig;
 use devkit::math::sinf;
 use bsp_rs::touch::{Point, Touch};
+use idf::fs;
 use idf::log::{error, info};
 use idf::thread;
 
@@ -91,6 +93,15 @@ pub fn run() {
         match rtc.now().and_then(|now| Ok((now, rtc.is_valid()?))) {
             Ok((now, valid)) => info!(TAG, "rtc: {now:?} valid {valid}"),
             Err(err) => error!(TAG, "rtc: {err}"),
+        }
+    }
+    if let Some(sd) = board.sd {
+        match sd.mount(c"/sdcard", &MountConfig::default()) {
+            Ok(()) => match fs::read_dir(c"/sdcard") {
+                Ok(entries) => info!(TAG, "sd: {} entries", entries.count()),
+                Err(err) => error!(TAG, "sd read_dir: {err}"),
+            },
+            Err(err) => error!(TAG, "sd mount: {err}"),
         }
     }
     if let Some(imu) = board.imu {

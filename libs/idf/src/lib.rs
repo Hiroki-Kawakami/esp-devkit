@@ -26,6 +26,8 @@ pub mod ledc;
 pub mod log;
 #[cfg(any(not(target_os = "none"), CONFIG_SOC_PPA_SUPPORTED))]
 pub mod ppa;
+#[cfg(all(target_os = "none", CONFIG_SOC_SDMMC_HOST_SUPPORTED))]
+pub mod sdmmc;
 pub mod sync;
 pub mod system;
 pub mod thread;

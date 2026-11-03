@@ -22,9 +22,11 @@ use crate::devices::pi4io::{Pi4io, PinConfig};
 use crate::devices::rx8130::{self, Rx8130};
 use crate::display;
 use crate::driver::mipi_dsi::MipiDsi;
+use crate::driver::sdmmc::{self, SdmmcCard};
 use crate::imu::{self, AxisMap, Imu};
 use crate::power;
 use crate::rtc::{self, Rtc};
+use crate::sd::{self, Sd};
 use crate::touch::{self, Touch};
 use crate::{Board, Config};
 
@@ -40,6 +42,11 @@ const PI4IOE1_TP_RST: u8 = 5;
 const TOUCH_PIN_INT: i32 = 23;
 
 const IMU_AXIS_MAP: AxisMap = AxisMap { x: -1, y: -2, z: 3 };
+
+const SD_SLOT: i32 = 0;
+const SD_PINS: idf::sdmmc::SlotPins = idf::sdmmc::SlotPins { clk: 43, cmd: 44, d0: 39, d1: 40, d2: 41, d3: 42 };
+const SD_LDO_CHANNEL: i32 = 4;
+const SD_ALLOCATION_UNIT: usize = 16 * 1024;
 
 // The RTC interrupt pulses the power key, so every timer expiry turns the board
 // off. A timer left running would do it again before the app could stop it;
@@ -88,8 +95,9 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
     let audio = audio_init(config, bus, pi4ioe1);
     let imu = imu_init(bus);
     let rtc = rtc_init(bus);
+    let sd = sd_init();
     let power = power::start(PowerDriver::new(bus, pi4ioe2), audio);
-    Ok(Board { audio, display: Some(DISPLAY.get_or_init(|| display::Display(display))), imu, power, rtc, touch })
+    Ok(Board { audio, display: Some(DISPLAY.get_or_init(|| display::Display(display))), imu, power, rtc, sd, touch })
 }
 
 // PI4IOE1 owns LCD_RST + TP_RST + SPK_EN + the headphone-detect input; PI4IOE2
@@ -226,6 +234,24 @@ fn imu_init(bus: &'static MasterBus) -> Option<&'static Imu> {
     Bmi270::new(bus, bmi270::ADDR, bmi270::DEFAULT_HZ)
         .and_then(|chip| imu::start(chip, IMU_AXIS_MAP))
         .inspect_err(|err| warn!(TAG, "imu unavailable: {err}"))
+        .ok()
+}
+
+// Non-fatal: the board comes up without a card slot.
+fn sd_init() -> Option<&'static Sd> {
+    let card = |controller| {
+        SdmmcCard::new(controller, sdmmc::Config {
+            slot: SD_SLOT,
+            pins: SD_PINS,
+            width: 4,
+            max_freq_khz: idf::sdmmc::FREQ_HIGHSPEED_KHZ,
+            ldo_channel: Some(SD_LDO_CHANNEL),
+            allocation_unit_size: SD_ALLOCATION_UNIT,
+        })
+    };
+    sdmmc::controller()
+        .and_then(|controller| sd::start(card(controller)))
+        .inspect_err(|err| warn!(TAG, "sd unavailable: {err}"))
         .ok()
 }
 

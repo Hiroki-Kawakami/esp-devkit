@@ -5,3 +5,5 @@
 
 #[cfg(CONFIG_BSP_RS_DRIVER_MIPI_DSI)]
 pub(crate) mod mipi_dsi;
+#[cfg(CONFIG_BSP_RS_DRIVER_SDMMC)]
+pub(crate) mod sdmmc;

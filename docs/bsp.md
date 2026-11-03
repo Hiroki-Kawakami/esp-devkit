@@ -69,6 +69,19 @@ way; `None` on a board without one.
   `period` until `stop_timer`; `timer_expired` and `clear_timer` read and clear
   the flag, which survives deep sleep. A board may refuse short periods.
 
+## SD
+
+`board.sd` is the card slot, shared the same way; `None` on a board without
+one.
+
+- `mount(path, config)` mounts the card's FAT file system at `path`, which
+  `idf::fs` then reaches; `unmount` and `is_mounted` follow. `MountConfig`
+  defaults to 5 open files at the board's speed.
+- On boards whose SDMMC controller also serves another slot, the board owns the
+  controller and the card is one of its users.
+- The simulator maps the mount point onto a host directory:
+  `SIMULATOR_SDCARD_PATH`, else `simulator/sdcard` under the working directory.
+
 ## IMU
 
 `board.imu` is shared the same way, in panel axes: +X right, +Y down, +Z into

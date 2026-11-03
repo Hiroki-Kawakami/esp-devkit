@@ -11,6 +11,7 @@ pub(crate) mod imu;
 pub(crate) mod panel;
 pub(crate) mod power;
 pub(crate) mod rtc;
+pub(crate) mod sd;
 pub(crate) mod touch;
 
 use alloc::boxed::Box;
