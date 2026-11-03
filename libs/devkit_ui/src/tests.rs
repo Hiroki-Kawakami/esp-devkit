@@ -13,13 +13,14 @@ use devkit_gfx::{Color, Font, FontChain, Rect};
 use idf::heap::Caps;
 
 use crate::*;
+use crate::id;
 use crate::erased::Erased;
 use crate::external::ExternalSurface;
 use crate::nav::SplitRole;
 use crate::rotation::Rotations;
 use crate::gesture::{Gesture, Gestures};
 use crate::keyboard::{InputKind, Key, KeyAction, KeyLabel, Keyboard, Layer};
-use crate::node::{NONE, Node, NodeContent, NodeId};
+use crate::node::{NONE, Node, NodeContent, NodeIndex};
 use crate::tree::Tree;
 use crate::widgets;
 
@@ -188,7 +189,7 @@ fn run(tree: &mut Tree) -> Vec<Rect> {
 }
 
 fn rect_of(tree: &Tree, id: &str) -> Rect {
-    let found = tree.find(id).unwrap_or_else(|| panic!("no {id} in {}", tree.describe()));
+    let found = tree.find(crate::Id::of(id)).unwrap_or_else(|| panic!("no {id} in {}", tree.describe()));
     tree.nodes[found as usize].screen
 }
 
@@ -254,32 +255,33 @@ impl Component for Sample {
 
     fn view<'a>(&'a self, ui: &'a Ui<Msg>) -> Element<'a, Msg> {
         self.views.set(self.views.get() + 1);
-        let a = ui.text(self.font, "A").key(1).id("a");
-        let b = ui.text(self.font, "BB").key(2).id("b");
+        let a = ui.text(self.font, "A").id(id!("a"));
+        let b = ui.text(self.font, "BB").id(id!("b"));
         let (first, second) = if self.swapped { (b, a) } else { (a, b) };
         ui.column([
             ui.row([
-                ui.text(self.font, ui.format(format_args!("n={}", self.count))).id("count").grow(1),
-                ui.column([]).size(40, 30).style(&PRESS_STYLE).id("button").on_tap(Msg::Inc),
+                ui.text(self.font, ui.format(format_args!("n={}", self.count))).id(id!("count")).grow(1),
+                ui.column([]).size(40, 30).style(&PRESS_STYLE).id(id!("button")).on_tap(Msg::Inc),
             ])
             .height(40)
             .padding_x(10)
             .align(Align::Center),
-            ui.row([first, second]).gap(4).id("pair"),
-            ui.child_mapped::<Counter>(self.count > 100, Msg::FromChild).id("child"),
-            ui.list(3, 1000, 50).id("list").grow(1),
+            ui.row([first, second]).gap(4).id(id!("pair")),
+            ui.child_mapped::<Counter>(self.count > 100, Msg::FromChild).id(id!("child")),
+            ui.list(1000, 50, Self::row).id(id!("list")).grow(1),
             if self.panel {
-                ui.column([ui.text(self.font, &self.label)]).size(100, 100).absolute(None, Some(20), Some(10), None).background(WHITE).id("panel").on_tap(Msg::Toggle)
+                ui.column([ui.text(self.font, &self.label)]).size(100, 100).absolute(None, Some(20), Some(10), None).background(WHITE).id(id!("panel")).on_tap(Msg::Toggle)
             } else {
                 ui.empty()
             },
         ])
     }
+}
 
-    fn list_row<'a>(&'a self, list: ListId, index: usize, ui: &'a Ui<Msg>) -> Element<'a, Msg> {
-        assert_eq!(list, 3);
+impl Sample {
+    fn row<'a>(&'a self, index: usize, ui: &'a Ui<Msg>) -> Element<'a, Msg> {
         let name = if index == 2 { "row2" } else { "row" };
-        ui.row([ui.text(self.font, ui.format(format_args!("{index}")))]).id(name).on_tap(Msg::Toggle).background(WHITE)
+        ui.row([ui.text(self.font, ui.format(format_args!("{index}")))]).id(crate::Id::named(name)).on_tap(Msg::Toggle).background(WHITE)
     }
 }
 
@@ -307,7 +309,7 @@ impl Component for Counter {
 
     fn view<'a>(&'a self, ui: &'a Ui<CounterMsg>) -> Element<'a, CounterMsg> {
         let height = if self.big { 60 } else { 20 + self.value as i16 };
-        ui.column([]).height(height).id("counter").on_tap(CounterMsg::Bump)
+        ui.column([]).height(height).id(id!("counter")).on_tap(CounterMsg::Bump)
     }
 }
 
@@ -355,7 +357,7 @@ impl Component for Bar {
     }
 
     fn view<'a>(&'a self, ui: &'a Ui<()>) -> Element<'a, ()> {
-        let more = widgets::icon_button(ui, ui.theme().icons.more, ()).id("more");
+        let more = widgets::icon_button(ui, ui.theme().icons.more, ()).id(id!("more"));
         ui.column([widgets::top_bar(ui, self.back.then_some(()), self.title, more)])
     }
 }
@@ -427,17 +429,17 @@ impl Component for Choices {
     }
 
     fn view<'a>(&'a self, ui: &'a Ui<usize>) -> Element<'a, usize> {
-        let options = widgets::segmented(ui, &[("Off", 0), ("On", 1)], self.choice).id("choice");
-        let slider = ui.column([widgets::slider(ui, 0, |_| 0).id("slider")]).grow(1);
+        let options = widgets::segmented(ui, &[("Off", 0), ("On", 1)], self.choice).id(id!("choice"));
+        let slider = ui.column([widgets::slider(ui, 0, |_| 0).id(id!("slider"))]).grow(1);
         ui.column([widgets::table_section(
             ui,
             [
                 widgets::table_row(ui, [widgets::table_label(ui, "Mode"), options]),
-                widgets::table_row(ui, [widgets::table_label(ui, "Next"), widgets::table_value(ui, "Value"), widgets::table_chevron(ui)]).on_tap(1).id("next"),
-                widgets::table_row(ui, [slider]).id("tall").min_height(100),
+                widgets::table_row(ui, [widgets::table_label(ui, "Next"), widgets::table_value(ui, "Value"), widgets::table_chevron(ui)]).on_tap(1).id(id!("next")),
+                widgets::table_row(ui, [slider]).id(id!("tall")).min_height(100),
             ],
         )
-        .id("section")])
+        .id(id!("section"))])
     }
 }
 
@@ -477,10 +479,10 @@ impl Component for Dividers {
     fn update(&mut self, _msg: (), _cx: &mut Cx<Self>) {}
 
     fn view<'a>(&'a self, ui: &'a Ui<()>) -> Element<'a, ()> {
-        let vertical = widgets::vertical_divider(ui).id("vertical").part(Part::Line, |line| line.id("vertical-line"));
+        let vertical = widgets::vertical_divider(ui).id(id!("vertical")).part(Part::Line, |line| line.id(id!("vertical-line")));
         ui.column([
-            widgets::divider(ui).id("full"),
-            widgets::divider(ui).padding_x(24).id("inset").part(Part::Line, |line| line.id("inset-line")),
+            widgets::divider(ui).id(id!("full")),
+            widgets::divider(ui).padding_x(24).id(id!("inset")).part(Part::Line, |line| line.id(id!("inset-line"))),
             ui.row([ui.text(ui.theme().fonts.body, "A"), vertical, ui.text(ui.theme().fonts.body, "B")]).height(88).align(Align::Center),
         ])
         .align(Align::Center)
@@ -517,8 +519,8 @@ impl Component for Dropdowns {
     }
 
     fn view<'a>(&'a self, ui: &'a Ui<DropdownMsg>) -> Element<'a, DropdownMsg> {
-        let content = ui.column([ui.column([]).height(500), widgets::dropdown(ui, "One", DropdownMsg::Open).id("open"), ui.column([]).height(1000)]);
-        ui.column([ui.row([]).size(40, 40).id("modal").on_tap(DropdownMsg::Modal), ui.scroll(content).grow(1)])
+        let content = ui.column([ui.column([]).height(500), widgets::dropdown(ui, "One", DropdownMsg::Open).id(id!("open")), ui.column([]).height(1000)]);
+        ui.column([ui.row([]).size(40, 40).id(id!("modal")).on_tap(DropdownMsg::Modal), ui.scroll(content).grow(1)])
     }
 }
 
@@ -558,9 +560,9 @@ impl Component for Menus {
 
     fn view<'a>(&'a self, ui: &'a Ui<MenuMsg>) -> Element<'a, MenuMsg> {
         ui.column([
-            ui.row([]).size(60, 60).absolute(Some(20), Some(20), None, None).id("left").on_tap(MenuMsg::Open),
-            ui.row([]).size(60, 60).absolute(None, Some(20), Some(20), None).id("right").on_tap(MenuMsg::Open),
-            ui.row([]).size(60, 60).absolute(Some(20), None, None, Some(20)).id("bottom").on_tap(MenuMsg::Forward),
+            ui.row([]).size(60, 60).absolute(Some(20), Some(20), None, None).id(id!("left")).on_tap(MenuMsg::Open),
+            ui.row([]).size(60, 60).absolute(None, Some(20), Some(20), None).id(id!("right")).on_tap(MenuMsg::Open),
+            ui.row([]).size(60, 60).absolute(Some(20), None, None, Some(20)).id(id!("bottom")).on_tap(MenuMsg::Forward),
         ])
     }
 }
@@ -613,10 +615,10 @@ fn a_menu_item_reports_to_the_target_and_closes_the_menu() {
     tree.touch(&[], 30);
     run(&mut tree);
     assert_eq!(chosen.load(Relaxed), 2);
-    assert!(tree.find("menu").is_none());
+    assert!(tree.find(id!("menu")).is_none());
     tap(&mut tree, "left");
     tap_at(&mut tree, (SCREEN.w - 10, SCREEN.h - 10));
-    assert!(tree.find("menu").is_none());
+    assert!(tree.find(id!("menu")).is_none());
     assert_eq!(chosen.load(Relaxed), 2);
 }
 
@@ -628,7 +630,7 @@ fn a_dropdown_menu_touches_the_dropdown_and_opens_upward_at_the_bottom() {
     assert_eq!(rect_of(&tree, "dropdown-menu").bottom(), open.y);
     assert_eq!(rect_of(&tree, "dropdown-menu").x, open.x);
     tap_at(&mut tree, (SCREEN.w - 10, 10));
-    assert!(tree.find("dropdown-menu").is_none());
+    assert!(tree.find(id!("dropdown-menu")).is_none());
     tree.touch(&[(0, (100, 300))], 0);
     tree.touch(&[(0, (100, 0))], 16);
     tree.touch(&[], 32);
@@ -652,7 +654,7 @@ fn a_popup_stays_over_a_modal_and_reports_to_it() {
     settle(&mut tree);
     let shown = |tree: &Tree| {
         let mut count = 0;
-        tree.walk(tree.root, &mut |_, node| count += u32::from(node.id == Some("open")));
+        tree.walk(tree.root, &mut |_, node| count += u32::from(node.id == Some(id!("open"))));
         count
     };
     assert_eq!(shown(&tree), 2, "the modal over the first screen");
@@ -664,13 +666,13 @@ fn a_popup_stays_over_a_modal_and_reports_to_it() {
     tree.touch(&[(0, point)], 0);
     tree.touch(&[], 10);
     tree.update();
-    assert!(tree.find("dropdown-menu").is_some());
+    assert!(tree.find(id!("dropdown-menu")).is_some());
     assert_eq!(shown(&tree), 2, "still there under the popup");
     let menu = rect_of(&tree, "dropdown-menu");
     tree.touch(&[(0, (menu.x + 10, menu.bottom() - 10))], 20);
     tree.touch(&[], 30);
     settle(&mut tree);
-    assert!(tree.find("dropdown-menu").is_none());
+    assert!(tree.find(id!("dropdown-menu")).is_none());
     assert_eq!(chosen.load(Relaxed), 2);
 }
 
@@ -678,10 +680,10 @@ fn a_popup_stays_over_a_modal_and_reports_to_it() {
 fn turning_the_screen_closes_popups() {
     let (mut tree, _) = dropdown_tree();
     tap(&mut tree, "open");
-    assert!(tree.find("dropdown-menu").is_some());
+    assert!(tree.find(id!("dropdown-menu")).is_some());
     tree.set_area(Rect::new(0, 0, 600, 400));
     run(&mut tree);
-    assert!(tree.find("dropdown-menu").is_none());
+    assert!(tree.find(id!("dropdown-menu")).is_none());
 }
 
 #[test]
@@ -710,8 +712,8 @@ impl Component for Scroller {
 
     fn view<'a>(&'a self, ui: &'a Ui<i32>) -> Element<'a, i32> {
         ui.column([
-            ui.column([]).height(80).scroll_border("content").id("bar"),
-            ui.scroll(ui.column([ui.column([]).height(2000)])).grow(1).on_scroll(|offset| offset).id("content"),
+            ui.column([]).height(80).scroll_border(id!("content")).id(id!("bar")),
+            ui.scroll(ui.column([ui.column([]).height(2000)])).grow(1).on_scroll(|offset| offset).id(id!("content")),
         ])
     }
 }
@@ -722,7 +724,7 @@ fn a_scroll_reports_every_move_and_shows_the_border_only_away_from_the_start() {
     let mut tree = Tree::new(Scroller { offsets }, SCREEN, Caps::INTERNAL, theme());
     run(&mut tree);
     let bar = rect_of(&tree, "bar");
-    let owner = tree.nodes[tree.find("bar").unwrap() as usize].owner;
+    let owner = tree.nodes[tree.find(id!("bar")).unwrap() as usize].owner;
     let drag = |tree: &mut Tree, y: i16, at: u32| {
         tree.touch(&[(0, (100, y))], at);
         tree.update();
@@ -730,13 +732,13 @@ fn a_scroll_reports_every_move_and_shows_the_border_only_away_from_the_start() {
     };
     drag(&mut tree, 300, 0);
     let first = drag(&mut tree, 260, 16);
-    assert!(tree.scrolled_away(owner, "content"));
+    assert!(tree.scrolled_away(owner, id!("content")));
     assert!(first.iter().any(|r| r.intersect(&bar).h > 0), "{first:?}");
     let second = drag(&mut tree, 240, 32);
     assert!(second.iter().all(|r| r.intersect(&bar).h == 0), "{second:?}");
     assert_eq!(offsets.borrow().len(), 2);
     let back = drag(&mut tree, 600, 48);
-    assert!(!tree.scrolled_away(owner, "content"));
+    assert!(!tree.scrolled_away(owner, id!("content")));
     assert!(back.iter().any(|r| r.intersect(&bar).h > 0), "{back:?}");
     assert!(*offsets.borrow().last().unwrap() < 0, "past the start, as it shows");
     tree.touch(&[], 64);
@@ -761,7 +763,7 @@ fn a_clip_with_a_radius_is_round_and_draws_its_border_over_what_is_inside() {
 fn tap_runs_the_handler_and_changes_only_what_changed() {
     let mut tree = Tree::new(Sample::new(), SCREEN, Caps::INTERNAL, theme());
     run(&mut tree);
-    let id = tree.find("count").unwrap();
+    let id = tree.find(id!("count")).unwrap();
     tap(&mut tree, "button");
     let NodeContent::Text(text) = &tree.nodes[id as usize].content else { panic!() };
     assert_eq!(text.text(), "n=1");
@@ -788,11 +790,11 @@ fn press_needs_no_rebuild() {
 fn keys_keep_nodes_when_siblings_move() {
     let mut tree = Tree::new(Sample::new(), SCREEN, Caps::INTERNAL, theme());
     run(&mut tree);
-    let (a, b) = (tree.find("a").unwrap(), tree.find("b").unwrap());
+    let (a, b) = (tree.find(id!("a")).unwrap(), tree.find(id!("b")).unwrap());
     tree.post(tree.root_id, crate::erased::Erased::new(Msg::Reorder));
     run(&mut tree);
-    assert_eq!(tree.find("a"), Some(a));
-    assert_eq!(tree.find("b"), Some(b));
+    assert_eq!(tree.find(id!("a")), Some(a));
+    assert_eq!(tree.find(id!("b")), Some(b));
     assert!(rect_of(&tree, "b").x < rect_of(&tree, "a").x);
 }
 
@@ -808,7 +810,7 @@ fn removed_nodes_damage_their_area_and_are_reused() {
     tree.post(tree.root_id, crate::erased::Erased::new(Msg::Toggle));
     let damage = run(&mut tree);
     assert!(damage.contains(&panel));
-    assert!(tree.find("panel").is_none());
+    assert!(tree.find(id!("panel")).is_none());
     tree.post(tree.root_id, crate::erased::Erased::new(Msg::Toggle));
     run(&mut tree);
     assert_eq!(tree.nodes.len(), nodes);
@@ -824,7 +826,7 @@ fn child_state_survives_and_events_reach_the_parent() {
     tap(&mut tree, "counter");
     assert_eq!(views.get(), before + 1, "the event rebuilt the parent");
     assert_eq!(rect_of(&tree, "counter").h, 21);
-    let NodeContent::Text(text) = &tree.nodes[tree.find("count").unwrap() as usize].content else { panic!() };
+    let NodeContent::Text(text) = &tree.nodes[tree.find(id!("count")).unwrap() as usize].content else { panic!() };
     assert_eq!(text.text(), "n=10");
     tap(&mut tree, "button");
     assert_eq!(rect_of(&tree, "counter").h, 21, "same props keep the child's state");
@@ -834,7 +836,7 @@ fn child_state_survives_and_events_reach_the_parent() {
 fn list_builds_only_visible_rows_and_keeps_them_while_scrolling() {
     let mut tree = Tree::new(Sample::new(), SCREEN, Caps::INTERNAL, theme());
     run(&mut tree);
-    let list_id = tree.find("list").unwrap();
+    let list_id = tree.find(id!("list")).unwrap();
     let rows = |tree: &Tree| match &tree.nodes[list_id as usize].content {
         NodeContent::List(list) => list.rows.iter().map(|r| r.0).collect::<Vec<_>>(),
         _ => panic!(),
@@ -882,11 +884,13 @@ fn a_new_string_of_the_same_box_skips_layout_and_a_revision_keeps_rows() {
         }
         fn view<'a>(&'a self, ui: &'a Ui<Set>) -> Element<'a, Set> {
             ui.column([
-                ui.row([ui.text(self.font, ui.format(format_args!("{}", "x".repeat(usize::from(self.value))))).grow(1).id("label")]),
-                ui.list(0, 100, 50).grow(1).revision(self.revision),
+                ui.row([ui.text(self.font, ui.format(format_args!("{}", "x".repeat(usize::from(self.value))))).grow(1).id(id!("label"))]),
+                ui.list(100, 50, Self::row).grow(1).revision(self.revision),
             ])
         }
-        fn list_row<'a>(&'a self, _: ListId, _: usize, ui: &'a Ui<Set>) -> Element<'a, Set> {
+    }
+    impl Label {
+        fn row<'a>(&'a self, _: usize, ui: &'a Ui<Set>) -> Element<'a, Set> {
             self.rows.set(self.rows.get() + 1);
             ui.column([])
         }
@@ -900,7 +904,7 @@ fn a_new_string_of_the_same_box_skips_layout_and_a_revision_keeps_rows() {
     let damage = run(&mut tree);
     assert_eq!(rows.get(), built);
     assert!(damage.iter().all(|r| r.h <= 12), "{damage:?}");
-    let NodeContent::Text(text) = &tree.nodes[tree.find("label").unwrap() as usize].content else { panic!() };
+    let NodeContent::Text(text) = &tree.nodes[tree.find(id!("label")).unwrap() as usize].content else { panic!() };
     assert_eq!(text.run.width(), 72);
 }
 
@@ -941,7 +945,7 @@ fn repeated_samples_leave_the_speed_alone_and_a_short_tick_keeps_the_fling() {
     tree.touch(&[(0, (x, viewport.y + 220))], 30);
     tree.touch(&[(0, (x, viewport.y + 220))], 40);
     tree.touch(&[], 45);
-    let offset = |tree: &Tree| match &tree.nodes[tree.find("list").unwrap() as usize].content {
+    let offset = |tree: &Tree| match &tree.nodes[tree.find(id!("list")).unwrap() as usize].content {
         NodeContent::List(list) => list.offset,
         _ => panic!(),
     };
@@ -962,7 +966,7 @@ fn drag_cancels_the_tap_of_a_row() {
     tree.touch(&[(0, (point.0, point.1 - 40))], 16);
     tree.touch(&[], 500);
     tree.update();
-    assert!(tree.find("panel").is_none());
+    assert!(tree.find(id!("panel")).is_none());
 }
 
 #[test]
@@ -971,7 +975,7 @@ fn covered_nodes_refuse_harness_taps_and_invoke_goes_direct() {
     run(&mut tree);
     tree.invoke("row2").unwrap();
     run(&mut tree);
-    assert!(tree.find("panel").is_some());
+    assert!(tree.find(id!("panel")).is_some());
     assert!(tree.tap_point("button").is_err() == (rect_of(&tree, "panel").intersects(&rect_of(&tree, "button"))));
     assert!(tree.tap_point("nothing").is_err());
     assert!(tree.describe().contains("button button") || tree.describe().contains("button box"));
@@ -989,15 +993,15 @@ fn grid_and_absolute_inset() {
         fn view<'a>(&'a self, ui: &'a Ui<Nothing>) -> Element<'a, Nothing> {
             ui.column([
                 ui.grid(3, [
-                    ui.column([]).height(10).id("c0"),
-                    ui.column([]).height(20).id("c1"),
-                    ui.column([]).height(10).id("c2"),
-                    ui.column([]).aspect_ratio(1, 1).id("c3"),
+                    ui.column([]).height(10).id(id!("c0")),
+                    ui.column([]).height(20).id(id!("c1")),
+                    ui.column([]).height(10).id(id!("c2")),
+                    ui.column([]).aspect_ratio(1, 1).id(id!("c3")),
                 ])
                 .gap(10)
                 .padding_x(5),
-                ui.text(self.0, "ABCDEFGHIJ").width(50).ellipsis().id("clipped"),
-                ui.column([]).absolute(Some(0), Some(0), Some(0), Some(0)).id("cover"),
+                ui.text(self.0, "ABCDEFGHIJ").width(50).ellipsis().id(id!("clipped")),
+                ui.column([]).absolute(Some(0), Some(0), Some(0), Some(0)).id(id!("cover")),
             ])
         }
     }
@@ -1054,19 +1058,25 @@ impl Component for Page {
     }
 
     fn view<'a>(&'a self, ui: &'a Ui<PageMsg>) -> Element<'a, PageMsg> {
+        self.view_in::<Self>(ui)
+    }
+}
+
+impl Page {
+    fn view_in<'a, C: Component<Msg = PageMsg>>(&'a self, ui: &'a Ui<PageMsg>) -> Element<'a, PageMsg> {
         ui.column([
-            ui.text(self.font, ui.format(format_args!("{} {}", self.name, self.opens))).id(self.name),
-            ui.row([]).size(40, 40).id("open").on_tap(PageMsg::Open),
-            ui.row([]).size(40, 40).id("open-root").on_tap(PageMsg::OpenRoot),
-            ui.row([]).size(40, 40).id("back").on_tap(PageMsg::Back),
-            widgets::slider(ui, self.value, |d| PageMsg::Slide(widgets::slider_value(d))).width(200).id("slider"),
-            ui.list(0, 100, 50).id("rows").grow(1),
+            ui.text(self.font, ui.format(format_args!("{} {}", self.name, self.opens))).id(crate::Id::named(self.name)),
+            ui.row([]).size(40, 40).id(id!("open")).on_tap(PageMsg::Open),
+            ui.row([]).size(40, 40).id(id!("open-root")).on_tap(PageMsg::OpenRoot),
+            ui.row([]).size(40, 40).id(id!("back")).on_tap(PageMsg::Back),
+            widgets::slider(ui, self.value, |d| PageMsg::Slide(widgets::slider_value(d))).width(200).id(id!("slider")),
+            ui.list(100, 50, page_row::<C>).id(id!("rows")).grow(1),
         ])
     }
+}
 
-    fn list_row<'a>(&'a self, _: ListId, _: usize, ui: &'a Ui<PageMsg>) -> Element<'a, PageMsg> {
-        ui.column([]).height(50).on_tap(PageMsg::Nothing)
-    }
+fn page_row<'a, C>(_: &'a C, _: usize, ui: &'a Ui<PageMsg>) -> Element<'a, PageMsg> {
+    ui.column([]).height(50).on_tap(PageMsg::Nothing)
 }
 
 impl Screen for Page {
@@ -1110,8 +1120,8 @@ impl Component for Split {
 
     fn view<'a>(&'a self, ui: &'a Ui<PageMsg>) -> Element<'a, PageMsg> {
         ui.row([
-            ui.column([ui.row([]).size(40, 40).id("side-open").on_tap(PageMsg::Open)]).width(100),
-            ui.navigator::<Pane, Page>(()).grow(1).id("pane-nav"),
+            ui.column([ui.row([]).size(40, 40).id(id!("side-open")).on_tap(PageMsg::Open)]).width(100),
+            ui.navigator::<Pane, Page>(()).grow(1).id(id!("pane-nav")),
         ])
     }
 }
@@ -1141,22 +1151,22 @@ fn a_pane_navigates_inside_its_area_and_the_root_over_everything() {
     assert!(damage.iter().all(|r| r.is_empty() || r.x >= 100), "a pane transition stays in the pane: {damage:?}");
     settle(&mut tree);
     assert_eq!(rect_of(&tree, "detail").x, 100);
-    assert!(tree.find("pane").is_none(), "the covered screen has no nodes");
+    assert!(tree.find(id!("pane")).is_none(), "the covered screen has no nodes");
 
     tap(&mut tree, "back");
     settle(&mut tree);
-    assert!(tree.find("pane").is_some());
-    assert!(tree.find("detail").is_none());
+    assert!(tree.find(id!("pane")).is_some());
+    assert!(tree.find(id!("detail")).is_none());
     assert!(log.borrow().contains(&("detail", "exit")));
 
     tap(&mut tree, "open-root");
     settle(&mut tree);
     assert_eq!(rect_of(&tree, "full").x, 0);
-    assert!(tree.find("side-open").is_none());
+    assert!(tree.find(id!("side-open")).is_none());
     tap(&mut tree, "back");
     settle(&mut tree);
-    assert!(tree.find("side-open").is_some());
-    assert!(tree.find("pane").is_some(), "the pane comes back with the screen around it");
+    assert!(tree.find(id!("side-open")).is_some());
+    assert!(tree.find(id!("pane")).is_some(), "the pane comes back with the screen around it");
 }
 
 #[test]
@@ -1171,7 +1181,7 @@ fn state_and_scroll_position_come_back_and_taps_wait_for_the_slide() {
     tree.touch(&[(0, (x, list.y + 50))], 1000);
     tree.touch(&[], 2000);
     settle(&mut tree);
-    let offset = |tree: &Tree, name: &str| match &tree.nodes[tree.find(name).unwrap() as usize].content {
+    let offset = |tree: &Tree, name: &str| match &tree.nodes[tree.find(crate::Id::of(name)).unwrap() as usize].content {
         NodeContent::List(list) => list.offset,
         _ => panic!(),
     };
@@ -1185,7 +1195,7 @@ fn state_and_scroll_position_come_back_and_taps_wait_for_the_slide() {
     tap(&mut tree, "back");
     settle(&mut tree);
     assert_eq!(offset(&tree, "rows"), before);
-    let NodeContent::Text(text) = &tree.nodes[tree.find("first").unwrap() as usize].content else { panic!() };
+    let NodeContent::Text(text) = &tree.nodes[tree.find(id!("first")).unwrap() as usize].content else { panic!() };
     assert_eq!(text.text(), "first 0");
     let events: Vec<_> = log.borrow().iter().filter(|e| e.0 == "first").map(|e| e.1).collect();
     assert_eq!(events, ["enter", "appear", "disappear", "appear"]);
@@ -1199,10 +1209,7 @@ impl Component for PageRoot {
         self.0.update(msg, unsafe { &mut *(cx as *mut Cx<Self>).cast::<Cx<Page>>() });
     }
     fn view<'a>(&'a self, ui: &'a Ui<PageMsg>) -> Element<'a, PageMsg> {
-        self.0.view(ui)
-    }
-    fn list_row<'a>(&'a self, list: ListId, index: usize, ui: &'a Ui<PageMsg>) -> Element<'a, PageMsg> {
-        self.0.list_row(list, index, ui)
+        self.0.view_in::<Self>(ui)
     }
 }
 
@@ -1218,14 +1225,14 @@ impl Screen for PageRoot {
     }
 }
 
-fn slider_nodes(tree: &Tree) -> [NodeId; 3] {
-    let bar = tree.nodes[tree.find("slider").unwrap() as usize].first_child;
+fn slider_nodes(tree: &Tree) -> [NodeIndex; 3] {
+    let bar = tree.nodes[tree.find(id!("slider")).unwrap() as usize].first_child;
     let track = tree.nodes[bar as usize].first_child;
     let stop = tree.nodes[track as usize].first_child;
     [track, stop, tree.nodes[stop as usize].first_child]
 }
 
-fn slider_thumb(tree: &Tree, fill: NodeId) -> Rect {
+fn slider_thumb(tree: &Tree, fill: NodeIndex) -> Rect {
     let end = tree.nodes[fill as usize].first_child;
     tree.nodes[tree.nodes[end as usize].first_child as usize].screen
 }
@@ -1280,11 +1287,11 @@ impl Component for Parts {
 
     fn view<'a>(&'a self, ui: &'a Ui<()>) -> Element<'a, ()> {
         ui.column([
-            widgets::slider(ui, 0, |_| ()).part(Part::Thumb, |thumb| thumb.background(RED).id("thumb")).part(Part::Fill, |fill| fill.id("fill")),
-            widgets::switch(ui, false, ()).part(Part::Track, |track| track.background(RED).id("track")),
-            widgets::list_item(ui, None, "Title", None, None, ()).part(Part::Meta, |meta| meta.id("no-meta")).part(Part::Title, |title| title.foreground(RED).id("title")),
-            widgets::segmented(ui, &[("A", ()), ("B", ())], 9).part(Part::Item, |item| item.background(WHITE)).part(Part::Label, |label| label.font(ui.theme().fonts.title).id("label")).id("segments"),
-            ui.row([widgets::slider(ui, 0, |_| ()).width(200)]).part(Part::Thumb, |thumb| thumb.id("nested-thumb")),
+            widgets::slider(ui, 0, |_| ()).part(Part::Thumb, |thumb| thumb.background(RED).id(id!("thumb"))).part(Part::Fill, |fill| fill.id(id!("fill"))),
+            widgets::switch(ui, false, ()).part(Part::Track, |track| track.background(RED).id(id!("track"))),
+            widgets::list_item(ui, None, "Title", None, None, ()).part(Part::Meta, |meta| meta.id(id!("no-meta"))).part(Part::Title, |title| title.foreground(RED).id(id!("title"))),
+            widgets::segmented(ui, &[("A", ()), ("B", ())], 9).part(Part::Item, |item| item.background(WHITE)).part(Part::Label, |label| label.font(ui.theme().fonts.title).id(id!("label"))).id(id!("segments")),
+            ui.row([widgets::slider(ui, 0, |_| ()).width(200)]).part(Part::Thumb, |thumb| thumb.id(id!("nested-thumb"))),
         ])
     }
 }
@@ -1293,16 +1300,16 @@ impl Component for Parts {
 fn a_part_reaches_the_pieces_of_a_widget_inside_it() {
     let mut tree = Tree::new(Parts, SCREEN, Caps::INTERNAL, theme());
     settle(&mut tree);
-    let background = |id: &str| tree.nodes[tree.find(id).unwrap() as usize].style.background;
+    let background = |id: &str| tree.nodes[tree.find(crate::Id::of(id)).unwrap() as usize].style.background;
     assert_eq!(background("thumb"), Some(RED.into()));
     assert!(background("fill").is_some(), "the rest of the widget stays");
     assert_eq!(background("track"), Some(RED.into()), "the root can be a part");
-    assert!(tree.find("title").is_some());
-    assert!(tree.find("no-meta").is_none(), "an absent part does nothing");
-    assert!(tree.find("nested-thumb").is_some());
-    assert!(tree.find("label").is_some());
+    assert!(tree.find(id!("title")).is_some());
+    assert!(tree.find(id!("no-meta")).is_none(), "an absent part does nothing");
+    assert!(tree.find(id!("nested-thumb")).is_some());
+    assert!(tree.find(id!("label")).is_some());
 
-    let mut item = tree.nodes[tree.find("segments").unwrap() as usize].first_child;
+    let mut item = tree.nodes[tree.find(id!("segments")).unwrap() as usize].first_child;
     let mut items = 0;
     while item != NONE {
         assert_eq!(tree.nodes[item as usize].style.background, Some(WHITE.into()));
@@ -1319,8 +1326,8 @@ fn an_animation_moves_a_node_without_a_rebuild() {
     let mut tree = Tree::new(sample, SCREEN, Caps::INTERNAL, theme());
     run(&mut tree);
     let before = views.get();
-    let id = tree.find("button").unwrap();
-    tree.dispatch_animation("button", Animation { property: Property::TranslateX, from: -40, to: 0, duration_ms: 100 });
+    let id = tree.find(id!("button")).unwrap();
+    tree.dispatch_animation(id!("button"), Animation { property: Property::TranslateX, from: -40, to: 0, duration_ms: 100 });
     let damage = run(&mut tree);
     assert_eq!(tree.nodes[id as usize].translate.0, -40);
     assert!(!damage.is_empty());
@@ -1367,9 +1374,9 @@ impl Component for Toggled {
 
     fn view<'a>(&'a self, ui: &'a Ui<()>) -> Element<'a, ()> {
         self.views.set(self.views.get() + 1);
-        let thumb = ui.column([]).style(&EASED_THUMB).id("thumb");
-        let track = ui.row([thumb]).style(&EASED_TRACK).justify(if self.on { Justify::End } else { Justify::Start }).checked(self.on).id("track").on_tap(());
-        ui.column([track, ui.column([]).style(&FADING).checked(self.on).id("fading")])
+        let thumb = ui.column([]).style(&EASED_THUMB).id(id!("thumb"));
+        let track = ui.row([thumb]).style(&EASED_TRACK).justify(if self.on { Justify::End } else { Justify::Start }).checked(self.on).id(id!("track")).on_tap(());
+        ui.column([track, ui.column([]).style(&FADING).checked(self.on).id(id!("fading"))])
     }
 }
 
@@ -1381,7 +1388,7 @@ fn toggled() -> (Tree, &'static core::cell::Cell<u32>) {
 }
 
 fn fill_of(tree: &Tree, name: &str) -> Option<Color> {
-    let node = &tree.nodes[tree.find(name).unwrap() as usize];
+    let node = &tree.nodes[tree.find(crate::Id::of(name)).unwrap() as usize];
     let palette = tree.theme.palette(tree.color_mode);
     crate::animate::faded(node.fades.as_ref().and_then(|f| f.background.as_ref()), node.style.background.map(|role| palette.color(role)))
 }
@@ -1389,7 +1396,7 @@ fn fill_of(tree: &Tree, name: &str) -> Option<Color> {
 #[test]
 fn a_style_eases_position_and_color_without_a_view_or_layout() {
     let (mut tree, views) = toggled();
-    let (track, thumb) = (tree.find("track").unwrap(), tree.find("thumb").unwrap());
+    let (track, thumb) = (tree.find(id!("track")).unwrap(), tree.find(id!("thumb")).unwrap());
     assert_eq!(rect_of(&tree, "thumb").x, 0, "nothing eases into the first layout");
     assert!(!tree.animating());
     tree.post(tree.root_id, Erased::new(()));
@@ -1456,7 +1463,7 @@ fn a_fade_started_by_a_touch_does_not_count_the_idle_time_before_it() {
 #[test]
 fn opacity_eases_to_the_style_and_leaves_nothing_behind() {
     let (mut tree, _) = toggled();
-    let id = tree.find("fading").unwrap();
+    let id = tree.find(id!("fading")).unwrap();
     tree.post(tree.root_id, Erased::new(()));
     run(&mut tree);
     tree.tick(50);
@@ -1492,9 +1499,9 @@ impl Component for Loading {
         if !self.shown {
             return ui.column([]);
         }
-        let bar = widgets::progress_bar(ui, self.value).width(200).height(8).id("bar");
-        let ring = widgets::progress_indicator(ui, self.value).width(48).height(48).id("ring");
-        let thin = widgets::progress_indicator(ui, self.value).stroke(2).width(24).height(24).id("thin");
+        let bar = widgets::progress_bar(ui, self.value).width(200).height(8).id(id!("bar"));
+        let ring = widgets::progress_indicator(ui, self.value).width(48).height(48).id(id!("ring"));
+        let thin = widgets::progress_indicator(ui, self.value).stroke(2).width(24).height(24).id(id!("thin"));
         ui.column([bar, ring, thin])
     }
 }
@@ -1567,7 +1574,7 @@ fn a_progress_paints_a_track_and_how_far() {
 fn a_progress_bar_goes_across_and_comes_back() {
     let mut tree = Tree::new(Loading { value: None, shown: true }, SCREEN, Caps::INTERNAL, theme());
     run(&mut tree);
-    let fill = tree.nodes[tree.find("bar").unwrap() as usize].first_child;
+    let fill = tree.nodes[tree.find(id!("bar")).unwrap() as usize].first_child;
     let phase = |tree: &Tree| match &tree.nodes[fill as usize].content {
         NodeContent::Progress(p) => (p.phase, p.backwards),
         _ => unreachable!(),
@@ -1583,7 +1590,7 @@ fn a_progress_bar_goes_across_and_comes_back() {
 #[test]
 fn a_new_screen_size_does_not_ease() {
     let (mut tree, _) = toggled();
-    let thumb = tree.find("thumb").unwrap();
+    let thumb = tree.find(id!("thumb")).unwrap();
     tree.nodes[thumb as usize].rect.x = 10;
     tree.set_area(Rect::new(0, 0, 600, 400));
     run(&mut tree);
@@ -1612,8 +1619,8 @@ const LONGER: &str = "AAAA AAAA AAAA AAAA AAAA AAAA AAAA AAAA AAAA AAAA AAAA AAA
 fn text_in_a_row_shrinks_wraps_and_makes_the_row_taller() {
     let tree = layout_tree(|ui, font| {
         ui.column([
-            ui.row([ui.text(font, LONG).wrap().id("a"), ui.text(font, LONG).wrap().id("b")]).id("row"),
-            ui.column([]).height(10).id("below"),
+            ui.row([ui.text(font, LONG).wrap().id(id!("a")), ui.text(font, LONG).wrap().id(id!("b"))]).id(id!("row")),
+            ui.column([]).height(10).id(id!("below")),
         ])
     });
     let (a, b, row) = (rect_of(&tree, "a"), rect_of(&tree, "b"), rect_of(&tree, "row"));
@@ -1627,8 +1634,8 @@ fn text_in_a_row_shrinks_wraps_and_makes_the_row_taller() {
 fn a_fixed_sibling_keeps_its_size_and_a_short_text_does_not_shrink() {
     let tree = layout_tree(|ui, font| {
         ui.column([
-            ui.row([ui.column([]).size(100, 10).id("fixed"), ui.text(font, LONGER).wrap().id("long")]).id("first"),
-            ui.row([ui.text(font, "AB").id("short"), ui.column([]).height(10).grow(1).id("rest")]),
+            ui.row([ui.column([]).size(100, 10).id(id!("fixed")), ui.text(font, LONGER).wrap().id(id!("long"))]).id(id!("first")),
+            ui.row([ui.text(font, "AB").id(id!("short")), ui.column([]).height(10).grow(1).id(id!("rest"))]),
         ])
     });
     assert_eq!(rect_of(&tree, "fixed").w, 100);
@@ -1640,7 +1647,7 @@ fn a_fixed_sibling_keeps_its_size_and_a_short_text_does_not_shrink() {
 
 #[test]
 fn ellipsis_applies_to_the_width_a_row_leaves() {
-    let tree = layout_tree(|ui, font| ui.row([ui.text(font, LONG).ellipsis().id("t"), ui.column([]).size(300, 10)]));
+    let tree = layout_tree(|ui, font| ui.row([ui.text(font, LONG).ellipsis().id(id!("t")), ui.column([]).size(300, 10)]));
     assert_eq!(rect_of(&tree, "t").w, 100);
 }
 
@@ -1648,11 +1655,11 @@ fn ellipsis_applies_to_the_width_a_row_leaves() {
 fn fractions_and_limits_follow_the_parent() {
     let tree = layout_tree(|ui, font| {
         ui.column([
-            ui.column([ui.column([]).width_fraction(1, 4).height(10).id("quarter")]).width(200),
-            ui.column([]).height_fraction(1, 2).id("half"),
-            ui.text(font, LONG).wrap().max_width(100).id("narrow"),
-            ui.column([ui.column([]).height(50)]).max_height(20).id("capped"),
-            ui.column([]).height(4).max_width(90).id("stretched"),
+            ui.column([ui.column([]).width_fraction(1, 4).height(10).id(id!("quarter"))]).width(200),
+            ui.column([]).height_fraction(1, 2).id(id!("half")),
+            ui.text(font, LONG).wrap().max_width(100).id(id!("narrow")),
+            ui.column([ui.column([]).height(50)]).max_height(20).id(id!("capped")),
+            ui.column([]).height(4).max_width(90).id(id!("stretched")),
         ])
     });
     assert_eq!(rect_of(&tree, "quarter").w, 50);
@@ -1676,7 +1683,7 @@ fn disabled_nodes_take_no_input_and_block_what_is_below() {
             self.0.set(self.0.get() + 1);
         }
         fn view<'a>(&'a self, ui: &'a Ui<M>) -> Element<'a, M> {
-            ui.column([ui.column([]).size(50, 50).id("under").on_tap(M::Tap), ui.column([]).size(50, 50).absolute(Some(0), Some(0), None, None).id("over").on_tap(M::Tap).disabled(self.1)])
+            ui.column([ui.column([]).size(50, 50).id(id!("under")).on_tap(M::Tap), ui.column([]).size(50, 50).absolute(Some(0), Some(0), None, None).id(id!("over")).on_tap(M::Tap).disabled(self.1)])
         }
     }
     impl Screen for View {}
@@ -1738,10 +1745,10 @@ impl Component for Stateful {
     fn view<'a>(&'a self, ui: &'a Ui<()>) -> Element<'a, ()> {
         let pressed_height = ui.screen_size().1 / 10;
         ui.column([
-            ui.row([]).height(40).when(State::PRESSED, &[Prop::Height(pressed_height)]).id("grows").on_tap(()),
-            ui.row([]).height(10).id("after"),
-            widgets::slider(ui, 0, |_| ()).width(200).id("slider").part(Part::Thumb, |thumb| thumb.size(40, 40).id("thumb")),
-            ui.row([widgets::slider(ui, 0, |_| ()).width(200).part(Part::Thumb, |thumb| thumb.id("inner-thumb"))]).padding(20).state_source().id("outer").on_tap(()),
+            ui.row([]).height(40).when(State::PRESSED, &[Prop::Height(pressed_height)]).id(id!("grows")).on_tap(()),
+            ui.row([]).height(10).id(id!("after")),
+            widgets::slider(ui, 0, |_| ()).width(200).id(id!("slider")).part(Part::Thumb, |thumb| thumb.size(40, 40).id(id!("thumb"))),
+            ui.row([widgets::slider(ui, 0, |_| ()).width(200).part(Part::Thumb, |thumb| thumb.id(id!("inner-thumb")))]).padding(20).state_source().id(id!("outer")).on_tap(()),
         ])
     }
 }
@@ -1764,7 +1771,7 @@ fn a_state_lays_out_again_and_gives_the_values_back() {
 fn a_drag_presses_and_parts_take_the_state_of_their_source() {
     let mut tree = Tree::new(Stateful, SCREEN, Caps::INTERNAL, theme());
     settle(&mut tree);
-    let pressed = |tree: &Tree, id: &str| tree.nodes[tree.find(id).unwrap() as usize].state.contains(State::PRESSED);
+    let pressed = |tree: &Tree, id: &str| tree.nodes[tree.find(crate::Id::of(id)).unwrap() as usize].state.contains(State::PRESSED);
     let slider = rect_of(&tree, "slider");
     tree.touch(&[(0, (slider.x + 100, slider.y + 10))], 0);
     tree.update();
@@ -1806,7 +1813,7 @@ impl Component for TwoStyles {
     fn view<'a>(&'a self, ui: &'a Ui<()>) -> Element<'a, ()> {
         static FIRST: StateStyle = StateStyle { font: None, base: &[Prop::Width(10), Prop::Height(10)], states: &[(State::PRESSED, &[Prop::Width(20)])] };
         static SECOND: StateStyle = StateStyle { font: None, base: &[Prop::Height(30)], states: &[] };
-        ui.column([ui.row([]).style(&FIRST).style(&SECOND).align_self(Align::Start).id("styled").on_tap(())])
+        ui.column([ui.row([]).style(&FIRST).style(&SECOND).align_self(Align::Start).id(id!("styled")).on_tap(())])
     }
 }
 
@@ -1878,9 +1885,9 @@ impl Component for Form {
 
     fn view<'a>(&'a self, ui: &'a Ui<FormMsg>) -> Element<'a, FormMsg> {
         ui.column([
-            widgets::text_field(ui, &self.name, FormMsg::Name).placeholder("Name").id("name"),
-            widgets::text_field(ui, &self.pin, FormMsg::Pin).placeholder("PIN").input(InputKind::Number).id("pin"),
-            ui.column([]).size(100, 40).id("other").on_tap(FormMsg::Other),
+            widgets::text_field(ui, &self.name, FormMsg::Name).placeholder("Name").id(id!("name")),
+            widgets::text_field(ui, &self.pin, FormMsg::Pin).placeholder("PIN").input(InputKind::Number).id(id!("pin")),
+            ui.column([]).size(100, 40).id(id!("other")).on_tap(FormMsg::Other),
         ])
     }
 }
@@ -1895,19 +1902,19 @@ fn form_tree() -> Tree {
 }
 
 fn text_of(tree: &Tree, id: &str) -> alloc::string::String {
-    let NodeContent::Text(text) = &tree.nodes[tree.find(id).unwrap() as usize].content else { panic!() };
+    let NodeContent::Text(text) = &tree.nodes[tree.find(crate::Id::of(id)).unwrap() as usize].content else { panic!() };
     alloc::string::String::from(text.text())
 }
 
 #[test]
 fn focus_routes_input_and_shows_the_field_keyboard() {
     let mut tree = form_tree();
-    assert!(tree.find("keyboard").is_none());
+    assert!(tree.find(id!("keyboard")).is_none());
     assert_eq!(tree.context(0).insets.bottom, 0);
 
     tap(&mut tree, "name");
     run(&mut tree);
-    assert!(tree.find("keyboard").is_none(), "the panel starts below the screen");
+    assert!(tree.find(id!("keyboard")).is_none(), "the panel starts below the screen");
     assert_eq!(tree.context(0).insets.bottom, TEXT_KEYS_HEIGHT, "what is below makes room before the panel arrives");
     settle(&mut tree);
     let keyboard = rect_of(&tree, "keyboard");
@@ -1934,7 +1941,7 @@ fn focus_routes_input_and_shows_the_field_keyboard() {
     assert_eq!(tree.context(0).insets.bottom, 0, "what is below takes the room back as the panel starts to leave");
     assert_eq!(rect_of(&tree, "keyboard").bottom(), 600);
     settle(&mut tree);
-    assert!(tree.find("keyboard").is_none(), "a tap elsewhere ends the input");
+    assert!(tree.find(id!("keyboard")).is_none(), "a tap elsewhere ends the input");
 }
 
 #[test]
@@ -1963,7 +1970,7 @@ fn a_leaving_keyboard_keeps_its_place_through_a_layout() {
     tree.layout_dirty = true;
     tree.tick(16);
     run(&mut tree);
-    let leaving = tree.nodes.iter().find(|n| n.id == Some("keyboard")).unwrap();
+    let leaving = tree.nodes.iter().find(|n| n.id == Some(id!("keyboard"))).unwrap();
     assert!(leaving.leaving);
     assert_eq!(leaving.rect, shown);
 }
@@ -1974,13 +1981,13 @@ fn a_physical_keyboard_hides_the_panel_and_keeps_input_working() {
     tree.set_keyboard_connected(true);
     tap(&mut tree, "name");
     settle(&mut tree);
-    assert!(tree.find("keyboard").is_none());
+    assert!(tree.find(id!("keyboard")).is_none());
     tree.input(TextInput::Char('k'));
     run(&mut tree);
     assert_eq!(text_of(&tree, "name"), "k");
     tree.set_keyboard_connected(false);
     settle(&mut tree);
-    assert!(tree.find("keyboard").is_some());
+    assert!(tree.find(id!("keyboard")).is_some());
 }
 
 #[test]
@@ -2013,7 +2020,7 @@ fn keys_line_up_across_rows_and_type_through_layers() {
     // A tap between keys neither ends the input nor reaches what is beneath.
     press(&mut tree, 2, row_y(0));
     assert_eq!(text_of(&tree, "name"), "WwWWw");
-    assert!(tree.find("keyboard").is_some());
+    assert!(tree.find(id!("keyboard")).is_some());
     // Symbols stay until asked to leave.
     press(&mut tree, k.gap + 10, row_y(3));
     press(&mut tree, k.gap + 10, row_y(0));
@@ -2033,8 +2040,8 @@ fn a_long_field_keeps_its_width_and_the_caret_in_view() {
     run(&mut tree);
     let field = rect_of(&tree, "name");
     assert_eq!((field.w, field.h), (empty.w, empty.h));
-    let NodeContent::Text(text) = &tree.nodes[tree.find("name").unwrap() as usize].content else { panic!() };
-    let [left, _, right, _] = tree.nodes[tree.find("name").unwrap() as usize].style.padding;
+    let NodeContent::Text(text) = &tree.nodes[tree.find(id!("name")).unwrap() as usize].content else { panic!() };
+    let [left, _, right, _] = tree.nodes[tree.find(id!("name")).unwrap() as usize].style.padding;
     let width = field.w - left - right;
     assert_eq!(text.scroll(width), text.run.caret(200).unwrap().0 + 2 - width);
 }
@@ -2048,7 +2055,7 @@ fn a_field_scrolls_only_when_the_cursor_leaves_it() {
         tree.input(TextInput::Char('A'));
     }
     run(&mut tree);
-    let id = tree.find("name").unwrap() as usize;
+    let id = tree.find(id!("name")).unwrap() as usize;
     let [left, _, right, _] = tree.nodes[id].style.padding;
     let width = tree.nodes[id].screen.w - left - right;
     let scroll = |tree: &Tree| {
@@ -2076,7 +2083,7 @@ fn a_tap_in_a_field_places_the_cursor() {
     tree.input(TextInput::Char('B'));
     run(&mut tree);
     let field = rect_of(&tree, "name");
-    let left = tree.nodes[tree.find("name").unwrap() as usize].style.padding[0];
+    let left = tree.nodes[tree.find(id!("name")).unwrap() as usize].style.padding[0];
     tree.touch(&[(0, (field.x + left + 11, field.y + 10))], 0);
     tree.touch(&[], 10);
     run(&mut tree);
@@ -2098,7 +2105,7 @@ impl Component for TopChrome {
     }
 
     fn view<'a>(&'a self, ui: &'a Ui<i16>) -> Element<'a, i16> {
-        if self.height == 0 { ui.empty() } else { ui.column([]).height(self.height).id("chrome") }
+        if self.height == 0 { ui.empty() } else { ui.column([]).height(self.height).id(id!("chrome")) }
     }
 }
 
@@ -2112,7 +2119,7 @@ impl Component for Padded {
     fn update(&mut self, _: (), _: &mut Cx<Self>) {}
 
     fn view<'a>(&'a self, ui: &'a Ui<()>) -> Element<'a, ()> {
-        ui.column([ui.column([]).height(10).id("first")]).padding_each(0, ui.insets().top, 0, 0)
+        ui.column([ui.column([]).height(10).id(id!("first"))]).padding_each(0, ui.insets().top, 0, 0)
     }
 }
 
@@ -2199,10 +2206,12 @@ impl Component for Pair {
     fn update(&mut self, _: (), _: &mut Cx<Self>) {}
 
     fn view<'a>(&'a self, ui: &'a Ui<()>) -> Element<'a, ()> {
-        ui.row([ui.list(0, 100, 40).grow(1).id("left"), ui.list(1, 100, 40).grow(1).id("right")])
+        ui.row([ui.list(100, 40, Self::row).grow(1).id(id!("left")), ui.list(100, 40, Self::row).grow(1).id(id!("right"))])
     }
+}
 
-    fn list_row<'a>(&'a self, _: ListId, _: usize, ui: &'a Ui<()>) -> Element<'a, ()> {
+impl Pair {
+    fn row<'a>(&'a self, _: usize, ui: &'a Ui<()>) -> Element<'a, ()> {
         ui.column([]).height(40)
     }
 }
@@ -2210,7 +2219,7 @@ impl Component for Pair {
 impl Screen for Pair {}
 
 fn offset_of(tree: &Tree, id: &str) -> i32 {
-    let NodeContent::List(list) = &tree.nodes[tree.find(id).unwrap() as usize].content else { panic!() };
+    let NodeContent::List(list) = &tree.nodes[tree.find(crate::Id::of(id)).unwrap() as usize].content else { panic!() };
     list.offset
 }
 
@@ -2302,7 +2311,7 @@ fn a_finger_on_a_held_key_does_not_end_the_input() {
     tree.touch(&[(0, (x, y)), (1, (x + 2, y))], 10);
     tree.touch(&[(0, (x, y))], 20);
     run(&mut tree);
-    assert!(tree.find("keyboard").is_some());
+    assert!(tree.find(id!("keyboard")).is_some());
     tree.touch(&[], 30);
     run(&mut tree);
     assert_eq!(text_of(&tree, "name"), "q");
@@ -2341,9 +2350,9 @@ impl Component for Pad {
 
     fn view<'a>(&'a self, ui: &'a Ui<PadMsg>) -> Element<'a, PadMsg> {
         ui.column([
-            ui.text(chain(), &self.log).height(20).id("log"),
-            ui.column([]).size(300, 300).id("pad").gestures(self.gestures, PadMsg::Gesture).on_tap(PadMsg::Tap),
-            ui.column([]).size(300, 100).id("elsewhere"),
+            ui.text(chain(), &self.log).height(20).id(id!("log")),
+            ui.column([]).size(300, 300).id(id!("pad")).gestures(self.gestures, PadMsg::Gesture).on_tap(PadMsg::Tap),
+            ui.column([]).size(300, 100).id(id!("elsewhere")),
         ])
     }
 }
@@ -2494,10 +2503,12 @@ impl Component for Photos {
     }
 
     fn view<'a>(&'a self, ui: &'a Ui<Gesture>) -> Element<'a, Gesture> {
-        ui.list(0, 20, 300).grow(1).id("photos")
+        ui.list(20, 300, Self::row).grow(1).id(id!("photos"))
     }
+}
 
-    fn list_row<'a>(&'a self, _: ListId, _: usize, ui: &'a Ui<Gesture>) -> Element<'a, Gesture> {
+impl Photos {
+    fn row<'a>(&'a self, _: usize, ui: &'a Ui<Gesture>) -> Element<'a, Gesture> {
         ui.column([]).height(300).gestures(Gestures::PINCH, |g| g)
     }
 }
@@ -2559,7 +2570,7 @@ impl Component for Scope {
                 self.tall = !self.tall;
                 cx.rebuild();
             }
-            ScopeMsg::Part => cx.redraw_rect("scope", Rect::new(10, 20, 30, 4)),
+            ScopeMsg::Part => cx.redraw_rect(id!("scope"), Rect::new(10, 20, 30, 4)),
         }
     }
 
@@ -2567,14 +2578,15 @@ impl Component for Scope {
         VIEWS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         ui.column([
             ui.column([]).height(10),
-            ui.canvas(3).height(if self.tall { 200 } else { 100 }).padding(5).id("scope").on_size(ScopeMsg::Sized),
-            ui.column([]).size(10, 10).id("toggle").on_tap(ScopeMsg::Toggle),
-            ui.column([]).size(10, 10).id("part").on_tap(ScopeMsg::Part),
+            ui.canvas(Self::draw).height(if self.tall { 200 } else { 100 }).padding(5).id(id!("scope")).on_size(ScopeMsg::Sized),
+            ui.column([]).size(10, 10).id(id!("toggle")).on_tap(ScopeMsg::Toggle),
+            ui.column([]).size(10, 10).id(id!("part")).on_tap(ScopeMsg::Part),
         ])
     }
+}
 
-    fn draw<'a>(&'a self, id: CanvasId, canvas: &mut Canvas<'a, '_>) {
-        assert_eq!(id, 3);
+impl Scope {
+    fn draw<'a>(&'a self, canvas: &mut Canvas<'a, '_>) {
         assert_eq!(canvas.size(), self.size, "the size arrives before the drawing at it");
         assert!(canvas.needs(Rect::new(0, 0, 4, 4)));
         assert!(!canvas.needs(Rect::new(0, 80, 4, 4)));
@@ -2649,10 +2661,10 @@ impl Component for Player {
     }
 
     fn view<'a>(&'a self, ui: &'a Ui<()>) -> Element<'a, ()> {
-        let menu = if self.menu { ui.column([]).size(50, 20).background(Color::rgb(1, 2, 3)).absolute(Some(10), Some(40), None, None).id("menu") } else { ui.empty() };
+        let menu = if self.menu { ui.column([]).size(50, 20).background(Color::rgb(1, 2, 3)).absolute(Some(10), Some(40), None, None).id(id!("menu")) } else { ui.empty() };
         ui.column([
-            ui.column([]).height(23).id("open").on_tap(()),
-            ui.external(&self.video).height(100).id("video"),
+            ui.column([]).height(23).id(id!("open")).on_tap(()),
+            ui.external(&self.video).height(100).id(id!("video")),
             menu,
         ])
     }
@@ -2738,7 +2750,7 @@ impl Component for Home {
     }
 
     fn view<'a>(&'a self, ui: &'a Ui<HomeMsg>) -> Element<'a, HomeMsg> {
-        ui.column([]).size(100, 40).id("home").on_tap(HomeMsg::Open)
+        ui.column([]).size(100, 40).id(id!("home")).on_tap(HomeMsg::Open)
     }
 }
 
@@ -2767,7 +2779,7 @@ impl Component for Leaf {
     }
 
     fn view<'a>(&'a self, ui: &'a Ui<LeafMsg>) -> Element<'a, LeafMsg> {
-        ui.column([]).size(100, 40).id("leaf").on_tap(LeafMsg::Open)
+        ui.column([]).size(100, 40).id(id!("leaf")).on_tap(LeafMsg::Open)
     }
 }
 
@@ -2804,7 +2816,7 @@ fn a_handle_follows_its_component_and_nothing_else() {
 
     tree.post(home, Erased::new(HomeMsg::Close));
     settle(&mut tree);
-    assert!(tree.find("home").is_some(), "a covered screen can move its navigator");
+    assert!(tree.find(id!("home")).is_some(), "a covered screen can move its navigator");
     tree.post(first_leaf, Erased::new(LeafMsg::Posted));
     assert_eq!(LEAF_POSTS.load(Relaxed), 1, "a closed screen gets nothing");
 }
@@ -2835,7 +2847,7 @@ impl Component for Listing {
             SplitRole::Main { detail: true } => "main-open",
             SplitRole::Detail => "detail",
         };
-        ui.text(chain(), role).id("listing").on_tap(SplitMsg::Open)
+        ui.text(chain(), role).id(id!("listing")).on_tap(SplitMsg::Open)
     }
 }
 
@@ -2866,10 +2878,10 @@ impl Component for Sheet {
     fn view<'a>(&'a self, ui: &'a Ui<SplitMsg>) -> Element<'a, SplitMsg> {
         let back = if ui.can_pop() { "back" } else { "stay" };
         ui.column([
-            ui.text(chain(), back).id(["depth0", "depth1"][usize::from(self.0)]),
-            ui.column([]).size(50, 40).id(["deeper0", "deeper1"][usize::from(self.0)]).on_tap(SplitMsg::Deeper),
-            ui.column([]).size(50, 40).id(["back0", "back1"][usize::from(self.0)]).on_tap(SplitMsg::Back),
-            ui.column([]).size(50, 40).id("cover0").on_tap(SplitMsg::Cover),
+            ui.text(chain(), back).id(crate::Id::named(["depth0", "depth1"][usize::from(self.0)])),
+            ui.column([]).size(50, 40).id(crate::Id::named(["deeper0", "deeper1"][usize::from(self.0)])).on_tap(SplitMsg::Deeper),
+            ui.column([]).size(50, 40).id(crate::Id::named(["back0", "back1"][usize::from(self.0)])).on_tap(SplitMsg::Back),
+            ui.column([]).size(50, 40).id(id!("cover0")).on_tap(SplitMsg::Cover),
         ])
     }
 }
@@ -2918,7 +2930,7 @@ fn a_split_shows_both_ends_of_one_stack() {
     let mut tree = split_tree(false);
     assert_eq!(text_of(&tree, "listing"), "main");
     assert_eq!(rect_of(&tree, "listing").w, 100);
-    assert!(tree.find("depth0").is_none(), "the right stays empty");
+    assert!(tree.find(id!("depth0")).is_none(), "the right stays empty");
 
     tap(&mut tree, "listing");
     assert!(!tree.transiting(), "showing beside the main screen does not slide");
@@ -2928,7 +2940,7 @@ fn a_split_shows_both_ends_of_one_stack() {
     assert_eq!(text_of(&tree, "depth0"), "stay", "the first on the right has no back");
 
     turn(&mut tree, false);
-    assert!(tree.find("listing").is_none());
+    assert!(tree.find(id!("listing")).is_none());
     assert_eq!(rect_of(&tree, "depth0").x, 0);
     assert_eq!(text_of(&tree, "depth0"), "back");
 
@@ -2936,7 +2948,7 @@ fn a_split_shows_both_ends_of_one_stack() {
     assert_eq!(text_of(&tree, "listing"), "main-open");
     go(&mut tree, "back0");
     assert_eq!(text_of(&tree, "listing"), "main");
-    assert!(tree.find("depth0").is_none());
+    assert!(tree.find(id!("depth0")).is_none());
 
     turn(&mut tree, false);
     assert_eq!(text_of(&tree, "listing"), "none");
@@ -2950,7 +2962,7 @@ fn a_default_detail_stays_out_of_the_stack_until_pushed_from() {
     assert_eq!(text_of(&tree, "depth0"), "stay");
 
     turn(&mut tree, false);
-    assert!(tree.find("depth0").is_none(), "one pane shows the main screen");
+    assert!(tree.find(id!("depth0")).is_none(), "one pane shows the main screen");
     turn(&mut tree, true);
     assert_eq!(text_of(&tree, "depth0"), "stay");
 
@@ -2974,7 +2986,7 @@ fn a_covered_split_comes_back_whole() {
     let mut tree = split_tree(false);
     go(&mut tree, "listing");
     go(&mut tree, "cover0");
-    assert!(tree.find("listing").is_none());
+    assert!(tree.find(id!("listing")).is_none());
     tree.post(LEAF_ID.load(Relaxed), Erased::new(LeafMsg::Back));
     settle(&mut tree);
     assert_eq!(text_of(&tree, "listing"), "main-open");
@@ -3053,7 +3065,7 @@ impl Component for Mover {
 
     fn view<'a>(&'a self, ui: &'a Ui<MoveMsg>) -> Element<'a, MoveMsg> {
         let color = if self.0 % 2 == 0 { RED } else { WHITE };
-        ui.column([]).grow(1).background(ColorRole::Fixed(color)).id(MOVER_NAMES[self.0])
+        ui.column([]).grow(1).background(ColorRole::Fixed(color)).id(crate::Id::named(MOVER_NAMES[self.0]))
     }
 }
 
@@ -3095,7 +3107,7 @@ fn a_move_takes_the_asked_transition_and_pop_plays_it_backwards() {
     assert!(going.x == 0 && going.y > 0, "goes down again: {going:?}");
     assert_eq!((back.x, back.y), (0, 0));
     settle(&mut tree);
-    assert!(tree.find("m1").is_none());
+    assert!(tree.find(id!("m1")).is_none());
 
     send_shown(&mut tree, MoveMsg::Push(None));
     tree.tick(16);
@@ -3125,7 +3137,7 @@ fn a_navigator_default_and_replace_change_at_once_unless_asked() {
     settle(&mut tree);
     send_shown(&mut tree, MoveMsg::Push(None));
     assert!(!tree.transiting(), "the navigator's default");
-    assert!(tree.find("m0").is_none());
+    assert!(tree.find(id!("m0")).is_none());
 
     send_shown(&mut tree, MoveMsg::Push(Some(Transition::Slide)));
     assert!(tree.transiting(), "asked over the default");
@@ -3133,17 +3145,17 @@ fn a_navigator_default_and_replace_change_at_once_unless_asked() {
 
     send_shown(&mut tree, MoveMsg::Replace(None));
     assert!(!tree.transiting(), "replace changes at once");
-    assert!(tree.find("m3").is_some() && tree.find("m2").is_none());
+    assert!(tree.find(id!("m3")).is_some() && tree.find(id!("m2")).is_none());
 
     send_shown(&mut tree, MoveMsg::Pop(None));
     assert!(tree.transiting(), "the replaced screen came with a slide");
     settle(&mut tree);
-    assert!(tree.find("m1").is_some());
+    assert!(tree.find(id!("m1")).is_some());
 
     send_shown(&mut tree, MoveMsg::Replace(Some(Transition::SlideUp)));
     assert!(tree.transiting());
     settle(&mut tree);
-    assert!(tree.find("m2").is_some() && tree.find("m1").is_none());
+    assert!(tree.find(id!("m2")).is_some() && tree.find(id!("m1")).is_none());
 }
 
 struct Asking {
@@ -3181,11 +3193,11 @@ impl Component for Dialog {
 
     fn view<'a>(&'a self, ui: &'a Ui<TextInput>) -> Element<'a, TextInput> {
         let modal = widgets::modal(ui, [
-            widgets::modal_title(ui, "Rename").id("title"),
-            widgets::text_field(ui, &self.name, |input| input).id("name"),
-            widgets::modal_actions(ui, [0, 1, 2].map(|i| ui.column([]).height(40).id(["a0", "a1", "a2"][i]))),
+            widgets::modal_title(ui, "Rename").id(id!("title")),
+            widgets::text_field(ui, &self.name, |input| input).id(id!("name")),
+            widgets::modal_actions(ui, [0, 1, 2].map(|i| ui.column([]).height(40).id(crate::Id::named(["a0", "a1", "a2"][i])))),
         ]);
-        if self.wide { modal.part(Part::Panel, |panel| panel.width(200).id("panel")) } else { modal.part(Part::Panel, |panel| panel.id("panel")) }
+        if self.wide { modal.part(Part::Panel, |panel| panel.width(200).id(id!("panel"))) } else { modal.part(Part::Panel, |panel| panel.id(id!("panel"))) }
     }
 }
 
@@ -3236,7 +3248,7 @@ fn insets_are_what_the_planes_above_cover() {
         tree.add_keyboard(crate::keyboard::KeyboardMode::Auto);
     });
     let chrome = tree.chrome[0];
-    let dialog = tree.nodes[tree.find("panel").unwrap() as usize].owner;
+    let dialog = tree.nodes[tree.find(id!("panel")).unwrap() as usize].owner;
     assert_eq!((tree.context(0).insets.top, tree.context(chrome).insets.top, tree.context(dialog).insets.top), (40, 0, 0));
     assert_eq!(rect_of(&tree, "panel").y + rect_of(&tree, "panel").h / 2, SCREEN.h / 2, "the overlay is above the chrome");
     tap(&mut tree, "name");
@@ -3252,7 +3264,7 @@ fn modals_change_at_once_whatever_is_asked() {
     send_shown(&mut tree, MoveMsg::Modal(Some(Transition::Slide)));
     send_shown(&mut tree, MoveMsg::Modal(Some(Transition::Slide)));
     assert!(!tree.transiting());
-    assert!(tree.find("m2").is_some());
+    assert!(tree.find(id!("m2")).is_some());
 }
 
 fn zoom_frame(tree: &mut Tree, cache: &mut devkit_gfx::GlyphCache<Caps>) -> Vec<u16> {
@@ -3296,7 +3308,7 @@ fn a_zoom_draws_pictures_from_the_old_screen_to_the_new_one() {
     let late = zoom_frame(&mut tree, &mut cache);
     assert_eq!(at(&late, 200, 300) & 0x07e0, WHITE_565 & 0x07e0, "the new screen in the end");
     settle(&mut tree);
-    assert!(tree.find("m0").is_none() && tree.find("m1").is_some());
+    assert!(tree.find(id!("m0")).is_none() && tree.find(id!("m1")).is_some());
 }
 
 #[test]
@@ -3348,11 +3360,13 @@ impl Component for Puller {
     }
 
     fn view<'a>(&'a self, ui: &'a Ui<PullMsg>) -> Element<'a, PullMsg> {
-        let list = ui.list(0, self.count, 40).grow(1).bounce(self.bounce).id("list");
+        let list = ui.list(self.count, 40, Self::row).grow(1).bounce(self.bounce).id(id!("list"));
         if self.pull { list.pull(60, self.refreshing, PullMsg::Refresh) } else { list }
     }
+}
 
-    fn list_row<'a>(&'a self, _: ListId, _: usize, ui: &'a Ui<PullMsg>) -> Element<'a, PullMsg> {
+impl Puller {
+    fn row<'a>(&'a self, _: usize, ui: &'a Ui<PullMsg>) -> Element<'a, PullMsg> {
         ui.column([]).height(40)
     }
 }
@@ -3492,7 +3506,7 @@ fn rows_follow_past_the_start() {
     tree.touch(&[(0, (r.x + 10, r.y + 400))], 32);
     run(&mut tree);
     let offset = offset_of(&tree, "list");
-    let NodeContent::List(list) = &tree.nodes[tree.find("list").unwrap() as usize].content else { panic!() };
+    let NodeContent::List(list) = &tree.nodes[tree.find(id!("list")).unwrap() as usize].content else { panic!() };
     let (index, row) = list.rows[0];
     assert_eq!(index, 0);
     assert_eq!(i32::from(tree.nodes[row as usize].screen.y), i32::from(r.y) - offset);
@@ -3641,9 +3655,9 @@ impl Component for Below {
 
     fn view<'a>(&'a self, ui: &'a Ui<BelowMsg>) -> Element<'a, BelowMsg> {
         ui.column([
-            ui.row([]).size(400, 300).id("below").on_tap(BelowMsg::Tap),
-            ui.row([]).size(40, 40).id("open").on_tap(BelowMsg::Open(true)),
-            ui.row([]).size(40, 40).id("open-kept").on_tap(BelowMsg::Open(false)),
+            ui.row([]).size(400, 300).id(id!("below")).on_tap(BelowMsg::Tap),
+            ui.row([]).size(40, 40).id(id!("open")).on_tap(BelowMsg::Open(true)),
+            ui.row([]).size(40, 40).id(id!("open-kept")).on_tap(BelowMsg::Open(false)),
         ])
     }
 }
@@ -3673,12 +3687,12 @@ impl Component for Card {
     }
 
     fn view<'a>(&'a self, ui: &'a Ui<CardMsg>) -> Element<'a, CardMsg> {
-        let inner = if self.inner { ui.row([]).size(40, 40).background(RED).key(1).id("inner").appear(Presence::fade()) } else { ui.empty() };
+        let inner = if self.inner { ui.row([]).size(40, 40).background(RED).id(id!("inner")).appear(Presence::fade()) } else { ui.empty() };
         ui.column([ui
-            .column([inner, ui.row([]).size(200, 40).id("in-card")])
+            .column([inner, ui.row([]).size(200, 40).id(id!("in-card"))])
             .background(WHITE)
             .absolute(Some(100), Some(400), None, None)
-            .id("card")
+            .id(id!("card"))
             .appear(Presence::from_edge(Edge::Bottom))
             .disappear(Presence::fade())])
     }
@@ -3707,9 +3721,9 @@ fn card_tree(theme: &'static Theme) -> (Tree, &'static AtomicU32) {
 }
 
 /// Finds what `tree.find` skips: nodes off the screen.
-fn node_of(tree: &Tree, from: NodeId, id: &str) -> Option<NodeId> {
+fn node_of(tree: &Tree, from: NodeIndex, id: &str) -> Option<NodeIndex> {
     let node = &tree.nodes[from as usize];
-    if node.id == Some(id) {
+    if node.id == Some(crate::Id::of(id)) {
         return Some(from);
     }
     let mut child = node.first_child;
@@ -3722,9 +3736,9 @@ fn node_of(tree: &Tree, from: NodeId, id: &str) -> Option<NodeId> {
     None
 }
 
-fn count(tree: &Tree, from: NodeId, id: &str) -> usize {
+fn count(tree: &Tree, from: NodeIndex, id: &str) -> usize {
     let node = &tree.nodes[from as usize];
-    let mut found = usize::from(node.id == Some(id));
+    let mut found = usize::from(node.id == Some(crate::Id::of(id)));
     let mut child = node.first_child;
     while child != NONE {
         found += count(tree, child, id);
@@ -3759,21 +3773,21 @@ fn the_scrim_keeps_touches_from_below_and_sends_what_the_screen_asks() {
     tap_at(&mut tree, (10, 10));
     settle(&mut tree);
     assert_eq!(taps.load(Relaxed), 0);
-    assert!(tree.find("card").is_some(), "no scrim_tap, nothing closes");
+    assert!(tree.find(id!("card")).is_some(), "no scrim_tap, nothing closes");
 
     send_card(&mut tree, CardMsg::Close);
     settle(&mut tree);
     tap(&mut tree, "open");
     settle(&mut tree);
     tap_at(&mut tree, (10, 10));
-    assert!(tree.find("card").is_some(), "kept while it disappears");
+    assert!(tree.find(id!("card")).is_some(), "kept while it disappears");
     tree.tick(100);
     tree.update();
     assert!(tree.scrim > 0 && tree.scrim < 128, "{}", tree.scrim);
     tap_at(&mut tree, (10, 10));
     assert_eq!(taps.load(Relaxed), 0, "still covered");
     settle(&mut tree);
-    assert!(tree.find("card").is_none());
+    assert!(tree.find(id!("card")).is_none());
     assert_eq!(tree.scrim, 0);
     tap_at(&mut tree, (10, 10));
     assert_eq!(taps.load(Relaxed), 1);
@@ -3799,7 +3813,7 @@ fn an_element_taken_out_stays_until_it_disappears_out_of_the_flow() {
     let inner = rect_of(&tree, "inner");
     assert_eq!(rect_of(&tree, "in-card").y, inner.bottom());
     send_card(&mut tree, CardMsg::Drop);
-    let left = tree.find("inner").unwrap();
+    let left = tree.find(id!("inner")).unwrap();
     assert!(tree.nodes[left as usize].leaving);
     assert_eq!(rect_of(&tree, "inner"), inner);
     assert_eq!(rect_of(&tree, "in-card").y, inner.y);
@@ -3808,7 +3822,7 @@ fn an_element_taken_out_stays_until_it_disappears_out_of_the_flow() {
     let opacity = tree.nodes[left as usize].pose.unwrap().opacity;
     assert!(opacity > 0 && opacity < 255, "{opacity}");
     settle(&mut tree);
-    assert!(tree.find("inner").is_none());
+    assert!(tree.find(id!("inner")).is_none());
 }
 
 #[test]
@@ -3827,7 +3841,7 @@ fn a_clear_scrim_damages_only_what_draws() {
     play(&mut tree);
     send_card(&mut tree, CardMsg::Close);
     play(&mut tree);
-    assert!(tree.find("card").is_none());
+    assert!(tree.find(id!("card")).is_none());
     assert!(!damage.is_empty());
     for rect in damage.iter().filter(|r| !r.is_empty()) {
         assert!(rect.w <= 200 && rect.y >= 300, "{rect:?} in {damage:?}");

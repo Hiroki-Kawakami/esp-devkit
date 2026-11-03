@@ -8,7 +8,6 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use devkit_gfx::Rect;
 
 use crate::app::{Handle, Link};
-use crate::canvas::{Canvas, CanvasId};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::any::{Any, TypeId};
@@ -16,16 +15,14 @@ use core::marker::PhantomData;
 
 use crate::element::{Element, Ui};
 use crate::erased::Erased;
+use crate::id::Id;
 use crate::nav::{Action, NavOp};
-use crate::node::NodeId;
+use crate::node::NodeIndex;
 use crate::presenter::Strips;
 use crate::style::ScreenStyle;
 use crate::text_buffer::TextInput;
 use crate::theme::{Theme, Transition};
 use crate::tree::Tree;
-
-/// Which `Ui::list` of a component a row belongs to.
-pub type ListId = u16;
 
 /// A piece of UI with its own state. Messages are `Copy` and at most 16 bytes;
 /// larger payloads stay in the state and messages carry an index.
@@ -40,13 +37,6 @@ pub trait Component: 'static {
         Self: Sized;
 
     fn view<'a>(&'a self, ui: &'a Ui<Self::Msg>) -> Element<'a, Self::Msg>;
-
-    fn list_row<'a>(&'a self, _list: ListId, _index: usize, ui: &'a Ui<Self::Msg>) -> Element<'a, Self::Msg> {
-        ui.empty()
-    }
-
-    /// Paints a `Ui::canvas`, in every frame that shows it.
-    fn draw<'a>(&'a self, _id: CanvasId, _canvas: &mut Canvas<'a, '_>) {}
 }
 
 /// A component created by a parent's view.
@@ -122,10 +112,10 @@ pub(crate) struct Requests {
     pub(crate) theme: Option<&'static Theme>,
     pub(crate) replaced: Option<Strips>,
     pub(crate) tap_rect: Option<Rect>,
-    pub(crate) animations: Vec<(&'static str, Animation)>,
-    pub(crate) focus: Option<&'static str>,
+    pub(crate) animations: Vec<(Id, Animation)>,
+    pub(crate) focus: Option<Id>,
     pub(crate) input: Vec<TextInput>,
-    pub(crate) redraw: Vec<(&'static str, Option<Rect>)>,
+    pub(crate) redraw: Vec<(Id, Option<Rect>)>,
 }
 
 /// What an animation moves, without running a view or layout.
@@ -212,18 +202,18 @@ impl<C: Component> Cx<C> {
     }
 
     /// Paints the canvas with this id again, without a view or layout.
-    pub fn redraw(&mut self, id: &'static str) {
-        self.requests.redraw.push((id, None));
+    pub fn redraw(&mut self, id: impl Into<Id>) {
+        self.requests.redraw.push((id.into(), None));
     }
 
     /// The same for a part of it, in its coordinates.
-    pub fn redraw_rect(&mut self, id: &'static str, rect: Rect) {
-        self.requests.redraw.push((id, Some(rect)));
+    pub fn redraw_rect(&mut self, id: impl Into<Id>, rect: Rect) {
+        self.requests.redraw.push((id.into(), Some(rect)));
     }
 
     /// Moves the focus to the node with this id, after the view has been built.
-    pub fn focus(&mut self, id: &'static str) {
-        self.requests.focus = Some(id);
+    pub fn focus(&mut self, id: impl Into<Id>) {
+        self.requests.focus = Some(id.into());
     }
 
     pub(crate) fn input(&mut self, input: TextInput) {
@@ -231,8 +221,8 @@ impl<C: Component> Cx<C> {
     }
 
     /// Animates the node with this id, after the view has been built.
-    pub fn animate(&mut self, id: &'static str, animation: Animation) {
-        self.requests.animations.push((id, animation));
+    pub fn animate(&mut self, id: impl Into<Id>, animation: Animation) {
+        self.requests.animations.push((id.into(), animation));
     }
 
     /// Replaces the theme of the whole UI.
@@ -317,9 +307,8 @@ pub(crate) unsafe fn call_event_map<E: Copy, M: Copy>(function: *const (), event
 pub(crate) trait AnyHost {
     fn id(&self) -> u32;
     fn dispatch(&mut self, msg: Erased, replaced: Option<Strips>, tap_rect: Option<Rect>, link: &Link) -> Requests;
-    fn build(&self, tree: &mut Tree, id: u16, node: NodeId);
-    fn build_row(&self, tree: &mut Tree, id: u16, list: ListId, index: usize, row: NodeId);
-    fn draw<'a>(&'a self, id: CanvasId, canvas: &mut Canvas<'a, '_>);
+    fn build(&self, tree: &mut Tree, id: u16, node: NodeIndex);
+    fn component(&self) -> &dyn Any;
     fn as_any(&mut self) -> &mut dyn Any;
 
     fn hook(&mut self, _hook: Hook, _link: &Link) -> Requests {
@@ -364,20 +353,14 @@ impl<C: Component> AnyHost for Host<C> {
         cx.requests
     }
 
-    fn build(&self, tree: &mut Tree, id: u16, node: NodeId) {
+    fn build(&self, tree: &mut Tree, id: u16, node: NodeIndex) {
         let ui = Ui::new(tree.bump(), tree.context(id));
         let element = self.component.view(&ui);
         tree.reconcile(id, node, &element);
     }
 
-    fn build_row(&self, tree: &mut Tree, id: u16, list: ListId, index: usize, row: NodeId) {
-        let ui = Ui::new(tree.bump(), tree.context(id));
-        let element = self.component.list_row(list, index, &ui);
-        tree.reconcile(id, row, &element);
-    }
-
-    fn draw<'a>(&'a self, id: CanvasId, canvas: &mut Canvas<'a, '_>) {
-        self.component.draw(id, canvas);
+    fn component(&self) -> &dyn Any {
+        &self.component
     }
 
     fn as_any(&mut self) -> &mut dyn Any {
@@ -398,16 +381,12 @@ impl<S: Screen> AnyHost for ScreenHost<S> {
         self.inner.dispatch(msg, replaced, tap_rect, link)
     }
 
-    fn draw<'a>(&'a self, id: CanvasId, canvas: &mut Canvas<'a, '_>) {
-        self.inner.draw(id, canvas);
-    }
-
-    fn build(&self, tree: &mut Tree, id: u16, node: NodeId) {
+    fn build(&self, tree: &mut Tree, id: u16, node: NodeIndex) {
         self.inner.build(tree, id, node);
     }
 
-    fn build_row(&self, tree: &mut Tree, id: u16, list: ListId, index: usize, row: NodeId) {
-        self.inner.build_row(tree, id, list, index, row);
+    fn component(&self) -> &dyn Any {
+        self.inner.component()
     }
 
     fn as_any(&mut self) -> &mut dyn Any {

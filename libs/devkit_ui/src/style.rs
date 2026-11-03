@@ -5,6 +5,7 @@
 
 use devkit_gfx::FontChain;
 
+use crate::id::Id;
 use crate::rotation::Rotations;
 use crate::theme::ColorRole;
 
@@ -169,7 +170,7 @@ pub enum Prop {
     BorderWidth(u8),
     BorderTop(ColorRole),
     BorderBottom(ColorRole),
-    ScrollBorder(&'static str),
+    ScrollBorder(Id),
     Shadow(i8, u8, ColorRole),
     Opacity(u8),
     Clip(bool),
@@ -232,7 +233,7 @@ pub struct Style {
     pub(crate) border_width: u8,
     pub(crate) border_top: Option<ColorRole>,
     pub(crate) border_bottom: Option<ColorRole>,
-    pub(crate) scroll_border: Option<&'static str>,
+    pub(crate) scroll_border: Option<Id>,
     pub(crate) shadow: Option<Shadow>,
     pub(crate) opacity: Option<u8>,
     pub(crate) clip: bool,

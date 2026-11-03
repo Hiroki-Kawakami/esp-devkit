@@ -8,12 +8,10 @@ use alloc::vec::Vec;
 
 use devkit_gfx::{Color, TextOptions, TextRun};
 use devkit_ui::widgets::{button, top_bar};
-use devkit_ui::{Canvas, CanvasId, Component, Cx, Element, Gesture, Gestures, Phase, Raster, RasterTarget, Rect, Screen, TextInput, Ui};
+use devkit_ui::{Canvas, Component, Cx, Element, Gesture, Gestures, Phase, Raster, RasterTarget, Rect, Screen, TextInput, Ui, id};
 
 use crate::scene::BODY;
 
-const TERMINAL: CanvasId = 0;
-const WAVE: CanvasId = 1;
 const LINE_HEIGHT: i16 = 32;
 const WAVE_PERIOD: i32 = 180;
 
@@ -93,13 +91,31 @@ impl CanvasDemo {
             TextInput::Enter => {
                 self.lines.push(String::from("$ "));
                 self.lay_out();
-                cx.redraw("term");
+                cx.redraw(id!("term"));
                 return;
             }
             _ => return,
         }
         self.lay_out();
-        cx.redraw_rect("term", self.line_rect(self.runs.len() - 1));
+        cx.redraw_rect(id!("term"), self.line_rect(self.runs.len() - 1));
+    }
+
+    fn draw_terminal<'a>(&'a self, canvas: &mut Canvas<'a, '_>) {
+        let (width, height) = canvas.size();
+        canvas.fill(Rect::new(0, 0, width, height), Color::rgb(0x10, 0x14, 0x18));
+        for (row, run) in self.runs.iter().enumerate() {
+            let rect = Rect::new(0, row as i16 * LINE_HEIGHT, width, LINE_HEIGHT);
+            if canvas.needs(rect) {
+                canvas.text(8, rect.y, run, Color::rgb(0xE0, 0xE6, 0xEA));
+            }
+        }
+    }
+
+    fn draw_wave<'a>(&'a self, canvas: &mut Canvas<'a, '_>) {
+        let (width, height) = canvas.size();
+        let colors = canvas.colors();
+        canvas.fill(Rect::new(0, 0, width, height), colors.background);
+        canvas.raster(Rect::new(0, 0, width, height), &self.wave);
     }
 }
 
@@ -109,12 +125,12 @@ impl Component for CanvasDemo {
     fn update(&mut self, msg: CanvasMsg, cx: &mut Cx<Self>) {
         match msg {
             CanvasMsg::Back => cx.nav().pop(),
-            CanvasMsg::Redraw => cx.redraw("term"),
+            CanvasMsg::Redraw => cx.redraw(id!("term")),
             CanvasMsg::Sized(width, height) => {
                 self.columns = width;
                 self.rows = (height / LINE_HEIGHT).max(1) as usize;
                 self.lay_out();
-                cx.redraw("term");
+                cx.redraw(id!("term"));
             }
             CanvasMsg::WaveSized(height) => self.wave.height = height,
             CanvasMsg::Key(input) => self.key(input, cx),
@@ -123,7 +139,7 @@ impl Component for CanvasDemo {
                     self.scrub_from = self.wave.phase;
                 }
                 self.wave.phase = self.scrub_from - i32::from(dx);
-                cx.redraw("wave");
+                cx.redraw(id!("wave"));
             }
             CanvasMsg::Scrub(_) => {}
         }
@@ -131,31 +147,14 @@ impl Component for CanvasDemo {
 
     fn view<'a>(&'a self, ui: &'a Ui<CanvasMsg>) -> Element<'a, CanvasMsg> {
         let theme = ui.theme();
-        let redraw = button(ui, "Redraw", theme.widgets.button.secondary, CanvasMsg::Redraw).keep_focus().id("term-redraw");
+        let redraw = button(ui, "Redraw", theme.widgets.button.secondary, CanvasMsg::Redraw).keep_focus().id(id!("term-redraw"));
         ui.column([
             top_bar(ui, Some(CanvasMsg::Back), "Canvas", redraw),
-            ui.canvas(TERMINAL).grow(1).id("term").on_size(CanvasMsg::Sized).on_input(CanvasMsg::Key),
-            ui.canvas(WAVE).height(160).id("wave").on_size(|_, height| CanvasMsg::WaveSized(height)).gestures(Gestures::PAN, CanvasMsg::Scrub),
+            ui.canvas(Self::draw_terminal).grow(1).id(id!("term")).on_size(CanvasMsg::Sized).on_input(CanvasMsg::Key),
+            ui.canvas(Self::draw_wave).height(160).id(id!("wave")).on_size(|_, height| CanvasMsg::WaveSized(height)).gestures(Gestures::PAN, CanvasMsg::Scrub),
         ])
         .padding_each(0, ui.insets().top, 0, ui.insets().bottom)
         .background(ui.colors().surface)
-    }
-
-    fn draw<'a>(&'a self, id: CanvasId, canvas: &mut Canvas<'a, '_>) {
-        let (width, height) = canvas.size();
-        let colors = canvas.colors();
-        if id == WAVE {
-            canvas.fill(Rect::new(0, 0, width, height), colors.background);
-            canvas.raster(Rect::new(0, 0, width, height), &self.wave);
-            return;
-        }
-        canvas.fill(Rect::new(0, 0, width, height), Color::rgb(0x10, 0x14, 0x18));
-        for (row, run) in self.runs.iter().enumerate() {
-            let rect = Rect::new(0, row as i16 * LINE_HEIGHT, width, LINE_HEIGHT);
-            if canvas.needs(rect) {
-                canvas.text(8, rect.y, run, Color::rgb(0xE0, 0xE6, 0xEA));
-            }
-        }
     }
 }
 

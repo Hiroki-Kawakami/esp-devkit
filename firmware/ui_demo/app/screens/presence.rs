@@ -6,7 +6,7 @@
 use alloc::vec::Vec;
 
 use devkit_ui::widgets::{button, list_item, modal, modal_actions, modal_message, modal_title, progress_bar, progress_indicator, text_field, toast, top_bar};
-use devkit_ui::{Align, Component, Cx, Edge, Element, Overlay, Part, Presence, Root, Screen, TextBuffer, TextInput, Ui};
+use devkit_ui::{Align, Component, Cx, Edge, Element, Id, Overlay, Part, Presence, Root, Screen, TextBuffer, TextInput, Ui, id};
 
 use crate::resources::colors;
 
@@ -67,9 +67,9 @@ impl Component for PresenceDemo {
     }
 
     fn view<'a>(&'a self, ui: &'a Ui<PresenceMsg>) -> Element<'a, PresenceMsg> {
-        let mut items: Vec<_> = KINDS.iter().map(|(name, id, kind)| list_item(ui, None, name, None, None, PresenceMsg::Open(*kind)).id(id)).collect();
-        items.push(list_item(ui, None, "Toast", Some(if self.toast { "Shown" } else { "Hidden" }), None, PresenceMsg::Toast).id("toggle-toast"));
-        let note = if self.toast { toast(ui, "Saved to storage").key(1).id("toast").appear(Presence::fade().offset(0, 24)) } else { ui.empty() };
+        let mut items: Vec<_> = KINDS.iter().map(|(name, id, kind)| list_item(ui, None, name, None, None, PresenceMsg::Open(*kind)).id(Id::named(*id))).collect();
+        items.push(list_item(ui, None, "Toast", Some(if self.toast { "Shown" } else { "Hidden" }), None, PresenceMsg::Toast).id(id!("toggle-toast")));
+        let note = if self.toast { toast(ui, "Saved to storage").id(id!("toast")).appear(Presence::fade().offset(0, 24)) } else { ui.empty() };
         ui.column([top_bar(ui, Some(PresenceMsg::Back), "Presence", ui.empty()), ui.scroll(ui.column(items)).grow(1), note])
             .padding_each(0, ui.insets().top, 0, 0)
             .background(ui.colors().background)
@@ -99,10 +99,10 @@ impl Shown {
     fn content<'a>(&self, ui: &'a Ui<ShownMsg>, title: &'a str, text: &'a str) -> [Element<'a, ShownMsg>; 3] {
         let b = &ui.theme().widgets.button;
         let next = match self.kind {
-            Kind::Sheet => button(ui, "Open a modal", b.primary, ShownMsg::Open(Kind::Modal)).id("next"),
-            _ => button(ui, "Open a sheet", b.primary, ShownMsg::Open(Kind::Sheet)).id("next"),
+            Kind::Sheet => button(ui, "Open a modal", b.primary, ShownMsg::Open(Kind::Modal)).id(id!("next")),
+            _ => button(ui, "Open a sheet", b.primary, ShownMsg::Open(Kind::Sheet)).id(id!("next")),
         };
-        [modal_title(ui, title), modal_message(ui, text), modal_actions(ui, [button(ui, "Close", b.secondary, ShownMsg::Close).id("close"), next])]
+        [modal_title(ui, title), modal_message(ui, text), modal_actions(ui, [button(ui, "Close", b.secondary, ShownMsg::Close).id(id!("close")), next])]
     }
 
     fn dialog<'a>(&self, ui: &'a Ui<ShownMsg>, title: &'a str, text: &'a str, appear: Presence, disappear: Presence) -> Element<'a, ShownMsg> {
@@ -112,12 +112,12 @@ impl Shown {
     fn input<'a>(&'a self, ui: &'a Ui<ShownMsg>) -> Element<'a, ShownMsg> {
         let b = &ui.theme().widgets.button;
         let bad = self.name.as_str().contains('/');
-        let error = if bad { modal_message(ui, "A name can't contain /").foreground(colors::DESTRUCTIVE).id("error") } else { ui.empty() };
+        let error = if bad { modal_message(ui, "A name can't contain /").foreground(colors::DESTRUCTIVE).id(id!("error")) } else { ui.empty() };
         modal(ui, [
             modal_title(ui, "Rename"),
-            text_field(ui, &self.name, ShownMsg::Name).placeholder("Name").id("name"),
+            text_field(ui, &self.name, ShownMsg::Name).placeholder("Name").id(id!("name")),
             error,
-            modal_actions(ui, [button(ui, "Cancel", b.secondary, ShownMsg::Close).id("close"), button(ui, "Rename", b.primary, ShownMsg::Close).disabled(bad)]),
+            modal_actions(ui, [button(ui, "Cancel", b.secondary, ShownMsg::Close).id(id!("close")), button(ui, "Rename", b.primary, ShownMsg::Close).disabled(bad)]),
         ])
     }
 }
@@ -149,7 +149,7 @@ impl Component for Shown {
                 modal_title(ui, "Copying"),
                 modal_message(ui, "1/1 big.bin"),
                 progress_bar(ui, None),
-                modal_actions(ui, [button(ui, "Cancel", theme.widgets.button.secondary, ShownMsg::Close).id("close")]),
+                modal_actions(ui, [button(ui, "Cancel", theme.widgets.button.secondary, ShownMsg::Close).id(id!("close"))]),
             ]),
             Kind::Busy => modal(ui, [ui.row([progress_indicator(ui, None), modal_message(ui, "Connecting...").grow(1)]).align(Align::Center).gap(m.padding)]),
             Kind::Sheet => {
@@ -160,7 +160,7 @@ impl Component for Shown {
                     .radius(m.radius)
                     .background(c.surface)
                     .absolute(Some(0), None, Some(0), Some(0))
-                    .id("sheet")
+                    .id(id!("sheet"))
                     .appear(Presence::from_edge(Edge::Bottom));
                 ui.column([sheet]).absolute(Some(0), Some(0), Some(0), Some(0))
             }
@@ -172,7 +172,7 @@ impl Component for Shown {
                     .width(360)
                     .background(c.surface)
                     .absolute(None, Some(0), Some(0), Some(0))
-                    .id("side")
+                    .id(id!("side"))
                     .appear(Presence::from_edge(Edge::Right));
                 ui.column([side]).absolute(Some(0), Some(0), Some(0), Some(0))
             }

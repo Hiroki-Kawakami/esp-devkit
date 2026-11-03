@@ -8,7 +8,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use devkit_ui::widgets::{list_item, segmented, top_bar};
-use devkit_ui::{Child, ColorRole, Component, Cx, Element, Nav, Root, Screen, Transition, Ui};
+use devkit_ui::{Child, ColorRole, Component, Cx, Element, Id, Nav, Root, Screen, Transition, Ui, id};
 
 use crate::resources::colors;
 
@@ -55,13 +55,13 @@ impl Component for TransitionDemo {
     fn view<'a>(&'a self, ui: &'a Ui<TransitionMsg>) -> Element<'a, TransitionMsg> {
         let theme = ui.theme();
         let options: Vec<_> = DEFAULTS.iter().enumerate().map(|(i, (name, _))| (*name, TransitionMsg::Default(i))).collect();
-        let mut stage = ui.navigator::<Stage, Page>(()).grow(1).id("stage");
+        let mut stage = ui.navigator::<Stage, Page>(()).grow(1).id(id!("stage"));
         if let Some(transition) = DEFAULTS[self.default].1 {
             stage = stage.transition(transition);
         }
         ui.column([
             top_bar(ui, Some(TransitionMsg::Back), "Transitions", ui.empty()),
-            ui.column([segmented(ui, &options, self.default).id("transition-default")]).padding(theme.widgets.unit.padding),
+            ui.column([segmented(ui, &options, self.default).id(id!("transition-default"))]).padding(theme.widgets.unit.padding),
             stage,
         ])
         .padding_each(0, ui.insets().top, 0, 0)
@@ -132,7 +132,7 @@ impl Component for Page {
             .column([ui.text(theme.fonts.title, &self.title).foreground(c.surface)])
             .padding(theme.widgets.unit.padding * 2)
             .background(tint);
-        let items: Vec<_> = MOVES.iter().map(|(name, id, msg)| list_item(ui, None, name, None, None, *msg).id(id)).collect();
+        let items: Vec<_> = MOVES.iter().map(|(name, id, msg)| list_item(ui, None, name, None, None, *msg).id(Id::named(*id))).collect();
         let top = if self.covers { ui.insets().top } else { 0 };
         ui.column([header, ui.scroll(ui.column(items)).grow(1)])
             .padding_each(0, top, 0, 0)

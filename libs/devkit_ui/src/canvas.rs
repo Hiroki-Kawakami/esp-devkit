@@ -11,9 +11,6 @@ use idf::heap::Caps;
 use crate::paint::{Effects, dim};
 use crate::theme::{Palette, Theme};
 
-/// Which `Ui::canvas` of a component is being drawn.
-pub type CanvasId = u16;
-
 /// Records a canvas's drawing, in its own coordinates and clipped to it.
 pub struct Canvas<'a, 'f> {
     pub(crate) list: &'f mut DisplayList<'a, Caps>,

@@ -4,7 +4,7 @@
  */
 
 use crate::erased::Erased;
-use crate::node::{NONE, NodeId};
+use crate::node::{NONE, NodeIndex};
 use crate::tree::{Contact, TAP_SLOP, Tree};
 
 const DOUBLE_TAP_MS: u32 = 300;
@@ -89,7 +89,7 @@ struct Waiting {
 
 /// One node's fingers. It outlives them while a first tap waits for a second.
 pub(crate) struct Tracker {
-    node: NodeId,
+    node: NodeIndex,
     fingers: u8,
     tracks: [u8; 2],
     mode: Mode,
@@ -127,20 +127,20 @@ fn atan2(y: f32, x: f32) -> f32 {
 }
 
 impl Tree {
-    fn tracker_of(&self, node: NodeId) -> Option<usize> {
+    fn tracker_of(&self, node: NodeIndex) -> Option<usize> {
         self.trackers.iter().position(|t| t.node == node)
     }
 
-    pub(crate) fn gestures_of(&self, node: NodeId) -> Gestures {
+    pub(crate) fn gestures_of(&self, node: NodeIndex) -> Gestures {
         self.nodes[node as usize].gestures.map_or(Gestures::empty(), |g| g.gestures)
     }
 
-    fn local(&self, node: NodeId, point: (i16, i16)) -> (i16, i16) {
+    fn local(&self, node: NodeIndex, point: (i16, i16)) -> (i16, i16) {
         let screen = self.nodes[node as usize].screen;
         (point.0 - screen.x, point.1 - screen.y)
     }
 
-    fn emit(&mut self, node: NodeId, gesture: Gesture) {
+    fn emit(&mut self, node: NodeIndex, gesture: Gesture) {
         let node = &self.nodes[node as usize];
         let Some(map) = node.gestures else { return };
         let msg = unsafe { (map.call)(map.function, gesture) };
@@ -162,7 +162,7 @@ impl Tree {
         }
     }
 
-    pub(crate) fn node_holds_fingers(&self, node: NodeId) -> bool {
+    pub(crate) fn node_holds_fingers(&self, node: NodeIndex) -> bool {
         self.tracker_of(node).is_some_and(|i| self.trackers[i].fingers > 0)
     }
 
@@ -190,7 +190,7 @@ impl Tree {
 
     /// A second finger landing on a node that takes two. It stops whatever the
     /// first finger was doing there.
-    pub(crate) fn join_gesture(&mut self, node: NodeId, track: u8, point: (i16, i16)) -> bool {
+    pub(crate) fn join_gesture(&mut self, node: NodeIndex, track: u8, point: (i16, i16)) -> bool {
         let gestures = self.gestures_of(node);
         let Some(index) = self.tracker_of(node) else { return false };
         let tracker = &self.trackers[index];
@@ -229,14 +229,14 @@ impl Tree {
     }
 
     /// Reports the start of a pinch once its second contact is in place.
-    pub(crate) fn gesture_joined(&mut self, node: NodeId) {
+    pub(crate) fn gesture_joined(&mut self, node: NodeIndex) {
         let Some(index) = self.tracker_of(node) else { return };
         for gesture in self.pinch_events(index, Phase::Began).into_iter().flatten() {
             self.emit(node, gesture);
         }
     }
 
-    pub(crate) fn gesture_pressed(&mut self, node: NodeId, track: u8, point: (i16, i16), now_ms: u32) {
+    pub(crate) fn gesture_pressed(&mut self, node: NodeIndex, track: u8, point: (i16, i16), now_ms: u32) {
         if node == NONE {
             return;
         }
@@ -440,7 +440,7 @@ impl Tree {
         }
     }
 
-    pub(crate) fn forget_gestures(&mut self, node: NodeId) {
+    pub(crate) fn forget_gestures(&mut self, node: NodeIndex) {
         self.trackers.retain(|t| t.node != node);
         for contact in &mut self.contacts {
             if contact.gesture == node {

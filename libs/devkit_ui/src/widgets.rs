@@ -12,6 +12,7 @@ use alloc::vec::Vec;
 use devkit_gfx::Rect;
 
 use crate::app::Handle;
+use crate::id;
 use crate::component::{Component, Cx};
 use crate::element::{Children, Drag, Element, Ui};
 use crate::presence::Presence;
@@ -74,7 +75,7 @@ pub fn top_bar<'a, M: Copy + 'static>(ui: &'a Ui<M>, back: Option<M>, title: &'a
                 .align(Align::Center)
                 .role(Role::Button)
                 .on_tap(msg)
-                .id("back")
+                .id(id!("back"))
                 .part_of(Part::Back);
             ui.row([button]).grow(1)
         }
@@ -210,7 +211,7 @@ impl<M: Copy + 'static> Component for DropdownMenu<M> {
         let t = &widgets.dropdown_menu;
         let height = self.options.len() as i16 * widgets.dropdown.height;
         let rows: Vec<_> = self.options.iter().enumerate().map(|(i, label)| dropdown_row(ui, label, t.item, ui.empty()).selected(i == self.selected).on_tap(i)).collect();
-        anchored(ui, self.anchor, (self.anchor.w, height), ui.column(rows).style(t.root).width(self.anchor.w).clip().id("dropdown-menu"))
+        anchored(ui, self.anchor, (self.anchor.w, height), ui.column(rows).style(t.root).width(self.anchor.w).clip().id(id!("dropdown-menu")))
     }
 }
 
@@ -310,7 +311,7 @@ impl<M: Copy + 'static> Component for Menu<M> {
         let t = &widgets.menu;
         let height = self.items.len() as i16 * widgets.menu_item.height + 2 * t.padding_y;
         let rows: Vec<_> = self.items.iter().map(|(label, msg)| menu_item(ui, label, *msg)).collect();
-        anchored(ui, self.anchor, (t.width, height), ui.column(rows).style(t.panel).part_of(Part::Panel).id("menu"))
+        anchored(ui, self.anchor, (t.width, height), ui.column(rows).style(t.panel).part_of(Part::Panel).id(id!("menu")))
     }
 }
 

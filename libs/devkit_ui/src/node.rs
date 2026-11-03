@@ -11,12 +11,11 @@ use devkit_gfx::{Color, FontChain, Image, Rect, TextOptions, TextRun};
 use idf::heap::Caps;
 
 use crate::animate::Fades;
-use crate::component::ListId;
-use crate::canvas::CanvasId;
 use crate::external::ExternalSurface;
-use crate::element::{DragMap, Edit, InputMap, ScrollMap, SizeMap};
+use crate::element::{DragMap, DrawMap, Edit, InputMap, RowMap, ScrollMap, SizeMap};
 use crate::erased::Erased;
 use crate::gesture::GestureMap;
+use crate::id::Id;
 use crate::keyboard::{InputKind, Keyboard};
 use crate::nav::NavigatorNode;
 use crate::presence::{Pose, Presence};
@@ -25,8 +24,8 @@ use crate::style::{Prop, Role, State, Style};
 
 const CARET_WIDTH: i16 = 2;
 
-pub(crate) type NodeId = u32;
-pub(crate) const NONE: NodeId = u32::MAX;
+pub(crate) type NodeIndex = u32;
+pub(crate) const NONE: NodeIndex = u32::MAX;
 
 pub(crate) struct TextNode {
     pub(crate) font: &'static FontChain,
@@ -90,19 +89,19 @@ pub(crate) struct ScrollNode {
 }
 
 pub(crate) struct ListNode {
-    pub(crate) id: ListId,
+    pub(crate) row: RowMap,
     pub(crate) count: usize,
     pub(crate) row_height: i16,
     pub(crate) revision: Option<u32>,
     pub(crate) offset: i32,
     /// Row index and node of what exists, in row order.
-    pub(crate) rows: Vec<(u32, NodeId), Caps>,
+    pub(crate) rows: Vec<(u32, NodeIndex), Caps>,
     /// The owner's view ran, so the rows must be built again.
     pub(crate) stale: bool,
 }
 
 pub(crate) struct CanvasNode {
-    pub(crate) id: CanvasId,
+    pub(crate) draw: DrawMap,
     pub(crate) reported: (i16, i16),
 }
 
@@ -143,11 +142,10 @@ pub(crate) struct Node {
     /// `style` before that, while it differs.
     pub(crate) base: Option<Box<Style, Caps>>,
     pub(crate) when: Vec<(State, Prop), Caps>,
-    pub(crate) parent: NodeId,
-    pub(crate) first_child: NodeId,
-    pub(crate) next: NodeId,
-    pub(crate) key: Option<u32>,
-    pub(crate) id: Option<&'static str>,
+    pub(crate) parent: NodeIndex,
+    pub(crate) first_child: NodeIndex,
+    pub(crate) next: NodeIndex,
+    pub(crate) id: Option<Id>,
     pub(crate) role: Role,
     pub(crate) owner: u16,
     pub(crate) tap: Option<Erased>,
@@ -209,7 +207,6 @@ impl Node {
             parent: NONE,
             first_child: NONE,
             next: NONE,
-            key: None,
             id: None,
             role: Role::None,
             owner,

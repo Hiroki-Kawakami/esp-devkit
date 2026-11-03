@@ -5,7 +5,7 @@
 
 use devkit_gfx::{Align as TextAlign, Rect};
 
-use crate::node::{NONE, NodeContent, NodeId};
+use crate::node::{NONE, NodeContent, NodeIndex};
 use crate::style::{Align, Animated, Dimension, Direction, Justify, Style};
 use crate::tree::Tree;
 
@@ -35,23 +35,23 @@ fn offer(limit: i16, max: i16) -> i16 {
 
 impl Tree {
     /// The next child after `child` that is in the flow.
-    fn flow(&self, mut child: NodeId) -> NodeId {
+    fn flow(&self, mut child: NodeIndex) -> NodeIndex {
         while child != NONE && (self.nodes[child as usize].style.absolute.is_some() || self.nodes[child as usize].leaving) {
             child = self.nodes[child as usize].next;
         }
         child
     }
 
-    fn first_flow(&self, id: NodeId) -> NodeId {
+    fn first_flow(&self, id: NodeIndex) -> NodeIndex {
         self.flow(self.nodes[id as usize].first_child)
     }
 
-    fn next_flow(&self, id: NodeId) -> NodeId {
+    fn next_flow(&self, id: NodeIndex) -> NodeIndex {
         self.flow(self.nodes[id as usize].next)
     }
 
     /// The size `id` wants within the limits.
-    pub(crate) fn measure(&mut self, id: NodeId, avail_w: i16, avail_h: i16) -> (i16, i16) {
+    pub(crate) fn measure(&mut self, id: NodeIndex, avail_w: i16, avail_h: i16) -> (i16, i16) {
         let node = &self.nodes[id as usize];
         if let Some((w, h, mw, mh)) = node.measured
             && w == avail_w
@@ -92,7 +92,7 @@ impl Tree {
         (width, height)
     }
 
-    fn measure_text(&mut self, id: NodeId, width: i16) -> (i16, i16) {
+    fn measure_text(&mut self, id: NodeIndex, width: i16) -> (i16, i16) {
         let NodeContent::Text(text) = &mut self.nodes[id as usize].content else { return (0, 0) };
         // Narrower than laid out but still fitting: the same glyphs.
         let fits = text.options.align == TextAlign::Start
@@ -106,7 +106,7 @@ impl Tree {
         (text.run.width(), text.run.height())
     }
 
-    fn measure_box(&mut self, id: NodeId, style: &Style, content_w: i16, content_h: i16) -> (i16, i16) {
+    fn measure_box(&mut self, id: NodeIndex, style: &Style, content_w: i16, content_h: i16) -> (i16, i16) {
         match style.direction {
             Direction::Column => self.solve_axis(id, style, content_h, content_w, true),
             Direction::Row => self.solve_axis(id, style, content_w, content_h, false),
@@ -130,7 +130,7 @@ impl Tree {
     }
 
     /// Gives `id` its rectangle, relative to the parent's content.
-    pub(crate) fn arrange(&mut self, id: NodeId, rect: Rect) {
+    pub(crate) fn arrange(&mut self, id: NodeIndex, rect: Rect) {
         let old = core::mem::replace(&mut self.nodes[id as usize].rect, rect);
         let style = self.nodes[id as usize].style;
         if style.eases(Animated::POSITION) {
@@ -183,7 +183,7 @@ impl Tree {
         self.arrange_absolute(id, rect);
     }
 
-    fn arrange_absolute(&mut self, id: NodeId, parent: Rect) {
+    fn arrange_absolute(&mut self, id: NodeIndex, parent: Rect) {
         let mut child = self.nodes[id as usize].first_child;
         while child != NONE {
             let node = &self.nodes[child as usize];
@@ -208,7 +208,7 @@ impl Tree {
         }
     }
 
-    fn arrange_box(&mut self, id: NodeId, style: &Style, content: Rect) {
+    fn arrange_box(&mut self, id: NodeIndex, style: &Style, content: Rect) {
         match style.direction {
             Direction::Column => self.arrange_axis(id, style, content, true),
             Direction::Row => self.arrange_axis(id, style, content, false),
@@ -248,7 +248,7 @@ impl Tree {
     /// space goes to the growing ones, and those are measured again, which is
     /// where wrapped text gets its height. Returns the size of the flow, in
     /// the box's (width, height).
-    fn solve_axis(&mut self, id: NodeId, style: &Style, main: i16, cross: i16, vertical: bool) -> (i16, i16) {
+    fn solve_axis(&mut self, id: NodeIndex, style: &Style, main: i16, cross: i16, vertical: bool) -> (i16, i16) {
         let gap = if vertical { style.gap_y } else { style.gap_x };
         let (mut used, mut count, mut grow, mut shrink_total) = (0i32, 0i32, 0u32, 0i64);
         let mut child = self.first_flow(id);
@@ -306,7 +306,7 @@ impl Tree {
         if vertical { (across, total) } else { (total, across) }
     }
 
-    fn arrange_axis(&mut self, id: NodeId, style: &Style, content: Rect, vertical: bool) {
+    fn arrange_axis(&mut self, id: NodeIndex, style: &Style, content: Rect, vertical: bool) {
         let (main, cross) = if vertical { (content.h, content.w) } else { (content.w, content.h) };
         let gap = if vertical { style.gap_y } else { style.gap_x };
         let (solved_w, solved_h) = self.solve_axis(id, style, main, cross, vertical);

@@ -9,6 +9,7 @@ use devkit_gfx::FontChain;
 
 use crate::component::{Child, Component, Cx};
 use crate::element::{Element, Ui};
+use crate::id;
 use crate::presence::{Edge, Presence};
 use crate::style::{Align, Justify, Role, StateStyle};
 use crate::text_buffer::TextInput;
@@ -291,7 +292,7 @@ impl Component for KeyboardPanel {
                 ui.row(items).gap(k.gap).height(height)
             })
             .collect();
-        let panel = ui.column(rows).height(panel_height).gap(k.gap).padding(k.gap).style(k.root).keep_focus().on_tap(KeyboardMsg::Panel).id("keyboard");
+        let panel = ui.column(rows).height(panel_height).gap(k.gap).padding(k.gap).style(k.root).keep_focus().on_tap(KeyboardMsg::Panel).id(id!("keyboard"));
         match self.width {
             Some(width) => panel.width(width),
             None => panel.absolute(Some(0), None, Some(0), Some(0)).appear(Presence::from_edge(Edge::Bottom)),

@@ -27,13 +27,15 @@ impl Component for FileBrowser {
         ui.column([
             ui.row([
                 ui.text(&TITLE, "Download").foreground(INK).grow(1),
-                ui.icon(&ICONS, icons::MORE).id("more").on_tap(Msg::OpenMenu),
+                ui.icon(&ICONS, icons::MORE).id(id!("more")).on_tap(Msg::OpenMenu),
             ]).height(80).align(Align::Center),
-            ui.list(0, self.names.len(), 80).grow(1),
+            ui.list(self.names.len(), 80, Self::row).grow(1),
         ])
     }
+}
 
-    fn list_row<'a>(&'a self, _list: ListId, i: usize, ui: &'a Ui<Msg>) -> Element<'a, Msg> {
+impl FileBrowser {
+    fn row<'a>(&'a self, i: usize, ui: &'a Ui<Msg>) -> Element<'a, Msg> {
         ui.row([ui.text(&BODY, &self.names[i])]).on_tap(Msg::Open(i as u16))
     }
 }
@@ -54,16 +56,25 @@ app.run();
   images, `scroll` and `list`.
 - `on_scroll` reports a scroller's offset as it moves, below 0 or above the end
   while it is stretched past one. `scroll_border(id)` shows a divider under a
-  node while the scroller named `id` is past its start, without a message or a
-  rebuild.
+  node while the scroller with that id is past its start, without a message
+  or a rebuild.
 - A scroller dragged past an end stretches and springs back, and a fling into
   an end overshoots; `.bounce(false)` holds the ends, and content that fits
   never bounces. `.pull(height, refreshing, msg)` sends `msg` when let go
   `height` past the start and stays that far open until a view gives
   `refreshing` false; the indicator is the app's, drawn from `on_scroll`.
-- `list` builds only the rows in view, through `Component::list_row`. Scrolling
-  moves the rows without running `view`. A rebuild of the owner rebuilds them,
-  unless `revision` is given and did not change.
+- `list` builds only the rows in view, through the row function given to it: a
+  method of the component whose view holds the list, as a function pointer, so
+  it can be called after the view is gone. Scrolling moves the rows without
+  running `view`. A rebuild of the owner rebuilds them, unless `revision` is
+  given and did not change. A list keeps its scroll position while its screen
+  is covered only if it has an id.
+- `.id` names a node. Among its siblings it matches the node of the last
+  rebuild with the same id, and a different id makes a new node. `id!("name")`
+  hashes a literal at compile time and keeps the name for `ui tree`;
+  `Id::named` does the same for a `&'static str` from a table, `Id::of` for a
+  string made at run time, and a number is an id as it is. `cx.focus`,
+  `cx.animate`, `cx.redraw` and `ui tap` find nodes by it.
 - `app.handle()` and `cx.handle()` give a `Handle`, whose `post` reaches that
   component from any task. Its `update` runs even while a screen covers it, and
   the next `view` shows the result; a message for a closed screen is dropped.
@@ -277,8 +288,8 @@ app.run();
 
   `from_edge` starts just past that edge of the screen wherever the node is.
   `Presence::none()` comes or goes at once, and 200 ms is the default length.
-  Siblings without a `key` match by place, so one that comes and goes among
-  them needs a `key`. `scale` draws an RGB565 picture of the node at half its
+  Siblings without an `id` match by place, so one that comes and goes among
+  them needs an `id`. `scale` draws an RGB565 picture of the node at half its
   size, taken when it starts; without memory for it the node moves unscaled,
   with a warning.
 
@@ -343,12 +354,12 @@ config.plugins.push(Box::new(SavedColorMode::new()));
 - Text comes through one path: the on-screen keyboard and `App::input` (a
   physical keyboard, a test harness) both reach the focused node as `TextInput`.
   A tap on another node ends the input unless it has `.keep_focus()`;
-  `cx.focus("id")` moves the focus from `update`.
+  `cx.focus(id!("name"))` moves the focus from `update`.
 - `TextBuffer` stays with the caller, which applies what the input reports.
   `Enter` and `Custom` are left to it. The caret blinks without a view.
 
   ```rust
-  text_field(ui, &self.name, Msg::Name).placeholder("Name").id("name")
+  text_field(ui, &self.name, Msg::Name).placeholder("Name").id(id!("name"))
   text_field(ui, &self.pin, Msg::Pin).input(InputKind::Number)
   // Msg::Name(input) => { self.name.apply(input); cx.rebuild(); }
   ```
@@ -387,15 +398,16 @@ config.plugins.push(Box::new(SavedColorMode::new()));
 
 ## Canvas
 
-- `ui.canvas(id)` is a node painted by `Component::draw`, in its own coordinates
-  and clipped to it. `cx.redraw(id)` and `cx.redraw_rect(id, rect)` repaint it
-  without a view or layout; `canvas.needs(rect)` tells what this frame repaints,
-  across framebuffers, so the rest need not be recorded.
+- `ui.canvas(draw)` is a node painted by `draw`, a method of the component
+  whose view holds it, in its own coordinates and clipped to it.
+  `cx.redraw(id)` and `cx.redraw_rect(id, rect)` repaint it without a view or
+  layout; `canvas.needs(rect)` tells what this frame repaints, across
+  framebuffers, so the rest need not be recorded.
 
   ```rust
-  ui.canvas(TERMINAL).grow(1).id("term").on_size(Msg::Resized).on_input(Msg::Key)
+  ui.canvas(Self::draw_terminal).grow(1).id(id!("term")).on_size(Msg::Resized).on_input(Msg::Key)
 
-  fn draw<'a>(&'a self, _: CanvasId, canvas: &mut Canvas<'a, '_>) {
+  fn draw_terminal<'a>(&'a self, canvas: &mut Canvas<'a, '_>) {
       for (row, run) in self.rows.iter().enumerate() {
           let rect = Rect::new(0, row as i16 * LINE, canvas.size().0, LINE);
           if canvas.needs(rect) {

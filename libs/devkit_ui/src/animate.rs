@@ -8,7 +8,7 @@ use alloc::boxed::Box;
 use devkit_gfx::Color;
 
 use crate::motion::{Clock, Motion, MotionKind};
-use crate::node::NodeId;
+use crate::node::NodeIndex;
 use crate::style::{Animated, Style};
 use crate::tree::Tree;
 
@@ -94,7 +94,7 @@ fn retarget(slot: &mut Option<Fade<Color>>, from: Option<Color>, to: Option<Colo
 impl Tree {
     /// The node's style just changed from `old`. A node not placed yet has
     /// nothing to come from.
-    pub(crate) fn ease_style(&mut self, id: NodeId, old: &Style) {
+    pub(crate) fn ease_style(&mut self, id: NodeIndex, old: &Style) {
         let node = &mut self.nodes[id as usize];
         let style = node.style;
         let background = old.background != style.background;
@@ -163,7 +163,7 @@ impl Tree {
         }
     }
 
-    pub(crate) fn end_fade(&mut self, id: NodeId, channel: Channel) {
+    pub(crate) fn end_fade(&mut self, id: NodeIndex, channel: Channel) {
         let node = &mut self.nodes[id as usize];
         node.paint_dirty = true;
         let Some(fades) = &mut node.fades else { return };

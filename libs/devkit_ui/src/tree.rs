@@ -24,12 +24,13 @@ use crate::bump::Bump;
 use crate::component::{Animation, AnyHost, EventMap, Hook, Host, Property, RenderRequest, Requests, Screen, screen_host};
 use crate::element::{BuildContext, Content, Drag, Element};
 use crate::gesture::{Gestures, Tracker};
+use crate::id::Id;
 use crate::external::ExternalSurface;
 use crate::keyboard::{InputKind, KeyboardMode, KeyboardPanel};
 use crate::erased::Erased;
 use crate::motion::{Clock, Motion, MotionKind};
 use crate::nav::{NavigatorNode, Overlay, Root, Saved};
-use crate::node::{CanvasNode, ListNode, NONE, Node, NodeContent, NodeId, Pull, ScrollNode, TextNode};
+use crate::node::{CanvasNode, ListNode, NONE, Node, NodeContent, NodeIndex, Pull, ScrollNode, TextNode};
 use crate::presenter::{ROW_GRID, Strips};
 use crate::progress::ProgressNode;
 use crate::style::{Dimension, Insets, Role, ScreenStyle, State, Style};
@@ -62,7 +63,7 @@ const REPEAT_EVERY_MS: u32 = 60;
 
 pub(crate) struct Slot {
     pub(crate) host: Option<Box<dyn AnyHost>>,
-    pub(crate) node: NodeId,
+    pub(crate) node: NodeIndex,
     pub(crate) events: Option<EventMap>,
     pub(crate) theme: &'static Theme,
 }
@@ -78,10 +79,10 @@ pub(crate) struct Contact {
     pub(crate) last: (i16, i16),
     /// When the contact last moved; a sample at the same place is not news.
     last_ms: u32,
-    pub(crate) tap: NodeId,
-    pub(crate) scroller: NodeId,
-    drag: NodeId,
-    pub(crate) gesture: NodeId,
+    pub(crate) tap: NodeIndex,
+    pub(crate) scroller: NodeIndex,
+    drag: NodeIndex,
+    pub(crate) gesture: NodeIndex,
     /// Nothing nearer to the finger takes a pan.
     pub(crate) pan: bool,
     pub(crate) dragging: bool,
@@ -94,10 +95,10 @@ pub(crate) struct Contact {
 
 #[derive(Clone, Copy)]
 pub(crate) struct Hit {
-    pub(crate) tap: NodeId,
-    scroller: NodeId,
-    drag: NodeId,
-    gesture: NodeId,
+    pub(crate) tap: NodeIndex,
+    scroller: NodeIndex,
+    drag: NodeIndex,
+    gesture: NodeIndex,
 }
 
 const NO_HIT: Hit = Hit { tap: NONE, scroller: NONE, drag: NONE, gesture: NONE };
@@ -191,32 +192,32 @@ fn exp_neg(x: f32) -> f32 {
 /// Everything below the display: components, nodes, layout and gestures.
 pub(crate) struct Tree {
     pub(crate) nodes: Vec<Node, Caps>,
-    free: Vec<NodeId>,
-    pub(crate) root: NodeId,
+    free: Vec<NodeIndex>,
+    pub(crate) root: NodeIndex,
     pub(crate) area: Rect,
     pub(crate) slots: Vec<Slot>,
-    lists: Vec<NodeId>,
-    canvases: Vec<NodeId>,
-    external: NodeId,
+    lists: Vec<NodeIndex>,
+    canvases: Vec<NodeIndex>,
+    external: NodeIndex,
     pub(crate) external_split: Cell<usize>,
     /// A navigator, and where the display list is once it is painted.
-    pub(crate) zoom_split: Cell<(NodeId, usize)>,
-    pending_redraw: Vec<(&'static str, Option<Rect>)>,
+    pub(crate) zoom_split: Cell<(NodeIndex, usize)>,
+    pending_redraw: Vec<(Id, Option<Rect>)>,
     format: ImageFormat,
-    pub(crate) navigators: Vec<NodeId>,
-    pub(crate) root_navigator: NodeId,
+    pub(crate) navigators: Vec<NodeIndex>,
+    pub(crate) root_navigator: NodeIndex,
     pub(crate) chrome: Vec<u16>,
-    pub(crate) popups: NodeId,
-    pub(crate) overlay: NodeId,
+    pub(crate) popups: NodeIndex,
+    pub(crate) overlay: NodeIndex,
     /// The scrim's alpha as last painted.
     pub(crate) scrim: u8,
     pub(crate) motions: Vec<Motion>,
     pub(crate) ended_motions: Vec<Motion>,
     pub(crate) ticking: bool,
     /// Created with `.appear`, waiting to be placed.
-    pub(crate) presence_pending: Vec<NodeId>,
+    pub(crate) presence_pending: Vec<NodeIndex>,
     /// Painted for a picture, as if shown.
-    pub(crate) capturing: Cell<NodeId>,
+    pub(crate) capturing: Cell<NodeIndex>,
 
     pub(crate) restoring: Vec<Saved>,
     pub(crate) theme: &'static Theme,
@@ -227,9 +228,9 @@ pub(crate) struct Tree {
     /// How tall the chrome came out, the top inset of what is under it.
     chrome_height: i16,
     pub(crate) render_request: Option<(u16, RenderRequest)>,
-    pending_animations: Vec<(&'static str, Animation)>,
-    pending_focus: Option<&'static str>,
-    focus: NodeId,
+    pending_animations: Vec<(Id, Animation)>,
+    pending_focus: Option<Id>,
+    focus: NodeIndex,
     keyboard_changed: bool,
     caret_on: bool,
     caret_ms: u32,
@@ -331,7 +332,7 @@ impl Tree {
     }
 
     /// Stacks a child over the whole area, above the planes so far.
-    fn add_plane(&mut self, node: NodeId) {
+    fn add_plane(&mut self, node: NodeIndex) {
         self.nodes[node as usize].style.absolute = Some(crate::style::Inset {
             left: Some(0),
             top: Some(0),
@@ -392,7 +393,7 @@ impl Tree {
         }
     }
 
-    fn plane_of(&self, slot: u16) -> NodeId {
+    fn plane_of(&self, slot: u16) -> NodeIndex {
         let mut plane = self.slots[usize::from(slot)].node;
         while plane != NONE && self.nodes[plane as usize].parent != self.root {
             plane = self.nodes[plane as usize].parent;
@@ -412,7 +413,7 @@ impl Tree {
         if below == NONE { 0 } else { rank }
     }
 
-    fn is_chrome(&self, node: NodeId) -> bool {
+    fn is_chrome(&self, node: NodeIndex) -> bool {
         self.chrome.iter().any(|&c| self.slots[usize::from(c)].node == node)
     }
 
@@ -504,7 +505,7 @@ impl Tree {
         NonNull::from(&*self.bump)
     }
 
-    pub(crate) fn alloc_node(&mut self, node: Node) -> NodeId {
+    pub(crate) fn alloc_node(&mut self, node: Node) -> NodeIndex {
         match self.free.pop() {
             Some(id) => {
                 self.nodes[id as usize] = node;
@@ -512,12 +513,12 @@ impl Tree {
             }
             None => {
                 self.nodes.push(node);
-                (self.nodes.len() - 1) as NodeId
+                (self.nodes.len() - 1) as NodeIndex
             }
         }
     }
 
-    pub(crate) fn free_subtree(&mut self, id: NodeId) {
+    pub(crate) fn free_subtree(&mut self, id: NodeIndex) {
         let mut child = self.nodes[id as usize].first_child;
         while child != NONE {
             let next = self.nodes[child as usize].next;
@@ -584,13 +585,13 @@ impl Tree {
     }
 
     /// Makes `element` the only child of `parent`.
-    pub(crate) fn reconcile<M: Copy>(&mut self, owner: u16, parent: NodeId, element: &Element<'_, M>) {
+    pub(crate) fn reconcile<M: Copy>(&mut self, owner: u16, parent: NodeIndex, element: &Element<'_, M>) {
         self.reconcile_children(owner, parent, slice::from_ref(element));
     }
 
-    fn matches<M: Copy>(&mut self, id: NodeId, element: &Element<'_, M>) -> bool {
+    fn matches<M: Copy>(&mut self, id: NodeIndex, element: &Element<'_, M>) -> bool {
         let node = &self.nodes[id as usize];
-        if node.key != element.key || node.leaving {
+        if node.id != element.id || node.leaving {
             return false;
         }
         match (&node.content, &element.content) {
@@ -603,10 +604,10 @@ impl Tree {
     }
 
     /// The common case of the same children in the same places.
-    fn reconcile_in_place<M: Copy>(&mut self, owner: u16, parent: NodeId, elements: &[Element<'_, M>]) -> bool {
+    fn reconcile_in_place<M: Copy>(&mut self, owner: u16, parent: NodeIndex, elements: &[Element<'_, M>]) -> bool {
         let mut child = self.nodes[parent as usize].first_child;
         for element in elements.iter().filter(|e| !e.is_empty()) {
-            if child == NONE || element.key.is_some() || !self.matches(child, element) {
+            if child == NONE || !self.matches(child, element) {
                 return false;
             }
             child = self.nodes[child as usize].next;
@@ -622,7 +623,7 @@ impl Tree {
         true
     }
 
-    fn reconcile_children<M: Copy>(&mut self, owner: u16, parent: NodeId, elements: &[Element<'_, M>]) {
+    fn reconcile_children<M: Copy>(&mut self, owner: u16, parent: NodeIndex, elements: &[Element<'_, M>]) {
         if self.reconcile_in_place(owner, parent, elements) {
             return;
         }
@@ -637,10 +638,10 @@ impl Tree {
         let mut cursor = 0;
         let mut new = Vec::with_capacity(elements.len());
         for element in elements.iter().filter(|e| !e.is_empty()) {
-            let found = if element.key.is_some() {
-                old.iter().position(|&id| id != NONE && self.nodes[id as usize].key == element.key)
+            let found = if element.id.is_some() {
+                old.iter().position(|&id| id != NONE && self.nodes[id as usize].id == element.id)
             } else {
-                while cursor < old.len() && (old[cursor] == NONE || self.nodes[old[cursor] as usize].key.is_some()) {
+                while cursor < old.len() && (old[cursor] == NONE || self.nodes[old[cursor] as usize].id.is_some()) {
                     cursor += 1;
                 }
                 (cursor < old.len()).then_some(cursor)
@@ -683,7 +684,7 @@ impl Tree {
     // at every level of a tree.
     /// Makes `node.style` what `base` comes to in the node's state.
     #[inline(never)]
-    fn restyle(&mut self, id: NodeId, base: Style) {
+    fn restyle(&mut self, id: NodeIndex, base: Style) {
         let node = &mut self.nodes[id as usize];
         let mut style = base;
         let selected = style.resolve(node.state, &node.when);
@@ -709,7 +710,7 @@ impl Tree {
 
     /// Brings a node's state and style up to date with `own_state` and
     /// `source_state`, and passes the state on.
-    fn update_state(&mut self, id: NodeId) {
+    fn update_state(&mut self, id: NodeIndex) {
         let node = &mut self.nodes[id as usize];
         let state = node.own_state | node.source_state;
         if state == node.state {
@@ -724,7 +725,7 @@ impl Tree {
         }
     }
 
-    fn pass_state(&mut self, id: NodeId, state: State) {
+    fn pass_state(&mut self, id: NodeIndex, state: State) {
         let owner = self.nodes[id as usize].owner;
         let mut child = self.nodes[id as usize].first_child;
         while child != NONE {
@@ -741,12 +742,12 @@ impl Tree {
         }
     }
 
-    fn set_state(&mut self, id: NodeId, state: State, on: bool) {
+    fn set_state(&mut self, id: NodeIndex, state: State, on: bool) {
         self.nodes[id as usize].own_state.set(state, on);
         self.update_state(id);
     }
 
-    fn reconcile_inside<M: Copy>(&mut self, owner: u16, id: NodeId, element: &Element<'_, M>) {
+    fn reconcile_inside<M: Copy>(&mut self, owner: u16, id: NodeIndex, element: &Element<'_, M>) {
         let saved = self.source;
         if element.state_source {
             self.source = self.nodes[id as usize].state;
@@ -755,10 +756,9 @@ impl Tree {
         self.source = saved;
     }
 
-    fn apply_common<M: Copy>(&mut self, id: NodeId, element: &Element<'_, M>) {
+    fn apply_common<M: Copy>(&mut self, id: NodeIndex, element: &Element<'_, M>) {
         let source = self.source;
         let node = &mut self.nodes[id as usize];
-        node.key = element.key;
         node.id = element.id;
         node.role = element.role;
         node.tap = element.tap;
@@ -788,7 +788,7 @@ impl Tree {
         self.sync_pull(id, element.pull);
     }
 
-    fn update_node<M: Copy>(&mut self, owner: u16, id: NodeId, element: &Element<'_, M>) {
+    fn update_node<M: Copy>(&mut self, owner: u16, id: NodeIndex, element: &Element<'_, M>) {
         self.apply_common(id, element);
         self.nodes[id as usize].owner = owner;
         let node = &mut self.nodes[id as usize];
@@ -840,9 +840,9 @@ impl Tree {
                     *surface = (*new).clone();
                 }
             }
-            (NodeContent::Canvas(canvas), Content::Canvas(canvas_id)) => {
-                node.paint_dirty |= canvas.id != *canvas_id;
-                canvas.id = *canvas_id;
+            (NodeContent::Canvas(canvas), Content::Canvas(draw)) => {
+                node.paint_dirty |= canvas.draw.function != draw.function;
+                canvas.draw = *draw;
             }
             (NodeContent::Progress(progress), Content::Progress { gauge, value, period_ms }) => {
                 let changed = progress.gauge != *gauge || progress.value != *value || progress.period_ms != *period_ms;
@@ -852,8 +852,9 @@ impl Tree {
                     self.sync_progress(id);
                 }
             }
-            (NodeContent::List(list), Content::List { id: list_id, count, row_height, revision }) => {
-                list.stale |= revision.is_none() || *revision != list.revision;
+            (NodeContent::List(list), Content::List { count, row_height, revision, row }) => {
+                list.stale |= revision.is_none() || *revision != list.revision || list.row.function != row.function;
+                list.row = *row;
                 list.revision = *revision;
                 if list.count != *count || list.row_height != *row_height {
                     list.count = *count;
@@ -861,7 +862,6 @@ impl Tree {
                     node.paint_dirty = true;
                     self.layout_dirty = true;
                 }
-                list.id = *list_id;
             }
             (NodeContent::Navigator(nav), Content::Navigator { split, transition, .. }) => {
                 nav.wanted = *split;
@@ -891,7 +891,7 @@ impl Tree {
     // Apart from create_node, which recurses: a `Node` is large, and would stay on
     // the stack at every level of a tree.
     #[inline(never)]
-    fn new_node<M: Copy>(&mut self, owner: u16, element: &Element<'_, M>) -> NodeId {
+    fn new_node<M: Copy>(&mut self, owner: u16, element: &Element<'_, M>) -> NodeIndex {
         let content = match element.content {
             Content::Empty | Content::Box => NodeContent::Box,
             Content::Text { font, text, options, edit } => {
@@ -902,10 +902,10 @@ impl Tree {
             }
             Content::Image { image, tint } => NodeContent::Image { image, tint },
             Content::Scroll => NodeContent::Scroll(ScrollNode { offset: 0, content: 0 }),
-            Content::List { id, count, row_height, revision } => {
-                NodeContent::List(ListNode { id, count, row_height, revision, offset: 0, rows: Vec::new_in(self.caps), stale: false })
+            Content::List { count, row_height, revision, row } => {
+                NodeContent::List(ListNode { row, count, row_height, revision, offset: 0, rows: Vec::new_in(self.caps), stale: false })
             }
-            Content::Canvas(id) => NodeContent::Canvas(CanvasNode { id, reported: (0, 0) }),
+            Content::Canvas(draw) => NodeContent::Canvas(CanvasNode { draw, reported: (0, 0) }),
             Content::External(surface) => NodeContent::External(surface.clone()),
             Content::Progress { gauge, value, period_ms } => NodeContent::Progress(ProgressNode::new(gauge, value, period_ms)),
             Content::Child(_) => NodeContent::Box,
@@ -922,7 +922,7 @@ impl Tree {
         id
     }
 
-    fn create_node<M: Copy>(&mut self, owner: u16, element: &Element<'_, M>) -> NodeId {
+    fn create_node<M: Copy>(&mut self, owner: u16, element: &Element<'_, M>) -> NodeIndex {
         let id = self.new_node(owner, element);
         if element.appear.is_some_and(|p| p.moves()) {
             self.presence_pending.push(id);
@@ -936,9 +936,9 @@ impl Tree {
                 }
                 self.external = id;
             }
-            Content::List { id: list_id, .. } => {
+            Content::List { .. } => {
                 self.lists.push(id);
-                let saved = self.restoring.last().and_then(|s| s.lists.iter().find(|l| l.0 == list_id));
+                let saved = element.id.and_then(|wanted| self.restoring.last().and_then(|s| s.lists.iter().find(|l| l.0 == wanted)));
                 if let (Some(&(_, offset)), NodeContent::List(list)) = (saved, &mut self.nodes[id as usize].content) {
                     list.offset = offset;
                 }
@@ -970,9 +970,9 @@ impl Tree {
     }
 
     /// Builds the rows a list shows, given its current size and offset.
-    fn sync_list(&mut self, id: NodeId) {
+    fn sync_list(&mut self, id: NodeIndex) {
         let NodeContent::List(list) = &mut self.nodes[id as usize].content else { return };
-        let (row_height, count, list_id) = (i32::from(list.row_height), list.count as i32, list.id);
+        let (row_height, count, row_map) = (i32::from(list.row_height), list.count as i32, list.row);
         let offset = list.offset;
         let stale = core::mem::take(&mut list.stale);
         let viewport = i32::from(self.nodes[id as usize].rect.h);
@@ -1006,7 +1006,7 @@ impl Tree {
                 let host = self.slots[usize::from(owner)].host.take();
                 if let Some(host) = host {
                     self.depth += 1;
-                    host.build_row(self, owner, list_id, index as usize, row);
+                    unsafe { (row_map.call)(row_map.function, host.component(), self, owner, index as usize, row) };
                     self.depth -= 1;
                     self.slots[usize::from(owner)].host = Some(host);
                 }
@@ -1023,7 +1023,7 @@ impl Tree {
         }
     }
 
-    fn clear_measured(&mut self, id: NodeId) {
+    fn clear_measured(&mut self, id: NodeIndex) {
         self.nodes[id as usize].measured = None;
         let mut child = self.nodes[id as usize].first_child;
         while child != NONE {
@@ -1165,10 +1165,10 @@ impl Tree {
             return;
         }
         self.apply_redraws();
-        if let Some(name) = self.pending_focus.take() {
-            match self.find(name) {
+        if let Some(target) = self.pending_focus.take() {
+            match self.find(target) {
                 Some(id) => self.set_focus(id),
-                None => idf::log::error!(c"ui", "focus: no node {name}"),
+                None => idf::log::error!(c"ui", "focus: no node {target:?}"),
             }
         }
         if core::mem::take(&mut self.keyboard_changed) {
@@ -1212,7 +1212,7 @@ impl Tree {
     }
 
     /// Whether the node itself draws anything, apart from what is in it.
-    fn paints(&self, id: NodeId) -> bool {
+    fn paints(&self, id: NodeIndex) -> bool {
         let node = &self.nodes[id as usize];
         let style = &node.style;
         style.background.is_some()
@@ -1231,7 +1231,7 @@ impl Tree {
     }
 
     /// Damages what `id` and what is in it drew, and nothing else.
-    pub(crate) fn damage_painted(&mut self, id: NodeId) {
+    pub(crate) fn damage_painted(&mut self, id: NodeIndex) {
         let node = &self.nodes[id as usize];
         if !node.screen.is_empty() && self.paints(id) {
             self.damage.push(node.screen.expand(Self::damage_extent(node)));
@@ -1249,20 +1249,20 @@ impl Tree {
     }
 
     #[cfg(test)]
-    pub(crate) fn dispatch_animation(&mut self, name: &'static str, animation: Animation) {
-        self.pending_animations.push((name, animation));
+    pub(crate) fn dispatch_animation(&mut self, target: impl Into<Id>, animation: Animation) {
+        self.pending_animations.push((target.into(), animation));
     }
 
     fn start_animations(&mut self) {
-        for (name, animation) in core::mem::take(&mut self.pending_animations) {
-            match self.find(name) {
+        for (target, animation) in core::mem::take(&mut self.pending_animations) {
+            match self.find(target) {
                 Some(id) => self.start_animation(id, animation),
-                None => idf::log::error!(c"ui", "animate: no node {name}"),
+                None => idf::log::error!(c"ui", "animate: no node {target:?}"),
             }
         }
     }
 
-    fn start_animation(&mut self, id: NodeId, animation: Animation) {
+    fn start_animation(&mut self, id: NodeIndex, animation: Animation) {
         self.stop_motions(id, |kind| matches!(kind, MotionKind::Value(a) if a.property == animation.property));
         self.motions.push(Motion::new(id, Some(Clock::once(u32::from(animation.duration_ms))), MotionKind::Value(animation)));
         self.apply_animation(self.motions.len() - 1);
@@ -1270,7 +1270,7 @@ impl Tree {
 
     /// Keeps the node where it shows, and lets it go to its new place. A node
     /// with no old place appears there.
-    pub(crate) fn ease_position(&mut self, id: NodeId, old: Rect, new: Rect) {
+    pub(crate) fn ease_position(&mut self, id: NodeIndex, old: Rect, new: Rect) {
         if old.is_empty() || self.resized {
             return;
         }
@@ -1297,7 +1297,7 @@ impl Tree {
         node.paint_dirty = true;
     }
 
-    pub(crate) fn end_animation(&mut self, id: NodeId, animation: &Animation) {
+    pub(crate) fn end_animation(&mut self, id: NodeIndex, animation: &Animation) {
         if animation.property == Property::Opacity {
             self.nodes[id as usize].opacity = (animation.to < 255).then_some(animation.to.clamp(0, 255) as u8);
         }
@@ -1338,9 +1338,9 @@ impl Tree {
     }
 
     fn apply_redraws(&mut self) {
-        for (name, rect) in core::mem::take(&mut self.pending_redraw) {
-            let Some(id) = self.find(name) else {
-                idf::log::error!(c"ui", "redraw: no node {name}");
+        for (target, rect) in core::mem::take(&mut self.pending_redraw) {
+            let Some(id) = self.find(target) else {
+                idf::log::error!(c"ui", "redraw: no node {target:?}");
                 continue;
             };
             let node = &self.nodes[id as usize];
@@ -1350,7 +1350,7 @@ impl Tree {
         }
     }
 
-    pub(crate) fn caret_visible(&self, id: NodeId) -> bool {
+    pub(crate) fn caret_visible(&self, id: NodeIndex) -> bool {
         self.focus == id && self.caret_on
     }
 
@@ -1358,7 +1358,7 @@ impl Tree {
         self.focus != NONE && matches!(&self.nodes[self.focus as usize].content, NodeContent::Text(text) if text.edit.is_some())
     }
 
-    fn set_focus(&mut self, id: NodeId) {
+    fn set_focus(&mut self, id: NodeIndex) {
         if self.focus == id {
             return;
         }
@@ -1453,7 +1453,7 @@ impl Tree {
         }
     }
 
-    fn sync_screen(&mut self, id: NodeId, dx: i32, dy: i32, clip: Rect, quiet: bool) {
+    fn sync_screen(&mut self, id: NodeIndex, dx: i32, dy: i32, clip: Rect, quiet: bool) {
         let paints = self.paints(id);
         let node = &mut self.nodes[id as usize];
         let (shift_x, shift_y) = node.shift();
@@ -1496,7 +1496,7 @@ impl Tree {
         }
     }
 
-    fn sync_children(&mut self, id: NodeId, dx: i32, dy: i32, clip: Rect, quiet: bool) {
+    fn sync_children(&mut self, id: NodeIndex, dx: i32, dy: i32, clip: Rect, quiet: bool) {
         let mut child = self.nodes[id as usize].first_child;
         while child != NONE {
             self.sync_screen(child, dx, dy, clip, quiet);
@@ -1526,7 +1526,7 @@ impl Tree {
         self.contacts.iter().any(|c| self.nodes.get(c.tap as usize).is_some_and(|n| n.repeat)) || self.gesture_timed()
     }
 
-    fn set_offset(&mut self, id: NodeId, offset: i32) {
+    fn set_offset(&mut self, id: NodeIndex, offset: i32) {
         let node = &mut self.nodes[id as usize];
         let Some(at) = node.scroll_offset_mut() else { return };
         let before = core::mem::replace(at, offset);
@@ -1538,7 +1538,7 @@ impl Tree {
         }
     }
 
-    fn bounds(&self, id: NodeId) -> Bounds {
+    fn bounds(&self, id: NodeIndex) -> Bounds {
         let node = &self.nodes[id as usize];
         let span = i32::from(node.rect.h);
         let content = match &node.content {
@@ -1553,12 +1553,12 @@ impl Tree {
         Bounds { start: start as f32, end: end as f32, limit: span.max(1) as f32 * STRETCH_LIMIT, pull: f32::from(pull), past_start: bounce || node.pull.is_some(), past_end: bounce }
     }
 
-    fn moving(&self, id: NodeId) -> bool {
+    fn moving(&self, id: NodeIndex) -> bool {
         self.motion(id, |kind| matches!(kind, MotionKind::Fling(_))).is_some() || self.contacts.iter().any(|c| c.scroller == id)
     }
 
     /// Puts a scroller nothing moves back between its ends.
-    pub(crate) fn keep_in_range(&mut self, id: NodeId) {
+    pub(crate) fn keep_in_range(&mut self, id: NodeIndex) {
         if self.moving(id) {
             return;
         }
@@ -1572,7 +1572,7 @@ impl Tree {
     }
 
     /// Springs a scroller nothing moves back if it is past an end.
-    pub(crate) fn settle(&mut self, id: NodeId) {
+    pub(crate) fn settle(&mut self, id: NodeIndex) {
         if id == NONE || self.moving(id) {
             return;
         }
@@ -1609,7 +1609,7 @@ impl Tree {
         }
     }
 
-    fn fling(&mut self, id: NodeId, fling: Fling) {
+    fn fling(&mut self, id: NodeIndex, fling: Fling) {
         self.motions.push(Motion::new(id, None, MotionKind::Fling(fling)));
     }
 
@@ -1652,7 +1652,7 @@ impl Tree {
         rest
     }
 
-    fn sync_pull(&mut self, id: NodeId, pull: Option<Pull>) {
+    fn sync_pull(&mut self, id: NodeIndex, pull: Option<Pull>) {
         let node = &mut self.nodes[id as usize];
         let was = node.pull.is_some_and(|p| p.refreshing);
         node.pull = pull;
@@ -1679,7 +1679,7 @@ impl Tree {
     }
 
     /// Tells what follows `id`, whose offset has just left `before`.
-    pub(crate) fn scroll_moved(&mut self, id: NodeId, before: i32) {
+    pub(crate) fn scroll_moved(&mut self, id: NodeIndex, before: i32) {
         let node = &self.nodes[id as usize];
         let offset = node.scroll_offset().unwrap_or(0);
         let (owner, name) = (node.owner, node.id);
@@ -1698,7 +1698,7 @@ impl Tree {
     }
 
     /// Whether the scroller `name` of `owner` is away from its start.
-    pub(crate) fn scrolled_away(&self, owner: u16, name: &str) -> bool {
+    pub(crate) fn scrolled_away(&self, owner: u16, name: Id) -> bool {
         let mut away = false;
         self.walk(self.root, &mut |_, node| {
             away |= node.owner == owner && node.id == Some(name) && node.scroll_offset().is_some_and(|offset| offset > 0);
@@ -1706,7 +1706,7 @@ impl Tree {
         away
     }
 
-    fn hit(&self, id: NodeId, dx: i32, dy: i32, x: i32, y: i32) -> Option<Hit> {
+    fn hit(&self, id: NodeIndex, dx: i32, dy: i32, x: i32, y: i32) -> Option<Hit> {
         let node = &self.nodes[id as usize];
         if node.leaving {
             return None;
@@ -1765,7 +1765,7 @@ impl Tree {
         found
     }
 
-    fn hit_children(&self, id: NodeId, dx: i32, dy: i32, x: i32, y: i32) -> Option<Hit> {
+    fn hit_children(&self, id: NodeIndex, dx: i32, dy: i32, x: i32, y: i32) -> Option<Hit> {
         let mut children = Vec::new();
         let mut child = self.nodes[id as usize].first_child;
         while child != NONE {
@@ -1775,7 +1775,7 @@ impl Tree {
         children.iter().rev().find_map(|&c| self.hit(c, dx, dy, x, y))
     }
 
-    pub(crate) fn set_pressed(&mut self, id: NodeId, pressed: bool) {
+    pub(crate) fn set_pressed(&mut self, id: NodeIndex, pressed: bool) {
         if id != NONE {
             self.set_state(id, State::PRESSED, pressed);
         }
@@ -1830,7 +1830,7 @@ impl Tree {
         if gesture != NONE && self.node_holds_fingers(gesture) {
             gesture = NONE;
         }
-        let held = |id: NodeId, of: fn(&Contact) -> NodeId| id != NONE && self.contacts.iter().any(|c| of(c) == id);
+        let held = |id: NodeIndex, of: fn(&Contact) -> NodeIndex| id != NONE && self.contacts.iter().any(|c| of(c) == id);
         let passive = held(hit.scroller, |c| c.scroller) || held(hit.tap, |c| c.tap) || held(hit.drag, |c| c.drag);
         let hit = if passive { NO_HIT } else { hit };
         let gesture = if passive { NONE } else { gesture };
@@ -1886,7 +1886,7 @@ impl Tree {
         }
     }
 
-    pub(crate) fn finish_tap(&mut self, id: NodeId, point: (i16, i16), repeated: bool) {
+    pub(crate) fn finish_tap(&mut self, id: NodeIndex, point: (i16, i16), repeated: bool) {
         if id == self.overlay {
             self.tap_scrim();
             return;
@@ -1950,7 +1950,7 @@ impl Tree {
         }
     }
 
-    fn send_drag(&mut self, id: NodeId, point: (i16, i16), ended: bool) {
+    fn send_drag(&mut self, id: NodeIndex, point: (i16, i16), ended: bool) {
         if id == NONE {
             return;
         }
@@ -1972,7 +1972,7 @@ impl Tree {
         self.tick_caret(dt_ms);
     }
 
-    pub(crate) fn walk(&self, id: NodeId, f: &mut impl FnMut(NodeId, &Node)) {
+    pub(crate) fn walk(&self, id: NodeIndex, f: &mut impl FnMut(NodeIndex, &Node)) {
         let node = &self.nodes[id as usize];
         if node.screen == Rect::default() && !matches!(node.content, NodeContent::Child(_)) {
             return;
@@ -1990,7 +1990,7 @@ impl Tree {
         }
     }
 
-    pub(crate) fn find(&self, name: &str) -> Option<NodeId> {
+    pub(crate) fn find(&self, name: Id) -> Option<NodeIndex> {
         let mut found = None;
         self.walk(self.root, &mut |id, node| {
             if found.is_none() && node.id == Some(name) {
@@ -2004,14 +2004,22 @@ impl Tree {
     pub(crate) fn describe(&self) -> String {
         let mut out = String::new();
         self.walk(self.root, &mut |_, node| {
-            if node.id.is_none() && node.role == Role::None {
+            let name = node.id.and_then(|id| id.name());
+            if name.is_none() && node.role == Role::None {
                 return;
             }
             let r = node.screen;
             if !out.is_empty() {
                 out.push_str("; ");
             }
-            let _ = write!(out, "{} {} {} {} {} {}", node.id.unwrap_or("-"), node.role.name(), r.x, r.y, r.w, r.h);
+            match (name, node.id) {
+                (Some(name), _) => out.push_str(name),
+                (None, Some(id)) => {
+                    let _ = write!(out, "#{:08x}", id.hash());
+                }
+                (None, None) => out.push('-'),
+            }
+            let _ = write!(out, " {} {} {} {} {}", node.role.name(), r.x, r.y, r.w, r.h);
             if node.state.contains(State::DISABLED) {
                 out.push_str(" disabled");
             }
@@ -2024,7 +2032,7 @@ impl Tree {
 
     /// The point a tap on `name` lands on, if it is the topmost target there.
     pub(crate) fn tap_point(&self, name: &str) -> Result<(i16, i16), String> {
-        let id = self.find(name).ok_or_else(|| format!("no node {name}"))?;
+        let id = self.find(Id::of(name)).ok_or_else(|| format!("no node {name}"))?;
         if self.nodes[id as usize].state.contains(State::DISABLED) {
             return Err(format!("{name} is disabled"));
         }
@@ -2039,7 +2047,7 @@ impl Tree {
     }
 
     pub(crate) fn invoke(&mut self, name: &str) -> Result<(), String> {
-        let id = self.find(name).ok_or_else(|| format!("no node {name}"))?;
+        let id = self.find(Id::of(name)).ok_or_else(|| format!("no node {name}"))?;
         let node = &self.nodes[id as usize];
         if node.state.contains(State::DISABLED) {
             return Err(format!("{name} is disabled"));

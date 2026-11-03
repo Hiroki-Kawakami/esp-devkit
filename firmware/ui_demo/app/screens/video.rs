@@ -10,7 +10,7 @@ use core::time::Duration;
 use bsp_rs::display::{self, Display, PixelFormat};
 use devkit_gfx::Color;
 use devkit_ui::widgets::{button, top_bar};
-use devkit_ui::{Component, Cx, Element, ExternalSurface, Policy, Screen, Ui};
+use devkit_ui::{Component, Cx, Element, ExternalSurface, Policy, Screen, Ui, id};
 use idf::sync::OnceLock;
 use idf::thread;
 
@@ -150,19 +150,19 @@ impl Component for VideoDemo {
                 .background(Color::rgba(0x20, 0x20, 0x28, 0xC0))
                 .absolute(Some(80), Some(400), Some(80), None)
                 .height(200)
-                .id("video-menu")
+                .id(id!("video-menu"))
         } else {
             ui.empty()
         };
         ui.column([
             top_bar(ui, Some(VideoMsg::Back), "Video", ui.empty()),
-            ui.external(&self.video).grow(1).id("video"),
+            ui.external(&self.video).grow(1).id(id!("video")),
             ui.row([
-                button(ui, "Pause", style, VideoMsg::Pause).grow(1).id("video-pause"),
-                button(ui, "Menu", style, VideoMsg::Menu).grow(1).id("video-toggle"),
-                button(ui, "Clip", style, VideoMsg::Policy(Policy::Clip)).grow(1).id("video-clip"),
-                button(ui, "Stamp", style, VideoMsg::Policy(Policy::Stamp)).grow(1).id("video-stamp"),
-                button(ui, "Full", style, VideoMsg::Policy(Policy::Exclusive)).grow(1).id("video-full"),
+                button(ui, "Pause", style, VideoMsg::Pause).grow(1).id(id!("video-pause")),
+                button(ui, "Menu", style, VideoMsg::Menu).grow(1).id(id!("video-toggle")),
+                button(ui, "Clip", style, VideoMsg::Policy(Policy::Clip)).grow(1).id(id!("video-clip")),
+                button(ui, "Stamp", style, VideoMsg::Policy(Policy::Stamp)).grow(1).id(id!("video-stamp")),
+                button(ui, "Full", style, VideoMsg::Policy(Policy::Exclusive)).grow(1).id(id!("video-full")),
             ])
             .padding(theme.widgets.unit.padding)
             .gap(theme.widgets.unit.gap),

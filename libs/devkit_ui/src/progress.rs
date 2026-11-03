@@ -7,7 +7,7 @@ use devkit_gfx::{Color, DisplayList, Rect};
 use idf::heap::Caps;
 
 use crate::motion::{Clock, Curve, Motion, MotionKind, Repeat};
-use crate::node::{NodeContent, NodeId};
+use crate::node::{NodeContent, NodeIndex};
 use crate::paint::{Effects, dim};
 use crate::theme::{ColorRole, Palette};
 use crate::tree::Tree;
@@ -40,7 +40,7 @@ impl ProgressNode {
 }
 
 impl Tree {
-    pub(crate) fn sync_progress(&mut self, id: NodeId) {
+    pub(crate) fn sync_progress(&mut self, id: NodeIndex) {
         let NodeContent::Progress(progress) = &self.nodes[id as usize].content else { return };
         let (gauge, period, moves) = (progress.gauge, u32::from(progress.period_ms), progress.moves());
         let running = self.motion(id, |kind| matches!(kind, MotionKind::Phase)).is_some();

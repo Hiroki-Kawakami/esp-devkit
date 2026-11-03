@@ -5,7 +5,7 @@
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use core::any::TypeId;
+use core::any::{Any, TypeId};
 use core::fmt::{self, Write};
 use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
@@ -14,12 +14,13 @@ use core::ptr::{self, NonNull};
 use devkit_gfx::{Align as TextAlign, Color, FontChain, Image, ImageFormat, Overflow, TextOptions};
 
 use crate::bump::Bump;
-use crate::component::{AnyHost, Child, EventMap, Host, ListId, Screen, call_event_map, screen_host};
+use crate::component::{AnyHost, Child, Component, EventMap, Host, Screen, call_event_map, screen_host};
 use crate::erased::Erased;
+use crate::id::Id;
 use crate::style::{Align, Animated, Direction, Inset, Insets, Justify, Part, Prop, Role, ScreenStyle, Shadow, State, StateStyle, Style};
-use crate::canvas::CanvasId;
+use crate::canvas::Canvas;
 use crate::external::ExternalSurface;
-use crate::node::Pull;
+use crate::node::{NodeIndex, Pull};
 use crate::nav::{DetailMap, SplitRole, SplitSpec, call_detail_map};
 use crate::presence::Presence;
 use crate::progress::Gauge;
@@ -27,6 +28,7 @@ use crate::gesture::{Gesture, GestureMap, Gestures, call_gesture_map};
 use crate::keyboard::{InputKind, Keyboard};
 use crate::text_buffer::TextInput;
 use crate::theme::{ColorMode, ColorRole, Icon, Palette, Theme, Transition};
+use crate::tree::Tree;
 
 /// Creates or updates a child component during reconciliation.
 pub(crate) trait ChildSpec {
@@ -74,8 +76,8 @@ pub(crate) enum Content<'a> {
     Text { font: &'static FontChain, text: &'a str, options: TextOptions, edit: Option<Edit> },
     Image { image: Image<'static>, tint: Color },
     Scroll,
-    List { id: ListId, count: usize, row_height: i16, revision: Option<u32> },
-    Canvas(CanvasId),
+    List { count: usize, row_height: i16, revision: Option<u32>, row: RowMap },
+    Canvas(DrawMap),
     External(&'a ExternalSurface),
     Progress { gauge: Gauge, value: Option<f32>, period_ms: u16 },
     Child(&'a dyn ChildSpec),
@@ -143,6 +145,42 @@ unsafe fn call_scroll_map<M: Copy>(function: *const (), offset: i32) -> Erased {
     Erased::new(function(offset))
 }
 
+type RowFn<C> = for<'r> fn(&'r C, usize, &'r Ui<<C as Component>::Msg>) -> Element<'r, <C as Component>::Msg>;
+
+#[derive(Clone, Copy)]
+pub(crate) struct RowMap {
+    pub(crate) function: *const (),
+    pub(crate) call: unsafe fn(*const (), &dyn Any, &mut Tree, u16, usize, NodeIndex),
+}
+
+unsafe fn call_row_map<C: Component>(function: *const (), component: &dyn Any, tree: &mut Tree, owner: u16, index: usize, row: NodeIndex) {
+    let Some(component) = component.downcast_ref::<C>() else {
+        idf::log::error!(c"ui", "list: the row function belongs to another component");
+        return;
+    };
+    let function: RowFn<C> = unsafe { core::mem::transmute(function) };
+    let ui = Ui::new(tree.bump(), tree.context(owner));
+    let element = function(component, index, &ui);
+    tree.reconcile(owner, row, &element);
+}
+
+type DrawFn<C> = for<'a, 'f> fn(&'a C, &mut Canvas<'a, 'f>);
+
+#[derive(Clone, Copy)]
+pub(crate) struct DrawMap {
+    pub(crate) function: *const (),
+    pub(crate) call: for<'a> unsafe fn(*const (), &'a dyn Any, &mut Canvas<'a, '_>),
+}
+
+unsafe fn call_draw_map<'a, C: Component>(function: *const (), component: &'a dyn Any, canvas: &mut Canvas<'a, '_>) {
+    let Some(component) = component.downcast_ref::<C>() else {
+        idf::log::error!(c"ui", "canvas: the draw function belongs to another component");
+        return;
+    };
+    let function: DrawFn<C> = unsafe { core::mem::transmute(function) };
+    function(component, canvas);
+}
+
 struct ScreenElement<S: Child + Screen> {
     props: S::Props,
 }
@@ -202,8 +240,7 @@ pub struct ElementData<'a, M: Copy> {
     pub(crate) when: &'a [(State, Prop)],
     pub(crate) inherit: State,
     pub(crate) state_source: bool,
-    pub(crate) key: Option<u32>,
-    pub(crate) id: Option<&'static str>,
+    pub(crate) id: Option<Id>,
     part: Option<Part>,
     pub(crate) role: Role,
     pub(crate) tap: Option<Erased>,
@@ -227,7 +264,7 @@ pub struct ElementData<'a, M: Copy> {
 
 impl<'a, M: Copy> Element<'a, M> {
     fn new(bump: NonNull<Bump>, content: Content<'a>, children: &'a mut [Element<'a, M>]) -> Self {
-        let data = ElementData { bump, content, children: NonNull::from(children), style: Style::default(), when: &[], inherit: State::empty(), state_source: false, key: None, id: None, part: None, role: Role::None, tap: None, drag: None, on_scroll: None, bounce: true, pull: None, gestures: None, size: None, input: None, focusable: false, keep_focus: false, keyboard: None, input_kind: InputKind::Text, repeat: false, state: State::empty(), appear: None, disappear: None, _msg: PhantomData };
+        let data = ElementData { bump, content, children: NonNull::from(children), style: Style::default(), when: &[], inherit: State::empty(), state_source: false, id: None, part: None, role: Role::None, tap: None, drag: None, on_scroll: None, bounce: true, pull: None, gestures: None, size: None, input: None, focusable: false, keep_focus: false, keyboard: None, input_kind: InputKind::Text, repeat: false, state: State::empty(), appear: None, disappear: None, _msg: PhantomData };
         Self { data: unsafe { NonNull::new_unchecked(bump.as_ref().alloc(data)) } }
     }
 
@@ -239,15 +276,10 @@ impl<'a, M: Copy> Element<'a, M> {
         unsafe { self.children.as_ref() }
     }
 
-    /// Matches this node across rebuilds when siblings move.
-    pub fn key(mut self, key: u32) -> Self {
-        self.key = Some(key);
-        self
-    }
-
-    /// Names the node for `ui tree`, `ui tap` and `ui invoke`.
-    pub fn id(mut self, id: &'static str) -> Self {
-        self.id = Some(id);
+    /// `id!("name")` for a node to find, or a number for one that moves
+    /// among its siblings.
+    pub fn id(mut self, id: impl Into<Id>) -> Self {
+        self.id = Some(id.into());
         self
     }
 
@@ -351,10 +383,10 @@ impl<'a, M: Copy> Element<'a, M> {
         self
     }
 
-    /// Draws a divider along the bottom while the `scroll` or `list` named `id`
-    /// in this component is away from its start.
-    pub fn scroll_border(mut self, id: &'static str) -> Self {
-        self.style.scroll_border = Some(id);
+    /// Draws a divider along the bottom while the `scroll` or `list` with this
+    /// id in this component is away from its start.
+    pub fn scroll_border(mut self, id: impl Into<Id>) -> Self {
+        self.style.scroll_border = Some(id.into());
         self
     }
 
@@ -849,9 +881,11 @@ impl<M: Copy> Ui<M> {
         Element::new(self.bump, Content::Image { image, tint: Color::rgb(0, 0, 0) }, &mut [])
     }
 
-    /// Pixels drawn by `Component::draw`. Takes the size the parent gives it.
-    pub fn canvas<'a>(&'a self, id: CanvasId) -> Element<'a, M> {
-        Element::new(self.bump, Content::Canvas(id), &mut [])
+    /// Pixels drawn by `draw` of the component whose view this is, in every
+    /// frame that shows it. Takes the size the parent gives it.
+    pub fn canvas<'a, C: Component<Msg = M>>(&'a self, draw: DrawFn<C>) -> Element<'a, M> {
+        let draw = DrawMap { function: draw as *const (), call: call_draw_map::<C> };
+        Element::new(self.bump, Content::Canvas(draw), &mut [])
     }
 
     pub(crate) fn progress<'a>(&'a self, gauge: Gauge, value: Option<f32>, period_ms: u16) -> Element<'a, M> {
@@ -870,9 +904,12 @@ impl<M: Copy> Ui<M> {
         Element::new(self.bump, Content::Scroll, self.place_slice(&[child]))
     }
 
-    /// Rows come from `Component::list_row`; only visible ones exist.
-    pub fn list<'a>(&'a self, id: ListId, count: usize, row_height: i16) -> Element<'a, M> {
-        let mut element = Element::new(self.bump, Content::List { id, count, row_height, revision: None }, &mut []);
+    /// Only visible rows exist, each made by `row` of the component whose view
+    /// this is. A list with an id keeps its scroll position while its screen is
+    /// covered.
+    pub fn list<'a, C: Component<Msg = M>>(&'a self, count: usize, row_height: i16, row: RowFn<C>) -> Element<'a, M> {
+        let row = RowMap { function: row as *const (), call: call_row_map::<C> };
+        let mut element = Element::new(self.bump, Content::List { count, row_height, revision: None, row }, &mut []);
         element.role = Role::List;
         element
     }
@@ -885,7 +922,7 @@ impl<M: Copy> Ui<M> {
         Element::new(self.bump, Content::Navigator { key: TypeId::of::<K>(), initial: Some(spec), split: SplitSpec::default(), transition: None }, &mut []).clip()
     }
 
-    /// A child component, kept across rebuilds by position or key.
+    /// A child component, kept across rebuilds by position or id.
     pub fn child<'a, C: Child>(&'a self, props: C::Props) -> Element<'a, M>
     where
         M: 'static,

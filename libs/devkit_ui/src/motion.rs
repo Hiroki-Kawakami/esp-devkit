@@ -6,7 +6,7 @@
 use crate::animate::Channel;
 use crate::component::Animation;
 use crate::nav::Transit;
-use crate::node::{NONE, NodeId};
+use crate::node::{NONE, NodeIndex};
 use crate::presence::Running;
 use crate::tree::{Fling, Tree};
 
@@ -104,7 +104,7 @@ pub(crate) enum MotionKind {
 
 /// Something moving on a node by itself, one frame at a time.
 pub(crate) struct Motion {
-    pub(crate) node: NodeId,
+    pub(crate) node: NodeIndex,
     /// `None` for what decides itself when it rests, as a fling does.
     pub(crate) clock: Option<Clock>,
     pub(crate) kind: MotionKind,
@@ -115,13 +115,13 @@ pub(crate) struct Motion {
 }
 
 impl Motion {
-    pub(crate) fn new(node: NodeId, clock: Option<Clock>, kind: MotionKind) -> Self {
+    pub(crate) fn new(node: NodeIndex, clock: Option<Clock>, kind: MotionKind) -> Self {
         Self { node, clock, kind, waiting: false, ended: false }
     }
 }
 
 impl Tree {
-    pub(crate) fn motion(&self, node: NodeId, which: impl Fn(&MotionKind) -> bool) -> Option<usize> {
+    pub(crate) fn motion(&self, node: NodeIndex, which: impl Fn(&MotionKind) -> bool) -> Option<usize> {
         self.motions.iter().position(|m| m.node == node && which(&m.kind))
     }
 
@@ -130,11 +130,11 @@ impl Tree {
         self.motions.remove(i)
     }
 
-    pub(crate) fn stop_motions(&mut self, node: NodeId, which: impl Fn(&MotionKind) -> bool) {
+    pub(crate) fn stop_motions(&mut self, node: NodeIndex, which: impl Fn(&MotionKind) -> bool) {
         self.forget_where(|m| m.node == node && which(&m.kind));
     }
 
-    pub(crate) fn forget_motions(&mut self, node: NodeId) {
+    pub(crate) fn forget_motions(&mut self, node: NodeIndex) {
         self.forget_where(|m| m.node == node);
         self.ended_motions.retain(|m| m.node != node);
     }
@@ -156,14 +156,14 @@ impl Tree {
         !self.motions.is_empty()
     }
 
-    pub(crate) fn transit(&self, nav: NodeId) -> Option<&Transit> {
+    pub(crate) fn transit(&self, nav: NodeIndex) -> Option<&Transit> {
         self.motions.iter().find_map(|m| match &m.kind {
             MotionKind::Transit(transit) if m.node == nav => Some(transit),
             _ => None,
         })
     }
 
-    pub(crate) fn transit_mut(&mut self, nav: NodeId) -> Option<&mut Transit> {
+    pub(crate) fn transit_mut(&mut self, nav: NodeIndex) -> Option<&mut Transit> {
         self.motions.iter_mut().find_map(|m| match &mut m.kind {
             MotionKind::Transit(transit) if m.node == nav => Some(transit),
             _ => None,

@@ -7,14 +7,13 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use devkit_ui::widgets::{Menu, button, checkbox, icon_button, list_item, modal, modal_actions, modal_message, modal_title, progress_bar, progress_indicator, slider, slider_value, switch, top_bar};
-use devkit_ui::{Align, Child, Component, Cx, Element, Handle, ListId, Overlay, RenderMode, Root, Screen, SplitRole, Strips, Ui};
+use devkit_ui::{Align, Child, Component, Cx, Element, Handle, Id, Overlay, RenderMode, Root, Screen, SplitRole, Strips, Ui, id};
 use idf::heap::Caps;
 use idf::sync::{LazyLock, Mutex};
 
 use crate::resources::{colors, icons};
 use super::{SPARE_STRIPS, icon};
 
-const FILES: ListId = 0;
 const FILE_COUNT: usize = 500;
 const ROW_IDS: [&str; 8] = ["row0", "row1", "row2", "row3", "row4", "row5", "row6", "row7"];
 const SIDEBAR_WIDTH: i16 = 400;
@@ -46,7 +45,7 @@ impl Component for FileManager {
 
     fn view<'a>(&'a self, ui: &'a Ui<()>) -> Element<'a, ()> {
         let (width, height) = ui.screen_size();
-        let pane = ui.navigator::<Pane, Storages>(()).split(width > height, SIDEBAR_WIDTH).grow(1).id("pane");
+        let pane = ui.navigator::<Pane, Storages>(()).split(width > height, SIDEBAR_WIDTH).grow(1).id(id!("pane"));
         ui.column([pane]).background(ui.colors().background)
     }
 }
@@ -103,7 +102,7 @@ impl Component for Storages {
             .enumerate()
             .filter(|(i, _)| *i != SD_CARD || self.card)
             .map(|(i, name)| {
-                list_item(ui, None, name, None, None, StorageMsg::Open(i as u8)).selected(open && self.selected == Some(i)).id(STORAGE_IDS[i])
+                list_item(ui, None, name, None, None, StorageMsg::Open(i as u8)).selected(open && self.selected == Some(i)).id(Id::named(STORAGE_IDS[i]))
             })
             .collect();
         ui.column([top_bar(ui, Some(StorageMsg::Back), "File Manager", ui.empty()), ui.column(items)])
@@ -145,6 +144,15 @@ impl Browser {
         let names = (0..FILE_COUNT).map(|i| alloc::format!("{:03} {}", i, NAMES[i % NAMES.len()])).collect();
         Self { names, selected: None, revision: 0 }
     }
+
+    fn row<'a>(&'a self, index: usize, ui: &'a Ui<Msg>) -> Element<'a, Msg> {
+        let row = list_item(ui, Some(icon(FILE_ICONS[index % FILE_ICONS.len()])), &self.names[index], None, None, Msg::Open(index as u16));
+        let row = row.selected(self.selected == Some(index as u16));
+        match ROW_IDS.get(index) {
+            Some(id) => row.id(Id::named(*id)),
+            None => row,
+        }
+    }
 }
 
 impl Component for Browser {
@@ -171,7 +179,7 @@ impl Component for Browser {
     fn view<'a>(&'a self, ui: &'a Ui<Msg>) -> Element<'a, Msg> {
         let theme = ui.theme();
         let back = ui.can_pop().then_some(Msg::Back);
-        let more = icon_button(ui, ui.theme().icons.more, Msg::OpenMenu).id("more");
+        let more = icon_button(ui, ui.theme().icons.more, Msg::OpenMenu).id(id!("more"));
         ui.column([
             top_bar(ui, back, "Download", more),
             ui.text(theme.fonts.caption, "Internal Storage › Download")
@@ -179,19 +187,10 @@ impl Component for Browser {
                 .height(48)
                 .padding_each(24, 13, 24, 0)
                 .border_top(ui.colors().divider),
-            ui.list(FILES, self.names.len(), theme.widgets.list.row_height).revision(self.revision).id("files").grow(1).background(ui.colors().surface),
+            ui.list(self.names.len(), theme.widgets.list.row_height, Self::row).revision(self.revision).id(id!("files")).grow(1).background(ui.colors().surface),
         ])
         .padding_each(0, ui.insets().top, 0, 0)
         .background(ui.colors().surface)
-    }
-
-    fn list_row<'a>(&'a self, _list: ListId, index: usize, ui: &'a Ui<Msg>) -> Element<'a, Msg> {
-        let row = list_item(ui, Some(icon(FILE_ICONS[index % FILE_ICONS.len()])), &self.names[index], None, None, Msg::Open(index as u16));
-        let row = row.selected(self.selected == Some(index as u16));
-        match ROW_IDS.get(index) {
-            Some(id) => row.id(id),
-            None => row,
-        }
     }
 }
 
@@ -265,19 +264,19 @@ impl Component for Detail {
         ui.column([
             top_bar(ui, Some(DetailMsg::Back), &self.name, ui.empty()),
             ui.column([
-                ui.row([ui.text(theme.fonts.body, "Keep").foreground(c.text).grow(1), switch(ui, self.keep, DetailMsg::Keep).id("keep")]).align(Align::Center),
-                ui.row([ui.text(theme.fonts.body, "Starred").foreground(c.text).grow(1), checkbox(ui, self.star, DetailMsg::Star).id("star")]).align(Align::Center),
-                ui.row([ui.text(theme.fonts.body, "Video mode").foreground(c.text).grow(1), switch(ui, self.video, DetailMsg::Video).id("video")]).align(Align::Center),
+                ui.row([ui.text(theme.fonts.body, "Keep").foreground(c.text).grow(1), switch(ui, self.keep, DetailMsg::Keep).id(id!("keep"))]).align(Align::Center),
+                ui.row([ui.text(theme.fonts.body, "Starred").foreground(c.text).grow(1), checkbox(ui, self.star, DetailMsg::Star).id(id!("star"))]).align(Align::Center),
+                ui.row([ui.text(theme.fonts.body, "Video mode").foreground(c.text).grow(1), switch(ui, self.video, DetailMsg::Video).id(id!("video"))]).align(Align::Center),
                 ui.text(theme.fonts.caption, ui.format(format_args!("Volume {}", self.volume))).foreground(colors::MUTED),
-                slider(ui, self.volume, |d| DetailMsg::Volume(slider_value(d))).id("volume"),
+                slider(ui, self.volume, |d| DetailMsg::Volume(slider_value(d))).id(id!("volume")),
                 ui.row([progress_bar(ui, Some(f32::from(self.volume) / 255.0)).grow(1), progress_indicator(ui, Some(f32::from(self.volume) / 255.0))]).align(Align::Center).gap(m.padding),
-                ui.row([progress_bar(ui, None).grow(1).id("busy-bar"), progress_indicator(ui, None).id("busy-ring")]).align(Align::Center).gap(m.padding),
+                ui.row([progress_bar(ui, None).grow(1).id(id!("busy-bar")), progress_indicator(ui, None).id(id!("busy-ring"))]).align(Align::Center).gap(m.padding),
                 ui.row([
-                    button(ui, "Rename", theme.widgets.button.secondary, DetailMsg::Back).grow(1).disabled(!self.keep).id("rename"),
-                    button(ui, "Delete", theme.widgets.button.primary, DetailMsg::Ask).grow(1).id("delete"),
+                    button(ui, "Rename", theme.widgets.button.secondary, DetailMsg::Back).grow(1).disabled(!self.keep).id(id!("rename")),
+                    button(ui, "Delete", theme.widgets.button.primary, DetailMsg::Ask).grow(1).id(id!("delete")),
                 ])
                 .gap(m.gap),
-                ui.text(theme.fonts.caption, "This note is long enough to wrap, and what follows it moves down with its height.").foreground(colors::MUTED).wrap().id("note"),
+                ui.text(theme.fonts.caption, "This note is long enough to wrap, and what follows it moves down with its height.").foreground(colors::MUTED).wrap().id(id!("note")),
             ])
             .padding(m.padding)
             .gap(m.padding)
@@ -309,7 +308,7 @@ impl Component for Confirm {
         modal(ui, [
             modal_title(ui, "Delete this file?"),
             modal_message(ui, "This cannot be undone."),
-            modal_actions(ui, [button(ui, "Cancel", b.secondary, ConfirmMsg::Close).id("cancel"), button(ui, "Delete", b.destructive, ConfirmMsg::Close).id("confirm-delete")]),
+            modal_actions(ui, [button(ui, "Cancel", b.secondary, ConfirmMsg::Close).id(id!("cancel")), button(ui, "Delete", b.destructive, ConfirmMsg::Close).id(id!("confirm-delete"))]),
         ])
     }
 }

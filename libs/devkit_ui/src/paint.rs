@@ -15,7 +15,7 @@ use idf::heap::Caps;
 
 use crate::animate::faded;
 use crate::canvas::Canvas;
-use crate::node::{NONE, NodeContent, NodeId};
+use crate::node::{NONE, NodeContent, NodeIndex};
 use crate::presence::Snapshot;
 use crate::style::Shadow;
 use crate::theme::Transition;
@@ -88,7 +88,7 @@ pub(crate) fn dim(color: Color, opacity: u8) -> Color {
 
 impl Tree {
     /// `(dx, dy)` is the origin of `id`'s parent content on the screen.
-    fn paint_node<'a>(&'a self, id: NodeId, dx: i32, dy: i32, clip: Rect, inherited: Inherited, effects: &mut Effects, regions: &[Rect], list: &mut DisplayList<'a, Caps>) {
+    fn paint_node<'a>(&'a self, id: NodeIndex, dx: i32, dy: i32, clip: Rect, inherited: Inherited, effects: &mut Effects, regions: &[Rect], list: &mut DisplayList<'a, Caps>) {
         let node = &self.nodes[id as usize];
         let pose = node.pose.filter(|_| self.capturing.get() != id);
         let (shift_x, shift_y) = match pose {
@@ -151,7 +151,7 @@ impl Tree {
         if let Some(role) = style.border_bottom {
             list.fill(Rect::new(sx, rect.bottom() - 1, rect.w, 1), dim(palette.color(role), opacity));
         }
-        if style.scroll_border.is_some_and(|name| self.scrolled_away(node.owner, name)) {
+        if style.scroll_border.is_some_and(|target| self.scrolled_away(node.owner, target)) {
             list.fill(Rect::new(sx, rect.bottom() - 1, rect.w, 1), dim(palette.divider, opacity));
         }
 
@@ -203,7 +203,7 @@ impl Tree {
                     opacity,
                     clips: 0,
                 };
-                host.draw(canvas.id, &mut target);
+                unsafe { (canvas.draw.call)(canvas.draw.function, host.component(), &mut target) };
                 target.finish();
                 list.pop_clip();
             }
@@ -277,7 +277,7 @@ impl Tree {
         }
     }
 
-    fn paint_children<'a>(&'a self, id: NodeId, dx: i32, dy: i32, clip: Rect, inherited: Inherited, effects: &mut Effects, regions: &[Rect], list: &mut DisplayList<'a, Caps>) {
+    fn paint_children<'a>(&'a self, id: NodeIndex, dx: i32, dy: i32, clip: Rect, inherited: Inherited, effects: &mut Effects, regions: &[Rect], list: &mut DisplayList<'a, Caps>) {
         let mut child = self.nodes[id as usize].first_child;
         while child != NONE {
             self.paint_node(child, dx, dy, clip, inherited, effects, regions, list);
@@ -318,7 +318,7 @@ impl Tree {
         }
     }
 
-    fn zoom_pictures<C: Allocator + Clone>(&self, nav: NodeId, effects: &mut Effects, cache: &mut GlyphCache<C>, mut engine: Option<&mut Engine<'_>>) -> Option<Zoom> {
+    fn zoom_pictures<C: Allocator + Clone>(&self, nav: NodeIndex, effects: &mut Effects, cache: &mut GlyphCache<C>, mut engine: Option<&mut Engine<'_>>) -> Option<Zoom> {
         let node = &self.nodes[nav as usize];
         let NodeContent::Navigator(navigator) = &node.content else { return None };
         let transit = self.transit(nav)?;
@@ -341,7 +341,7 @@ impl Tree {
 
     /// Which bands of `area` the panel shows as the screens of `nav` drew
     /// them: nothing painted over them, and not in `stale`.
-    fn shown_bands(&self, nav: NodeId, area: Rect, stale: &[Rect], effects: &mut Effects) -> Vec<bool> {
+    fn shown_bands(&self, nav: NodeIndex, area: Rect, stale: &[Rect], effects: &mut Effects) -> Vec<bool> {
         self.zoom_split.set((nav, usize::MAX));
         let mut list = DisplayList::new_in(self.caps);
         self.paint(effects, &[area], &mut list);
@@ -361,7 +361,7 @@ impl Tree {
     #[allow(clippy::too_many_arguments)]
     fn take_picture<C: Allocator + Clone>(
         &self,
-        id: NodeId,
+        id: NodeIndex,
         area: Rect,
         background: Color,
         effects: &mut Effects,
@@ -451,7 +451,7 @@ impl Tree {
 
 impl Tree {
     /// `id` as shown at `shown`, without what moves it in or out.
-    pub(crate) fn snapshot<C: Allocator + Clone>(&self, id: NodeId, shown: Rect, effects: &mut Effects, cache: &mut GlyphCache<C>) -> Option<Snapshot> {
+    pub(crate) fn snapshot<C: Allocator + Clone>(&self, id: NodeIndex, shown: Rect, effects: &mut Effects, cache: &mut GlyphCache<C>) -> Option<Snapshot> {
         if shown.is_empty() {
             return None;
         }

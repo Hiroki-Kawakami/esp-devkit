@@ -3,7 +3,7 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
-use devkit_ui::{Align, Bars, Component, Cx, Element, Ui};
+use devkit_ui::{Align, Bars, Component, Cx, Element, Ui, id};
 
 use crate::resources::icons;
 use crate::scene::CAPTION;
@@ -39,7 +39,7 @@ impl Component for StatusBar {
         let color = ui.colors().text;
         let time = ui.format(format_args!("{:02}:{:02}:{:02}", self.seconds / 3600, self.seconds / 60 % 60, self.seconds % 60));
         ui.row([
-            ui.text(&CAPTION, time).foreground(color).id("clock").grow(1),
+            ui.text(&CAPTION, time).foreground(color).id(id!("clock")).grow(1),
             ui.icon(small_icon(icons::WIFI)).foreground(color),
             ui.icon(small_icon(icons::BATTERY)).foreground(color),
             ui.text(&CAPTION, "78%").foreground(color),

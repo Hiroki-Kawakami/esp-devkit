@@ -6,7 +6,7 @@
 use alloc::vec::Vec;
 
 use devkit_ui::widgets::{list_item, top_bar};
-use devkit_ui::{Component, Cx, Element, Root, Screen, Ui};
+use devkit_ui::{Component, Cx, Element, Id, Root, Screen, Ui};
 
 use super::canvas::CanvasDemo;
 use super::files::FileManager;
@@ -48,7 +48,7 @@ impl Component for Home {
     }
 
     fn view<'a>(&'a self, ui: &'a Ui<u8>) -> Element<'a, u8> {
-        let items: Vec<_> = DEMOS.iter().enumerate().map(|(i, (name, id))| list_item(ui, None, name, None, None, i as u8).id(id)).collect();
+        let items: Vec<_> = DEMOS.iter().enumerate().map(|(i, (name, id))| list_item(ui, None, name, None, None, i as u8).id(Id::named(*id))).collect();
         ui.column([top_bar(ui, None, "ui_demo", ui.empty()), ui.column(items)])
             .padding_each(0, ui.insets().top, 0, 0)
             .background(ui.colors().background)

@@ -4,7 +4,7 @@
  */
 
 use devkit_ui::widgets::{DropdownMenu, dropdown, segmented, slider, slider_value, switch, table, table_chevron, table_header, table_label, table_row, table_section, table_value, top_bar};
-use devkit_ui::{Align, AutoRotation, ColorMode, Component, Cx, Drag, Element, Input, Screen, Ui};
+use devkit_ui::{Align, AutoRotation, ColorMode, Component, Cx, Drag, Element, Input, Screen, Ui, id};
 use idf::sync::OnceLock;
 
 use crate::resources::{colors, icons};
@@ -93,28 +93,28 @@ impl Component for Settings {
         let percent = |value: u8| u32::from(value) * 100 / 255;
         let dark = ui.color_mode() == ColorMode::Dark;
         ui.column([
-            top_bar(ui, Some(SettingsMsg::Back), "Settings", ui.empty()).scroll_border("content"),
+            top_bar(ui, Some(SettingsMsg::Back), "Settings", ui.empty()).scroll_border(id!("content")),
             table(
                 ui,
                 [
-                    table_section(ui, [table_row(ui, [ui.icon(icon(icons::WIFI)), table_label(ui, "Wi-Fi"), table_value(ui, "example-ap"), table_chevron(ui)]).on_tap(SettingsMsg::Open).id("wifi")]),
+                    table_section(ui, [table_row(ui, [ui.icon(icon(icons::WIFI)), table_label(ui, "Wi-Fi"), table_value(ui, "example-ap"), table_chevron(ui)]).on_tap(SettingsMsg::Open).id(id!("wifi"))]),
                     table_header(ui, "DISPLAY"),
                     table_section(
                         ui,
                         [
-                            slider_row(ui, "Brightness", ui.format(format_args!("{}%", percent(self.brightness))), self.brightness, |d| SettingsMsg::Brightness(slider_value(d))).id("brightness"),
+                            slider_row(ui, "Brightness", ui.format(format_args!("{}%", percent(self.brightness))), self.brightness, |d| SettingsMsg::Brightness(slider_value(d))).id(id!("brightness")),
                             table_row(ui, [table_label(ui, "Color Mode"), segmented(ui, &[("16-bit", SettingsMsg::ColorBits(0)), ("24-bit", SettingsMsg::ColorBits(1))], self.color_bits)]),
-                            table_row(ui, [table_label(ui, "Dark Mode"), switch(ui, dark, SettingsMsg::Dark(!dark)).id("dark")]),
-                            table_row(ui, [table_label(ui, "Rotation Lock"), switch(ui, ROTATION.get().is_some_and(AutoRotation::locked), SettingsMsg::RotationLock).id("rotation-lock")]),
+                            table_row(ui, [table_label(ui, "Dark Mode"), switch(ui, dark, SettingsMsg::Dark(!dark)).id(id!("dark"))]),
+                            table_row(ui, [table_label(ui, "Rotation Lock"), switch(ui, ROTATION.get().is_some_and(AutoRotation::locked), SettingsMsg::RotationLock).id(id!("rotation-lock"))]),
                         ],
                     ),
                     table_header(ui, "AUDIO"),
                     table_section(
                         ui,
                         [
-                            slider_row(ui, "Volume", ui.format(format_args!("{}", percent(self.volume))), self.volume, |d| SettingsMsg::Volume(slider_value(d))).id("volume"),
-                            table_row(ui, [table_label(ui, "Equalizer"), switch(ui, self.equalizer, SettingsMsg::Equalizer(!self.equalizer)).id("equalizer")]),
-                            table_row(ui, [table_label(ui, "Output Device"), dropdown(ui, OUTPUTS[self.output], SettingsMsg::OpenOutput).id("output")]),
+                            slider_row(ui, "Volume", ui.format(format_args!("{}", percent(self.volume))), self.volume, |d| SettingsMsg::Volume(slider_value(d))).id(id!("volume")),
+                            table_row(ui, [table_label(ui, "Equalizer"), switch(ui, self.equalizer, SettingsMsg::Equalizer(!self.equalizer)).id(id!("equalizer"))]),
+                            table_row(ui, [table_label(ui, "Output Device"), dropdown(ui, OUTPUTS[self.output], SettingsMsg::OpenOutput).id(id!("output"))]),
                         ],
                     ),
                     table_header(ui, "ABOUT"),
@@ -122,13 +122,13 @@ impl Component for Settings {
                         ui,
                         [
                             table_row(ui, [table_label(ui, "Version"), table_value(ui, "0.0.0")]),
-                            table_row(ui, [table_label(ui, "Acknowledgements"), table_chevron(ui)]).on_tap(SettingsMsg::Open).id("acknowledgements"),
+                            table_row(ui, [table_label(ui, "Acknowledgements"), table_chevron(ui)]).on_tap(SettingsMsg::Open).id(id!("acknowledgements")),
                         ],
                     ),
                 ],
             )
             .grow(1)
-            .id("content"),
+            .id(id!("content")),
         ])
         .padding_each(0, ui.insets().top, 0, 0)
         .background(c.background)

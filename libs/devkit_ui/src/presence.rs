@@ -13,7 +13,7 @@ use devkit_gfx::{Argb8888, Bgr888, GlyphCache, ImageFormat, Pixel, Raster, Raste
 use idf::heap::Caps;
 
 use crate::motion::{Clock, Motion, MotionKind, ease_out};
-use crate::node::{NONE, NodeContent, NodeId};
+use crate::node::{NONE, NodeContent, NodeIndex};
 use crate::paint::Effects;
 use crate::zoom::{CHUNK, Line, gather};
 use crate::tree::Tree;
@@ -306,7 +306,7 @@ impl Raster for Snapshot {
 }
 
 impl Tree {
-    fn running(&self, id: NodeId) -> Option<usize> {
+    fn running(&self, id: NodeIndex) -> Option<usize> {
         self.motion(id, |kind| matches!(kind, MotionKind::Presence(_)))
     }
 
@@ -318,7 +318,7 @@ impl Tree {
         }
     }
 
-    pub(crate) fn snapshot_of(&self, id: NodeId) -> Option<&Snapshot> {
+    pub(crate) fn snapshot_of(&self, id: NodeIndex) -> Option<&Snapshot> {
         self.running(id).and_then(|i| self.running_of(i)).and_then(|(r, _)| r.snapshot.as_deref())
     }
 
@@ -334,13 +334,13 @@ impl Tree {
     }
 
     /// The way a node goes, if it moves.
-    fn leaving_presence(&self, id: NodeId) -> Option<Presence> {
+    fn leaving_presence(&self, id: NodeIndex) -> Option<Presence> {
         let node = &self.nodes[id as usize];
         node.disappear.or(node.appear).filter(Presence::moves)
     }
 
     /// Keeps a node taken out of the view until its `.disappear` ends.
-    pub(crate) fn leave(&mut self, id: NodeId) -> bool {
+    pub(crate) fn leave(&mut self, id: NodeIndex) -> bool {
         let Some(presence) = self.leaving_presence(id) else { return false };
         self.nodes[id as usize].leaving = true;
         self.run_presence(id, presence, false);
@@ -348,7 +348,7 @@ impl Tree {
     }
 
     /// Plays `.disappear` of every node in `id`; `false` when none moves.
-    pub(crate) fn disappear_within(&mut self, id: NodeId) -> bool {
+    pub(crate) fn disappear_within(&mut self, id: NodeIndex) -> bool {
         let mut found = Vec::new();
         self.collect_presences(id, &mut found);
         for &(node, presence) in &found {
@@ -357,7 +357,7 @@ impl Tree {
         !found.is_empty()
     }
 
-    fn collect_presences(&self, id: NodeId, found: &mut Vec<(NodeId, Presence)>) {
+    fn collect_presences(&self, id: NodeIndex, found: &mut Vec<(NodeIndex, Presence)>) {
         if let Some(presence) = self.leaving_presence(id) {
             found.push((id, presence));
         }
@@ -373,7 +373,7 @@ impl Tree {
         }
     }
 
-    pub(crate) fn presence_within(&self, id: NodeId) -> bool {
+    pub(crate) fn presence_within(&self, id: NodeIndex) -> bool {
         self.motions.iter().filter(|m| matches!(m.kind, MotionKind::Presence(_))).any(|m| {
             let mut node = m.node;
             while node != NONE && node != id {
@@ -384,7 +384,7 @@ impl Tree {
     }
 
     /// How shown the first node in `id` with a presence is, 1 without one.
-    pub(crate) fn presence_level(&self, id: NodeId) -> f32 {
+    pub(crate) fn presence_level(&self, id: NodeIndex) -> f32 {
         let Some(found) = self.first_presence(id) else { return 1.0 };
         match self.running(found).and_then(|i| self.running_of(i)) {
             Some((running, clock)) => running.progress(clock),
@@ -393,7 +393,7 @@ impl Tree {
         }
     }
 
-    fn first_presence(&self, id: NodeId) -> Option<NodeId> {
+    fn first_presence(&self, id: NodeIndex) -> Option<NodeIndex> {
         let node = &self.nodes[id as usize];
         if node.appear.is_some() || node.disappear.is_some() {
             return Some(id);
@@ -408,7 +408,7 @@ impl Tree {
         None
     }
 
-    fn run_presence(&mut self, id: NodeId, absent: Presence, appearing: bool) {
+    fn run_presence(&mut self, id: NodeIndex, absent: Presence, appearing: bool) {
         let shown = match self.running(id) {
             Some(i) => {
                 let shown = self.running_of(i).map_or(0.0, |(running, clock)| running.progress(clock));
@@ -455,7 +455,7 @@ impl Tree {
 
     /// An appeared node is as its style says; a disappeared one stays absent
     /// until it is removed.
-    pub(crate) fn end_presence(&mut self, id: NodeId, appearing: bool) {
+    pub(crate) fn end_presence(&mut self, id: NodeIndex, appearing: bool) {
         let node = &mut self.nodes[id as usize];
         node.paint_dirty = true;
         if appearing {
@@ -467,7 +467,7 @@ impl Tree {
         }
     }
 
-    fn drop_left(&mut self, id: NodeId) {
+    fn drop_left(&mut self, id: NodeIndex) {
         let parent = self.nodes[id as usize].parent;
         self.damage_painted(id);
         self.unlink(parent, id);
