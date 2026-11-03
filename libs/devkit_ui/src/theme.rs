@@ -200,6 +200,28 @@ pub struct SliderTheme {
 }
 
 #[derive(Clone, Copy)]
+pub struct ProgressBarTheme {
+    /// Of the width, in percent.
+    pub segment: u8,
+    /// One way across; 0 keeps it still.
+    pub period_ms: u16,
+    pub track: &'static StateStyle,
+    pub fill: &'static StateStyle,
+}
+
+#[derive(Clone, Copy)]
+pub struct ProgressIndicatorTheme {
+    pub stroke: u8,
+    /// Of the arc going round, in degrees.
+    pub sweep: u16,
+    /// One turn; 0 keeps it still.
+    pub period_ms: u16,
+    pub track_color: ColorRole,
+    pub fill_color: ColorRole,
+    pub root: &'static StateStyle,
+}
+
+#[derive(Clone, Copy)]
 pub struct SegmentedTheme {
     pub root: &'static StateStyle,
     pub item: &'static StateStyle,
@@ -307,6 +329,8 @@ pub struct Widgets {
     pub switch: SwitchTheme,
     pub checkbox: CheckboxTheme,
     pub slider: SliderTheme,
+    pub progress_bar: ProgressBarTheme,
+    pub progress_indicator: ProgressIndicatorTheme,
     pub segmented: SegmentedTheme,
     pub dropdown: DropdownTheme,
     pub dropdown_menu: DropdownMenuTheme,

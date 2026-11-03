@@ -14,7 +14,7 @@ use crate::node::{NONE, Node, NodeContent, NodeId};
 use crate::presenter::Strips;
 use devkit_gfx::Rect;
 use crate::style::{Dimension, Style};
-use crate::animate::ease_out;
+use crate::motion::{Clock, Motion, MotionKind};
 use crate::theme::{Theme, Transition};
 use crate::tree::Tree;
 use crate::zoom::Zoom;
@@ -54,8 +54,6 @@ pub(crate) struct Transit {
     pub(crate) leaving: NodeId,
     /// The leaving screen is gone for good, as after `pop`.
     pub(crate) drop_leaving: bool,
-    pub(crate) elapsed: u32,
-    pub(crate) duration: u32,
     pub(crate) forward: bool,
     /// Pictures of a zoom, taken before its first frame.
     pub(crate) zoom: Option<Box<Zoom>>,
@@ -100,7 +98,6 @@ pub(crate) struct SplitSpec {
 pub(crate) struct NavigatorNode {
     pub(crate) key: TypeId,
     pub(crate) stack: Vec<Entry>,
-    pub(crate) transit: Option<Transit>,
     pub(crate) transition: Option<Transition>,
     /// Width of the main screen while split.
     pub(crate) split: Option<i16>,
@@ -116,7 +113,7 @@ pub(crate) struct NavigatorNode {
 
 impl NavigatorNode {
     pub(crate) fn new(key: TypeId) -> Self {
-        Self { key, stack: Vec::new(), transit: None, transition: None, split: None, wanted: SplitSpec::default(), spare: NONE, promoted: false, departing: NONE }
+        Self { key, stack: Vec::new(), transition: None, split: None, wanted: SplitSpec::default(), spare: NONE, promoted: false, departing: NONE }
     }
 
     pub(crate) fn main(&self) -> NodeId {
@@ -250,7 +247,7 @@ impl Tree {
             Action::Show(host) => self.show_screen(nav, host, asked),
             Action::Root => self.pop_to_root(nav, asked),
         }
-        if let Some(transit) = self.navigator(nav).and_then(|n| n.transit.as_mut()) {
+        if let Some(transit) = self.transit_mut(nav) {
             transit.stale = stale;
         }
         self.style_changed(nav);
@@ -640,11 +637,10 @@ impl Tree {
             }
             return;
         }
-        let duration = u32::from(self.theme.motion.duration_ms(kind)).max(1);
-        if let Some(navigator) = self.navigator(nav) {
-            navigator.transit = Some(Transit { kind, leaving, drop_leaving, elapsed: 0, duration, forward, zoom: None, skip_tick: false, stale: Vec::new() });
-        }
-        self.step_transit(nav, 0);
+        let clock = Clock::once(u32::from(self.theme.motion.duration_ms(kind)));
+        let transit = Transit { kind, leaving, drop_leaving, forward, zoom: None, skip_tick: false, stale: Vec::new() };
+        self.motions.push(Motion::new(nav, Some(clock), MotionKind::Transit(transit)));
+        self.step_transit(self.motions.len() - 1);
     }
 
     fn retire(&mut self, nav: NodeId, leaving: NodeId, drop_leaving: bool) {
@@ -662,14 +658,19 @@ impl Tree {
 
     /// `false` when none was running.
     pub(crate) fn finish_transit(&mut self, nav: NodeId) -> bool {
-        let Some(transit) = self.navigator(nav).and_then(|n| n.transit.take()) else { return false };
+        let Some(i) = self.motion(nav, |kind| matches!(kind, MotionKind::Transit(_))) else { return false };
+        let MotionKind::Transit(transit) = self.take_motion(i).kind else { return false };
+        self.end_transit(nav, transit);
+        true
+    }
+
+    pub(crate) fn end_transit(&mut self, nav: NodeId, transit: Transit) {
         let top = self.navigator(nav).map_or(NONE, |n| n.shown());
         if top != NONE {
             self.nodes[top as usize].translate = (0, 0);
         }
         self.retire(nav, transit.leaving, transit.drop_leaving);
         self.mark_dirty_rect(nav);
-        true
     }
 
     fn mark_dirty_rect(&mut self, nav: NodeId) {
@@ -678,15 +679,15 @@ impl Tree {
         self.nodes[nav as usize].scrolled = true;
     }
 
-    fn step_transit(&mut self, nav: NodeId, dt_ms: u32) {
+    pub(crate) fn step_transit(&mut self, i: usize) {
+        let nav = self.motions[i].node;
         let top = self.navigator(nav).map_or(NONE, |n| n.shown());
         let side = self.navigator(nav).and_then(|n| n.split).unwrap_or(0);
         let (width, height) = (self.nodes[nav as usize].rect.w - side, self.nodes[nav as usize].rect.h);
-        let Some(transit) = self.navigator(nav).and_then(|n| n.transit.as_mut()) else { return };
-        let dt_ms = if core::mem::take(&mut transit.skip_tick) { 0 } else { dt_ms };
-        transit.elapsed = (transit.elapsed + dt_ms).min(transit.duration);
-        let (elapsed, duration, forward, leaving, kind) = (transit.elapsed, transit.duration, transit.forward, transit.leaving, transit.kind);
-        let eased = ease_out(elapsed as f32 / duration as f32);
+        let motion = &mut self.motions[i];
+        let (MotionKind::Transit(transit), Some(clock)) = (&mut motion.kind, motion.clock) else { return };
+        let (forward, leaving, kind) = (transit.forward, transit.leaving, transit.kind);
+        let eased = clock.eased();
         if let Some(zoom) = &mut transit.zoom {
             zoom.set_progress(eased);
         }
@@ -704,22 +705,6 @@ impl Tree {
         self.nodes[top as usize].translate = entering;
         self.nodes[leaving as usize].translate = departing;
         self.mark_dirty_rect(nav);
-        if elapsed >= duration {
-            self.finish_transit(nav);
-        }
-    }
-
-    pub(crate) fn tick_transits(&mut self, dt_ms: u32) {
-        // Finishing a transition can remove navigators inside the screen it hid.
-        let mut i = 0;
-        while let Some(&nav) = self.navigators.get(i) {
-            self.step_transit(nav, dt_ms);
-            i += 1;
-        }
-    }
-
-    pub(crate) fn transiting(&self) -> bool {
-        self.navigators.iter().any(|&nav| matches!(&self.nodes[nav as usize].content, NodeContent::Navigator(n) if n.transit.is_some()))
     }
 
     fn push_screen(&mut self, nav: NodeId, host: Box<dyn AnyHost>, asked: Option<Transition>) {

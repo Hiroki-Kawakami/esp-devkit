@@ -10,7 +10,7 @@ use core::alloc::Allocator;
 use core::time::Duration;
 
 use bsp_rs::display::{self, Blitter, FrameBuffer, PixelFormat, Rotation, Size};
-use devkit_gfx::{Argb8888, ClipStore, Color, CornerMask, DisplayList, GlyphCache, Prepared, Rect, Rgb565, ShadowMask, Surface, draw};
+use devkit_gfx::{ArcMask, Argb8888, ClipStore, Color, CornerMask, DisplayList, GlyphCache, Prepared, Rect, Rgb565, ShadowMask, Surface, draw};
 use idf::heap::Caps;
 
 use crate::animate::faded;
@@ -29,12 +29,13 @@ pub(crate) struct Effects {
     corners: Vec<CornerMask>,
     rings: Vec<(u8, u8, CornerMask)>,
     shadows: Vec<(u8, u8, ShadowMask)>,
+    arcs: Vec<ArcMask>,
     caps: Caps,
 }
 
 impl Effects {
     pub(crate) fn new(caps: Caps) -> Self {
-        Self { corners: Vec::new(), rings: Vec::new(), shadows: Vec::new(), caps }
+        Self { corners: Vec::new(), rings: Vec::new(), shadows: Vec::new(), arcs: Vec::new(), caps }
     }
 
     pub(crate) fn corner(&mut self, radius: u8) -> CornerMask {
@@ -53,6 +54,15 @@ impl Effects {
         let ring = CornerMask::ring_in(u16::from(radius), u16::from(stroke), self.caps);
         self.rings.push((radius, stroke, ring));
         ring
+    }
+
+    pub(crate) fn arc(&mut self, radius: u16, stroke: u16) -> ArcMask {
+        if let Some(arc) = self.arcs.iter().find(|a| a.radius() == radius && a.stroke() == stroke) {
+            return *arc;
+        }
+        let arc = ArcMask::new_in(radius, stroke, self.caps);
+        self.arcs.push(arc);
+        arc
     }
 
     fn shadow(&mut self, blur: u8, radius: u8) -> ShadowMask {
@@ -177,6 +187,7 @@ impl Tree {
             }
             NodeContent::Image { image, tint } => list.image(cx as i16, cy as i16, *image, dim(*tint, opacity)),
             NodeContent::External(_) => self.external_split.set(list.ops().len()),
+            NodeContent::Progress(progress) => self.paint_progress(progress, rect, style.radius, down.foreground, opacity, palette, effects, list),
             NodeContent::Canvas(canvas) => {
                 let viewport = rect.intersect(&clip);
                 let Some(host) = &self.slots[usize::from(node.owner)].host else { return };
@@ -211,14 +222,14 @@ impl Tree {
                 }
                 list.pop_clip();
             }
-            NodeContent::Navigator(nav) if nav.transit.as_ref().is_some_and(|t| t.zoom.is_some()) => {
+            NodeContent::Navigator(nav) if self.transit(id).is_some_and(|t| t.zoom.is_some()) => {
                 let viewport = rect.intersect(&clip);
                 list.push_clip(viewport);
                 let main = nav.main();
                 if nav.split.is_some() && main != NONE {
                     self.paint_node(main, x, y, viewport, down, effects, regions, list);
                 }
-                if let Some(zoom) = nav.transit.as_ref().and_then(|t| t.zoom.as_deref()) {
+                if let Some(zoom) = self.transit(id).and_then(|t| t.zoom.as_deref()) {
                     list.raster(zoom.area, (zoom.area.x, zoom.area.y), zoom);
                 }
                 list.pop_clip();
@@ -281,19 +292,18 @@ impl Tree {
     }
 
     pub(crate) fn zooming(&self) -> bool {
-        self.navigators.iter().any(|&nav| matches!(&self.nodes[nav as usize].content, NodeContent::Navigator(n) if n.transit.as_ref().is_some_and(|t| t.zoom.is_some())))
+        self.navigators.iter().any(|&nav| self.transit(nav).is_some_and(|t| t.zoom.is_some()))
     }
 
     pub(crate) fn zoom_pending(&self) -> bool {
-        self.navigators.iter().any(|&nav| matches!(&self.nodes[nav as usize].content, NodeContent::Navigator(n) if n.transit.as_ref().is_some_and(|t| t.kind == Transition::Zoom && t.zoom.is_none())))
+        self.navigators.iter().any(|&nav| self.transit(nav).is_some_and(|t| t.kind == Transition::Zoom && t.zoom.is_none()))
     }
 
     /// Takes the pictures of zooms starting this frame; without `engine`, on
     /// this task alone. One that gets no pictures changes screens at once.
     pub(crate) fn capture_zooms<C: Allocator + Clone>(&mut self, effects: &mut Effects, cache: &mut GlyphCache<C>, mut engine: Option<&mut Engine<'_>>) {
         for nav in self.navigators.clone() {
-            let NodeContent::Navigator(navigator) = &self.nodes[nav as usize].content else { continue };
-            if !navigator.transit.as_ref().is_some_and(|t| t.kind == Transition::Zoom && t.zoom.is_none()) {
+            if !self.transit(nav).is_some_and(|t| t.kind == Transition::Zoom && t.zoom.is_none()) {
                 continue;
             }
             let Some(zoom) = self.zoom_pictures(nav, effects, cache, engine.as_deref_mut()) else {
@@ -301,9 +311,7 @@ impl Tree {
                 self.finish_transit(nav);
                 continue;
             };
-            if let NodeContent::Navigator(navigator) = &mut self.nodes[nav as usize].content
-                && let Some(transit) = &mut navigator.transit
-            {
+            if let Some(transit) = self.transit_mut(nav) {
                 transit.zoom = Some(Box::new(zoom));
                 transit.skip_tick = true;
             }
@@ -313,7 +321,7 @@ impl Tree {
     fn zoom_pictures<C: Allocator + Clone>(&self, nav: NodeId, effects: &mut Effects, cache: &mut GlyphCache<C>, mut engine: Option<&mut Engine<'_>>) -> Option<Zoom> {
         let node = &self.nodes[nav as usize];
         let NodeContent::Navigator(navigator) = &node.content else { return None };
-        let transit = navigator.transit.as_ref()?;
+        let transit = self.transit(nav)?;
         let side = navigator.split.unwrap_or(0);
         let area = Rect::new(node.screen.x + side, node.screen.y, node.screen.w - side, node.screen.h).intersect(&self.area);
         if area.is_empty() {

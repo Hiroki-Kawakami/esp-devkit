@@ -20,6 +20,7 @@ use crate::gesture::GestureMap;
 use crate::keyboard::{InputKind, Keyboard};
 use crate::nav::NavigatorNode;
 use crate::presence::{Pose, Presence};
+use crate::progress::ProgressNode;
 use crate::style::{Prop, Role, State, Style};
 
 const CARET_WIDTH: i16 = 2;
@@ -113,6 +114,7 @@ pub(crate) enum NodeContent {
     List(ListNode),
     Canvas(CanvasNode),
     External(ExternalSurface),
+    Progress(ProgressNode),
     Child(u16),
     Navigator(NavigatorNode),
 }
@@ -129,6 +131,7 @@ impl NodeContent {
                 | (Self::List(_), C::List { .. })
                 | (Self::Canvas(_), C::Canvas(_))
                 | (Self::External(_), C::External(_))
+                | (Self::Progress(_), C::Progress { .. })
         ) || matches!((self, other), (Self::Navigator(nav), C::Navigator { key, .. }) if nav.key == *key)
     }
 }

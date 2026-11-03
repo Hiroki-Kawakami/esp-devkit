@@ -589,3 +589,67 @@ fn a_round_clip_open_at_the_mark_stays_square() {
     draw_from::<Argb8888, _, _, _>(&list, first, &Prepared::new(), &mut ClipStore::new(), &surface);
     assert_eq!(pixels[3], 255);
 }
+
+#[test]
+fn a_gradient_goes_from_one_end_to_the_other_inside_its_corners() {
+    let corner = CornerMask::new_in(4, Global);
+    let mut list = DisplayList::new();
+    list.fill(Rect::new(0, 0, 40, 8), Color::rgb(0, 0, 0));
+    list.gradient(Rect::new(0, 0, 40, 8), Some(corner), Color::rgba(255, 255, 255, 0), Color::rgb(255, 255, 255), false);
+    let out = render::<Bgr888>(&list, &mut GlyphCache::new(64), 40, 8, &[Rect::new(0, 0, 40, 4), Rect::new(0, 4, 40, 4)]);
+    let at = |x: usize, y: usize| out[(y * 40 + x) * 3];
+    assert!(at(1, 4) < 10, "{}", at(1, 4));
+    assert!(at(37, 4) > 235, "{}", at(37, 4));
+    assert!((100..160).contains(&at(20, 4)), "{}", at(20, 4));
+    assert_eq!(at(39, 0), 0, "the corner stays out");
+    for x in 1..40 {
+        assert!(at(x, 4) >= at(x - 1, 4));
+    }
+    let vertical = {
+        let mut list = DisplayList::new();
+        list.gradient(Rect::new(0, 0, 8, 40), None, Color::rgb(255, 255, 255), Color::rgb(0, 0, 0), true);
+        render::<Bgr888>(&list, &mut GlyphCache::new(64), 8, 40, &[Rect::new(0, 0, 8, 40)])
+    };
+    assert!(vertical[0] > vertical[(39 * 8) * 3]);
+}
+
+#[test]
+fn an_arc_covers_its_angles_with_round_ends() {
+    let mask = ArcMask::new_in(12, 4, Global);
+    let draw = |start: f32, sweep: f32| {
+        let mut list = DisplayList::new();
+        list.fill(Rect::new(0, 0, 24, 24), Color::rgb(0, 0, 0));
+        list.arc(0, 0, mask, start, sweep, Color::rgb(255, 255, 255), Color::rgb(255, 255, 255));
+        render::<Bgr888>(&list, &mut GlyphCache::new(64), 24, 24, &[Rect::new(0, 0, 24, 12), Rect::new(0, 12, 24, 12)])
+    };
+    let quarter = draw(0.0, 90.0);
+    let at = |out: &[u8], x: usize, y: usize| out[(y * 24 + x) * 3];
+    assert_eq!(at(&quarter, 18, 5), 255, "between 12 and 3 o'clock");
+    assert_eq!(at(&quarter, 12, 12), 0, "the middle stays empty");
+    assert_eq!(at(&quarter, 5, 18), 0, "past the end");
+    assert!(at(&quarter, 10, 1) > 100, "the round start reaches back before 12 o'clock");
+    assert!(at(&quarter, 6, 3) < 10);
+    let whole = draw(45.0, 360.0);
+    for (x, y) in [(12, 1), (22, 12), (12, 22), (1, 12)] {
+        assert_eq!(at(&whole, x, y), 255);
+    }
+    for y in 0..24 {
+        for x in 0..24 {
+            assert_eq!(at(&whole, x, y), at(&whole, 23 - x, y));
+            assert_eq!(at(&whole, x, y), at(&whole, x, 23 - y));
+        }
+    }
+}
+
+#[test]
+fn an_arc_shades_from_its_start_to_its_end() {
+    let mask = ArcMask::new_in(12, 4, Global);
+    let mut list = DisplayList::new();
+    list.fill(Rect::new(0, 0, 24, 24), Color::rgb(0, 0, 0));
+    list.arc(0, 0, mask, 0.0, 270.0, Color::rgba(255, 255, 255, 0), Color::rgb(255, 255, 255));
+    let out = render::<Rgb565>(&list, &mut GlyphCache::new(64), 24, 24, &[Rect::new(0, 0, 24, 24)]);
+    let green = |x: usize, y: usize| (px565(&out, 24, x, y) >> 5) & 0x3f;
+    let (right, bottom, left) = (green(22, 12), green(12, 22), green(1, 12));
+    assert!(right < bottom && bottom < left, "{right} {bottom} {left}");
+    assert_eq!(green(12, 1), 0, "the start is clear");
+}

@@ -16,6 +16,7 @@ mod geom;
 mod glyph_cache;
 mod image;
 mod list;
+mod math;
 mod pixel;
 mod raster;
 mod render;
@@ -25,7 +26,7 @@ mod text;
 
 pub use color::Color;
 pub use damage::Damage;
-pub use effect::{CornerMask, ShadowMask};
+pub use effect::{ArcMask, CornerMask, ShadowMask};
 pub use font::Font;
 pub use format::ImageFormat;
 pub use geom::Rect;

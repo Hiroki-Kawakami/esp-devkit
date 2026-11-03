@@ -7,6 +7,9 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::alloc::Allocator;
 
+use crate::geom::Rect;
+use crate::math::turns;
+
 const SUBSAMPLES: i32 = 4;
 const BOX_PASSES: usize = 3;
 
@@ -77,6 +80,81 @@ impl CornerMask {
 
     pub(crate) fn data(&self) -> *const u8 {
         self.data.as_ptr()
+    }
+
+    pub(crate) fn coverage(&self, rect: &Rect, x: i16, y: i16) -> u8 {
+        let r = self.radius as i16;
+        let column = if x < rect.x + r {
+            x - rect.x
+        } else if x >= rect.right() - r {
+            r + x - (rect.right() - r)
+        } else {
+            return 255;
+        };
+        let row = if y < rect.y + r {
+            y - rect.y
+        } else if y >= rect.bottom() - r {
+            rect.bottom() - 1 - y
+        } else {
+            return 255;
+        };
+        self.data[row as usize * usize::from(self.radius) * 2 + column as usize]
+    }
+}
+
+/// A ring `stroke` px wide inside a circle of `radius`, with the angle of each
+/// pixel, for arcs. Like [`CornerMask`] it is never freed.
+#[derive(Clone, Copy)]
+pub struct ArcMask {
+    radius: u16,
+    stroke: u16,
+    data: &'static [u8],
+}
+
+impl ArcMask {
+    pub fn new_in<A: Allocator + 'static>(radius: u16, stroke: u16, alloc: A) -> Self {
+        let r = i32::from(radius);
+        let side = usize::from(radius) * 2;
+        let inner = (r - i32::from(stroke)).max(0);
+        let outer_limit = (r * SUBSAMPLES * 2) * (r * SUBSAMPLES * 2);
+        let inner_limit = (inner * SUBSAMPLES * 2) * (inner * SUBSAMPLES * 2);
+        let mut data = Vec::with_capacity_in(side * side * 3, alloc);
+        for y in 0..side as i32 {
+            for x in 0..side as i32 {
+                let mut inside = 0;
+                for sy in 0..SUBSAMPLES {
+                    for sx in 0..SUBSAMPLES {
+                        let dx = x * SUBSAMPLES * 2 + sx * 2 + 1 - r * SUBSAMPLES * 2;
+                        let dy = y * SUBSAMPLES * 2 + sy * 2 + 1 - r * SUBSAMPLES * 2;
+                        let distance = dx * dx + dy * dy;
+                        inside += i32::from(distance <= outer_limit && distance > inner_limit);
+                    }
+                }
+                let angle = (turns(x as f32 + 0.5 - r as f32, y as f32 + 0.5 - r as f32) * 65536.0) as u32 as u16;
+                data.push((inside * 255 / (SUBSAMPLES * SUBSAMPLES)) as u8);
+                data.extend_from_slice(&angle.to_le_bytes());
+            }
+        }
+        Self { radius, stroke, data: data.leak() }
+    }
+
+    pub const fn radius(&self) -> u16 {
+        self.radius
+    }
+
+    pub const fn stroke(&self) -> u16 {
+        self.stroke
+    }
+
+    pub(crate) fn side(&self) -> usize {
+        usize::from(self.radius) * 2
+    }
+
+    /// Coverage and angle of the pixel at `(x, y)` from the top left.
+    #[inline(always)]
+    pub(crate) fn at(&self, x: usize, y: usize) -> (u8, u16) {
+        let i = (y * self.side() + x) * 3;
+        (self.data[i], u16::from_le_bytes([self.data[i + 1], self.data[i + 2]]))
     }
 }
 

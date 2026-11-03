@@ -8,11 +8,12 @@ use alloc::vec::Vec;
 use core::alloc::Allocator;
 use core::ptr;
 
-use crate::color::Color;
-use crate::effect::{CornerMask, ShadowMask};
+use crate::color::{Color, mul8};
+use crate::effect::{ArcMask, CornerMask, ShadowMask};
 use crate::geom::Rect;
 use crate::glyph_cache::GlyphCache;
 use crate::list::{DisplayList, MAX_CLIPS, Op};
+use crate::math::{direction, sqrt};
 use crate::pixel::Pixel;
 use crate::raster::RasterTarget;
 use crate::surface::Surface;
@@ -240,6 +241,93 @@ fn draw_shadow<P: Pixel>(s: &Surface, rect: &Rect, mask: &ShadowMask, clip: &Rec
     }
 }
 
+const SPAN: usize = 64;
+
+/// Paints `r` with the color and coverage `pixel` gives for each pixel.
+fn draw_pixels<P: Pixel>(s: &Surface, r: &Rect, solid: bool, base: Color, mut pixel: impl FnMut(i16, i16) -> (Color, u8)) {
+    let packed = P::pack(base);
+    let mut alphas = [0u8; SPAN];
+    for y in r.y..r.bottom() {
+        let mut x = r.x;
+        while x < r.right() {
+            let n = (r.right() - x).min(SPAN as i16);
+            let row = s.bytes::<P>(x, y, n as usize).cast::<u8>();
+            for i in 0..n {
+                let (color, coverage) = pixel(x + i, y);
+                let a = mul8(color.a, coverage);
+                if solid {
+                    alphas[i as usize] = a;
+                } else if a != 0 {
+                    unsafe { P::blend_mask(row.add(i as usize * P::BYTES), &a, 1, P::pack(color)) };
+                }
+            }
+            if solid {
+                unsafe { P::blend_mask(row, alphas.as_ptr(), n as usize, packed) };
+            }
+            x += n;
+        }
+    }
+}
+
+fn same_rgb(a: Color, b: Color) -> bool {
+    (a.r, a.g, a.b) == (b.r, b.g, b.b)
+}
+
+fn draw_gradient<P: Pixel>(s: &Surface, rect: &Rect, corner: Option<&CornerMask>, from: Color, to: Color, vertical: bool, clip: &Rect) {
+    let r = rect.intersect(clip);
+    if r.is_empty() {
+        return;
+    }
+    let length = i32::from(if vertical { rect.h } else { rect.w });
+    let start = if vertical { rect.y } else { rect.x };
+    draw_pixels::<P>(s, &r, same_rgb(from, to), from, |x, y| {
+        let at = i32::from(if vertical { y } else { x } - start);
+        let color = from.mix(to, ((at * 2 + 1) * 255 / (length * 2)) as u8);
+        (color, corner.map_or(255, |corner| corner.coverage(rect, x, y)))
+    });
+}
+
+fn draw_arc<P: Pixel>(s: &Surface, rect: &Rect, mask: &ArcMask, start: f32, sweep: f32, from: Color, to: Color, clip: &Rect) {
+    let r = rect.intersect(clip);
+    if r.is_empty() {
+        return;
+    }
+    let whole = sweep >= 360.0;
+    let first = start / 360.0;
+    let span = (sweep.clamp(0.0, 360.0) / 360.0 * 65536.0) as u32;
+    let base = ((first - first as i32 as f32 + 1.0) * 65536.0) as u32 & 0xffff;
+    let radius = f32::from(mask.radius());
+    let half = f32::from(mask.stroke()) / 2.0;
+    let center = radius - half;
+    let cap = |t: f32| {
+        let (dx, dy) = direction(t);
+        (radius + dx * center, radius + dy * center)
+    };
+    let caps = [cap(first), cap(first + sweep / 360.0)];
+    draw_pixels::<P>(s, &r, same_rgb(from, to), from, |x, y| {
+        let (lx, ly) = ((x - rect.x) as usize, (y - rect.y) as usize);
+        let (coverage, angle) = mask.at(lx, ly);
+        if coverage == 0 {
+            return (from, 0);
+        }
+        let past = (u32::from(angle).wrapping_sub(base)) & 0xffff;
+        if whole || past <= span {
+            let amount = if span == 0 { 0 } else { (past * 255 / span) as u8 };
+            return (from.mix(to, amount), coverage);
+        }
+        let (px, py) = (lx as f32 + 0.5, ly as f32 + 0.5);
+        let reach = |(cx, cy): (f32, f32)| {
+            let distance = sqrt((px - cx) * (px - cx) + (py - cy) * (py - cy));
+            ((half + 0.5 - distance).clamp(0.0, 1.0) * 255.0) as u8
+        };
+        let (near_start, near_end) = (reach(caps[0]), reach(caps[1]));
+        match near_start >= near_end {
+            true => (from, near_start.min(coverage)),
+            false => (to, near_end.min(coverage)),
+        }
+    });
+}
+
 fn draw_text<P: Pixel>(s: &Surface, glyphs: &[PlacedGlyph], masks: &[*const u8], x: i16, y: i16, clip: &Rect, color: Color) {
     for (g, &mask) in glyphs.iter().zip(masks) {
         if !mask.is_null() {
@@ -313,6 +401,8 @@ fn draw_ops<P: Pixel, A: Allocator, L: Allocator, S: Allocator>(list: &DisplayLi
             Op::RoundRect { rect, corner, color } => draw_round_rect::<P>(surface, &rect, &corner, &clip, color),
             Op::Border { rect, ring, stroke, color } => draw_border::<P>(surface, &rect, ring.as_ref(), stroke, &clip, color),
             Op::Shadow { rect, mask, color } => draw_shadow::<P>(surface, &rect, &mask, &clip, color),
+            Op::Gradient { rect, corner, from, to, vertical } => draw_gradient::<P>(surface, &rect, corner.as_ref(), from, to, vertical, &clip),
+            Op::Arc { rect, mask, start, sweep, from, to } => draw_arc::<P>(surface, &rect, &mask, start, sweep, from, to, &clip),
             Op::Image { x, y, image, tint } => surface.image::<P>(x, y, &image, &clip, tint),
             Op::Text { x, y, glyphs, color, slot, .. } => {
                 let start = prepared.starts[slot as usize];

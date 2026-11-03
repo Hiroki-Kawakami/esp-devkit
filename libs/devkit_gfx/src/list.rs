@@ -8,7 +8,7 @@ use alloc::vec::Vec;
 use core::alloc::Allocator;
 
 use crate::color::Color;
-use crate::effect::{CornerMask, ShadowMask};
+use crate::effect::{ArcMask, CornerMask, ShadowMask};
 use crate::format::ImageFormat;
 use crate::geom::Rect;
 use crate::image::Image;
@@ -23,6 +23,8 @@ pub enum Op<'a> {
     RoundRect { rect: Rect, corner: CornerMask, color: Color },
     Border { rect: Rect, ring: Option<CornerMask>, stroke: i16, color: Color },
     Shadow { rect: Rect, mask: ShadowMask, color: Color },
+    Gradient { rect: Rect, corner: Option<CornerMask>, from: Color, to: Color, vertical: bool },
+    Arc { rect: Rect, mask: ArcMask, start: f32, sweep: f32, from: Color, to: Color },
     Image { x: i16, y: i16, image: Image<'a>, tint: Color },
     Text { x: i16, y: i16, glyphs: &'a [PlacedGlyph], bounds: Rect, color: Color, slot: u32 },
     Raster { rect: Rect, origin: (i16, i16), raster: &'a dyn Raster },
@@ -35,7 +37,7 @@ pub enum Op<'a> {
 impl Op<'_> {
     pub(crate) fn bounds(&self) -> Rect {
         match *self {
-            Self::Fill { rect, .. } | Self::RoundRect { rect, .. } | Self::Border { rect, .. } | Self::Raster { rect, .. } => rect,
+            Self::Fill { rect, .. } | Self::RoundRect { rect, .. } | Self::Border { rect, .. } | Self::Gradient { rect, .. } | Self::Arc { rect, .. } | Self::Raster { rect, .. } => rect,
             Self::Shadow { rect, mask, .. } => rect.expand(mask.blur() as i16),
             Self::Image { x, y, image, .. } => Rect::new(x, y, image.width() as i16, image.height() as i16),
             Self::Text { bounds, .. } => bounds,
@@ -140,6 +142,20 @@ impl<'a, A: Allocator> DisplayList<'a, A> {
     /// cover afterwards.
     pub fn shadow(&mut self, rect: Rect, mask: ShadowMask, color: Color) {
         self.ops.push(Op::Shadow { rect, mask, color });
+    }
+
+    /// `from` at the left, or the top when `vertical`, to `to` at the other
+    /// end. `corner` rounds it as `round_rect` does.
+    pub fn gradient(&mut self, rect: Rect, corner: Option<CornerMask>, from: Color, to: Color, vertical: bool) {
+        self.ops.push(Op::Gradient { rect, corner, from, to, vertical });
+    }
+
+    /// Part of `mask`'s ring with round ends, its top left at `(x, y)`: `sweep`
+    /// degrees clockwise from `start`, 0 being straight up, going from `from`
+    /// to `to`. 360 or more is the whole ring.
+    pub fn arc(&mut self, x: i16, y: i16, mask: ArcMask, start: f32, sweep: f32, from: Color, to: Color) {
+        let side = mask.radius() as i16 * 2;
+        self.ops.push(Op::Arc { rect: Rect::new(x, y, side, side), mask, start, sweep, from, to });
     }
 
     /// `tint`'s alpha is the opacity; an `A8` image takes its color too.

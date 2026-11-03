@@ -6,7 +6,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use devkit_ui::widgets::{Menu, button, checkbox, icon_button, list_item, modal, slider, slider_value, switch, top_bar};
+use devkit_ui::widgets::{Menu, button, checkbox, icon_button, list_item, modal, progress_bar, progress_indicator, slider, slider_value, switch, top_bar};
 use devkit_ui::{Align, Child, Component, Cx, Element, Handle, ListId, Overlay, RenderMode, Root, Screen, SplitRole, Strips, Ui};
 use idf::heap::Caps;
 use idf::sync::{LazyLock, Mutex};
@@ -270,6 +270,8 @@ impl Component for Detail {
                 ui.row([ui.text(theme.fonts.body, "Video mode").foreground(c.text).grow(1), switch(ui, self.video, DetailMsg::Video).id("video")]).align(Align::Center),
                 ui.text(theme.fonts.caption, ui.format(format_args!("Volume {}", self.volume))).foreground(colors::MUTED),
                 slider(ui, self.volume, |d| DetailMsg::Volume(slider_value(d))).id("volume"),
+                ui.row([progress_bar(ui, Some(f32::from(self.volume) / 255.0)).grow(1), progress_indicator(ui, Some(f32::from(self.volume) / 255.0))]).align(Align::Center).gap(m.padding),
+                ui.row([progress_bar(ui, None).grow(1).id("busy-bar"), progress_indicator(ui, None).id("busy-ring")]).align(Align::Center).gap(m.padding),
                 ui.row([
                     button(ui, "Rename", theme.widgets.button.secondary, DetailMsg::Back).grow(1).disabled(!self.keep).id("rename"),
                     button(ui, "Delete", theme.widgets.button.primary, DetailMsg::Ask).grow(1).id("delete"),

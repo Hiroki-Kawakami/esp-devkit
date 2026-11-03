@@ -342,6 +342,30 @@
         "background": "color.primary"
       }
     },
+    "progress_bar": {
+      "segment": 40,
+      "period_ms": 1100,
+      "track": {
+        "height": 8,
+        "radius": 4,
+        "background": "color.selected"
+      },
+      "fill": {
+        "radius": 4,
+        "foreground": "color.primary"
+      }
+    },
+    "progress_indicator": {
+      "stroke": 6,
+      "sweep": 270,
+      "period_ms": 1000,
+      "track_color": "color.selected",
+      "fill_color": "color.primary",
+      "root": {
+        "width": 48,
+        "height": 48
+      }
+    },
     "segmented": {
       "root": {
         "padding": 4,

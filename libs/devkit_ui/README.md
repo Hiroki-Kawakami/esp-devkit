@@ -213,6 +213,7 @@ app.run();
   | widget | parts |
   |---|---|
   | `slider` | `Track`, `Fill`, `Thumb` |
+  | `progress_bar` | `Track`, `Fill` |
   | `switch` | `Track`, `Thumb` |
   | `checkbox` | `Mark` |
   | `list_item` | `Leading`, `Title`, `Meta`, `Trailing` |
@@ -227,6 +228,11 @@ app.run();
   `table_header` the title above one. `table_row` holds any children, and
   `table_label`, `table_value` and `table_chevron` are the usual ones. Unlike
   `list`, every row exists.
+- `progress_bar` and `progress_indicator` show `Some(0.0..=1.0)`. With `None`
+  they move until they know: a segment crosses the bar and comes back, an arc
+  goes round, each fading toward its tail. Only they repaint while moving, and
+  `period_ms: 0` in the theme keeps them still. An indicator takes its size
+  from `.width` and `.height`, and its ring width from `.stroke`.
 - `cx.animate(id, animation)` moves a node's offset or opacity, without running a
   view or layout.
 - A style with `animate` eases to its new values by itself, from what shows at

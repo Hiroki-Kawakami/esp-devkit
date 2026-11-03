@@ -12,7 +12,7 @@ use devkit_gfx::simd::{blend565, mix565};
 use devkit_gfx::{Argb8888, Bgr888, GlyphCache, ImageFormat, Pixel, Raster, RasterTarget, Rect, Rgb565};
 use idf::heap::Caps;
 
-use crate::animate::ease_out;
+use crate::motion::{Clock, Motion, MotionKind, ease_out};
 use crate::node::{NONE, NodeContent, NodeId};
 use crate::paint::Effects;
 use crate::zoom::{CHUNK, Line, gather};
@@ -84,27 +84,25 @@ pub(crate) struct Pose {
 }
 
 pub(crate) struct Running {
-    id: NodeId,
     absent: Presence,
     edge: (i16, i16),
-    appearing: bool,
-    elapsed: u32,
+    pub(crate) appearing: bool,
     /// Where the node shows when it is not moved.
     shown: Rect,
     snapshot: Option<Box<Snapshot>>,
     /// A picture to scale is still to be taken.
-    capture: bool,
+    pub(crate) capture: bool,
 }
 
 impl Running {
     /// 0 absent, 1 shown.
-    fn progress(&self) -> f32 {
-        let t = self.elapsed as f32 / f32::from(self.absent.ms.max(1));
+    fn progress(&self, clock: &Clock) -> f32 {
+        let t = clock.linear();
         if self.appearing { ease_out(t) } else { ease_out(1.0 - t) }
     }
 
-    fn pose(&self, size: (i16, i16)) -> Pose {
-        let p = self.progress();
+    fn pose(&self, clock: &Clock, size: (i16, i16)) -> Pose {
+        let p = self.progress(clock);
         let q = 1.0 - p;
         let (dx, dy) = (self.absent.offset.0 + self.edge.0, self.absent.offset.1 + self.edge.1);
         let opacity = f32::from(self.absent.opacity) + (255.0 - f32::from(self.absent.opacity)) * p;
@@ -309,11 +307,19 @@ impl Raster for Snapshot {
 
 impl Tree {
     fn running(&self, id: NodeId) -> Option<usize> {
-        self.presences.iter().position(|r| r.id == id)
+        self.motion(id, |kind| matches!(kind, MotionKind::Presence(_)))
+    }
+
+    fn running_of(&self, i: usize) -> Option<(&Running, &Clock)> {
+        let motion = &self.motions[i];
+        match (&motion.kind, &motion.clock) {
+            (MotionKind::Presence(running), Some(clock)) => Some((running, clock)),
+            _ => None,
+        }
     }
 
     pub(crate) fn snapshot_of(&self, id: NodeId) -> Option<&Snapshot> {
-        self.presences.iter().find(|r| r.id == id).and_then(|r| r.snapshot.as_deref())
+        self.running(id).and_then(|i| self.running_of(i)).and_then(|(r, _)| r.snapshot.as_deref())
     }
 
     /// Plays `.appear` of the nodes created since the last call, now that they are placed.
@@ -368,8 +374,8 @@ impl Tree {
     }
 
     pub(crate) fn presence_within(&self, id: NodeId) -> bool {
-        self.presences.iter().any(|r| {
-            let mut node = r.id;
+        self.motions.iter().filter(|m| matches!(m.kind, MotionKind::Presence(_))).any(|m| {
+            let mut node = m.node;
             while node != NONE && node != id {
                 node = self.nodes[node as usize].parent;
             }
@@ -380,8 +386,8 @@ impl Tree {
     /// How shown the first node in `id` with a presence is, 1 without one.
     pub(crate) fn presence_level(&self, id: NodeId) -> f32 {
         let Some(found) = self.first_presence(id) else { return 1.0 };
-        match self.running(found) {
-            Some(i) => self.presences[i].progress(),
+        match self.running(found).and_then(|i| self.running_of(i)) {
+            Some((running, clock)) => running.progress(clock),
             None if self.nodes[found as usize].pose.is_some() => 0.0,
             None => 1.0,
         }
@@ -404,7 +410,11 @@ impl Tree {
 
     fn run_presence(&mut self, id: NodeId, absent: Presence, appearing: bool) {
         let shown = match self.running(id) {
-            Some(i) => self.presences.swap_remove(i).progress(),
+            Some(i) => {
+                let shown = self.running_of(i).map_or(0.0, |(running, clock)| running.progress(clock));
+                self.take_motion(i);
+                shown
+            }
             None if appearing => 0.0,
             None => 1.0,
         };
@@ -417,9 +427,11 @@ impl Tree {
         let rect = node.screen.offset(-at.0, -at.1);
         let edge = absent.edge.map_or((0, 0), |edge| self.edge_offset(rect, edge));
         let t = if appearing { 1.0 - cbrt(1.0 - shown) } else { cbrt(1.0 - shown) };
-        let elapsed = (t * f32::from(absent.ms)) as u32;
-        self.presences.push(Running { id, absent, edge, appearing, elapsed, shown: rect, snapshot: None, capture: absent.scale != 1.0 });
-        self.apply_pose(self.presences.len() - 1);
+        let mut clock = Clock::once(u32::from(absent.ms));
+        clock.elapsed = (t * f32::from(absent.ms)) as u32;
+        let running = Running { absent, edge, appearing, shown: rect, snapshot: None, capture: absent.scale != 1.0 };
+        self.motions.push(Motion::new(id, Some(clock), MotionKind::Presence(running)));
+        self.apply_pose(self.motions.len() - 1);
     }
 
     fn edge_offset(&self, rect: Rect, edge: Edge) -> (i16, i16) {
@@ -431,10 +443,11 @@ impl Tree {
         }
     }
 
-    fn apply_pose(&mut self, i: usize) {
-        let id = self.presences[i].id;
+    pub(crate) fn apply_pose(&mut self, i: usize) {
+        let id = self.motions[i].node;
         let node = &self.nodes[id as usize];
-        let pose = self.presences[i].pose((node.rect.w, node.rect.h));
+        let size = (node.rect.w, node.rect.h);
+        let Some(pose) = self.running_of(i).map(|(running, clock)| running.pose(clock, size)) else { return };
         let node = &mut self.nodes[id as usize];
         node.pose = Some(pose);
         node.paint_dirty = true;
@@ -442,7 +455,7 @@ impl Tree {
 
     /// An appeared node is as its style says; a disappeared one stays absent
     /// until it is removed.
-    fn end_presence(&mut self, id: NodeId, appearing: bool) {
+    pub(crate) fn end_presence(&mut self, id: NodeId, appearing: bool) {
         let node = &mut self.nodes[id as usize];
         node.paint_dirty = true;
         if appearing {
@@ -462,43 +475,25 @@ impl Tree {
         self.layout_dirty = true;
     }
 
-    pub(crate) fn forget_presence(&mut self, id: NodeId) {
-        self.presences.retain(|r| r.id != id);
-        self.presence_pending.retain(|p| *p != id);
-    }
-
-    pub(crate) fn tick_presences(&mut self, dt_ms: u32) {
-        let mut i = 0;
-        while i < self.presences.len() {
-            let running = &mut self.presences[i];
-            // Whoever paints takes the picture before the first tick, or never.
-            running.capture = false;
-            running.elapsed = (running.elapsed + dt_ms).min(u32::from(running.absent.ms));
-            if running.elapsed < u32::from(running.absent.ms) {
-                self.apply_pose(i);
-                i += 1;
-                continue;
-            }
-            let running = self.presences.swap_remove(i);
-            self.end_presence(running.id, running.appearing);
-        }
-    }
-
     pub(crate) fn capture_pending(&self) -> bool {
-        self.presences.iter().any(|r| r.capture)
+        self.motions.iter().any(|m| matches!(&m.kind, MotionKind::Presence(r) if r.capture))
     }
 
     /// Takes the pictures of what starts to scale this frame. One without
     /// memory for it moves unscaled.
     pub(crate) fn capture_presences<C: Allocator + Clone>(&mut self, effects: &mut Effects, cache: &mut GlyphCache<C>) {
-        for i in 0..self.presences.len() {
-            if !core::mem::take(&mut self.presences[i].capture) {
+        for i in 0..self.motions.len() {
+            let id = self.motions[i].node;
+            let MotionKind::Presence(running) = &mut self.motions[i].kind else { continue };
+            if !core::mem::take(&mut running.capture) {
                 continue;
             }
-            let (id, shown) = (self.presences[i].id, self.presences[i].shown);
+            let shown = running.shown;
             match self.snapshot(id, shown, effects, cache) {
                 Some(snapshot) => {
-                    self.presences[i].snapshot = Some(Box::new(snapshot));
+                    if let MotionKind::Presence(running) = &mut self.motions[i].kind {
+                        running.snapshot = Some(Box::new(snapshot));
+                    }
                     self.apply_pose(i);
                     let node = &self.nodes[id as usize];
                     let reach = node.pose.map_or(0, |p| p.reach);

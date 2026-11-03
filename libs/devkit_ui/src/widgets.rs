@@ -15,6 +15,7 @@ use crate::app::Handle;
 use crate::component::{Component, Cx};
 use crate::element::{Children, Drag, Element, Ui};
 use crate::presence::Presence;
+use crate::progress::Gauge;
 use crate::keyboard::{Keyboard, KeyboardPanel, KeyboardProps};
 use crate::text_buffer::{TextBuffer, TextInput};
 use crate::style::{Align, Justify, Part, Role, State, StateStyle};
@@ -120,6 +121,21 @@ pub fn slider<'a, M: Copy>(ui: &'a Ui<M>, value: u8, on_drag: fn(Drag) -> M) -> 
     // The track reaches past the root's padding, which the thumb and a drag keep to.
     let bar = ui.column([track]).padding_x(t.track_inset).justify(Justify::Center).absolute(Some(0), Some(0), Some(0), Some(0));
     ui.column([bar]).style(t.root).state_source().on_drag(on_drag)
+}
+
+/// `value` is 0.0..=1.0, `None` while how far is not known. Takes the width
+/// it is given.
+pub fn progress_bar<'a, M: Copy>(ui: &'a Ui<M>, value: Option<f32>) -> Element<'a, M> {
+    let t = &ui.theme().widgets.progress_bar;
+    let fill = ui.progress(Gauge::Bar { segment: t.segment }, value, t.period_ms).style(t.fill).absolute(Some(0), Some(0), Some(0), Some(0)).part_of(Part::Fill);
+    ui.column([fill]).style(t.track).part_of(Part::Track)
+}
+
+/// `value` is 0.0..=1.0, `None` while how far is not known.
+pub fn progress_indicator<'a, M: Copy>(ui: &'a Ui<M>, value: Option<f32>) -> Element<'a, M> {
+    let t = &ui.theme().widgets.progress_indicator;
+    let gauge = Gauge::Ring { stroke: t.stroke, sweep: t.sweep, track: t.track_color, fill: t.fill_color };
+    ui.progress(gauge, value, t.period_ms).style(t.root)
 }
 
 /// One choice out of `options`, which pair a label with what tapping it sends.

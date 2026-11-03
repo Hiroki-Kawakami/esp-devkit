@@ -19,7 +19,6 @@ use devkit_gfx::{Color, ImageFormat, Rect};
 use idf::heap::Caps;
 use idf::sync::OnceLock;
 
-use crate::animate::ease_out;
 use crate::app::Link;
 use crate::bump::Bump;
 use crate::component::{Animation, AnyHost, EventMap, Hook, Host, Property, RenderRequest, Requests, Screen, screen_host};
@@ -28,10 +27,11 @@ use crate::gesture::{Gestures, Tracker};
 use crate::external::ExternalSurface;
 use crate::keyboard::{InputKind, KeyboardMode, KeyboardPanel};
 use crate::erased::Erased;
+use crate::motion::{Clock, Motion, MotionKind};
 use crate::nav::{NavigatorNode, Overlay, Root, Saved};
 use crate::node::{CanvasNode, ListNode, NONE, Node, NodeContent, NodeId, Pull, ScrollNode, TextNode};
-use crate::presence::Running;
 use crate::presenter::{ROW_GRID, Strips};
+use crate::progress::ProgressNode;
 use crate::style::{Dimension, Insets, Role, ScreenStyle, State, Style};
 use crate::text_buffer::TextInput;
 use crate::theme::{ColorMode, Theme};
@@ -105,8 +105,7 @@ const NO_HIT: Hit = Hit { tap: NONE, scroller: NONE, drag: NONE, gesture: NONE }
 /// A scroller moving by itself: thrown, or springing back to `anchor` or to
 /// the end it is past.
 #[derive(Clone, Copy)]
-struct Fling {
-    id: NodeId,
+pub(crate) struct Fling {
     position: f32,
     velocity: f32,
     anchor: Option<f32>,
@@ -211,7 +210,9 @@ pub(crate) struct Tree {
     pub(crate) overlay: NodeId,
     /// The scrim's alpha as last painted.
     pub(crate) scrim: u8,
-    pub(crate) presences: Vec<Running>,
+    pub(crate) motions: Vec<Motion>,
+    pub(crate) ended_motions: Vec<Motion>,
+    pub(crate) ticking: bool,
     /// Created with `.appear`, waiting to be placed.
     pub(crate) presence_pending: Vec<NodeId>,
     /// Painted for a picture, as if shown.
@@ -235,11 +236,6 @@ pub(crate) struct Tree {
     keyboard_height: i16,
     keyboard_mode: KeyboardMode,
     keyboard_connected: bool,
-    animations: Vec<(NodeId, Animation, u32)>,
-    pub(crate) fading: Vec<NodeId>,
-    /// Held back until `update`: the `tick` after an input counts the idle
-    /// time before it, which would finish them at once.
-    pub(crate) starting: Vec<NodeId>,
     /// The next layout is a new screen size, and nothing eases into it.
     resized: bool,
     pub(crate) parked_strips: Option<Strips>,
@@ -254,7 +250,6 @@ pub(crate) struct Tree {
     pub(crate) damage: Vec<Rect>,
     pub(crate) contacts: Vec<Contact>,
     pub(crate) trackers: Vec<Tracker>,
-    flings: Vec<Fling>,
 }
 
 pub(crate) fn shadow_extent(style: &Style) -> i16 {
@@ -276,7 +271,9 @@ impl Tree {
             popups: NONE,
             overlay: NONE,
             scrim: 0,
-            presences: Vec::new(),
+            motions: Vec::new(),
+            ended_motions: Vec::new(),
+            ticking: false,
             presence_pending: Vec::new(),
             capturing: Cell::new(NONE),
 
@@ -298,9 +295,6 @@ impl Tree {
             keyboard_height: 0,
             keyboard_mode: KeyboardMode::Auto,
             keyboard_connected: false,
-            animations: Vec::new(),
-            fading: Vec::new(),
-            starting: Vec::new(),
             resized: false,
             parked_strips: None,
             bump: Box::new(Bump::new(caps)),
@@ -319,7 +313,6 @@ impl Tree {
             format: ImageFormat::Rgb565,
             contacts: Vec::new(),
             trackers: Vec::new(),
-            flings: Vec::new(),
         };
         tree.root = tree.alloc_node(Node::new(NodeContent::Box, 0, tree.caps));
         let nav = tree.new_navigator(TypeId::of::<Root>(), 0);
@@ -428,7 +421,7 @@ impl Tree {
             (contact.passive, contact.dragging) = (true, false);
         }
         self.trackers.clear();
-        self.flings.clear();
+        self.motions.retain(|m| !matches!(m.kind, MotionKind::Fling(_)));
         self.close_popups();
         self.area = area;
         self.layout_dirty = true;
@@ -522,11 +515,9 @@ impl Tree {
                 contact.drag = NONE;
             }
         }
-        self.flings.retain(|f| f.id != id);
         self.forget_gestures(id);
-        self.animations.retain(|a| a.0 != id);
-        self.forget_fades(id);
-        self.forget_presence(id);
+        self.forget_motions(id);
+        self.presence_pending.retain(|p| *p != id);
         if self.focus == id {
             self.focus = NONE;
             self.keyboard_changed = true;
@@ -810,6 +801,14 @@ impl Tree {
                 node.paint_dirty |= canvas.id != *canvas_id;
                 canvas.id = *canvas_id;
             }
+            (NodeContent::Progress(progress), Content::Progress { gauge, value, period_ms }) => {
+                let changed = progress.gauge != *gauge || progress.value != *value || progress.period_ms != *period_ms;
+                if changed {
+                    (progress.gauge, progress.value, progress.period_ms) = (*gauge, *value, *period_ms);
+                    node.paint_dirty = true;
+                    self.sync_progress(id);
+                }
+            }
             (NodeContent::List(list), Content::List { id: list_id, count, row_height, revision }) => {
                 list.stale |= revision.is_none() || *revision != list.revision;
                 list.revision = *revision;
@@ -865,6 +864,7 @@ impl Tree {
             }
             Content::Canvas(id) => NodeContent::Canvas(CanvasNode { id, reported: (0, 0) }),
             Content::External(surface) => NodeContent::External(surface.clone()),
+            Content::Progress { gauge, value, period_ms } => NodeContent::Progress(ProgressNode::new(gauge, value, period_ms)),
             Content::Child(_) => NodeContent::Box,
             Content::Navigator { key, split, transition, .. } => {
                 let mut navigator = NavigatorNode::new(key);
@@ -886,6 +886,7 @@ impl Tree {
         }
         match element.content {
             Content::Canvas(_) => self.canvases.push(id),
+            Content::Progress { .. } => self.sync_progress(id),
             Content::External(_) => {
                 if self.external != NONE {
                     idf::log::error!(c"ui", "only one external surface can show at a time");
@@ -1104,7 +1105,7 @@ impl Tree {
         if appearing || animating {
             self.sync_screen(self.root, 0, 0, self.area, false);
         }
-        self.fading.append(&mut self.starting);
+        self.release_waiting();
         self.sync_scrim();
     }
 
@@ -1143,7 +1144,7 @@ impl Tree {
             || style.scroll_border.is_some()
             || style.shadow.is_some()
             || node.pose.is_some()
-            || matches!(node.content, NodeContent::Text(_) | NodeContent::Image { .. } | NodeContent::Canvas(_) | NodeContent::External(_))
+            || matches!(node.content, NodeContent::Text(_) | NodeContent::Image { .. } | NodeContent::Canvas(_) | NodeContent::External(_) | NodeContent::Progress(_))
     }
 
     fn damage_extent(node: &Node) -> i16 {
@@ -1183,9 +1184,9 @@ impl Tree {
     }
 
     fn start_animation(&mut self, id: NodeId, animation: Animation) {
-        self.animations.retain(|a| a.0 != id || a.1.property != animation.property);
-        self.animations.push((id, animation, 0));
-        self.apply_animation(id, &animation, 0);
+        self.stop_motions(id, |kind| matches!(kind, MotionKind::Value(a) if a.property == animation.property));
+        self.motions.push(Motion::new(id, Some(Clock::once(u32::from(animation.duration_ms))), MotionKind::Value(animation)));
+        self.apply_animation(self.motions.len() - 1);
     }
 
     /// Keeps the node where it shows, and lets it go to its new place. A node
@@ -1203,11 +1204,12 @@ impl Tree {
         }
     }
 
-    fn apply_animation(&mut self, id: NodeId, animation: &Animation, elapsed: u32) {
-        let t = elapsed as f32 / f32::from(animation.duration_ms.max(1));
+    pub(crate) fn apply_animation(&mut self, i: usize) {
+        let motion = &self.motions[i];
+        let (MotionKind::Value(animation), Some(clock)) = (&motion.kind, motion.clock) else { return };
         let range = f32::from(animation.to) - f32::from(animation.from);
-        let value = animation.from + (range * ease_out(t)) as i16;
-        let node = &mut self.nodes[id as usize];
+        let value = animation.from + (range * clock.eased()) as i16;
+        let node = &mut self.nodes[motion.node as usize];
         match animation.property {
             Property::TranslateX => node.translate.0 = value,
             Property::TranslateY => node.translate.1 = value,
@@ -1216,20 +1218,9 @@ impl Tree {
         node.paint_dirty = true;
     }
 
-    fn tick_animations(&mut self, dt_ms: u32) {
-        let mut i = 0;
-        while let Some(&(id, animation, elapsed)) = self.animations.get(i) {
-            let elapsed = (elapsed + dt_ms).min(u32::from(animation.duration_ms));
-            self.apply_animation(id, &animation, elapsed);
-            if elapsed >= u32::from(animation.duration_ms) {
-                if animation.property == Property::Opacity {
-                    self.nodes[id as usize].opacity = (animation.to < 255).then_some(animation.to.clamp(0, 255) as u8);
-                }
-                self.animations.swap_remove(i);
-            } else {
-                self.animations[i].2 = elapsed;
-                i += 1;
-            }
+    pub(crate) fn end_animation(&mut self, id: NodeId, animation: &Animation) {
+        if animation.property == Property::Opacity {
+            self.nodes[id as usize].opacity = (animation.to < 255).then_some(animation.to.clamp(0, 255) as u8);
         }
     }
 
@@ -1441,11 +1432,7 @@ impl Tree {
     pub(crate) fn idle(&self) -> bool {
         self.queue.is_empty()
             && self.dirty.is_empty()
-            && self.flings.is_empty()
-            && !self.transiting()
-            && self.animations.is_empty()
-            && self.fading.is_empty()
-            && self.presences.is_empty()
+            && self.motions.is_empty()
             && self.presence_pending.is_empty()
             && !self.keyboard_changed
             && self.contacts.is_empty()
@@ -1453,10 +1440,6 @@ impl Tree {
             && self.damage.is_empty()
             && self.pending_redraw.is_empty()
             && !self.layout_dirty
-    }
-
-    pub(crate) fn animating(&self) -> bool {
-        !self.flings.is_empty() || self.transiting() || !self.animations.is_empty() || !self.fading.is_empty() || !self.presences.is_empty()
     }
 
     /// Something happens after a delay, without an event to wake for.
@@ -1492,7 +1475,7 @@ impl Tree {
     }
 
     fn moving(&self, id: NodeId) -> bool {
-        self.flings.iter().any(|f| f.id == id) || self.contacts.iter().any(|c| c.scroller == id)
+        self.motion(id, |kind| matches!(kind, MotionKind::Fling(_))).is_some() || self.contacts.iter().any(|c| c.scroller == id)
     }
 
     /// Puts a scroller nothing moves back between its ends.
@@ -1517,7 +1500,7 @@ impl Tree {
         let Some(offset) = self.nodes[id as usize].scroll_offset() else { return };
         let position = offset as f32;
         if self.bounds(id).past(position).is_some() {
-            self.flings.push(Fling { id, position, velocity: 0.0, anchor: None });
+            self.fling(id, Fling { position, velocity: 0.0, anchor: None });
         }
     }
 
@@ -1540,16 +1523,21 @@ impl Tree {
                 if (position - edge) * velocity > 0.0 {
                     velocity = 0.0;
                 }
-                self.flings.push(Fling { id, position, velocity, anchor: None });
+                self.fling(id, Fling { position, velocity, anchor: None });
             }
-            None if velocity.abs() > FLING_MIN => self.flings.push(Fling { id, position, velocity, anchor: None }),
+            None if velocity.abs() > FLING_MIN => self.fling(id, Fling { position, velocity, anchor: None }),
             None => {}
         }
     }
 
-    /// Moves `fling` on by `dt_ms`; `None` once it rests.
-    fn advance(&mut self, fling: Fling, dt_ms: u32) -> Option<Fling> {
-        let Fling { id, mut position, mut velocity, anchor } = fling;
+    fn fling(&mut self, id: NodeId, fling: Fling) {
+        self.motions.push(Motion::new(id, None, MotionKind::Fling(fling)));
+    }
+
+    /// Moves the fling at `i` on by `dt_ms`; `true` once it rests.
+    pub(crate) fn advance(&mut self, i: usize, fling: Fling, dt_ms: u32) -> bool {
+        let id = self.motions[i].node;
+        let Fling { mut position, mut velocity, anchor } = fling;
         let bounds = self.bounds(id);
         let dt = (dt_ms as f32).min(MAX_FLING_STEP_MS);
         let rest = match anchor.or_else(|| bounds.past(position).map(|p| p.0)) {
@@ -1580,8 +1568,9 @@ impl Tree {
                 }
             }
         };
+        self.motions[i].kind = MotionKind::Fling(Fling { position, velocity, anchor });
         self.set_offset(id, nearest(position));
-        (!rest).then_some(Fling { id, position, velocity, anchor })
+        rest
     }
 
     fn sync_pull(&mut self, id: NodeId, pull: Option<Pull>) {
@@ -1594,13 +1583,15 @@ impl Tree {
                 if self.contacts.iter().any(|c| c.scroller == id) {
                     return;
                 }
-                self.flings.retain(|f| f.id != id);
-                self.flings.push(Fling { id, position: offset as f32, velocity: 0.0, anchor: Some(-f32::from(p.height)) });
+                self.stop_motions(id, |kind| matches!(kind, MotionKind::Fling(_)));
+                self.fling(id, Fling { position: offset as f32, velocity: 0.0, anchor: Some(-f32::from(p.height)) });
             }
             Some(Pull { refreshing: true, .. }) => {}
             _ if was => {
-                for fling in self.flings.iter_mut().filter(|f| f.id == id) {
-                    fling.anchor = None;
+                for motion in self.motions.iter_mut().filter(|m| m.node == id) {
+                    if let MotionKind::Fling(fling) = &mut motion.kind {
+                        fling.anchor = None;
+                    }
                 }
                 self.settle(id);
             }
@@ -1654,7 +1645,7 @@ impl Tree {
         if inside && node.state.contains(State::DISABLED) {
             return Some(NO_HIT);
         }
-        if matches!(&node.content, NodeContent::Navigator(nav) if nav.transit.is_some()) {
+        if matches!(&node.content, NodeContent::Navigator(_)) && self.transit(id).is_some() {
             return None;
         }
         let [pad_left, pad_top, _, _] = node.style.padding;
@@ -1764,7 +1755,7 @@ impl Tree {
         let passive = held(hit.scroller, |c| c.scroller) || held(hit.tap, |c| c.tap) || held(hit.drag, |c| c.drag);
         let hit = if passive { NO_HIT } else { hit };
         let gesture = if passive { NONE } else { gesture };
-        self.flings.retain(|f| f.id != hit.scroller);
+        self.stop_motions(hit.scroller, |kind| matches!(kind, MotionKind::Fling(_)));
         let position = self.nodes.get(hit.scroller as usize).and_then(|n| n.scroll_offset()).unwrap_or(0) as f32;
         self.set_pressed(hit.tap, true);
         self.set_pressed(hit.drag, true);
@@ -1895,26 +1886,11 @@ impl Tree {
 
     /// Advances what moves by itself.
     pub(crate) fn tick(&mut self, dt_ms: u32) {
-        self.tick_transits(dt_ms);
-        self.tick_presences(dt_ms);
+        self.tick_motions(dt_ms);
         self.finish_departures();
-        self.tick_animations(dt_ms);
-        self.tick_fades(dt_ms);
         self.tick_repeat(dt_ms);
         self.tick_gestures(dt_ms);
         self.tick_caret(dt_ms);
-        let mut i = 0;
-        while let Some(&fling) = self.flings.get(i) {
-            match self.advance(fling, dt_ms) {
-                Some(fling) => {
-                    self.flings[i] = fling;
-                    i += 1;
-                }
-                None => {
-                    self.flings.swap_remove(i);
-                }
-            }
-        }
     }
 
     pub(crate) fn walk(&self, id: NodeId, f: &mut impl FnMut(NodeId, &Node)) {

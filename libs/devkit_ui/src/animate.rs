@@ -7,44 +7,37 @@ use alloc::boxed::Box;
 
 use devkit_gfx::Color;
 
+use crate::motion::{Clock, Motion, MotionKind};
 use crate::node::NodeId;
 use crate::style::{Animated, Style};
 use crate::tree::Tree;
-
-pub(crate) fn ease_out(t: f32) -> f32 {
-    1.0 - (1.0 - t) * (1.0 - t) * (1.0 - t)
-}
 
 /// A value on its way from `from` to what the style says now.
 #[derive(Clone, Copy)]
 pub(crate) struct Fade<T> {
     from: T,
-    elapsed: u16,
-    duration: u16,
-}
-
-impl<T> Fade<T> {
-    fn eased(&self) -> f32 {
-        ease_out(f32::from(self.elapsed) / f32::from(self.duration))
-    }
-
-    fn advance(&mut self, dt_ms: u32) -> bool {
-        self.elapsed = (u32::from(self.elapsed) + dt_ms).min(u32::from(self.duration)) as u16;
-        self.elapsed == self.duration
-    }
+    mix: f32,
 }
 
 impl Fade<Color> {
     /// With no `to` it fades out.
     fn color(&self, to: Option<Color>) -> Color {
-        self.from.mix(to.unwrap_or(Color { a: 0, ..self.from }), (self.eased() * 255.0) as u8)
+        self.from.mix(to.unwrap_or(Color { a: 0, ..self.from }), (self.mix * 255.0) as u8)
     }
 }
 
 impl Fade<u8> {
     pub(crate) fn opacity(&self, to: u8) -> u8 {
-        (f32::from(self.from) + (f32::from(to) - f32::from(self.from)) * self.eased()) as u8
+        (f32::from(self.from) + (f32::from(to) - f32::from(self.from)) * self.mix) as u8
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Channel {
+    Background,
+    Foreground,
+    Border,
+    Opacity,
 }
 
 #[derive(Default)]
@@ -60,16 +53,31 @@ impl Fades {
         self.background.is_none() && self.foreground.is_none() && self.border.is_none() && self.opacity.is_none()
     }
 
-    fn advance(&mut self, dt_ms: u32) {
-        fn step<T>(slot: &mut Option<Fade<T>>, dt_ms: u32) {
-            if slot.as_mut().is_some_and(|fade| fade.advance(dt_ms)) {
-                *slot = None;
-            }
+    fn has(&self, channel: Channel) -> bool {
+        match channel {
+            Channel::Background => self.background.is_some(),
+            Channel::Foreground => self.foreground.is_some(),
+            Channel::Border => self.border.is_some(),
+            Channel::Opacity => self.opacity.is_some(),
         }
-        step(&mut self.background, dt_ms);
-        step(&mut self.foreground, dt_ms);
-        step(&mut self.border, dt_ms);
-        step(&mut self.opacity, dt_ms);
+    }
+
+    fn set_mix(&mut self, channel: Channel, mix: f32) {
+        match channel {
+            Channel::Background => self.background.iter_mut().for_each(|f| f.mix = mix),
+            Channel::Foreground => self.foreground.iter_mut().for_each(|f| f.mix = mix),
+            Channel::Border => self.border.iter_mut().for_each(|f| f.mix = mix),
+            Channel::Opacity => self.opacity.iter_mut().for_each(|f| f.mix = mix),
+        }
+    }
+
+    fn clear(&mut self, channel: Channel) {
+        match channel {
+            Channel::Background => self.background = None,
+            Channel::Foreground => self.foreground = None,
+            Channel::Border => self.border = None,
+            Channel::Opacity => self.opacity = None,
+        }
     }
 }
 
@@ -78,9 +86,9 @@ pub(crate) fn faded(fade: Option<&Fade<Color>>, to: Option<Color>) -> Option<Col
     fade.map(|fade| fade.color(to)).or(to)
 }
 
-fn retarget(slot: &mut Option<Fade<Color>>, from: Option<Color>, to: Option<Color>, duration: u16) {
+fn retarget(slot: &mut Option<Fade<Color>>, from: Option<Color>, to: Option<Color>) {
     let shown = faded(slot.as_ref(), from).or(to.map(|color| Color { a: 0, ..color }));
-    *slot = shown.map(|from| Fade { from, elapsed: 0, duration });
+    *slot = shown.map(|from| Fade { from, mix: 0.0 });
 }
 
 impl Tree {
@@ -103,59 +111,65 @@ impl Tree {
         }
         let palette = self.slots[usize::from(node.owner)].theme.palette(self.color_mode);
         let resolve = |role: Option<crate::theme::ColorRole>| role.map(|role| palette.color(role));
-        let ms = style.animate_ms;
         let fades = node.fades.get_or_insert_with(|| Box::new_in(Fades::default(), self.caps));
         if background {
             match colors {
-                true => retarget(&mut fades.background, resolve(old.background), resolve(style.background), ms),
+                true => retarget(&mut fades.background, resolve(old.background), resolve(style.background)),
                 false => fades.background = None,
             }
         }
         if foreground {
             // No color of its own means the inherited one, unknown here.
             match colors && old.foreground.is_some() && style.foreground.is_some() {
-                true => retarget(&mut fades.foreground, resolve(old.foreground), resolve(style.foreground), ms),
+                true => retarget(&mut fades.foreground, resolve(old.foreground), resolve(style.foreground)),
                 false => fades.foreground = None,
             }
         }
         if border {
             match colors {
-                true => retarget(&mut fades.border, resolve(old.border_color), resolve(style.border_color), ms),
+                true => retarget(&mut fades.border, resolve(old.border_color), resolve(style.border_color)),
                 false => fades.border = None,
             }
         }
         if opacity {
             let was = old.opacity.unwrap_or(255);
             let from = fades.opacity.as_ref().map_or(was, |fade| fade.opacity(was));
-            fades.opacity = fade_opacity.then_some(Fade { from, elapsed: 0, duration: ms });
+            fades.opacity = fade_opacity.then_some(Fade { from, mix: 0.0 });
         }
+        let channels = [(background, Channel::Background), (foreground, Channel::Foreground), (border, Channel::Border), (opacity, Channel::Opacity)]
+            .map(|(changed, channel)| (changed, channel, fades.has(channel)));
         if fades.is_empty() {
             node.fades = None;
-        } else if !self.fading.contains(&id) && !self.starting.contains(&id) {
-            self.starting.push(id);
         }
-    }
-
-    pub(crate) fn tick_fades(&mut self, dt_ms: u32) {
-        let mut i = 0;
-        while let Some(&id) = self.fading.get(i) {
-            let node = &mut self.nodes[id as usize];
-            node.paint_dirty = true;
-            if let Some(fades) = &mut node.fades {
-                fades.advance(dt_ms);
-            }
-            if node.fades.as_ref().is_none_or(|fades| fades.is_empty()) {
-                node.fades = None;
-                self.fading.swap_remove(i);
-            } else {
-                i += 1;
+        let waiting = !self.motions.iter().any(|m| m.node == id && matches!(m.kind, MotionKind::Fade(_)) && !m.waiting);
+        for (_, channel, has) in channels.into_iter().filter(|c| c.0) {
+            self.stop_motions(id, |kind| matches!(kind, MotionKind::Fade(c) if *c == channel));
+            if has {
+                let mut motion = Motion::new(id, Some(Clock::once(u32::from(style.animate_ms))), MotionKind::Fade(channel));
+                motion.waiting = waiting;
+                self.motions.push(motion);
             }
         }
     }
 
-    pub(crate) fn forget_fades(&mut self, id: NodeId) {
-        self.nodes[id as usize].fades = None;
-        self.fading.retain(|f| *f != id);
-        self.starting.retain(|f| *f != id);
+    pub(crate) fn step_fade(&mut self, i: usize) {
+        let motion = &self.motions[i];
+        let (MotionKind::Fade(channel), Some(clock)) = (&motion.kind, motion.clock) else { return };
+        let (channel, mix) = (*channel, clock.eased());
+        let node = &mut self.nodes[motion.node as usize];
+        node.paint_dirty = true;
+        if let Some(fades) = &mut node.fades {
+            fades.set_mix(channel, mix);
+        }
+    }
+
+    pub(crate) fn end_fade(&mut self, id: NodeId, channel: Channel) {
+        let node = &mut self.nodes[id as usize];
+        node.paint_dirty = true;
+        let Some(fades) = &mut node.fades else { return };
+        fades.clear(channel);
+        if fades.is_empty() {
+            node.fades = None;
+        }
     }
 }

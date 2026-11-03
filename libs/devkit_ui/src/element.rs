@@ -22,6 +22,7 @@ use crate::external::ExternalSurface;
 use crate::node::Pull;
 use crate::nav::{DetailMap, SplitRole, SplitSpec, call_detail_map};
 use crate::presence::Presence;
+use crate::progress::Gauge;
 use crate::gesture::{Gesture, GestureMap, Gestures, call_gesture_map};
 use crate::keyboard::{InputKind, Keyboard};
 use crate::text_buffer::TextInput;
@@ -76,6 +77,7 @@ pub(crate) enum Content<'a> {
     List { id: ListId, count: usize, row_height: i16, revision: Option<u32> },
     Canvas(CanvasId),
     External(&'a ExternalSurface),
+    Progress { gauge: Gauge, value: Option<f32>, period_ms: u16 },
     Child(&'a dyn ChildSpec),
     Navigator { key: TypeId, initial: Option<&'a dyn ChildSpec>, split: SplitSpec, transition: Option<Transition> },
 }
@@ -443,6 +445,14 @@ impl<'a, M: Copy> Element<'a, M> {
             && text.is_empty()
         {
             *text = placeholder;
+        }
+        self
+    }
+
+    /// The ring width of a `progress_indicator`.
+    pub fn stroke(mut self, px: u8) -> Self {
+        if let Content::Progress { gauge: Gauge::Ring { stroke, .. }, .. } = &mut self.content {
+            *stroke = px;
         }
         self
     }
@@ -842,6 +852,10 @@ impl<M: Copy> Ui<M> {
     /// Pixels drawn by `Component::draw`. Takes the size the parent gives it.
     pub fn canvas<'a>(&'a self, id: CanvasId) -> Element<'a, M> {
         Element::new(self.bump, Content::Canvas(id), &mut [])
+    }
+
+    pub(crate) fn progress<'a>(&'a self, gauge: Gauge, value: Option<f32>, period_ms: u16) -> Element<'a, M> {
+        Element::new(self.bump, Content::Progress { gauge, value, period_ms }, &mut [])
     }
 
     /// A rectangle `surface` writes, inside the size the parent gives it: its

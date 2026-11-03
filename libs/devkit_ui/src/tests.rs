@@ -136,6 +136,8 @@ static WIDGETS: Widgets = Widgets {
     switch: SwitchTheme { root: &EMPTY, thumb: &EMPTY },
     checkbox: CheckboxTheme { root: &EMPTY, mark: &EMPTY },
     slider: SliderTheme { inset: 14, track_inset: 4, root: &SLIDER_ROOT, track: &SLIDER_TRACK, fill: &SLIDER_FILL, thumb: &SLIDER_THUMB },
+    progress_bar: ProgressBarTheme { segment: 30, period_ms: 1000, track: &EMPTY, fill: &EMPTY },
+    progress_indicator: ProgressIndicatorTheme { stroke: 4, sweep: 270, period_ms: 1000, track_color: ColorRole::Divider, fill_color: ColorRole::Primary, root: &EMPTY },
     segmented: SegmentedTheme { root: &EMPTY, item: &EMPTY, label: &EMPTY },
     dropdown: DropdownTheme { height: 56, root: &DROPDOWN_ITEM, label: &EMPTY, icon: &EMPTY },
     dropdown_menu: DropdownMenuTheme { root: &DROPDOWN_MENU, item: &DROPDOWN_ITEM },
@@ -1431,6 +1433,116 @@ fn opacity_eases_to_the_style_and_leaves_nothing_behind() {
     assert!(tree.nodes[id as usize].fades.is_none());
     assert_eq!(tree.nodes[id as usize].opacity, None);
     assert_eq!(tree.nodes[id as usize].style.opacity, Some(0));
+}
+
+struct Loading {
+    value: Option<f32>,
+    shown: bool,
+}
+
+impl Screen for Loading {}
+
+impl Component for Loading {
+    type Msg = Option<f32>;
+
+    fn update(&mut self, value: Option<f32>, cx: &mut Cx<Self>) {
+        match value {
+            Some(v) if v < 0.0 => self.shown = false,
+            _ => self.value = value,
+        }
+        cx.rebuild();
+    }
+
+    fn view<'a>(&'a self, ui: &'a Ui<Option<f32>>) -> Element<'a, Option<f32>> {
+        if !self.shown {
+            return ui.column([]);
+        }
+        let bar = widgets::progress_bar(ui, self.value).width(200).height(8).id("bar");
+        let ring = widgets::progress_indicator(ui, self.value).width(48).height(48).id("ring");
+        let thin = widgets::progress_indicator(ui, self.value).stroke(2).width(24).height(24).id("thin");
+        ui.column([bar, ring, thin])
+    }
+}
+
+fn phases(tree: &Tree) -> usize {
+    tree.motions.iter().filter(|m| matches!(m.kind, crate::motion::MotionKind::Phase)).count()
+}
+
+#[test]
+fn a_progress_not_knowing_how_far_moves_by_itself_and_stops_when_it_knows() {
+    let mut tree = Tree::new(Loading { value: None, shown: true }, SCREEN, Caps::INTERNAL, theme());
+    run(&mut tree);
+    assert_eq!(phases(&tree), 3);
+    assert!(tree.animating());
+    tree.tick(100);
+    let damage = run(&mut tree);
+    let ring = rect_of(&tree, "ring");
+    assert!(damage.contains(&ring), "{damage:?}");
+    assert!(damage.iter().all(|d| d.is_empty() || ["bar", "ring", "thin"].iter().any(|id| d.intersects(&rect_of(&tree, id)))), "only the progress repaints: {damage:?}");
+    tree.post(tree.root_id, Erased::new(Some(0.5f32)));
+    run(&mut tree);
+    assert_eq!(phases(&tree), 0);
+    assert!(!tree.animating());
+    tree.post(tree.root_id, Erased::new(None::<f32>));
+    run(&mut tree);
+    assert_eq!(phases(&tree), 3);
+    tree.post(tree.root_id, Erased::new(Some(-1.0f32)));
+    run(&mut tree);
+    assert_eq!(phases(&tree), 0, "a removed progress stops");
+    assert!(!tree.animating());
+}
+
+fn with_ops(tree: &Tree, check: impl FnOnce(&[devkit_gfx::Op<'_>])) {
+    let mut effects = crate::paint::Effects::new(Caps::INTERNAL);
+    let mut list = devkit_gfx::DisplayList::new_in(Caps::INTERNAL);
+    tree.paint(&mut effects, &[SCREEN], &mut list);
+    check(list.ops());
+}
+
+#[test]
+fn a_progress_paints_a_track_and_how_far() {
+    let mut tree = Tree::new(Loading { value: Some(0.5), shown: true }, SCREEN, Caps::INTERNAL, theme());
+    run(&mut tree);
+    let (bar, ring) = (rect_of(&tree, "bar"), rect_of(&tree, "ring"));
+    with_ops(&tree, |ops| {
+        assert!(ops.iter().any(|op| matches!(op, devkit_gfx::Op::Fill { rect, .. } if rect.right() == bar.x + 100 && rect.w == 200)), "the fill ends halfway");
+        let sweeps: Vec<f32> = ops.iter().filter_map(|op| match op {
+            devkit_gfx::Op::Arc { rect, sweep, .. } if *rect == ring => Some(*sweep),
+            _ => None,
+        }).collect();
+        assert_eq!(sweeps, [360.0, 180.0]);
+        let thin = rect_of(&tree, "thin");
+        let masks: Vec<(u16, u16)> = ops.iter().filter_map(|op| match op {
+            devkit_gfx::Op::Arc { rect, mask, .. } if *rect == thin => Some((mask.radius(), mask.stroke())),
+            _ => None,
+        }).collect();
+        assert_eq!(masks, [(12, 2), (12, 2)], "its own size and stroke over the theme's");
+    });
+    tree.post(tree.root_id, Erased::new(None::<f32>));
+    run(&mut tree);
+    tree.tick(100);
+    run(&mut tree);
+    with_ops(&tree, |ops| {
+        assert!(ops.iter().any(|op| matches!(op, devkit_gfx::Op::Gradient { from, to, .. } if from.a == 0 && to.a == 255)), "the head leads to the right");
+        assert!(ops.iter().any(|op| matches!(op, devkit_gfx::Op::Arc { sweep, from, .. } if *sweep == 270.0 && from.a == 0)));
+    });
+}
+
+#[test]
+fn a_progress_bar_goes_across_and_comes_back() {
+    let mut tree = Tree::new(Loading { value: None, shown: true }, SCREEN, Caps::INTERNAL, theme());
+    run(&mut tree);
+    let fill = tree.nodes[tree.find("bar").unwrap() as usize].first_child;
+    let phase = |tree: &Tree| match &tree.nodes[fill as usize].content {
+        NodeContent::Progress(p) => (p.phase, p.backwards),
+        _ => unreachable!(),
+    };
+    tree.tick(500);
+    let (t, backwards) = phase(&tree);
+    assert!(t > 0.0 && t < 1.0 && !backwards, "{t}");
+    tree.tick(1000);
+    let (t, backwards) = phase(&tree);
+    assert!(t > 0.0 && t < 1.0 && backwards, "{t}");
 }
 
 #[test]
