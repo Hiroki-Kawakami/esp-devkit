@@ -3096,7 +3096,12 @@ impl Component for Dialog {
 }
 
 fn asked(wide: bool) -> Tree {
+    asked_with(wide, |_| {})
+}
+
+fn asked_with(wide: bool, setup: impl FnOnce(&mut Tree)) -> Tree {
     let mut tree = Tree::new(Asking { wide }, SCREEN, Caps::INTERNAL, theme());
+    setup(&mut tree);
     run(&mut tree);
     tree.post(tree.root_id, Erased::new(()));
     run(&mut tree);
@@ -3128,6 +3133,22 @@ fn a_modal_moves_above_the_keyboard() {
     let keyboard = TEXT_KEYS.height;
     let panel = rect_of(&tree, "panel");
     assert_eq!(panel.y + panel.h / 2, (SCREEN.h - keyboard) / 2, "centered in what the keyboard leaves");
+}
+
+#[test]
+fn insets_are_what_the_planes_above_cover() {
+    let mut tree = asked_with(false, |tree| {
+        tree.add_chrome(Empty, Insets { top: 40, ..Insets::default() });
+        tree.add_keyboard(crate::keyboard::KeyboardMode::Auto);
+    });
+    let chrome = tree.chrome[0];
+    let dialog = tree.nodes[tree.find("panel").unwrap() as usize].owner;
+    assert_eq!((tree.context(0).insets.top, tree.context(chrome).insets.top, tree.context(dialog).insets.top), (40, 0, 0));
+    assert_eq!(rect_of(&tree, "panel").y + rect_of(&tree, "panel").h / 2, SCREEN.h / 2, "the overlay is above the chrome");
+    tap(&mut tree, "name");
+    run(&mut tree);
+    let keyboard = TEXT_KEYS.height;
+    assert_eq!([0, chrome, dialog].map(|slot| tree.context(slot).insets.bottom), [keyboard; 3]);
 }
 
 #[test]

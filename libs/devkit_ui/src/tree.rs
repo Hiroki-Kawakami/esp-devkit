@@ -392,6 +392,29 @@ impl Tree {
         }
     }
 
+    /// What the planes above the one holding `slot` cover.
+    fn insets_above(&self, slot: u16) -> Insets {
+        let mut plane = self.slots[usize::from(slot)].node;
+        while plane != NONE && self.nodes[plane as usize].parent != self.root {
+            plane = self.nodes[plane as usize].parent;
+        }
+        let chrome = |node: NodeId| self.chrome.iter().any(|&c| self.slots[usize::from(c)].node == node);
+        let keyboard = self.keyboard_slot.map_or(NONE, |k| self.slots[usize::from(k)].node);
+        // Not placed yet: under everything, as a screen is.
+        let mut above = if plane == NONE { self.nodes[self.root as usize].first_child } else { self.nodes[plane as usize].next };
+        let mut insets = Insets::default();
+        while above != NONE {
+            if chrome(above) {
+                insets = self.insets;
+            }
+            if above == keyboard {
+                insets.bottom = insets.bottom.max(self.keyboard_height);
+            }
+            above = self.nodes[above as usize].next;
+        }
+        insets
+    }
+
     pub(crate) fn context(&self, slot: u16) -> BuildContext {
         let (split_role, can_pop) = self.nav_state(slot);
         let theme = self.slots[usize::from(slot)].theme;
@@ -401,7 +424,7 @@ impl Tree {
             colors: *theme.palette(self.color_mode),
             color_mode: self.color_mode,
             theme,
-            insets: Insets { bottom: self.insets.bottom.max(self.keyboard_height), ..self.insets },
+            insets: self.insets_above(slot),
             area: self.area,
             screen_style: self.screen_style,
             format: self.format,

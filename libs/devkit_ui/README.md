@@ -167,7 +167,9 @@ app.run();
   nested navigators come back with it; state of its child components does not.
 - `App::chrome` adds a component above the screens that stays across navigation,
   with the `Insets` it covers. Screens read them with `ui.insets()` and can avoid
-  them or draw beneath. `ScreenStyle` tells the chrome what the top root screen
+  them or draw beneath. `ui.insets()` is what the planes above cover: the
+  chrome's and the keyboard's under the chrome, only the keyboard's on the chrome
+  and the `Overlay`, so the chrome keeps its own size. `ScreenStyle` tells the chrome what the top root screen
   wants. `Handle`s from `App::chrome` post to that component.
 - `Overlay` holds one screen over a scrim, `widgets.overlay.scrim`. The scrim
   fades with the first node in the screen that has a presence, and keeps
@@ -347,7 +349,8 @@ config.plugins.push(Box::new(SavedColorMode::new()));
 
 - `AppConfig::keyboard` says when the docked keyboard shows: with
   `KeyboardMode::Auto`, while an input has focus and no physical keyboard is
-  reported by `Input::set_keyboard_connected`. It raises `insets().bottom`.
+  reported by `Input::set_keyboard_connected`. It raises `insets().bottom` of
+  what is under it.
   `widgets::keyboard` places one in a view instead.
 - A `Keyboard` is static data. Label and action of a `Key` are separate, a style
   or font can replace the theme's, and widths go by quarters of a column: a key

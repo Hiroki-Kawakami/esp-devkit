@@ -168,7 +168,7 @@ impl Component for Shown {
                 let side = ui
                     .column(self.content(ui, "Side panel", "Comes from the right edge."))
                     .gap(m.padding)
-                    .padding_each(m.padding, m.padding + ui.insets().top, m.padding, m.padding)
+                    .padding(m.padding)
                     .width(360)
                     .background(c.surface)
                     .absolute(None, Some(0), Some(0), Some(0))
