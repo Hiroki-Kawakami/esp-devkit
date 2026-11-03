@@ -43,6 +43,36 @@ pub(crate) fn ticks_ceil(d: Duration) -> sys::TickType_t {
     whole.saturating_add(frac).min(u64::from(MAX_DELAY - 1)) as sys::TickType_t
 }
 
+// Rust code shares index 0 as a set of bits, one per kind of waiter; a wait
+// that takes the whole value would eat the others' wakeups.
+const NOTIFY_INDEX: sys::UBaseType_t = 0;
+pub(crate) const NOTIFY_EXECUTOR: u32 = 1 << 0;
+
+pub(crate) fn notify(task: sys::TaskHandle_t, bits: u32) {
+    unsafe { sys::idf_task_notify(task, NOTIFY_INDEX, bits) }
+}
+
+/// Takes `bits` off the calling task once any is set; false after `ticks`.
+pub(crate) fn wait_notify(bits: u32, ticks: sys::TickType_t) -> bool {
+    let start = unsafe { sys::xTaskGetTickCount() };
+    loop {
+        let value = unsafe { sys::ulTaskGenericNotifyValueClear(ptr::null_mut(), NOTIFY_INDEX, bits) };
+        if value & bits != 0 {
+            return true;
+        }
+        let left = if ticks == MAX_DELAY {
+            MAX_DELAY
+        } else {
+            let elapsed = unsafe { sys::xTaskGetTickCount() }.wrapping_sub(start);
+            if elapsed >= ticks {
+                return false;
+            }
+            ticks - elapsed
+        };
+        unsafe { sys::xTaskGenericNotifyWait(NOTIFY_INDEX, 0, 0, ptr::null_mut(), left) };
+    }
+}
+
 pub fn sleep(d: Duration) {
     unsafe { sys::vTaskDelay(ticks(d)) }
 }
@@ -332,10 +362,11 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{Builder, NAME_LEN, current, scope, sleep, spawn, ticks, ticks_ceil};
+    use super::{Builder, NAME_LEN, NOTIFY_EXECUTOR, NOTIFY_INDEX, current, scope, sleep, spawn, ticks, ticks_ceil, wait_notify};
     use crate::system::{CORE_COUNT, core_id};
     use crate::heap::Caps;
     use crate::time::Instant;
+    use crate::{sync, sys};
     use core::time::Duration;
 
     #[test]
@@ -484,5 +515,36 @@ mod tests {
         let start = Instant::now();
         sleep(Duration::from_millis(15));
         assert!(start.elapsed() >= Duration::from_millis(15));
+    }
+
+    #[test]
+    fn wait_notify_takes_only_its_own_bits() {
+        const OTHER: u32 = 1 << 5;
+        let notify = |task, bits| unsafe {
+            sys::xTaskGenericNotify(task, NOTIFY_INDEX, bits, sys::eNotifyAction_eSetBits, core::ptr::null_mut());
+        };
+        let (tx, rx) = sync::channel(1);
+        let h = spawn(move || {
+            tx.send(unsafe { sys::xTaskGetCurrentTaskHandle() } as usize);
+            let early = wait_notify(NOTIFY_EXECUTOR, 0);
+            sleep(Duration::from_millis(20));
+            let set_before = wait_notify(NOTIFY_EXECUTOR, 0);
+            let start = Instant::now();
+            let other_only = wait_notify(NOTIFY_EXECUTOR, ticks(Duration::from_millis(30)));
+            let waited = start.elapsed();
+            let other_kept = wait_notify(OTHER, 0);
+            (early, set_before, other_only, waited, other_kept)
+        });
+        let task = rx.recv() as sys::TaskHandle_t;
+        sleep(Duration::from_millis(10));
+        notify(task, NOTIFY_EXECUTOR);
+        sleep(Duration::from_millis(15));
+        notify(task, OTHER);
+        let (early, set_before, other_only, waited, other_kept) = h.join();
+        assert!(!early);
+        assert!(set_before);
+        assert!(!other_only);
+        assert!(waited >= Duration::from_millis(30), "{waited:?}");
+        assert!(other_kept);
     }
 }

@@ -69,6 +69,7 @@ BaseType_t xTaskGenericNotifyWait(UBaseType_t uxIndex, uint32_t ulBitsToClearOnE
                                   TickType_t xTicksToWait);
 uint32_t   ulTaskGenericNotifyTake(UBaseType_t uxIndex, BaseType_t xClearCountOnExit,
                                    TickType_t xTicksToWait);
+uint32_t   ulTaskGenericNotifyValueClear(TaskHandle_t xTask, UBaseType_t uxIndex, uint32_t ulBitsToClear);
 
 #define tskNO_AFFINITY      ((BaseType_t)0x7FFFFFFF)
 #define tskDEFAULT_INDEX    0
@@ -80,6 +81,7 @@ uint32_t   ulTaskGenericNotifyTake(UBaseType_t uxIndex, BaseType_t xClearCountOn
 #define ulTaskNotifyTake(clr, ticks)         ulTaskGenericNotifyTake(tskDEFAULT_INDEX, (clr), (ticks))
 #define xTaskNotifyWait(clrEntry, clrExit, pval, ticks) \
         xTaskGenericNotifyWait(tskDEFAULT_INDEX, (clrEntry), (clrExit), (pval), (ticks))
+#define ulTaskNotifyValueClear(task, bits)   ulTaskGenericNotifyValueClear((task), tskDEFAULT_INDEX, (bits))
 
 #ifdef __cplusplus
 }

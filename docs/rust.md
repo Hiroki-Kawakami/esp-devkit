@@ -418,8 +418,7 @@ local.run();
 - Spawners and wakers work from any task; a waker also from an interrupt, by
   reference: dropping the last waker of a finished task frees it, which an
   interrupt must not do.
-- A blocking call stalls every task of the executor it runs on, and a task
-  wait that uses task notifications can take the executor's wakeups.
+- A blocking call stalls every task of the executor it runs on.
 - Dropping an executor drops its unfinished tasks; awaiting one of them panics.
 - `sleep(ticks)`, `sleep_until(tick)` and `timeout(ticks, future)` count the
   `Park`'s ticks: a timer is due on the executor's first look at or after its
@@ -622,8 +621,12 @@ let answer = executor::block_on(async { local.spawn(compute()).await });
 - `channel(capacity)` and `Signal::new(&CRITICAL)` hand values from tasks and
   interrupts to async code; the other way, async code sends on
   `idf::sync::channel` as any task does.
-- `TaskPark` waits with the task's notification at index 0 and wakes from
-  interrupts too; `CRITICAL` is one spinlock shared by every executor.
+- `TaskPark` waits for bit 0 of the task's notification value at index 0 and
+  wakes from interrupts too; `CRITICAL` is one spinlock shared by every
+  executor.
+- Rust code shares notification index 0 as bits, one per kind of waiter. A
+  Rust task must not wait on index 0 in a way that takes the whole value
+  (`ulTaskNotifyTake`, stream and message buffers, `pthread_join`).
 
 ### `devkit_compression` (`libs/devkit_compression`)
 

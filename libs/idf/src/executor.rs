@@ -13,11 +13,8 @@ pub use devkit::executor::{
     local_spawner, spawner,
 };
 
-use crate::thread::{Builder, MAX_DELAY, ticks};
+use crate::thread::{Builder, MAX_DELAY, NOTIFY_EXECUTOR, notify, ticks, wait_notify};
 use crate::{Result, sys};
-
-const PD_TRUE: sys::BaseType_t = 1;
-const DEFAULT_INDEX: sys::UBaseType_t = 0;
 
 /// One spinlock for every executor; holds off interrupts and the other core.
 pub struct Critical;
@@ -32,7 +29,7 @@ impl CriticalSection for Critical {
     }
 }
 
-/// Waits on the task that created it, with its notification at index 0.
+/// Waits on the task that created it, for `NOTIFY_EXECUTOR`.
 pub struct TaskPark {
     task: sys::TaskHandle_t,
 }
@@ -42,12 +39,11 @@ unsafe impl Sync for TaskPark {}
 
 impl Park for TaskPark {
     fn park(&self, timeout: Option<u32>) {
-        let ticks = timeout.map_or(MAX_DELAY, |t| t as sys::TickType_t);
-        unsafe { sys::ulTaskGenericNotifyTake(DEFAULT_INDEX, PD_TRUE, ticks) };
+        wait_notify(NOTIFY_EXECUTOR, timeout.map_or(MAX_DELAY, |t| t as sys::TickType_t));
     }
 
     fn unpark(&self) {
-        unsafe { sys::idf_executor_notify(self.task) };
+        notify(self.task, NOTIFY_EXECUTOR);
     }
 
     fn now(&self) -> u32 {

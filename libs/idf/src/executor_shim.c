@@ -7,16 +7,16 @@
 
 static portMUX_TYPE s_mux __attribute__((unused)) = portMUX_INITIALIZER_UNLOCKED;
 
-void idf_executor_notify(TaskHandle_t task) {
+void idf_task_notify(TaskHandle_t task, UBaseType_t index, uint32_t bits) {
 #ifdef ESP_PLATFORM
     if (xPortInIsrContext()) {
         BaseType_t woken = pdFALSE;
-        vTaskNotifyGiveFromISR(task, &woken);
+        xTaskGenericNotifyFromISR(task, index, bits, eSetBits, NULL, &woken);
         portYIELD_FROM_ISR(woken);
         return;
     }
 #endif
-    xTaskNotifyGive(task);
+    xTaskGenericNotify(task, index, bits, eSetBits, NULL);
 }
 
 void idf_executor_critical_enter(void) {

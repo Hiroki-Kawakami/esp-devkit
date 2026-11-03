@@ -219,6 +219,17 @@ uint32_t ulTaskGenericNotifyTake(UBaseType_t uxIndex, BaseType_t xClearCountOnEx
     return ret;
 }
 
+uint32_t ulTaskGenericNotifyValueClear(TaskHandle_t xTask, UBaseType_t uxIndex, uint32_t ulBitsToClear) {
+    (void)uxIndex;
+    TCB_t *t = xTask ? (TCB_t *)xTask : current_tcb();
+    if (!t) return 0;
+    pthread_mutex_lock(&t->ntf_mtx);
+    uint32_t ret = t->ntf_value;
+    t->ntf_value &= ~ulBitsToClear;
+    pthread_mutex_unlock(&t->ntf_mtx);
+    return ret;
+}
+
 BaseType_t xTaskGenericNotifyWait(UBaseType_t uxIndex, uint32_t ulBitsToClearOnEntry,
                                   uint32_t ulBitsToClearOnExit, uint32_t *pulNotificationValue,
                                   TickType_t xTicksToWait) {
