@@ -141,7 +141,7 @@ impl Tree {
         match &self.nodes[id as usize].content {
             NodeContent::Box => self.arrange_box(id, &style, content),
             NodeContent::Child(_) => {
-                let child = self.nodes[id as usize].first_child;
+                let child = self.first_flow(id);
                 if child != NONE {
                     self.arrange(child, content);
                 }

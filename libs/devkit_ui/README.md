@@ -352,8 +352,9 @@ config.plugins.push(Box::new(SavedColorMode::new()));
 - `AppConfig::keyboard` says when the docked keyboard shows: with
   `KeyboardMode::Auto`, while an input has focus and no physical keyboard is
   reported by `Input::set_keyboard_connected`. It raises `insets().bottom` of
-  what is under it.
-  `widgets::keyboard` places one in a view instead.
+  what is under it, and slides in from the bottom and out again while
+  `insets()` changes at once.
+  `widgets::keyboard` places one in a view instead, coming and going at once.
 - A `Keyboard` is static data. Label and action of a `Key` are separate, a style
   or font can replace the theme's, and widths go by quarters of a column: a key
   `n` wide covers `n` pitches less one gap, so a wide key spans the gaps it

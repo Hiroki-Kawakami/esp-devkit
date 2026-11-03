@@ -1874,6 +1874,9 @@ fn focus_routes_input_and_shows_the_field_keyboard() {
 
     tap(&mut tree, "name");
     run(&mut tree);
+    assert!(tree.find("keyboard").is_none(), "the panel starts below the screen");
+    assert_eq!(tree.context(0).insets.bottom, TEXT_KEYS_HEIGHT, "what is below makes room before the panel arrives");
+    settle(&mut tree);
     let keyboard = rect_of(&tree, "keyboard");
     assert_eq!(keyboard.bottom(), 600);
     assert_eq!(tree.context(0).insets.bottom, keyboard.h);
@@ -1895,15 +1898,17 @@ fn focus_routes_input_and_shows_the_field_keyboard() {
     tree.touch(&[(0, (390, 200))], 0);
     tree.touch(&[], 10);
     run(&mut tree);
+    assert_eq!(tree.context(0).insets.bottom, 0, "what is below takes the room back as the panel starts to leave");
+    assert_eq!(rect_of(&tree, "keyboard").bottom(), 600);
+    settle(&mut tree);
     assert!(tree.find("keyboard").is_none(), "a tap elsewhere ends the input");
-    assert_eq!(tree.context(0).insets.bottom, 0);
 }
 
 #[test]
 fn a_turned_screen_caps_the_keyboard_height() {
     let mut tree = form_tree();
     tap(&mut tree, "pin");
-    run(&mut tree);
+    settle(&mut tree);
     assert_eq!(rect_of(&tree, "keyboard").h, 200);
 
     tree.set_area(Rect::new(0, 0, 600, 400));
@@ -1914,17 +1919,34 @@ fn a_turned_screen_caps_the_keyboard_height() {
 }
 
 #[test]
+fn a_leaving_keyboard_keeps_its_place_through_a_layout() {
+    let mut tree = form_tree();
+    tap(&mut tree, "name");
+    settle(&mut tree);
+    let shown = rect_of(&tree, "keyboard");
+    tree.touch(&[(0, (390, 200))], 0);
+    tree.touch(&[], 10);
+    run(&mut tree);
+    tree.layout_dirty = true;
+    tree.tick(16);
+    run(&mut tree);
+    let leaving = tree.nodes.iter().find(|n| n.id == Some("keyboard")).unwrap();
+    assert!(leaving.leaving);
+    assert_eq!(leaving.rect, shown);
+}
+
+#[test]
 fn a_physical_keyboard_hides_the_panel_and_keeps_input_working() {
     let mut tree = form_tree();
     tree.set_keyboard_connected(true);
     tap(&mut tree, "name");
-    run(&mut tree);
+    settle(&mut tree);
     assert!(tree.find("keyboard").is_none());
     tree.input(TextInput::Char('k'));
     run(&mut tree);
     assert_eq!(text_of(&tree, "name"), "k");
     tree.set_keyboard_connected(false);
-    run(&mut tree);
+    settle(&mut tree);
     assert!(tree.find("keyboard").is_some());
 }
 
@@ -1932,7 +1954,7 @@ fn a_physical_keyboard_hides_the_panel_and_keeps_input_working() {
 fn keys_line_up_across_rows_and_type_through_layers() {
     let mut tree = form_tree();
     tap(&mut tree, "name");
-    run(&mut tree);
+    settle(&mut tree);
     let keyboard = rect_of(&tree, "keyboard");
     let press = |tree: &mut Tree, x: i16, y: i16| {
         tree.touch(&[(0, (x, y))], 0);
@@ -1971,7 +1993,7 @@ fn a_long_field_keeps_its_width_and_the_caret_in_view() {
     let mut tree = form_tree();
     let empty = rect_of(&tree, "name");
     tap(&mut tree, "name");
-    run(&mut tree);
+    settle(&mut tree);
     for _ in 0..200 {
         tree.input(TextInput::Char('A'));
     }
@@ -1988,7 +2010,7 @@ fn a_long_field_keeps_its_width_and_the_caret_in_view() {
 fn a_field_scrolls_only_when_the_cursor_leaves_it() {
     let mut tree = form_tree();
     tap(&mut tree, "name");
-    run(&mut tree);
+    settle(&mut tree);
     for _ in 0..200 {
         tree.input(TextInput::Char('A'));
     }
@@ -2016,7 +2038,7 @@ fn a_field_scrolls_only_when_the_cursor_leaves_it() {
 fn a_tap_in_a_field_places_the_cursor() {
     let mut tree = form_tree();
     tap(&mut tree, "name");
-    run(&mut tree);
+    settle(&mut tree);
     tree.input(TextInput::Char('A'));
     tree.input(TextInput::Char('B'));
     run(&mut tree);
@@ -2081,7 +2103,7 @@ fn the_chrome_is_as_tall_as_it_comes_out_and_screens_start_below_it() {
 fn a_layer_keeps_the_panel_height_and_shares_it_between_its_rows() {
     let mut tree = form_tree();
     tap(&mut tree, "name");
-    run(&mut tree);
+    settle(&mut tree);
     let keyboard = rect_of(&tree, "keyboard");
     let gap = theme().widgets.keyboard.gap;
     let press = |tree: &mut Tree, x: i16, y: i16| {
@@ -2101,7 +2123,7 @@ fn a_layer_keeps_the_panel_height_and_shares_it_between_its_rows() {
 fn full_rows_end_at_the_panel_edge() {
     let mut tree = form_tree();
     tap(&mut tree, "name");
-    run(&mut tree);
+    settle(&mut tree);
     let keyboard = rect_of(&tree, "keyboard");
     let gap = theme().widgets.keyboard.gap;
     let y = keyboard.y + gap + 2 * KEY_PITCH + 10;
@@ -2114,7 +2136,7 @@ fn full_rows_end_at_the_panel_edge() {
 fn a_held_key_repeats_and_its_release_adds_nothing() {
     let mut tree = form_tree();
     tap(&mut tree, "name");
-    run(&mut tree);
+    settle(&mut tree);
     for _ in 0..3 {
         tree.input(TextInput::Char('a'));
     }
@@ -2221,7 +2243,7 @@ fn a_second_finger_on_a_held_list_does_nothing() {
 fn keys_pressed_together_both_type_in_release_order() {
     let mut tree = form_tree();
     tap(&mut tree, "name");
-    run(&mut tree);
+    settle(&mut tree);
     let keyboard = rect_of(&tree, "keyboard");
     let k = theme().widgets.keyboard;
     let pitch = (keyboard.w - k.gap) / 10;
@@ -2239,7 +2261,7 @@ fn keys_pressed_together_both_type_in_release_order() {
 fn a_finger_on_a_held_key_does_not_end_the_input() {
     let mut tree = form_tree();
     tap(&mut tree, "name");
-    run(&mut tree);
+    settle(&mut tree);
     let keyboard = rect_of(&tree, "keyboard");
     let y = keyboard.y + theme().widgets.keyboard.gap + 10;
     let x = theme().widgets.keyboard.gap + 10;
@@ -3168,7 +3190,7 @@ fn a_modal_moves_above_the_keyboard() {
     tree.add_keyboard(crate::keyboard::KeyboardMode::Auto);
     run(&mut tree);
     tap(&mut tree, "name");
-    run(&mut tree);
+    settle(&mut tree);
     let keyboard = TEXT_KEYS.height;
     let panel = rect_of(&tree, "panel");
     assert_eq!(panel.y + panel.h / 2, (SCREEN.h - keyboard) / 2, "centered in what the keyboard leaves");
@@ -3185,7 +3207,7 @@ fn insets_are_what_the_planes_above_cover() {
     assert_eq!((tree.context(0).insets.top, tree.context(chrome).insets.top, tree.context(dialog).insets.top), (40, 0, 0));
     assert_eq!(rect_of(&tree, "panel").y + rect_of(&tree, "panel").h / 2, SCREEN.h / 2, "the overlay is above the chrome");
     tap(&mut tree, "name");
-    run(&mut tree);
+    settle(&mut tree);
     let keyboard = TEXT_KEYS.height;
     assert_eq!([0, chrome, dialog].map(|slot| tree.context(slot).insets.bottom), [keyboard; 3]);
 }
