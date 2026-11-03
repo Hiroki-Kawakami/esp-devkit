@@ -413,6 +413,8 @@ let config = AppConfig::new(&resources::TOUCH);
 
 - `height` is the whole panel's, gaps included. It stays through layer changes,
   and each layer's rows share it evenly.
+- `max_height` caps `height` at that share of the screen's height, as `0.33`
+  for a third, so a landscape screen gets a shorter panel. Default 1.
 - `layers` starts on the first entry. `columns` is the width of a full row, and a
   row may be narrower: it stays on the left. The keys of a row are
   - a name of `keys`,

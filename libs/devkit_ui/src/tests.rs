@@ -91,6 +91,7 @@ const SYMBOLS: Key = Key::action(KeyLabel::Text("?123"), KeyAction::layer(3)).wi
 
 static TEXT_KEYS: Keyboard = Keyboard {
     height: TEXT_KEYS_HEIGHT,
+    max_height: 1.0,
     layers: &[
         Layer {
             columns: 10,
@@ -123,6 +124,7 @@ static TEXT_KEYS: Keyboard = Keyboard {
 
 static NUMBER_KEYS: Keyboard = Keyboard {
     height: 200,
+    max_height: 0.4,
     layers: &[Layer { columns: 3, rows: &[&[Key::text("1"), Key::text("2"), Key::text("3")]] }],
 };
 
@@ -1895,6 +1897,20 @@ fn focus_routes_input_and_shows_the_field_keyboard() {
     run(&mut tree);
     assert!(tree.find("keyboard").is_none(), "a tap elsewhere ends the input");
     assert_eq!(tree.context(0).insets.bottom, 0);
+}
+
+#[test]
+fn a_turned_screen_caps_the_keyboard_height() {
+    let mut tree = form_tree();
+    tap(&mut tree, "pin");
+    run(&mut tree);
+    assert_eq!(rect_of(&tree, "keyboard").h, 200);
+
+    tree.set_area(Rect::new(0, 0, 600, 400));
+    run(&mut tree);
+    let keyboard = rect_of(&tree, "keyboard");
+    assert_eq!((keyboard.h, keyboard.bottom()), (160, 400));
+    assert_eq!(tree.context(0).insets.bottom, 160);
 }
 
 #[test]

@@ -154,7 +154,15 @@ pub struct Layer {
 pub struct Keyboard {
     /// Of the whole panel, whichever layer shows. Rows share it evenly.
     pub height: i16,
+    /// Of the screen's height.
+    pub max_height: f32,
     pub layers: &'static [Layer],
+}
+
+impl Keyboard {
+    pub fn panel_height(&self, screen_height: i16) -> i16 {
+        self.height.min((f32::from(screen_height) * self.max_height) as i16)
+    }
 }
 
 /// The kind of text an input takes, choosing the theme's keyboard.
@@ -258,7 +266,8 @@ impl Component for KeyboardPanel {
         let width = self.width.unwrap_or(ui.screen_size().0);
         let span = i32::from(width) - i32::from(k.gap);
         let columns = i32::from(layer.columns) * QUARTER as i32;
-        let span_y = i32::from(layout.height) - i32::from(k.gap);
+        let panel_height = layout.panel_height(ui.screen_size().1);
+        let span_y = i32::from(panel_height) - i32::from(k.gap);
         let row_count = layer.rows.len() as i32;
         let rows: Vec<_> = layer
             .rows
@@ -281,7 +290,7 @@ impl Component for KeyboardPanel {
                 ui.row(items).gap(k.gap).height(height)
             })
             .collect();
-        let panel = ui.column(rows).height(layout.height).gap(k.gap).padding(k.gap).style(k.root).keep_focus().on_tap(KeyboardMsg::Panel).id("keyboard");
+        let panel = ui.column(rows).height(panel_height).gap(k.gap).padding(k.gap).style(k.root).keep_focus().on_tap(KeyboardMsg::Panel).id("keyboard");
         match self.width {
             Some(width) => panel.width(width),
             None => panel.absolute(Some(0), None, Some(0), Some(0)),

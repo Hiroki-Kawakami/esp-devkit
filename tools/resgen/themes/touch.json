@@ -605,7 +605,6 @@
     "keys": {
       "⌫": { "icon": "backspace", "action": "TextInput.Backspace", "width": 1.5, "role": "KeyRole.Special", "repeat": true },
       "⌫1": { "extends": "⌫", "width": 1 },
-      "⌫2": { "extends": "⌫", "width": 2 },
       "⏎": { "icon": "enter", "action": "TextInput.Enter", "width": 1.5, "role": "KeyRole.Primary" },
       "⎵": { "insert": " ", "width": 5 },
       "⇧": { "icon": "shift", "action": "layer.upper", "once": true, "double": "caps", "width": 1.5, "role": "KeyRole.Special" },
@@ -616,6 +615,7 @@
     },
     "text": {
       "height": 360,
+      "max_height": 0.40,
       "layers": [
         {
           "id": "lower",
@@ -653,7 +653,7 @@
           "layout": [
             ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"],
             ["@", "#", "$", "%", "&", "*", "-", "+", "(", ")"],
-            ["!", "\"", "'", ":", ";", "/", "?", "_", "⌫2"],
+            [0.5, "!", "\"", "'", ":", ";", "/", "?", "_", "⌫"],
             ["ABC", ",", "⎵", ".", "⏎"]
           ]
         }
@@ -661,6 +661,7 @@
     },
     "number": {
       "height": 360,
+      "max_height": 0.33,
       "layers": [
         {
           "id": "main",

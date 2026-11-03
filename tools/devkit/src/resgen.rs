@@ -69,6 +69,8 @@ struct ThemeEntry {
 #[serde(deny_unknown_fields)]
 struct KeyboardEntry {
     height: i16,
+    #[serde(default = "full_height")]
+    max_height: f32,
     layers: Vec<LayerEntry>,
 }
 
@@ -158,6 +160,10 @@ fn default_key_width() -> f64 {
     1.0
 }
 
+fn full_height() -> f32 {
+    1.0
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ImageEntry {
@@ -185,6 +191,7 @@ struct Theme {
 
 struct ThemeKeyboard {
     height: i16,
+    max_height: f32,
     layers: Vec<ThemeLayer>,
 }
 
@@ -408,6 +415,9 @@ impl Resolver<'_> {
         if entry.layers.is_empty() {
             return Err(self.error(path, "no layers"));
         }
+        if !(entry.max_height > 0.0 && entry.max_height <= 1.0) {
+            return Err(self.error(path, format!("max_height {} is not in (0, 1]", entry.max_height)));
+        }
         let Token::Number(gap) = self.text(path, "widgets.keyboard.gap")? else { return Err(self.error(path, "widgets.keyboard.gap is not a number")) };
         let ids: Vec<&str> = entry.layers.iter().map(|layer| layer.id.as_str()).collect();
         let mut layers = Vec::new();
@@ -439,7 +449,7 @@ impl Resolver<'_> {
             }
             layers.push(ThemeLayer { columns: layer.columns, rows });
         }
-        Ok(ThemeKeyboard { height: entry.height, layers })
+        Ok(ThemeKeyboard { height: entry.height, max_height: entry.max_height, layers })
     }
 
     /// A key of a row, with its width.
@@ -914,7 +924,7 @@ fn keyboard_code(context: &Context, theme: &Theme, keyboard: &ThemeKeyboard) -> 
             format!("devkit_ui::keyboard::Layer {{ columns: {}, rows: &[{}] }}", layer.columns, rows.join(", "))
         })
         .collect();
-    format!("devkit_ui::keyboard::Keyboard {{ height: {}, layers: &[{}] }}", keyboard.height, layers.join(", "))
+    format!("devkit_ui::keyboard::Keyboard {{ height: {}, max_height: {:?}, layers: &[{}] }}", keyboard.height, keyboard.max_height, layers.join(", "))
 }
 
 fn theme_code(context: &Context, name: &str, theme: &Theme) -> String {
