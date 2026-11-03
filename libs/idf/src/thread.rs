@@ -96,6 +96,7 @@ where
     }
 }
 
+#[derive(Clone)]
 pub struct Builder {
     name: [u8; NAME_LEN],
     stack_size: usize,

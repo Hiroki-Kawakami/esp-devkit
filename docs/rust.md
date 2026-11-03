@@ -42,7 +42,7 @@ devkit_rust_crate(ROOT "main.rs")
   main component keeps `WHOLE_ARCHIVE ON` as with C.
 
 `firmware/rust_hello` is a working example: a Rust-only main and an app
-component mixing C and Rust.
+component mixing C and Rust, ending in async code on `idf::executor`.
 
 ## C headers
 
@@ -391,6 +391,49 @@ let (front, back) = lease.0.split_at_mut(SHARED_SRAM_BYTES / 2);
 - Pointers passed to C from a lease are not tracked: C must be done with them
   before the `Lease` is dropped.
 
+`devkit::executor` runs futures on tasks the platform provides, behind two
+traits: `Park` (wait on the running task, wake it from anywhere, tick count) and
+`CriticalSection` (keeps out other tasks, cores and interrupts). `idf` provides
+them for FreeRTOS.
+
+```rust
+let local = LocalExecutor::new(&CRITICAL, park);
+local.spawn_local(async {
+    let spawner = executor::spawner().await;
+    let job = spawner.spawn(async { 1 + 1 });
+    assert_eq!(job.await, 2);
+});
+local.run();
+```
+
+- `LocalExecutor` runs on the task that created it, so its futures need not
+  be `Send`; `run` never returns, `run_until(future)` returns that future's
+  output. `Executor` is shared by every task that calls `run` on it, one per
+  core typically, and takes `Send` futures only. `block_on` runs one future on
+  the calling task with a throwaway `LocalExecutor`.
+- `spawn` returns a `JoinHandle`, itself a future for the output. Dropping it
+  lets the task run on; `abort` drops the future at its next suspension point.
+- `spawner().await` and `local_spawner().await` reach the executor running the
+  caller, from its waker; they panic elsewhere.
+- Spawners and wakers work from any task; a waker also from an interrupt, by
+  reference: dropping the last waker of a finished task frees it, which an
+  interrupt must not do.
+- A blocking call stalls every task of the executor it runs on, and a task
+  wait that uses task notifications can take the executor's wakeups.
+- Dropping an executor drops its unfinished tasks; awaiting one of them panics.
+- `sleep(ticks)`, `sleep_until(tick)` and `timeout(ticks, future)` count the
+  `Park`'s ticks: a timer is due on the executor's first look at or after its
+  tick, and runners wait no longer than the next one. Ticks wrap, so a wait
+  must stay under half their range. `timeout` drops the future when it runs
+  out.
+- `Signal<T>` keeps the latest value until `wait().await` takes it;
+  `channel(critical, capacity)` is a bounded queue with one `Receiver`
+  (`recv().await`, `try_recv`) and any number of `Sender`s: `try_send` never
+  waits, `send(v).await` waits for room in turn. `signal` and `try_send` work
+  from interrupts as long as the waiting waker clones without allocating, as
+  devkit's do: they wake a copy and leave the stored waker in place. There is
+  no disconnection, as with `idf::sync::channel`.
+
 ### `idf` (`libs/idf`)
 
 Safe wrappers for ESP-IDF APIs. `idf::sys` is the raw bindgen output, public
@@ -558,6 +601,29 @@ let cfg = CONFIG.get_or_try_init(load_config)?;
   `try_recv_from_isr` are for interrupt handlers and request the context
   switch themselves when they wake a higher-priority task. The other methods
   must not be called from an ISR.
+
+`idf::executor` runs `devkit::executor` on FreeRTOS tasks:
+
+```rust
+let local = thread::Builder::new().name("ui").priority(4).spawn_local_executor(|local| {
+    local.spawn_local(ui_loop());
+})?;
+let shared = thread::Builder::new().name("work").stack_size(16 * 1024).spawn_executor()?;
+shared.spawn(fetch());
+let answer = executor::block_on(async { local.spawn(compute()).await });
+```
+
+- `spawn_local_executor` starts one task with a `LocalExecutor` and runs
+  `setup` on it first; `spawn_executor` starts one task per core, pinned, on one
+  `Executor`. Both run for good and return a `Spawner`.
+- `block_on` runs a future on the calling task.
+- `sleep(d)` and `timeout(d, future)` wait at least `d`, rounded up to ticks
+  plus one as `thread::sleep` does.
+- `channel(capacity)` and `Signal::new(&CRITICAL)` hand values from tasks and
+  interrupts to async code; the other way, async code sends on
+  `idf::sync::channel` as any task does.
+- `TaskPark` waits with the task's notification at index 0 and wakes from
+  interrupts too; `CRITICAL` is one spinlock shared by every executor.
 
 ### `devkit_compression` (`libs/devkit_compression`)
 

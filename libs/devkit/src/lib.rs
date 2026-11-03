@@ -6,10 +6,13 @@
 #![cfg_attr(not(test), no_std)]
 #![feature(core_float_math)]
 
+extern crate alloc;
+
 mod align;
 mod bitflags;
 mod byte_cursor;
 mod defer;
+pub mod executor;
 mod fmt_buf;
 pub mod math;
 mod static_lease;

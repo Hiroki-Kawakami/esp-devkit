@@ -7,10 +7,13 @@
 
 extern crate alloc;
 
+use alloc::rc::Rc;
 use alloc::vec::Vec;
+use core::cell::Cell;
 use core::ffi::CStr;
 use core::time::Duration;
 
+use idf::executor;
 use idf::heap::{self, Caps};
 use idf::log::{error, info};
 use idf::sync::{LazyLock, Mutex, channel};
@@ -78,12 +81,57 @@ pub fn run() {
     info!(TAG, "task {} on core {}/{CORE_COUNT}, stack high water mark {}", me.name(), core_id(),
           me.stack_high_water_mark());
 
-    let mut seconds = 0u32;
-    loop {
-        info!(TAG, "{seconds}s uptime={}ms", Instant::now().since_boot().as_millis());
-        seconds += 1;
-        thread::sleep(Duration::from_secs(1));
-    }
+    let (values, mut inbox) = executor::channel::<u32>(4);
+    Builder::new()
+        .name("rust_feeder")
+        .spawn(move || {
+            for i in 1..=5 {
+                while values.try_send(i).is_err() {
+                    thread::yield_now();
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+        })
+        .expect("spawn");
+    let shared = Builder::new().name("rust_async").spawn_executor().expect("executor");
+    let jobs: Vec<_> = (1..=4u32)
+        .map(|i| {
+            shared.spawn(async move {
+                executor::sleep(Duration::from_millis(u64::from(i) * 10)).await;
+                (i * 2, core_id())
+            })
+        })
+        .collect();
+
+    executor::block_on(async move {
+        let mut sum = 0;
+        for _ in 0..5 {
+            sum += inbox.recv().await;
+        }
+        let mut done = Vec::new();
+        for job in jobs {
+            done.push(job.await);
+        }
+        let hits = Rc::new(Cell::new(0));
+        let local = executor::local_spawner().await;
+        let counters: Vec<_> = (0..3)
+            .map(|_| {
+                let hits = hits.clone();
+                local.spawn_local(async move { hits.set(hits.get() + 1) })
+            })
+            .collect();
+        for counter in counters {
+            counter.await;
+        }
+        info!(TAG, "async: channel sum={sum} jobs (value, core)={done:?} local hits={}", hits.get());
+
+        let mut seconds = 0u32;
+        loop {
+            info!(TAG, "{seconds}s uptime={}ms", Instant::now().since_boot().as_millis());
+            seconds += 1;
+            executor::sleep(Duration::from_secs(1)).await;
+        }
+    })
 }
 
 #[cfg(test)]
