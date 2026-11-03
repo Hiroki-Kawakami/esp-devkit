@@ -243,6 +243,14 @@ pub struct DropdownMenuTheme {
 }
 
 #[derive(Clone, Copy)]
+pub struct DividerTheme {
+    pub thickness: i16,
+    pub horizontal: &'static StateStyle,
+    pub vertical: &'static StateStyle,
+    pub line: &'static StateStyle,
+}
+
+#[derive(Clone, Copy)]
 pub struct TableTheme {
     pub padding: i16,
 }
@@ -255,8 +263,6 @@ pub struct TableHeaderTheme {
 #[derive(Clone, Copy)]
 pub struct TableSectionTheme {
     pub root: &'static StateStyle,
-    pub divider: &'static StateStyle,
-    pub line: &'static StateStyle,
 }
 
 #[derive(Clone, Copy)]
@@ -339,6 +345,7 @@ pub struct Widgets {
     pub segmented: SegmentedTheme,
     pub dropdown: DropdownTheme,
     pub dropdown_menu: DropdownMenuTheme,
+    pub divider: DividerTheme,
     pub table: TableTheme,
     pub table_header: TableHeaderTheme,
     pub table_section: TableSectionTheme,

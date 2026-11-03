@@ -429,6 +429,16 @@
         }
       }
     },
+    "divider": {
+      "thickness": 1,
+      "horizontal": {},
+      "vertical": {
+        "padding_y": "widgets.unit.gap"
+      },
+      "line": {
+        "background": "color.divider"
+      }
+    },
     "table": {
       "padding": "widgets.unit.padding"
     },
@@ -448,13 +458,6 @@
       "root": {
         "radius": 24,
         "background": "color.surface"
-      },
-      "divider": {
-        "padding_x": "widgets.unit.padding"
-      },
-      "line": {
-        "height": 1,
-        "background": "color.divider"
       }
     },
     "table_row": {

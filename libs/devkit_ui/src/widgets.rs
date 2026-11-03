@@ -214,6 +214,18 @@ impl<M: Copy + 'static> Component for DropdownMenu<M> {
     }
 }
 
+/// A line across the width it is given.
+pub fn divider<'a, M: Copy>(ui: &'a Ui<M>) -> Element<'a, M> {
+    let t = &ui.theme().widgets.divider;
+    ui.column([ui.column([]).style(t.line).height(t.thickness).part_of(Part::Line)]).style(t.horizontal).align_self(Align::Stretch).shrink(0)
+}
+
+/// A line down the height it is given.
+pub fn vertical_divider<'a, M: Copy>(ui: &'a Ui<M>) -> Element<'a, M> {
+    let t = &ui.theme().widgets.divider;
+    ui.row([ui.column([]).style(t.line).width(t.thickness).part_of(Part::Line)]).style(t.vertical).align_self(Align::Stretch).shrink(0)
+}
+
 /// A scroller with a table's margins. Takes the height it is given.
 pub fn table<'a, M: Copy>(ui: &'a Ui<M>, children: impl Children<'a, M>) -> Element<'a, M> {
     let padding = ui.theme().widgets.table.padding;
@@ -228,15 +240,15 @@ pub fn table_header<'a, M: Copy>(ui: &'a Ui<M>, title: &'a str) -> Element<'a, M
 
 /// Rows in one rounded panel, with a divider between them.
 pub fn table_section<'a, M: Copy>(ui: &'a Ui<M>, rows: impl IntoIterator<Item = Element<'a, M>>) -> Element<'a, M> {
-    let t = &ui.theme().widgets.table_section;
+    let widgets = &ui.theme().widgets;
     let mut children = Vec::new();
     for (i, row) in rows.into_iter().enumerate() {
         if i > 0 {
-            children.push(ui.column([ui.column([]).style(t.line)]).style(t.divider));
+            children.push(divider(ui).padding_x(widgets.unit.padding));
         }
         children.push(row);
     }
-    ui.column(children).style(t.root).clip()
+    ui.column(children).style(widgets.table_section.root).clip()
 }
 
 /// A row of `children`, as tall as they need above a minimum. Shows presses

@@ -79,7 +79,7 @@ static DROPDOWN_MENU: StateStyle = StateStyle { base: &[Prop::Radius(14), Prop::
 static MENU_PANEL: StateStyle = StateStyle { base: &[Prop::Width(200), Prop::PaddingY(8)], ..StateStyle::EMPTY };
 static MENU_ITEM: StateStyle = StateStyle { base: &[Prop::Height(50)], ..StateStyle::EMPTY };
 static TABLE_ROW: StateStyle = StateStyle { base: &[Prop::MinHeight(88), Prop::PaddingX(24), Prop::Gap(12)], ..StateStyle::EMPTY };
-static TABLE_LINE: StateStyle = StateStyle { base: &[Prop::Height(1)], ..StateStyle::EMPTY };
+static DIVIDER_VERTICAL: StateStyle = StateStyle { base: &[Prop::PaddingY(12)], ..StateStyle::EMPTY };
 static KEY: StateStyle = StateStyle { states: &[(State::PRESSED, &[Prop::Background(ColorRole::Custom(1))])], ..StateStyle::EMPTY };
 
 const KEY_PITCH: i16 = 88;
@@ -143,9 +143,10 @@ static WIDGETS: Widgets = Widgets {
     segmented: SegmentedTheme { root: &EMPTY, item: &EMPTY, label: &EMPTY },
     dropdown: DropdownTheme { height: 56, root: &DROPDOWN_ITEM, label: &EMPTY, icon: &EMPTY },
     dropdown_menu: DropdownMenuTheme { root: &DROPDOWN_MENU, item: &DROPDOWN_ITEM },
+    divider: DividerTheme { thickness: 1, horizontal: &EMPTY, vertical: &DIVIDER_VERTICAL, line: &EMPTY },
     table: TableTheme { padding: 24 },
     table_header: TableHeaderTheme { root: &EMPTY },
-    table_section: TableSectionTheme { root: &EMPTY, divider: &EMPTY, line: &TABLE_LINE },
+    table_section: TableSectionTheme { root: &EMPTY },
     table_row: TableRowTheme { root: &TABLE_ROW, label: &EMPTY, value: &EMPTY, chevron: &EMPTY },
     menu: MenuTheme { width: 200, padding_y: 8, panel: &MENU_PANEL },
     menu_item: MenuItemTheme { height: 50, root: &MENU_ITEM, label: &EMPTY },
@@ -464,6 +465,38 @@ fn a_table_section_divides_its_rows_and_they_keep_its_width() {
     assert_eq!((next.x, next.w), (section.x, section.w));
     assert_eq!(rect_of(&tree, "slider").w, section.w - 48);
     assert_eq!(text_rect(&tree, "Value").right() + 12 + 8 + 24, section.right());
+}
+
+struct Dividers;
+
+impl Screen for Dividers {}
+
+impl Component for Dividers {
+    type Msg = ();
+
+    fn update(&mut self, _msg: (), _cx: &mut Cx<Self>) {}
+
+    fn view<'a>(&'a self, ui: &'a Ui<()>) -> Element<'a, ()> {
+        let vertical = widgets::vertical_divider(ui).id("vertical").part(Part::Line, |line| line.id("vertical-line"));
+        ui.column([
+            widgets::divider(ui).id("full"),
+            widgets::divider(ui).padding_x(24).id("inset").part(Part::Line, |line| line.id("inset-line")),
+            ui.row([ui.text(ui.theme().fonts.body, "A"), vertical, ui.text(ui.theme().fonts.body, "B")]).height(88).align(Align::Center),
+        ])
+        .align(Align::Center)
+    }
+}
+
+#[test]
+fn dividers_fill_a_centering_parent_across_their_line() {
+    let mut tree = Tree::new(Dividers, SCREEN, Caps::INTERNAL, theme());
+    run(&mut tree);
+    assert_eq!(rect_of(&tree, "full"), Rect::new(0, 0, SCREEN.w, 1));
+    let inset = rect_of(&tree, "inset-line");
+    assert_eq!((inset.x, inset.w, inset.h), (24, SCREEN.w - 48, 1));
+    let (vertical, line) = (rect_of(&tree, "vertical"), rect_of(&tree, "vertical-line"));
+    assert_eq!((vertical.w, vertical.h), (1, 88));
+    assert_eq!((line.y, line.w, line.h), (vertical.y + 12, 1, 88 - 24));
 }
 
 struct Dropdowns {

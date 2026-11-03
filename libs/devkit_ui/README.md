@@ -225,9 +225,13 @@ app.run();
   | `segmented` | `Item`, `Label` |
   | `menu` | `Panel` |
   | `modal` | `Panel`, `Title`, `Message`, `Actions` |
+  | `divider`, `vertical_divider` | `Line` |
 
   It reaches every match below the element, and not into child components.
 
+- `divider` is a line across the width it is given and `vertical_divider` one down
+  the height, filling it even where the parent centers its children.
+  `.padding_x` on a `divider` keeps its ends clear.
 - `table` lays out a scrolling form: `table_section` is a rounded panel of rows and
   `table_header` the title above one. `table_row` holds any children, and
   `table_label`, `table_value` and `table_chevron` are the usual ones. Unlike

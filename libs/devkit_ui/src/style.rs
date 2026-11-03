@@ -53,6 +53,7 @@ pub enum Part {
     Item,
     Label,
     Leading,
+    Line,
     Mark,
     Message,
     Meta,
