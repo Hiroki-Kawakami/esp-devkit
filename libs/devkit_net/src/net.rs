@@ -20,13 +20,15 @@ use crate::{Error, Result};
 pub struct Config {
     /// Receive buffer of a UDP socket that sets none of its own.
     pub udp_rx_buffer: usize,
+    pub tcp_rx_buffer: usize,
+    pub tcp_tx_buffer: usize,
     /// Where socket buffers are allocated unless a socket says otherwise.
     pub caps: Caps,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { udp_rx_buffer: 4096, caps: Caps::DEFAULT }
+        Self { udp_rx_buffer: 4096, tcp_rx_buffer: 16384, tcp_tx_buffer: 16384, caps: Caps::DEFAULT }
     }
 }
 
@@ -85,8 +87,23 @@ pub(crate) fn now() -> Instant {
     Instant::from_micros(idf::time::Instant::now().since_boot().as_micros() as u64)
 }
 
+/// Calls `f` under the lock until it returns `Some`, sleeping in between
+/// until an event on `socket`.
+pub(crate) async fn wait_for<T>(net: &Net, socket: SocketId, mut f: impl FnMut(&mut Inner, Instant) -> Option<T>) -> T {
+    let waker = current_waker().await;
+    loop {
+        let mut inner = net.lock_async().await;
+        if let Some(value) = f(&mut inner, now()) {
+            return value;
+        }
+        inner.register(socket, &waker);
+        drop(inner);
+        woken().await;
+    }
+}
+
 /// Resolves on the first poll after it was woken, or spuriously.
-pub(crate) async fn woken() {
+async fn woken() {
     let mut first = true;
     poll_fn(|_| {
         if first {
@@ -99,7 +116,7 @@ pub(crate) async fn woken() {
     .await
 }
 
-pub(crate) async fn current_waker() -> Waker {
+async fn current_waker() -> Waker {
     poll_fn(|cx| Poll::Ready(cx.waker().clone())).await
 }
 

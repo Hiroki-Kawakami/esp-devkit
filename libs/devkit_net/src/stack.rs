@@ -12,10 +12,10 @@ use crate::Error;
 use crate::arp::{self, Resolve};
 use crate::link::{LinkInfo, Medium};
 use crate::time::Instant;
-use crate::udp;
+use crate::{tcp, udp};
 use crate::wire::{
     ARP_LEN, ARP_REPLY, ARP_REQUEST, Arp, BROADCAST_MAC, DEFAULT_TTL, ETHERNET_HEADER, ETHERNET_MIN_FRAME,
-    ETHERTYPE_ARP, ETHERTYPE_IPV4, Ethernet, ICMP_ECHO_REPLY, ICMP_ECHO_REQUEST, IPV4_HEADER, Ipv4, Mac, PROTO_ICMP, PROTO_UDP,
+    ETHERTYPE_ARP, ETHERTYPE_IPV4, Ethernet, ICMP_ECHO_REPLY, ICMP_ECHO_REQUEST, IPV4_HEADER, Ipv4, Mac, PROTO_ICMP, PROTO_TCP, PROTO_UDP,
     checksum, put16, sum,
 };
 
@@ -38,6 +38,8 @@ impl IfaceId {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum SocketId {
     Udp(usize),
+    Tcp(usize),
+    Listener(usize),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
@@ -96,6 +98,7 @@ pub struct Stack {
     buf: Vec<u8>,
     ident: u16,
     pub(crate) udp: udp::Sockets,
+    pub(crate) tcp: tcp::Sockets,
     pub(crate) woken: Vec<SocketId>,
 }
 
@@ -114,6 +117,7 @@ impl Stack {
             buf: Vec::new(),
             ident: 0,
             udp: udp::Sockets::default(),
+            tcp: tcp::Sockets::default(),
             woken: Vec::new(),
         };
         let lo = stack.add_interface("lo", LinkInfo { medium: Medium::Ip, mac: [0; 6], mtu: LOOPBACK_MTU });
@@ -195,10 +199,12 @@ impl Stack {
             self.receive(IfaceId::LOOPBACK, &frame, now, tx);
         }
         let mut requests = Vec::new();
-        let next = self.arp.poll(now, |id, ip| requests.push((id, ip)));
+        let arp = self.arp.poll(now, |id, ip| requests.push((id, ip)));
         for (id, ip) in requests {
             self.send_arp_request(id, ip, tx);
         }
+        let tcp = self.tcp_poll(now, tx);
+        let next = [arp, tcp].into_iter().flatten().min();
         if self.loopback.is_empty() { next } else { Some(now) }
     }
 
@@ -309,6 +315,7 @@ impl Stack {
         match ip.protocol {
             PROTO_ICMP => self.icmp_input(&ip, unicast, payload, now, tx),
             PROTO_UDP => self.udp_input(&ip, payload),
+            PROTO_TCP => self.tcp_input(&ip, unicast, payload, now, tx),
             _ => {}
         }
     }
@@ -338,7 +345,7 @@ impl Stack {
     }
 
     /// The interface and next hop for `dst`.
-    fn route_v4(&self, dst: Ipv4Addr) -> Option<(IfaceId, Ipv4Addr)> {
+    pub(crate) fn route_v4(&self, dst: Ipv4Addr) -> Option<(IfaceId, Ipv4Addr)> {
         if dst.is_loopback() || self.is_own_address(dst) {
             return Some((IfaceId::LOOPBACK, dst));
         }

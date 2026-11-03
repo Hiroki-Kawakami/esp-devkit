@@ -34,11 +34,24 @@ pub(crate) struct Net {
     pub captured: Vec<Captured>,
     wires: Vec<Wire>,
     in_flight: Vec<InFlight>,
+    loss: Option<Box<dyn FnMut(&[u8]) -> bool>>,
 }
 
 impl Net {
     pub fn new() -> Self {
-        Self { stacks: Vec::new(), now: Instant::ZERO, captured: Vec::new(), wires: Vec::new(), in_flight: Vec::new() }
+        Self {
+            stacks: Vec::new(),
+            now: Instant::ZERO,
+            captured: Vec::new(),
+            wires: Vec::new(),
+            in_flight: Vec::new(),
+            loss: None,
+        }
+    }
+
+    /// Frames for which `drop` returns true are lost on the wire.
+    pub fn set_loss(&mut self, drop: impl FnMut(&[u8]) -> bool + 'static) {
+        self.loss = Some(Box::new(drop));
     }
 
     pub fn add_stack(&mut self, stack: Stack) -> usize {
@@ -113,6 +126,9 @@ impl Net {
     fn route(&mut self, from: End, frame: Vec<u8>) {
         let (to, delay) = peer(&self.wires, from).unwrap();
         self.captured.push(Captured { at: self.now, from, frame: frame.clone() });
+        if self.loss.as_mut().is_some_and(|drop| drop(&frame)) {
+            return;
+        }
         self.in_flight.push(InFlight { at: self.now + delay, to, frame });
     }
 }

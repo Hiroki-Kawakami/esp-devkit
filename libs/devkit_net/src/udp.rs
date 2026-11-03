@@ -9,6 +9,7 @@ use core::net::{Ipv4Addr, SocketAddrV4};
 
 use idf::heap::Caps;
 
+use crate::ring::Ring;
 use crate::stack::{SocketId, Stack, Tx};
 use crate::time::Instant;
 use crate::wire::{Ipv4, PROTO_UDP, UDP_HEADER, be16, checksum, put16, sum};
@@ -16,48 +17,6 @@ use crate::{Error, Result};
 
 const EPHEMERAL_FIRST: u16 = 49152;
 const MAX_QUEUED: usize = 64;
-
-struct Ring {
-    data: Vec<u8, Caps>,
-    head: usize,
-    len: usize,
-}
-
-impl Ring {
-    fn new(size: usize, caps: Caps) -> Result<Self> {
-        let mut data = Vec::new_in(caps);
-        data.try_reserve_exact(size).map_err(|_| Error::NoMemory)?;
-        data.resize(size, 0);
-        Ok(Self { data, head: 0, len: 0 })
-    }
-
-    fn free(&self) -> usize {
-        self.data.len() - self.len
-    }
-
-    fn push(&mut self, src: &[u8]) {
-        let cap = self.data.len();
-        let tail = (self.head + self.len) % cap.max(1);
-        let first = src.len().min(cap - tail);
-        self.data[tail..tail + first].copy_from_slice(&src[..first]);
-        self.data[..src.len() - first].copy_from_slice(&src[first..]);
-        self.len += src.len();
-    }
-
-    /// Takes `n` bytes and copies as many of them as fit into `out`.
-    fn pop(&mut self, n: usize, out: &mut [u8]) -> usize {
-        let cap = self.data.len();
-        let copy = n.min(out.len());
-        let first = copy.min(cap - self.head);
-        out[..first].copy_from_slice(&self.data[self.head..self.head + first]);
-        out[first..copy].copy_from_slice(&self.data[..copy - first]);
-        if n > 0 {
-            self.head = (self.head + n) % cap;
-        }
-        self.len -= n;
-        copy
-    }
-}
 
 pub(crate) struct Socket {
     local: SocketAddrV4,

@@ -13,7 +13,10 @@ mod error;
 mod harness;
 mod link;
 mod net;
+mod ring;
 mod stack;
+mod tcp;
+mod tcp_socket;
 #[cfg(test)]
 mod tests;
 mod time;
@@ -25,5 +28,6 @@ pub use error::{Error, Result};
 pub use link::{Link, LinkInfo, LinkRx, Medium, RxFrame, TxError};
 pub use net::Config;
 pub use stack::{IfaceId, IfaceStats, Ipv4Config, Stack};
+pub use tcp_socket::{Shutdown, TcpBuilder, TcpListener, TcpReader, TcpStream, TcpWriter};
 pub use time::Instant;
 pub use udp_socket::{UdpBuilder, UdpSocket};

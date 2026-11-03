@@ -9,7 +9,7 @@ use core::time::Duration;
 use idf::executor;
 use idf::heap::Caps;
 
-use crate::net::{self, Net, current_waker, woken};
+use crate::net::{self, Net, wait_for};
 use crate::stack::SocketId;
 use crate::{Error, Result};
 
@@ -108,16 +108,8 @@ impl UdpSocket {
     }
 
     pub async fn recv_from_async(&self, buf: &mut [u8]) -> Result<(usize, SocketAddr)> {
-        let waker = current_waker().await;
-        loop {
-            let mut inner = self.net.lock_async().await;
-            if let Some((n, from)) = inner.stack.udp_recv(self.id, buf) {
-                return Ok((n, from.into()));
-            }
-            inner.register(SocketId::Udp(self.id), &waker);
-            drop(inner);
-            woken().await;
-        }
+        let (n, from) = wait_for(self.net, SocketId::Udp(self.id), |inner, _| inner.stack.udp_recv(self.id, buf)).await;
+        Ok((n, from.into()))
     }
 
     pub fn recv(&self, buf: &mut [u8]) -> Result<usize> {

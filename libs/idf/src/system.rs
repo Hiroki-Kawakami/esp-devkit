@@ -12,6 +12,12 @@ pub fn core_id() -> u32 {
     unsafe { sys::xPortGetCoreID() as u32 }
 }
 
+/// From the hardware RNG; truly random only while the RF or the bootloader's
+/// entropy source runs.
+pub fn random() -> u32 {
+    unsafe { sys::esp_random() }
+}
+
 pub fn restart() -> ! {
     unsafe { sys::esp_restart() }
 }
