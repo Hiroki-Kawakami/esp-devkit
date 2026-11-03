@@ -2,7 +2,7 @@
 idf_component_register(
     SRCS "/dev/null"
     REQUIRES esp_common esp_system esp_timer freertos heap log esp_driver_i2c esp_driver_gpio
-             esp_driver_ledc esp_driver_i2s esp_driver_ppa esp_driver_sdmmc esp_hw_support esp_lcd sdmmc fatfs vfs
+             esp_driver_ledc esp_driver_i2s esp_driver_ppa esp_driver_sdmmc esp_hw_support esp_lcd esp_mm sdmmc fatfs vfs
     PRIV_REQUIRES devkit rust_rt)
 if(ESP_PLATFORM)
     set(log_headers "esp_log.h" "esp_log_config.h" "esp_log_level.h" "esp_log_timestamp.h"
@@ -18,7 +18,7 @@ if(ESP_PLATFORM)
     endif()
     if(CONFIG_SOC_SDMMC_HOST_SUPPORTED)
         list(APPEND driver_headers "driver/sdmmc_host.h" "sd_protocol_types.h" "sd_pwr_ctrl_by_on_chip_ldo.h"
-                                   "esp_vfs_fat.h")
+                                   "esp_vfs_fat.h" "sdmmc_cmd.h" "esp_cache.h")
     endif()
     if(CONFIG_SOC_I2S_SUPPORTED)
         list(APPEND driver_headers "driver/i2s_std.h" "driver/i2s_common.h" "driver/i2s_types.h" "hal/i2s_types.h")

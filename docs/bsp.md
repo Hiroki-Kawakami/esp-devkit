@@ -98,3 +98,22 @@ the screen.
   ready for `Blitter::start`. `set_orientation_cb` delivers each new pose on the
   dispatch task.
 - `inject` replaces the sensor, in panel axes, until `None`.
+
+## Wi-Fi and BLE
+
+A board whose radios sit on an esp-hosted coprocessor (the Tab5's C6) serves
+them through the IDF APIs, not through `Board`: with
+`CONFIG_ESP_WIFI_REMOTE_LIBRARY_CUSTOM`, `esp_wifi_init()` resets the
+coprocessor, brings the SDIO link up and the rest of `esp_wifi` maps to its
+RPCs; with NimBLE as a host-only stack, `nimble_port_init()` brings the link
+and the coprocessor's controller up. `init` only records where the coprocessor
+is.
+
+- The firmware brings in `esp_wifi` (through `libs/wifi`, for one) and `bt`
+  itself; `bsp_rs` does not require them.
+- The link is `libs/esp_hosted_enhanced`'s host in Rust (`driver/esp_hosted`),
+  with its wire format, priorities and SDIO handling, and works with the stock
+  coprocessor firmware too. A firmware with `bsp_rs` gets it instead of the C
+  host.
+- On the Tab5 it shares the SDMMC controller with the card slot.
+- `firmware/esp_hosted_enhanced/rust_check` runs the Wi-Fi and BLE benches on it.

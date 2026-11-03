@@ -32,6 +32,8 @@ pub mod sync;
 pub mod system;
 pub mod thread;
 pub mod time;
+#[cfg(target_os = "none")]
+pub mod timer;
 
 pub use error::{Error, Result};
 

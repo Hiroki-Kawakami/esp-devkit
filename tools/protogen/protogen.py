@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate serialization code from a proto3 schema (stdlib only).
 
-    protogen.py c|protobuf-c <file.proto> <outdir>
+    protogen.py c|protobuf-c|rust <file.proto> <outdir>
 """
 
 import argparse
@@ -10,11 +10,13 @@ from pathlib import Path
 
 import gen_c
 import gen_protobuf_c
+import gen_rust
 from proto import ProtoError, parse
 
 GENERATORS = {
     "c": gen_c.generate,
     "protobuf-c": gen_protobuf_c.generate,
+    "rust": gen_rust.generate,
 }
 
 

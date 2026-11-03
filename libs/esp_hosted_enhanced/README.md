@@ -23,6 +23,9 @@ CONFIG_ESP_HOSTED_ENHANCED_PIN_D3=8
 CONFIG_ESP_HOSTED_ENHANCED_PIN_RESET=15
 ```
 
+A firmware using `libs/bsp_rs` gets the same host in Rust from there instead
+(docs/bsp.md), and this one stays off.
+
 `esp_wifi_init()` resets the coprocessor and brings the link up; the rest of
 the `esp_wifi` API maps to its RPCs. `inc/hosted_host.h` covers what lies
 beside that API: connecting without Wi-Fi, the firmware version, OTA, and the
@@ -66,10 +69,11 @@ are polled; transfers of 4 KB and more wait for the completion interrupt. Anythi
 
 ## Tests
 
-`test/` checks the generated RPC code against libprotobuf-c on the PC (from the
-repository root):
+`test/` checks the generated RPC code, C and Rust, against libprotobuf-c on the
+PC (from the repository root):
 
 ```
 nix develop -c sh -c 'cmake -S libs/esp_hosted_enhanced/test -B build/hosted_rpc_test -G Ninja && cmake --build build/hosted_rpc_test'
 build/hosted_rpc_test/hosted_rpc_test
+build/hosted_rpc_test/hosted_rpc_test_rs.test
 ```

@@ -21,6 +21,7 @@ choice BSP_RS_BOARD
         select BSP_RS_DEVICE_ST7123 if !DEVKIT_SIMULATOR
         select BSP_RS_DEVICE_ST712X_TOUCH if !DEVKIT_SIMULATOR
         select BSP_RS_DRIVER_SDMMC if !DEVKIT_SIMULATOR
+        select BSP_RS_DRIVER_ESP_HOSTED if !DEVKIT_SIMULATOR && ESP_WIFI_REMOTE_LIBRARY_CUSTOM
 endchoice
 
 # Chip drivers and transports compiled into the crate; each board selects the
@@ -57,6 +58,10 @@ config BSP_RS_DEVICE_ST7123
 
 config BSP_RS_DEVICE_ST712X_TOUCH
     bool
+
+config BSP_RS_DRIVER_ESP_HOSTED
+    bool
+    select BSP_RS_DRIVER_SDMMC
 
 config BSP_RS_DRIVER_MIPI_DSI
     bool

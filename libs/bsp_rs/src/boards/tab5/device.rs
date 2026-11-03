@@ -21,6 +21,8 @@ use crate::devices::{ili9881c, st7121, st7123};
 use crate::devices::pi4io::{Pi4io, PinConfig};
 use crate::devices::rx8130::{self, Rx8130};
 use crate::display;
+#[cfg(CONFIG_BSP_RS_DRIVER_ESP_HOSTED)]
+use crate::driver::esp_hosted;
 use crate::driver::mipi_dsi::MipiDsi;
 use crate::driver::sdmmc::{self, SdmmcCard};
 use crate::imu::{self, AxisMap, Imu};
@@ -47,6 +49,15 @@ const SD_SLOT: i32 = 0;
 const SD_PINS: idf::sdmmc::SlotPins = idf::sdmmc::SlotPins { clk: 43, cmd: 44, d0: 39, d1: 40, d2: 41, d3: 42 };
 const SD_LDO_CHANNEL: i32 = 4;
 const SD_ALLOCATION_UNIT: usize = 16 * 1024;
+
+#[cfg(CONFIG_BSP_RS_DRIVER_ESP_HOSTED)]
+const C6_SLOT: i32 = 1;
+#[cfg(CONFIG_BSP_RS_DRIVER_ESP_HOSTED)]
+const C6_PINS: idf::sdmmc::SlotPins = idf::sdmmc::SlotPins { clk: 12, cmd: 13, d0: 11, d1: 10, d2: 9, d3: 8 };
+#[cfg(CONFIG_BSP_RS_DRIVER_ESP_HOSTED)]
+const C6_PIN_EN: i32 = 15;
+#[cfg(CONFIG_BSP_RS_DRIVER_ESP_HOSTED)]
+const C6_FREQ_KHZ: i32 = 40_000;
 
 // The RTC interrupt pulses the power key, so every timer expiry turns the board
 // off. A timer left running would do it again before the app could stop it;
@@ -96,6 +107,8 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
     let imu = imu_init(bus);
     let rtc = rtc_init(bus);
     let sd = sd_init();
+    #[cfg(CONFIG_BSP_RS_DRIVER_ESP_HOSTED)]
+    coprocessor_init();
     let power = power::start(PowerDriver::new(bus, pi4ioe2), audio);
     Ok(Board { audio, display: Some(DISPLAY.get_or_init(|| display::Display(display))), imu, power, rtc, sd, touch })
 }
@@ -253,6 +266,16 @@ fn sd_init() -> Option<&'static Sd> {
         .and_then(|controller| sd::start(card(controller)))
         .inspect_err(|err| warn!(TAG, "sd unavailable: {err}"))
         .ok()
+}
+
+// Non-fatal: the board comes up without Wi-Fi and BLE.
+#[cfg(CONFIG_BSP_RS_DRIVER_ESP_HOSTED)]
+fn coprocessor_init() {
+    let config =
+        esp_hosted::Config { slot: C6_SLOT, pins: C6_PINS, freq_khz: C6_FREQ_KHZ, reset_pin: Some(C6_PIN_EN) };
+    if let Err(err) = sdmmc::controller().and_then(|controller| esp_hosted::configure(controller, config)) {
+        warn!(TAG, "coprocessor unavailable: {err}");
+    }
 }
 
 // Non-fatal: the board comes up without a clock.

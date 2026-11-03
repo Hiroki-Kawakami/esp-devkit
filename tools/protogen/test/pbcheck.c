@@ -326,3 +326,23 @@ int pbcheck_run(const ProtobufCMessageDescriptor *ref, const pb_msgdesc_t *desc,
     printf("%s: %u iterations, %d failures\n", ref->name, iterations, failures);
     return failures;
 }
+
+int pbcheck_dump(const ProtobufCMessageDescriptor *ref, unsigned iterations, const char *path) {
+    FILE *f = fopen(path, "wb");
+    if (!f) {
+        perror(path);
+        return 1;
+    }
+    for (unsigned it = 0; it < iterations; it++) {
+        s_budget = FILL_MESSAGES;
+        ProtobufCMessage *m = fill(ref, 0);
+        size_t n = protobuf_c_message_get_packed_size(m);
+        uint8_t *wire = malloc(n + 4);
+        for (int i = 0; i < 4; i++) wire[i] = (uint8_t)(n >> (8 * i));
+        protobuf_c_message_pack(m, wire + 4);
+        fwrite(wire, 1, n + 4, f);
+        free(wire);
+        protobuf_c_message_free_unpacked(m, NULL);
+    }
+    return fclose(f) ? 1 : 0;
+}

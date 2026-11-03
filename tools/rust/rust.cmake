@@ -375,7 +375,7 @@ endfunction()
 # Generates <gen>/bindings.rs for the headers, plus <gen>/static.c with the
 # wrappers for their static inline functions, compiled into the component.
 function(_devkit_rust_bindgen name out gen)
-    cmake_parse_arguments(B "" "" "HEADERS;EXPORTS" ${ARGN})
+    cmake_parse_arguments(B "" "" "HEADERS;EXPORTS;OPTIONS" ${ARGN})
     get_property(bindgen GLOBAL PROPERTY DEVKIT_RUST_BINDGEN)
 
     set(header_content "")
@@ -385,7 +385,7 @@ function(_devkit_rust_bindgen name out gen)
     file(CONFIGURE OUTPUT "${gen}/bindgen.h" CONTENT "${header_content}" @ONLY)
 
     _devkit_rust_header_regexes(allow ${B_HEADERS} ${B_EXPORTS})
-    set(options --use-core)
+    set(options --use-core ${B_OPTIONS})
     foreach(regex ${allow})
         list(APPEND options "--allowlist-file=${regex}")
     endforeach()
@@ -447,19 +447,20 @@ endfunction()
 
 # devkit_rust_crate(ROOT file [EDITION year] [TESTS] [OPT_LEVEL level]
 #                   [BINDGEN_HEADERS header...] [EXPORT_HEADERS header...]
-#                   [DEPENDS file...])
+#                   [BINDGEN_OPTIONS option...] [DEPENDS file...])
 #
 # Call after idf_component_register(); the component must (PRIV_)REQUIRES
 # rust_rt. Builds a crate named after the component; crates of its requirements,
 # `sdkconfig`, and a --cfg per enabled bool option are in scope. The headers
 # (as #included) are bound into $OUT_DIR/bindings.rs; each function declared
 # in an EXPORT_HEADERS header must be defined at the crate root with the same
-# signature. TESTS adds the simulator's rust_test_<crate> target; the crate
-# root must then be #![cfg_attr(not(test), no_std)]. OPT_LEVEL overrides the
+# signature. BINDGEN_OPTIONS are passed to bindgen as they are. TESTS adds the
+# simulator's rust_test_<crate> target; the crate root must then be
+# #![cfg_attr(not(test), no_std)]. OPT_LEVEL overrides the
 # project's optimization for this crate, in one codegen unit, unless the project
 # asked for none.
 function(devkit_rust_crate)
-    cmake_parse_arguments(R "TESTS" "ROOT;EDITION;OPT_LEVEL;RESOURCES" "BINDGEN_HEADERS;EXPORT_HEADERS;DEPENDS" ${ARGN})
+    cmake_parse_arguments(R "TESTS" "ROOT;EDITION;OPT_LEVEL;RESOURCES" "BINDGEN_HEADERS;EXPORT_HEADERS;BINDGEN_OPTIONS;DEPENDS" ${ARGN})
     if(NOT R_ROOT)
         message(FATAL_ERROR "devkit_rust_crate: ROOT is required")
     endif()
@@ -530,7 +531,7 @@ function(devkit_rust_crate)
     set(bindings "")
     if(R_BINDGEN_HEADERS OR R_EXPORT_HEADERS)
         _devkit_rust_bindgen(${name} "${out}" "${gen}"
-            HEADERS ${R_BINDGEN_HEADERS} EXPORTS ${R_EXPORT_HEADERS})
+            HEADERS ${R_BINDGEN_HEADERS} EXPORTS ${R_EXPORT_HEADERS} OPTIONS ${R_BINDGEN_OPTIONS})
         set(bindings "${gen}/bindings.rs")
     endif()
     set(resources "")

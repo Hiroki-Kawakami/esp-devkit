@@ -5,6 +5,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "pbcheck.h"
 
@@ -23,7 +24,8 @@ static int check_unpacked_repeated(void) {
     return !ok;
 }
 
-int main(void) {
+int main(int argc, char **argv) {
+    if (argc == 3 && strcmp(argv[1], "--dump") == 0) return pbcheck_dump(&test_all__descriptor, 5000, argv[2]);
     int failures = check_unpacked_repeated();
     failures += pbcheck_run(&test_all__descriptor, &test_all__msgdesc, 20000);
     return failures ? EXIT_FAILURE : EXIT_SUCCESS;

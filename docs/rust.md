@@ -72,6 +72,9 @@ mod ffi {
   must be defined at the crate root (or re-exported there) with the
   declaration's signature; a missing definition or a different signature
   fails the build. A header is either all Rust or not listed here.
+- `BINDGEN_OPTIONS` go to bindgen as they are, e.g. `--blocklist-type=<name>`
+  for a struct whose layout bindgen gets wrong, which the crate then defines
+  itself next to the `include!`.
 - Bindings are regenerated when a header changes and the crate rebuilds only
   if the bindings did.
 

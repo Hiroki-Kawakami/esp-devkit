@@ -21,35 +21,87 @@ const TAG: &CStr = c"sdmmc";
 const DEFAULT_MAX_FILES: u8 = 5;
 const SECTOR: usize = 512;
 
+/// A slot user that drives the controller itself between IDF transactions.
+pub(crate) trait PolledSlot: Sync {
+    /// Before the first IDF user takes the controller.
+    fn suspend(&self);
+    /// After the last IDF user, while the lock is still held.
+    fn resume(&self);
+}
+
 /// The SDMMC controller. The board owns it for good; each slot's user brackets
-/// what touches it with `acquire`.
+/// what touches it through the IDF driver with `acquire`, and a polled slot its
+/// own accesses with `lock`.
 pub(crate) struct Controller {
     lock: Semaphore,
     owner: AtomicPtr<c_void>,
     depth: AtomicU32,
+    idf_depth: AtomicU32,
+    polled: OnceLock<&'static dyn PolledSlot>,
 }
 
 pub(crate) struct Guard<'a>(&'a Controller);
 
+#[allow(dead_code)]
+pub(crate) struct LockGuard<'a>(&'a Controller);
+
 impl Controller {
-    /// Nests within one task.
-    pub(crate) fn acquire(&self) -> Guard<'_> {
+    fn lock_raw(&self) {
         let me = unsafe { sys::xTaskGetCurrentTaskHandle() }.cast::<c_void>();
         if self.owner.load(Ordering::Acquire) != me {
             self.lock.take();
             self.owner.store(me, Ordering::Release);
         }
         self.depth.fetch_add(1, Ordering::AcqRel);
+    }
+
+    fn unlock_raw(&self) {
+        if self.depth.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.owner.store(ptr::null_mut(), Ordering::Release);
+            self.lock.give();
+        }
+    }
+
+    /// Nests within one task.
+    pub(crate) fn acquire(&self) -> Guard<'_> {
+        self.lock_raw();
+        if self.idf_depth.fetch_add(1, Ordering::AcqRel) == 0
+            && let Some(polled) = self.polled.get()
+        {
+            polled.suspend();
+        }
         Guard(self)
+    }
+
+    /// Nests within one task, and with `acquire`.
+    #[allow(dead_code)]
+    pub(crate) fn lock(&self) -> LockGuard<'_> {
+        self.lock_raw();
+        LockGuard(self)
+    }
+
+    /// Only one slot can be polled.
+    #[allow(dead_code)]
+    pub(crate) fn set_polled(&self, slot: &'static dyn PolledSlot) -> Result<()> {
+        self.polled.set(slot).map_err(|_| Error::INVALID_STATE)
     }
 }
 
 impl Drop for Guard<'_> {
     fn drop(&mut self) {
-        if self.0.depth.fetch_sub(1, Ordering::AcqRel) == 1 {
-            self.0.owner.store(ptr::null_mut(), Ordering::Release);
-            self.0.lock.give();
+        if self.0.idf_depth.load(Ordering::Acquire) == 1
+            && let Some(polled) = self.0.polled.get()
+        {
+            polled.resume();
         }
+        self.0.idf_depth.fetch_sub(1, Ordering::AcqRel);
+        self.0.unlock_raw();
+    }
+}
+
+impl Drop for LockGuard<'_> {
+    fn drop(&mut self) {
+        self.0.unlock_raw();
     }
 }
 
@@ -58,7 +110,13 @@ static CONTROLLER: OnceLock<Controller> = OnceLock::new();
 pub(crate) fn controller() -> Result<&'static Controller> {
     CONTROLLER.get_or_try_init(|| {
         ensure_host()?;
-        Ok(Controller { lock: Semaphore::try_new(1, 1)?, owner: AtomicPtr::new(ptr::null_mut()), depth: AtomicU32::new(0) })
+        Ok(Controller {
+            lock: Semaphore::try_new(1, 1)?,
+            owner: AtomicPtr::new(ptr::null_mut()),
+            depth: AtomicU32::new(0),
+            idf_depth: AtomicU32::new(0),
+            polled: OnceLock::new(),
+        })
     })
 }
 
