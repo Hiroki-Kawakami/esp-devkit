@@ -12,7 +12,7 @@ use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
 use core::ptr::{self, NonNull};
 
-use devkit_gfx::{Align as TextAlign, Color, FontChain, Image, ImageFormat, Overflow, TextOptions};
+use devkit_gfx::{Align as TextAlign, Color, Corners, FontChain, Image, ImageFormat, Overflow, Sides, TextOptions};
 
 use crate::bump::Bump;
 use crate::component::{AnyHost, Child, Component, EventMap, Host, Screen, call_event_map, screen_host};
@@ -651,17 +651,20 @@ impl<'a, M: Copy> Element<'a, M> {
         self.prop(Prop::Radius(px))
     }
 
+    /// Which corners `radius` rounds; the others stay square.
+    pub fn corners(self, corners: Corners) -> Self {
+        self.prop(Prop::Corners(corners))
+    }
+
     /// An outline inside the box, following its radius.
     pub fn border(self, color: impl Into<ColorRole>, width: u8) -> Self {
         self.prop(Prop::Border(color.into(), width))
     }
 
-    pub fn border_top(self, color: impl Into<ColorRole>) -> Self {
-        self.prop(Prop::BorderTop(color.into()))
-    }
-
-    pub fn border_bottom(self, color: impl Into<ColorRole>) -> Self {
-        self.prop(Prop::BorderBottom(color.into()))
+    /// Which sides `border` runs along. A rounded corner with only one of its
+    /// sides ends that side where the curve starts.
+    pub fn border_sides(self, sides: Sides) -> Self {
+        self.prop(Prop::BorderSides(sides))
     }
 
     pub fn shadow(mut self, shadow: Shadow) -> Self {

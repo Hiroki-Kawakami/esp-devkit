@@ -7,7 +7,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::alloc::Allocator;
 
-use crate::geom::Rect;
+use crate::geom::{Corners, Rect};
 use crate::math::turns;
 
 const SUBSAMPLES: i32 = 4;
@@ -18,6 +18,7 @@ const BOX_PASSES: usize = 3;
 #[derive(Clone, Copy)]
 pub struct CornerMask {
     radius: u16,
+    corners: Corners,
     data: &'static [u8],
 }
 
@@ -43,7 +44,7 @@ impl CornerMask {
             data.extend_from_slice(&row[..usize::from(radius)]);
             data.extend(row[..usize::from(radius)].iter().rev());
         }
-        Self { radius, data: data.leak() }
+        Self { radius, corners: Corners::ALL, data: data.leak() }
     }
 
     /// The corners of a rounded outline `stroke` px wide.
@@ -71,11 +72,20 @@ impl CornerMask {
             data.extend_from_slice(&row[..usize::from(radius)]);
             data.extend(row[..usize::from(radius)].iter().rev());
         }
-        Self { radius, data: data.leak() }
+        Self { radius, corners: Corners::ALL, data: data.leak() }
+    }
+
+    /// The same mask rounding only `corners`; the others stay square.
+    pub const fn only(self, corners: Corners) -> Self {
+        Self { corners, ..self }
     }
 
     pub const fn radius(&self) -> u16 {
         self.radius
+    }
+
+    pub const fn corners(&self) -> Corners {
+        self.corners
     }
 
     pub(crate) fn data(&self) -> *const u8 {
@@ -84,21 +94,33 @@ impl CornerMask {
 
     pub(crate) fn coverage(&self, rect: &Rect, x: i16, y: i16) -> u8 {
         let r = self.radius as i16;
-        let column = if x < rect.x + r {
-            x - rect.x
+        let (column, right) = if x < rect.x + r {
+            (x - rect.x, false)
         } else if x >= rect.right() - r {
-            r + x - (rect.right() - r)
+            (r + x - (rect.right() - r), true)
         } else {
             return 255;
         };
-        let row = if y < rect.y + r {
-            y - rect.y
+        let (row, low) = if y < rect.y + r {
+            (y - rect.y, false)
         } else if y >= rect.bottom() - r {
-            rect.bottom() - 1 - y
+            (rect.bottom() - 1 - y, true)
         } else {
             return 255;
         };
+        if !self.corners.contains(corner_at(right, low)) {
+            return 255;
+        }
         self.data[row as usize * usize::from(self.radius) * 2 + column as usize]
+    }
+}
+
+pub(crate) const fn corner_at(right: bool, low: bool) -> Corners {
+    match (right, low) {
+        (false, false) => Corners::TOP_LEFT,
+        (true, false) => Corners::TOP_RIGHT,
+        (false, true) => Corners::BOTTOM_LEFT,
+        (true, true) => Corners::BOTTOM_RIGHT,
     }
 }
 
@@ -166,6 +188,20 @@ pub struct ShadowMask {
     blur: u16,
     margin: u16,
     data: &'static [u8],
+    corners: Corners,
+    square: Tile,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct Tile {
+    pub(crate) margin: u16,
+    pub(crate) data: &'static [u8],
+}
+
+impl Tile {
+    pub(crate) fn side(&self) -> usize {
+        usize::from(self.margin) * 2 + 1
+    }
 }
 
 impl ShadowMask {
@@ -195,7 +231,16 @@ impl ShadowMask {
                 box_blur(&mut data, x, side, side, width, &mut line);
             }
         }
-        Self { blur, margin: margin as u16, data: data.leak() }
+        let data = data.leak();
+        let margin = margin as u16;
+        Self { blur, margin, data, corners: Corners::ALL, square: Tile { margin, data } }
+    }
+
+    /// The same shadow rounding only `corners`, taking the others from
+    /// `square`, a mask of the same blur and no radius.
+    pub fn only(self, corners: Corners, square: ShadowMask) -> Self {
+        debug_assert!(square.blur == self.blur);
+        Self { corners, square: Tile { margin: square.margin, data: square.data }, ..self }
     }
 
     pub const fn blur(&self) -> u16 {
@@ -216,6 +261,10 @@ impl ShadowMask {
 
     pub(crate) fn at(&self, x: usize, y: usize) -> u8 {
         self.data[y * self.side() + x]
+    }
+
+    pub(crate) fn tile(&self, corner: Corners) -> Tile {
+        if self.corners.contains(corner) { Tile { margin: self.margin, data: self.data } } else { self.square }
     }
 }
 

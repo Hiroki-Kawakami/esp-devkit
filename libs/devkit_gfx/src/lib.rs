@@ -29,7 +29,7 @@ pub use damage::Damage;
 pub use effect::{ArcMask, CornerMask, ShadowMask};
 pub use font::Font;
 pub use format::ImageFormat;
-pub use geom::Rect;
+pub use geom::{Corners, Rect, Sides};
 pub use glyph_cache::GlyphCache;
 pub use image::Image;
 pub use list::{DisplayList, Op, overlap};

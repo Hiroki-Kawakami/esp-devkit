@@ -82,3 +82,41 @@ impl Rect {
         Rect::new(self.x - by, self.y - by, self.w + by * 2, self.h + by * 2)
     }
 }
+
+devkit::bitflags! {
+    /// Which corners of a box are rounded. The default is all of them.
+    pub struct Corners: u8 {
+        const TOP_LEFT = 1 << 0;
+        const TOP_RIGHT = 1 << 1;
+        const BOTTOM_LEFT = 1 << 2;
+        const BOTTOM_RIGHT = 1 << 3;
+        const TOP = 0b0011;
+        const BOTTOM = 0b1100;
+        const LEFT = 0b0101;
+        const RIGHT = 0b1010;
+        const ALL = 0b1111;
+    }
+}
+
+impl Default for Corners {
+    fn default() -> Self {
+        Self::ALL
+    }
+}
+
+devkit::bitflags! {
+    /// Which sides of a box a border runs along. The default is all of them.
+    pub struct Sides: u8 {
+        const LEFT = 1 << 0;
+        const TOP = 1 << 1;
+        const RIGHT = 1 << 2;
+        const BOTTOM = 1 << 3;
+        const ALL = 0b1111;
+    }
+}
+
+impl Default for Sides {
+    fn default() -> Self {
+        Self::ALL
+    }
+}

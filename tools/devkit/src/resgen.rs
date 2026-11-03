@@ -125,6 +125,8 @@ const THEME_COLORS: [&str; 5] = ["text", "primary", "surface", "background", "di
 const THEME_KEYBOARDS: [&str; 2] = ["text", "number"];
 const THEME_ANIMATED: [&str; 3] = ["color", "opacity", "position"];
 const THEME_STATES: [&str; 6] = ["pressed", "hovered", "focused", "selected", "disabled", "checked"];
+const THEME_CORNERS: [&str; 9] = ["top_left", "top_right", "bottom_left", "bottom_right", "top", "bottom", "left", "right", "all"];
+const THEME_SIDES: [&str; 5] = ["left", "top", "right", "bottom", "all"];
 const DEFAULT_ICON_SIZE: u16 = 40;
 const THEME_KEYS: &str = "keys";
 const KEY_QUARTERS: f64 = 4.0;
@@ -562,6 +564,14 @@ impl Resolver<'_> {
                 props.push(self.animate(path, value)?);
                 continue;
             }
+            if let Some((flags, names)) = match key.as_str() {
+                "corners" => Some(("Corners", &THEME_CORNERS[..])),
+                "border_sides" => Some(("Sides", &THEME_SIDES[..])),
+                _ => None,
+            } {
+                props.push(self.edges(path, key, flags, names, value)?);
+                continue;
+            }
             let values: Vec<&Value> = match value {
                 Value::Array(list) => list.iter().collect(),
                 one => vec![one],
@@ -606,6 +616,25 @@ impl Resolver<'_> {
             _ => return Err(self.error(path, "animate takes [names, milliseconds] or []")),
         };
         Ok(format!("devkit_ui::Prop::Animate({arguments})"))
+    }
+
+    /// `"top|left"` of `names`, directly or through a reference.
+    fn edges(&mut self, path: &str, key: &str, flags: &str, names: &[&str], value: &Value) -> Result<String, String> {
+        let Value::String(text) = value else { return Err(self.error(path, format!("{key} takes names joined by |"))) };
+        if text.contains('.') {
+            self.enter(path, text)?;
+            let target = self.find(path, text);
+            self.following.pop();
+            return self.edges(text, key, flags, names, &target?);
+        }
+        let mut bits = Vec::new();
+        for name in text.split('|') {
+            if !names.contains(&name) {
+                return Err(self.error(path, format!("{key}: no {name}")));
+            }
+            bits.push(format!("devkit_ui::{flags}::{}.bits()", name.to_uppercase()));
+        }
+        Ok(format!("devkit_ui::Prop::{}(devkit_ui::{flags}::from_bits_retain({}))", type_name(key), bits.join(" | ")))
     }
 }
 

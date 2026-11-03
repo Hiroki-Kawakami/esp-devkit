@@ -10,7 +10,7 @@ use core::alloc::Allocator;
 use core::time::Duration;
 
 use bsp_rs::display::{self, Blitter, FrameBuffer, PixelFormat, Rotation, Size};
-use devkit_gfx::{ArcMask, Argb8888, ClipStore, Color, CornerMask, DisplayList, GlyphCache, Prepared, Rect, Rgb565, ShadowMask, Surface, draw};
+use devkit_gfx::{ArcMask, Argb8888, ClipStore, Color, CornerMask, Corners, DisplayList, GlyphCache, Prepared, Rect, Rgb565, ShadowMask, Surface, draw};
 use idf::heap::Caps;
 
 use crate::animate::faded;
@@ -128,28 +128,23 @@ impl Tree {
 
         if let Some(Shadow { y: down, blur, color }) = style.shadow {
             let mask = effects.shadow(blur, style.radius);
+            let mask = if style.radius == 0 || style.corners == Corners::ALL { mask } else { mask.only(style.corners, effects.shadow(blur, 0)) };
             list.shadow(rect.offset(0, i16::from(down)), mask, dim(palette.color(color), opacity));
         }
         if let Some(fill) = faded(fades.and_then(|f| f.background.as_ref()), style.background.map(|role| palette.color(role))) {
             let color = dim(fill, opacity);
             if style.radius > 0 {
-                list.round_rect(rect, effects.corner(style.radius), color);
+                list.round_rect(rect, effects.corner(style.radius).only(style.corners), color);
             } else {
                 list.fill(rect, color);
             }
         }
         let width = style.border_width;
         let outline = faded(fades.and_then(|f| f.border.as_ref()), style.border_color.map(|role| palette.color(role)));
-        let border = outline.filter(|_| width > 0).map(|color| ((style.radius > 0).then(|| effects.ring(style.radius, width)), i16::from(width), dim(color, opacity)));
+        let border = outline.filter(|_| width > 0).map(|color| ((style.radius > 0).then(|| effects.ring(style.radius, width).only(style.corners)), i16::from(width), dim(color, opacity)));
         let round_clip = style.clip && style.radius > 0 && rect.w.min(rect.h) >= i16::from(style.radius) * 2 && matches!(node.content, NodeContent::Box | NodeContent::Child(_));
         if !round_clip && let Some((ring, width, color)) = border {
-            list.border(rect, ring, width, color);
-        }
-        if let Some(role) = style.border_top {
-            list.fill(Rect::new(sx, sy, rect.w, 1), dim(palette.color(role), opacity));
-        }
-        if let Some(role) = style.border_bottom {
-            list.fill(Rect::new(sx, rect.bottom() - 1, rect.w, 1), dim(palette.color(role), opacity));
+            list.border(rect, ring, width, style.border_sides, color);
         }
         if style.scroll_border.is_some_and(|target| self.scrolled_away(node.owner, target)) {
             list.fill(Rect::new(sx, rect.bottom() - 1, rect.w, 1), dim(palette.divider, opacity));
@@ -256,12 +251,12 @@ impl Tree {
                 list.pop_clip();
             }
             _ if round_clip => {
-                list.push_round_clip(rect, effects.corner(style.radius));
+                list.push_round_clip(rect, effects.corner(style.radius).only(style.corners));
                 self.paint_children(id, x, y, rect.intersect(&clip), down, effects, regions, list);
                 list.pop_round_clip();
                 // After what is inside, which would cover it.
                 if let Some((ring, width, color)) = border {
-                    list.border(rect, ring, width, color);
+                    list.border(rect, ring, width, style.border_sides, color);
                 }
             }
             _ if style.clip => {

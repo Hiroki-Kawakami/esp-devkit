@@ -234,7 +234,11 @@
         "gap": "widgets.unit.padding",
         "background": "color.surface",
         "foreground": "color.text",
-        "border_bottom": "color.divider",
+        "border": [
+          "color.divider",
+          1
+        ],
+        "border_sides": "bottom",
         "states": {
           "selected": {
             "background": "color.selected"

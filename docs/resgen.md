@@ -363,6 +363,11 @@ let config = AppConfig::new(&resources::TOUCH);
   `disabled` and `checked` exist, and `selected|pressed` takes both. `extends` is a
   style or a list of them to start from.
 
+  `corners` names the corners `radius` rounds, as `"top_left|top_right"`, with
+  `top`, `bottom`, `left`, `right` and `all` for two or four. `border_sides` names
+  the sides `border` runs along, as `"left"`, `"top|bottom"` or `"all"`. Both can
+  be references.
+
   `animate` eases changes on the way to that style, as `["color|position", 150]`
   with `color`, `opacity` and `position` to choose from and the milliseconds.
   `[]` eases nothing. It can be a reference, so one value in `vars` turns a whole

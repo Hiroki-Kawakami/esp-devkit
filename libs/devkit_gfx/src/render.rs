@@ -9,7 +9,8 @@ use core::alloc::Allocator;
 use core::ptr;
 
 use crate::color::{Color, mul8};
-use crate::effect::{ArcMask, CornerMask, ShadowMask};
+use crate::effect::{ArcMask, CornerMask, ShadowMask, corner_at};
+use crate::geom::{Corners, Sides};
 use crate::geom::Rect;
 use crate::glyph_cache::GlyphCache;
 use crate::list::{DisplayList, MAX_CLIPS, Op};
@@ -61,8 +62,12 @@ impl RoundClip {
         let data = self.corner.data();
         let last_row = unsafe { data.offset(isize::from(r - 1) * stride) };
         let (rect, right, low) = (self.rect, self.rect.right() - r, self.rect.bottom() - r);
+        let corners = self.corner.corners();
         let place = |x: i16, y: i16, mask: *const u8, mask_stride: isize| {
             let tile = Rect::new(x, y, r, r);
+            if !corners.contains(corner_at(x != rect.x, y != rect.y)) {
+                return (Rect::default(), mask, mask_stride);
+            }
             let part = tile.intersect(&self.area);
             let skip = isize::from(part.y - y) * mask_stride + isize::from(part.x - x);
             (part, unsafe { mask.offset(skip) }, mask_stride)
@@ -184,36 +189,79 @@ fn start_op(ops: &[Op<'_>], area: &Rect) -> usize {
 
 fn draw_round_rect<P: Pixel>(s: &Surface, rect: &Rect, corner: &CornerMask, clip: &Rect, color: Color) {
     let r = corner.radius() as i16;
-    let stride = isize::from(r) * 2;
-    let data = corner.data();
-    let last_row = unsafe { data.offset(isize::from(r - 1) * stride) };
     let right = rect.right() - r;
     let low = rect.bottom() - r;
-    s.mask::<P>(&Rect::new(rect.x, rect.y, r, r), clip, data, stride, color);
-    s.mask::<P>(&Rect::new(right, rect.y, r, r), clip, unsafe { data.add(r as usize) }, stride, color);
-    s.mask::<P>(&Rect::new(rect.x, low, r, r), clip, last_row, -stride, color);
-    s.mask::<P>(&Rect::new(right, low, r, r), clip, unsafe { last_row.add(r as usize) }, -stride, color);
+    for (x, y, mask, stride) in corner_tiles(rect, corner) {
+        let tile = Rect::new(x, y, r, r);
+        if corner.corners().contains(corner_at(x == right, y == low)) {
+            s.mask::<P>(&tile, clip, mask, stride, color);
+        } else {
+            s.fill::<P>(&tile, clip, color);
+        }
+    }
     s.fill::<P>(&Rect::new(rect.x + r, rect.y, rect.w - r * 2, r), clip, color);
     s.fill::<P>(&Rect::new(rect.x, rect.y + r, rect.w, rect.h - r * 2), clip, color);
     s.fill::<P>(&Rect::new(rect.x + r, low, rect.w - r * 2, r), clip, color);
 }
 
-fn draw_border<P: Pixel>(s: &Surface, rect: &Rect, ring: Option<&CornerMask>, stroke: i16, clip: &Rect, color: Color) {
+fn corner_tiles(rect: &Rect, corner: &CornerMask) -> [(i16, i16, *const u8, isize); 4] {
+    let r = corner.radius() as i16;
+    let stride = isize::from(r) * 2;
+    let data = corner.data();
+    let last_row = unsafe { data.offset(isize::from(r - 1) * stride) };
+    let (right, low) = (rect.right() - r, rect.bottom() - r);
+    [
+        (rect.x, rect.y, data, stride),
+        (right, rect.y, unsafe { data.add(r as usize) }, stride),
+        (rect.x, low, last_row, -stride),
+        (right, low, unsafe { last_row.add(r as usize) }, -stride),
+    ]
+}
+
+/// A rounded corner draws its arc only where both sides meeting there are on;
+/// with one, that side stops where the arc would start.
+fn draw_border<P: Pixel>(s: &Surface, rect: &Rect, ring: Option<&CornerMask>, stroke: i16, sides: Sides, clip: &Rect, color: Color) {
+    let (left, top) = (sides.contains(Sides::LEFT), sides.contains(Sides::TOP));
+    let (right, bottom) = (sides.contains(Sides::RIGHT), sides.contains(Sides::BOTTOM));
     let r = ring.map_or(0, |ring| ring.radius() as i16);
     if let Some(ring) = ring {
-        let stride = isize::from(r) * 2;
-        let data = ring.data();
-        let last_row = unsafe { data.offset(isize::from(r - 1) * stride) };
-        let (right, low) = (rect.right() - r, rect.bottom() - r);
-        s.mask::<P>(&Rect::new(rect.x, rect.y, r, r), clip, data, stride, color);
-        s.mask::<P>(&Rect::new(right, rect.y, r, r), clip, unsafe { data.add(r as usize) }, stride, color);
-        s.mask::<P>(&Rect::new(rect.x, low, r, r), clip, last_row, -stride, color);
-        s.mask::<P>(&Rect::new(right, low, r, r), clip, unsafe { last_row.add(r as usize) }, -stride, color);
+        let band = stroke.min(r);
+        for (x, y, mask, mask_stride) in corner_tiles(rect, ring) {
+            let (east, south) = (x != rect.x, y != rect.y);
+            let across = if south { bottom } else { top };
+            let along = if east { right } else { left };
+            if ring.corners().contains(corner_at(east, south)) {
+                if across && along {
+                    s.mask::<P>(&Rect::new(x, y, r, r), clip, mask, mask_stride, color);
+                }
+                continue;
+            }
+            let row = if south { y + r - band } else { y };
+            if across {
+                s.fill::<P>(&Rect::new(x, row, r, band), clip, color);
+            }
+            if along {
+                let column = if east { x + r - band } else { x };
+                let skip = if across { band } else { 0 };
+                let from = if south { y } else { y + skip };
+                s.fill::<P>(&Rect::new(column, from, band, r - skip), clip, color);
+            }
+        }
     }
-    s.fill::<P>(&Rect::new(rect.x + r, rect.y, rect.w - r * 2, stroke), clip, color);
-    s.fill::<P>(&Rect::new(rect.x + r, rect.bottom() - stroke, rect.w - r * 2, stroke), clip, color);
-    s.fill::<P>(&Rect::new(rect.x, rect.y + r, stroke, rect.h - r * 2), clip, color);
-    s.fill::<P>(&Rect::new(rect.right() - stroke, rect.y + r, stroke, rect.h - r * 2), clip, color);
+    if top {
+        s.fill::<P>(&Rect::new(rect.x + r, rect.y, rect.w - r * 2, stroke), clip, color);
+    }
+    if bottom {
+        s.fill::<P>(&Rect::new(rect.x + r, rect.bottom() - stroke, rect.w - r * 2, stroke), clip, color);
+    }
+    let above = if r > 0 { r } else if top { stroke } else { 0 };
+    let below = if r > 0 { r } else if bottom { stroke } else { 0 };
+    if left {
+        s.fill::<P>(&Rect::new(rect.x, rect.y + above, stroke, rect.h - above - below), clip, color);
+    }
+    if right {
+        s.fill::<P>(&Rect::new(rect.right() - stroke, rect.y + above, stroke, rect.h - above - below), clip, color);
+    }
 }
 
 fn draw_shadow<P: Pixel>(s: &Surface, rect: &Rect, mask: &ShadowMask, clip: &Rect, color: Color) {
@@ -222,22 +270,30 @@ fn draw_shadow<P: Pixel>(s: &Surface, rect: &Rect, mask: &ShadowMask, clip: &Rec
     let side = mask.side() as isize;
     let data = mask.data();
     let far = isize::from(m) + 1;
-    let (right, low) = (outer.right() - m, outer.bottom() - m);
     let at = |x: isize, y: isize| unsafe { data.offset(y * side + x) };
-    s.mask::<P>(&Rect::new(outer.x, outer.y, m, m), clip, at(0, 0), side, color);
-    s.mask::<P>(&Rect::new(right, outer.y, m, m), clip, at(far, 0), side, color);
-    s.mask::<P>(&Rect::new(outer.x, low, m, m), clip, at(0, far), side, color);
-    s.mask::<P>(&Rect::new(right, low, m, m), clip, at(far, far), side, color);
-    let (w, h) = (outer.w - m * 2, outer.h - m * 2);
-    s.mask::<P>(&Rect::new(outer.x, outer.y + m, m, h), clip, at(0, isize::from(m)), 0, color);
-    s.mask::<P>(&Rect::new(right, outer.y + m, m, h), clip, at(far, isize::from(m)), 0, color);
+    let corner = |which: Corners, east: bool, south: bool| {
+        let tile = mask.tile(which);
+        let tm = tile.margin as i16;
+        let ts = tile.side() as isize;
+        let (x, mx) = if east { (outer.right() - tm, isize::from(tm) + 1) } else { (outer.x, 0) };
+        let (y, my) = if south { (outer.bottom() - tm, isize::from(tm) + 1) } else { (outer.y, 0) };
+        s.mask::<P>(&Rect::new(x, y, tm, tm), clip, unsafe { tile.data.as_ptr().offset(my * ts + mx) }, ts, color);
+        tm
+    };
+    let top_left = corner(Corners::TOP_LEFT, false, false);
+    let top_right = corner(Corners::TOP_RIGHT, true, false);
+    let bottom_left = corner(Corners::BOTTOM_LEFT, false, true);
+    let bottom_right = corner(Corners::BOTTOM_RIGHT, true, true);
+    let low = outer.bottom() - m;
+    s.mask::<P>(&Rect::new(outer.x, outer.y + top_left, m, outer.h - top_left - bottom_left), clip, at(0, isize::from(m)), 0, color);
+    s.mask::<P>(&Rect::new(outer.right() - m, outer.y + top_right, m, outer.h - top_right - bottom_right), clip, at(far, isize::from(m)), 0, color);
     for i in 0..m {
         let u = i as usize;
         let center = mask.margin() as usize;
-        let top = color.with_opacity(mask.at(center, u));
-        let bottom = color.with_opacity(mask.at(center, center + 1 + u));
-        s.fill::<P>(&Rect::new(outer.x + m, outer.y + i, w, 1), clip, top);
-        s.fill::<P>(&Rect::new(outer.x + m, low + i, w, 1), clip, bottom);
+        let above = color.with_opacity(mask.at(center, u));
+        let under = color.with_opacity(mask.at(center, center + 1 + u));
+        s.fill::<P>(&Rect::new(outer.x + top_left, outer.y + i, outer.w - top_left - top_right, 1), clip, above);
+        s.fill::<P>(&Rect::new(outer.x + bottom_left, low + i, outer.w - bottom_left - bottom_right, 1), clip, under);
     }
 }
 
@@ -428,7 +484,7 @@ fn draw_ops<P: Pixel, A: Allocator, L: Allocator, S: Allocator>(list: &DisplayLi
         match *op {
             Op::Fill { rect, color } => surface.fill::<P>(&rect, &clip, color),
             Op::RoundRect { rect, corner, color } => draw_round_rect::<P>(surface, &rect, &corner, &clip, color),
-            Op::Border { rect, ring, stroke, color } => draw_border::<P>(surface, &rect, ring.as_ref(), stroke, &clip, color),
+            Op::Border { rect, ring, stroke, sides, color } => draw_border::<P>(surface, &rect, ring.as_ref(), stroke, sides, &clip, color),
             Op::Shadow { rect, mask, color } => draw_shadow::<P>(surface, &rect, &mask, &clip, color),
             Op::Gradient { rect, corner, from, to, vertical } => draw_gradient::<P>(surface, &rect, corner.as_ref(), from, to, vertical, &clip),
             Op::Arc { rect, mask, start, sweep, from, to } => draw_arc::<P>(surface, &rect, &mask, start, sweep, from, to, &clip),

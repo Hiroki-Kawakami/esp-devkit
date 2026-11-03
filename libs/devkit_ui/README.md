@@ -115,6 +115,9 @@ app.run();
 - `.foreground()` colors text and icons on the node and inside, where they set
   none. `.background()` and the other colors take a `Color` or a `ColorRole`, which
   follows the palette.
+- `.radius()` rounds the corners `.corners()` names, all by default.
+  `.border(color, width)` runs along the sides `.border_sides()` names, all by
+  default.
 - Every value of a `Style` can change with a state, with no view running: what
   needs layout gets it, the rest only repaints. A `StateStyle` is a style to share:
   `base` values and what each state changes. `.style(&S)` puts the base on the

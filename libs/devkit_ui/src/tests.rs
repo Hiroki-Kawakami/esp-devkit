@@ -502,6 +502,38 @@ fn dividers_fill_a_centering_parent_across_their_line() {
     assert_eq!((line.y, line.w, line.h), (vertical.y + 12, 1, 88 - 24));
 }
 
+struct Edges;
+
+impl Screen for Edges {}
+
+impl Component for Edges {
+    type Msg = ();
+
+    fn update(&mut self, _msg: (), _cx: &mut Cx<Self>) {}
+
+    fn view<'a>(&'a self, ui: &'a Ui<()>) -> Element<'a, ()> {
+        let shadow = Shadow { y: 4, blur: 8, color: ColorRole::Divider };
+        ui.column([
+            ui.column([]).height(80).radius(16).corners(Corners::TOP).background(ColorRole::Surface).shadow(shadow).border(ColorRole::Divider, 2),
+            ui.column([]).height(40).border(ColorRole::Primary, 4).border_sides(Sides::LEFT),
+        ])
+        .padding(20)
+    }
+}
+
+#[test]
+fn corners_and_sides_reach_the_display_list() {
+    let mut tree = Tree::new(Edges, SCREEN, Caps::INTERNAL, theme());
+    run(&mut tree);
+    let mut effects = crate::paint::Effects::new(Caps::INTERNAL);
+    let mut list = devkit_gfx::DisplayList::new_in(Caps::INTERNAL);
+    tree.paint(&mut effects, &[SCREEN], &mut list);
+    let ops = list.ops();
+    assert!(ops.iter().any(|op| matches!(op, devkit_gfx::Op::RoundRect { corner, .. } if corner.corners() == Corners::TOP)));
+    assert!(ops.iter().any(|op| matches!(op, devkit_gfx::Op::Border { ring: Some(ring), sides: Sides::ALL, .. } if ring.corners() == Corners::TOP)));
+    assert!(ops.iter().any(|op| matches!(op, devkit_gfx::Op::Border { ring: None, stroke: 4, sides: Sides::LEFT, .. })));
+}
+
 struct Dropdowns {
     chosen: &'static AtomicU32,
 }

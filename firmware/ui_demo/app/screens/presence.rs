@@ -6,7 +6,7 @@
 use alloc::vec::Vec;
 
 use devkit_ui::widgets::{button, list_item, modal, modal_actions, modal_message, modal_title, progress_bar, progress_indicator, text_field, toast, top_bar};
-use devkit_ui::{Align, Component, Cx, Edge, Element, Id, Overlay, Part, Presence, Root, Screen, TextBuffer, TextInput, Ui, id};
+use devkit_ui::{Align, Component, Corners, Cx, Edge, Element, Id, Overlay, Part, Presence, Root, Screen, TextBuffer, TextInput, Ui, id};
 
 use crate::resources::colors;
 
@@ -158,6 +158,7 @@ impl Component for Shown {
                     .gap(m.padding)
                     .padding_each(m.padding, m.padding, m.padding, m.padding + ui.insets().bottom)
                     .radius(m.radius)
+                    .corners(Corners::TOP)
                     .background(c.surface)
                     .absolute(Some(0), None, Some(0), Some(0))
                     .id(id!("sheet"))

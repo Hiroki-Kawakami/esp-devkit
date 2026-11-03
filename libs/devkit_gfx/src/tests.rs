@@ -172,7 +172,7 @@ fn half_size_draws_the_pixels_at_odd_offsets() {
         let alpha: Vec<u8> = (0..10 * 9).map(|i| (i * 29) as u8).collect();
         let ring = CornerMask::new_in(5, Global);
         let mut list = scene.list();
-        list.border(Rect::new(3, 50, 25, 23), Some(ring), 2, Color::rgb(20, 120, 40));
+        list.border(Rect::new(3, 50, 25, 23), Some(ring), 2, Sides::ALL, Color::rgb(20, 120, 40));
         list.gradient(Rect::new(70, 5, 27, 31), Some(scene.corner), Color::rgba(255, 0, 0, 40), Color::rgb(0, 0, 255), true);
         list.arc(72, 50, ArcMask::new_in(12, 3, Global), 30.0, 250.0, Color::rgb(0, 200, 0), Color::rgb(200, 0, 200));
         list.image(5, 30, Image::from_pixels(ImageFormat::A8, 10, 9, 10, &alpha), Color::rgb(90, 0, 0));
@@ -270,7 +270,7 @@ fn rounded_border_is_hollow_and_symmetric() {
     let ring = CornerMask::ring_in(8, 2, Global);
     let mut list = DisplayList::new();
     list.fill(Rect::new(0, 0, 24, 24), Color::rgb(0, 0, 0));
-    list.border(Rect::new(0, 0, 24, 24), Some(ring), 2, Color::rgb(255, 255, 255));
+    list.border(Rect::new(0, 0, 24, 24), Some(ring), 2, Sides::ALL, Color::rgb(255, 255, 255));
     let out = render::<Bgr888>(&list, &mut GlyphCache::new(64), 24, 24, &[Rect::new(0, 0, 24, 24)]);
     let at = |x: usize, y: usize| out[(y * 24 + x) * 3];
     assert_eq!(at(0, 0), 0);
@@ -285,6 +285,86 @@ fn rounded_border_is_hollow_and_symmetric() {
             assert_eq!(at(x, y), at(x, 23 - y));
         }
     }
+}
+
+#[test]
+fn only_the_chosen_corners_are_round() {
+    let corner = CornerMask::new_in(8, Global).only(Corners::TOP);
+    let mut list = DisplayList::new();
+    list.fill(Rect::new(0, 0, 24, 24), Color::rgb(0, 0, 0));
+    list.round_rect(Rect::new(0, 0, 24, 24), corner, Color::rgb(255, 255, 255));
+    let out = render::<Bgr888>(&list, &mut GlyphCache::new(64), 24, 24, &[Rect::new(0, 0, 24, 24)]);
+    let at = |x: usize, y: usize| out[(y * 24 + x) * 3];
+    assert_eq!(at(0, 0), 0);
+    assert_eq!(at(23, 0), 0);
+    assert_eq!(at(0, 23), 255);
+    assert_eq!(at(23, 23), 255);
+    assert_eq!(at(12, 0), 255);
+}
+
+#[test]
+fn a_border_runs_only_along_its_sides() {
+    let mut list = DisplayList::new();
+    list.fill(Rect::new(0, 0, 24, 24), Color::rgb(0, 0, 0));
+    list.border(Rect::new(0, 0, 24, 24), None, 4, Sides::LEFT, Color::rgb(255, 255, 255));
+    list.border(Rect::new(0, 0, 24, 24), None, 1, Sides::BOTTOM, Color::rgba(255, 255, 255, 128));
+    let out = render::<Bgr888>(&list, &mut GlyphCache::new(64), 24, 24, &[Rect::new(0, 0, 24, 24)]);
+    let at = |x: usize, y: usize| out[(y * 24 + x) * 3];
+    assert_eq!(at(0, 0), 255);
+    assert_eq!(at(3, 12), 255);
+    assert_eq!(at(4, 12), 0);
+    assert_eq!(at(12, 0), 0);
+    assert_eq!(at(23, 12), 0);
+    assert!((126..=130).contains(&at(12, 23)));
+    assert!((126..=130).contains(&at(23, 23)));
+}
+
+#[test]
+fn a_rounded_border_with_one_side_stops_before_the_arc() {
+    let ring = CornerMask::ring_in(8, 2, Global);
+    let draw = |ring: CornerMask, sides: Sides| {
+        let mut list = DisplayList::new();
+        list.fill(Rect::new(0, 0, 24, 24), Color::rgb(0, 0, 0));
+        list.border(Rect::new(0, 0, 24, 24), Some(ring), 2, sides, Color::rgb(255, 255, 255));
+        render::<Bgr888>(&list, &mut GlyphCache::new(64), 24, 24, &[Rect::new(0, 0, 24, 24)])
+    };
+    let out = draw(ring, Sides::TOP);
+    let at = |x: usize, y: usize| out[(y * 24 + x) * 3];
+    assert_eq!(at(8, 0), 255);
+    assert_eq!(at(7, 0), 0);
+    assert_eq!(at(0, 12), 0);
+    let out = draw(ring.only(Corners::BOTTOM), Sides::TOP | Sides::LEFT);
+    let at = |x: usize, y: usize| out[(y * 24 + x) * 3];
+    assert_eq!(at(0, 0), 255, "a square corner meets both sides");
+    assert_eq!(at(1, 1), 255);
+    assert_eq!(at(2, 2), 0);
+    assert_eq!(at(23, 0), 255, "a square corner carries its one side to the end");
+    assert_eq!(at(23, 2), 0);
+    assert_eq!(at(0, 15), 255);
+    assert_eq!(at(0, 16), 0, "the rounded corner below stops the side");
+}
+
+#[test]
+fn a_shadow_keeps_square_corners_square() {
+    let rect = Rect::new(24, 24, 60, 50);
+    let draw = |shadow: ShadowMask| {
+        let mut list = DisplayList::new();
+        list.fill(Rect::new(0, 0, 108, 98), Color::rgb(255, 255, 255));
+        list.shadow(rect, shadow, Color::rgba(0, 0, 0, 255));
+        list.fill(rect, Color::rgb(255, 255, 255));
+        render::<Bgr888>(&list, &mut GlyphCache::new(64), 108, 98, &[Rect::new(0, 0, 108, 98)])
+    };
+    let round = draw(ShadowMask::new_in(8, 12, Global));
+    let square = draw(ShadowMask::new_in(8, 0, Global));
+    let mixed = draw(ShadowMask::new_in(8, 12, Global).only(Corners::TOP, ShadowMask::new_in(8, 0, Global)));
+    let at = |out: &[u8], x: usize, y: usize| out[(y * 108 + x) * 3];
+    for y in 0..98 {
+        for x in 0..108 {
+            let expected = if y < 49 { &round } else { &square };
+            assert!(at(&mixed, x, y).abs_diff(at(expected, x, y)) <= 1, "{x},{y}: {} vs {}", at(&mixed, x, y), at(expected, x, y));
+        }
+    }
+    assert!(at(&round, 25, 74) > at(&square, 25, 74), "a square corner shades where a round one leaves out");
 }
 
 #[test]
@@ -620,6 +700,15 @@ fn a_round_clip_leaves_what_is_under_its_corners() {
     assert_eq!(pixel(16, 16), [255, 0, 0], "inside");
     assert_eq!(pixel(16, 4), [255, 0, 0], "along the top edge");
     assert_eq!(pixel(0, 0), [0, 255, 0], "outside");
+}
+
+#[test]
+fn a_round_clip_cuts_only_its_round_corners() {
+    let out = draw_rows(&round_clip_list(CornerMask::new_in(8, Global).only(Corners::TOP)), &[(0, 32)]);
+    let pixel = |x: usize, y: usize| [out[(y * 32 + x) * 3], out[(y * 32 + x) * 3 + 1], out[(y * 32 + x) * 3 + 2]];
+    assert_eq!(pixel(4, 4), [0, 255, 0], "a round corner keeps what is under it");
+    assert_eq!(pixel(27, 27), [255, 0, 0], "a square corner is clipped like the rest");
+    assert_eq!(pixel(4, 27), [255, 0, 0]);
 }
 
 #[test]

@@ -7,7 +7,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use devkit_ui::widgets::{Menu, button, checkbox, icon_button, list_item, modal, modal_actions, modal_message, modal_title, progress_bar, progress_indicator, slider, slider_value, switch, top_bar};
-use devkit_ui::{Align, Child, Component, Cx, Element, Handle, Id, Overlay, RenderMode, Root, Screen, SplitRole, Strips, Ui, id};
+use devkit_ui::{Align, Child, Component, Cx, Element, Handle, Id, Sides, Overlay, RenderMode, Root, Screen, SplitRole, Strips, Ui, id};
 use idf::heap::Caps;
 use idf::sync::{LazyLock, Mutex};
 
@@ -186,7 +186,8 @@ impl Component for Browser {
                 .foreground(colors::MUTED)
                 .height(48)
                 .padding_each(24, 13, 24, 0)
-                .border_top(ui.colors().divider),
+                .border(ui.colors().divider, 1)
+                .border_sides(Sides::TOP),
             ui.list(self.names.len(), theme.widgets.list.row_height, Self::row).revision(self.revision).id(id!("files")).grow(1).background(ui.colors().surface),
         ])
         .padding_each(0, ui.insets().top, 0, 0)
@@ -276,11 +277,12 @@ impl Component for Detail {
                     button(ui, "Delete", theme.widgets.button.primary, DetailMsg::Ask).grow(1).id(id!("delete")),
                 ])
                 .gap(m.gap),
-                ui.text(theme.fonts.caption, "This note is long enough to wrap, and what follows it moves down with its height.").foreground(colors::MUTED).wrap().id(id!("note")),
+                ui.text(theme.fonts.caption, "This note is long enough to wrap, and what follows it moves down with its height.").foreground(colors::MUTED).wrap().padding_each(m.gap, 0, 0, 0).border(c.primary, 4).border_sides(Sides::LEFT).id(id!("note")),
             ])
             .padding(m.padding)
             .gap(m.padding)
-            .border_top(c.divider),
+            .border(c.divider, 1)
+            .border_sides(Sides::TOP),
         ])
         .padding_each(0, ui.insets().top, 0, 0)
         .background(c.surface)

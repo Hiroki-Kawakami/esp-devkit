@@ -30,6 +30,11 @@ draw::<Rgb565, _, _>(&list, &prepared, &surface);
 - `CornerMask` and `ShadowMask` are generated once and never freed; keep them
   with the theme. `Op::Shadow` leaves the middle of its rectangle unpainted, so
   something opaque must cover it.
+- `CornerMask::only(Corners)` rounds some corners and leaves the others square,
+  for every operation taking the mask. A `ShadowMask` takes the square corners
+  from a mask of the same blur without radius. `border` runs along `Sides`; a
+  rounded corner between an enabled and a disabled side ends the enabled one
+  where the curve starts.
 - Damage merges into at most `N` rectangles, and several rectangles covering
   75% promote to the full area.
 - `Pixel` implements a pixel format: `Rgb565`, `Bgr888` (B, G, R in memory) and

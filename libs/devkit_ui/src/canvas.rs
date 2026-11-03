@@ -5,7 +5,7 @@
 
 use core::alloc::Allocator;
 
-use devkit_gfx::{Color, DisplayList, Image, Raster, Rect, TextRun};
+use devkit_gfx::{Color, DisplayList, Image, Raster, Rect, Sides, TextRun};
 use idf::heap::Caps;
 
 use crate::paint::{Effects, dim};
@@ -61,7 +61,7 @@ impl<'a> Canvas<'a, '_> {
     pub fn border(&mut self, rect: Rect, radius: u8, stroke: u8, color: Color) {
         let rect = self.place(rect);
         let ring = (radius > 0).then(|| self.effects.ring(radius, stroke));
-        self.list.border(rect, ring, i16::from(stroke), dim(color, self.opacity));
+        self.list.border(rect, ring, i16::from(stroke), Sides::ALL, dim(color, self.opacity));
     }
 
     pub fn image(&mut self, x: i16, y: i16, image: Image<'a>, tint: Color) {

@@ -44,7 +44,7 @@ pub use app::{App, AppConfig, Handle, Input, Probe};
 pub use bsp_rs::display::Rotation;
 pub use canvas::Canvas;
 pub use component::{Animation, Child, Component, Cx, Nav, Property, RenderMode, Screen};
-pub use devkit_gfx::{ImageFormat, Raster, RasterTarget, Rect};
+pub use devkit_gfx::{Corners, ImageFormat, Raster, RasterTarget, Rect, Sides};
 pub use element::{ChildElement, Children, Drag, Element, Ui};
 pub use external::{ExternalFrame, ExternalSurface, Policy};
 pub use gesture::{Direction as SwipeDirection, Gesture, Gestures, Phase};

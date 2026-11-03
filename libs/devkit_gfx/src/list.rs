@@ -10,7 +10,7 @@ use core::alloc::Allocator;
 use crate::color::Color;
 use crate::effect::{ArcMask, CornerMask, ShadowMask};
 use crate::format::ImageFormat;
-use crate::geom::Rect;
+use crate::geom::{Rect, Sides};
 use crate::image::Image;
 use crate::raster::Raster;
 use crate::text::{PlacedGlyph, TextRun};
@@ -21,7 +21,7 @@ pub(crate) const MAX_CLIPS: usize = 8;
 pub enum Op<'a> {
     Fill { rect: Rect, color: Color },
     RoundRect { rect: Rect, corner: CornerMask, color: Color },
-    Border { rect: Rect, ring: Option<CornerMask>, stroke: i16, color: Color },
+    Border { rect: Rect, ring: Option<CornerMask>, stroke: i16, sides: Sides, color: Color },
     Shadow { rect: Rect, mask: ShadowMask, color: Color },
     Gradient { rect: Rect, corner: Option<CornerMask>, from: Color, to: Color, vertical: bool },
     Arc { rect: Rect, mask: ArcMask, start: f32, sweep: f32, from: Color, to: Color },
@@ -132,10 +132,10 @@ impl<'a, A: Allocator> DisplayList<'a, A> {
         self.ops.push(Op::RoundRect { rect, corner, color });
     }
 
-    /// An outline `stroke` px wide inside `rect`; `ring` rounds its corners and
-    /// must have been made for the same stroke.
-    pub fn border(&mut self, rect: Rect, ring: Option<CornerMask>, stroke: i16, color: Color) {
-        self.ops.push(Op::Border { rect, ring, stroke, color });
+    /// An outline `stroke` px wide inside `rect` along `sides`; `ring` rounds
+    /// its corners and must have been made for the same stroke.
+    pub fn border(&mut self, rect: Rect, ring: Option<CornerMask>, stroke: i16, sides: Sides, color: Color) {
+        self.ops.push(Op::Border { rect, ring, stroke, sides, color });
     }
 
     /// Paints only around the middle of `rect`, which something opaque must

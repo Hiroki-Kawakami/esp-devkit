@@ -3,7 +3,7 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
-use devkit_gfx::FontChain;
+use devkit_gfx::{Corners, FontChain, Sides};
 
 use crate::id::Id;
 use crate::rotation::Rotations;
@@ -165,11 +165,11 @@ pub enum Prop {
     Background(ColorRole),
     Foreground(ColorRole),
     Radius(u8),
+    Corners(Corners),
     Border(ColorRole, u8),
     BorderColor(ColorRole),
     BorderWidth(u8),
-    BorderTop(ColorRole),
-    BorderBottom(ColorRole),
+    BorderSides(Sides),
     ScrollBorder(Id),
     Shadow(i8, u8, ColorRole),
     Opacity(u8),
@@ -229,10 +229,10 @@ pub struct Style {
     /// Text and icons here and inside that set none of their own.
     pub(crate) foreground: Option<ColorRole>,
     pub(crate) radius: u8,
+    pub(crate) corners: Corners,
     pub(crate) border_color: Option<ColorRole>,
     pub(crate) border_width: u8,
-    pub(crate) border_top: Option<ColorRole>,
-    pub(crate) border_bottom: Option<ColorRole>,
+    pub(crate) border_sides: Sides,
     pub(crate) scroll_border: Option<Id>,
     pub(crate) shadow: Option<Shadow>,
     pub(crate) opacity: Option<u8>,
@@ -273,11 +273,11 @@ impl Style {
             Prop::Background(color) => self.background = Some(color),
             Prop::Foreground(color) => self.foreground = Some(color),
             Prop::Radius(px) => self.radius = px,
+            Prop::Corners(corners) => self.corners = corners,
             Prop::Border(color, width) => (self.border_color, self.border_width) = (Some(color), width),
             Prop::BorderColor(color) => self.border_color = Some(color),
             Prop::BorderWidth(width) => self.border_width = width,
-            Prop::BorderTop(color) => self.border_top = Some(color),
-            Prop::BorderBottom(color) => self.border_bottom = Some(color),
+            Prop::BorderSides(sides) => self.border_sides = sides,
             Prop::ScrollBorder(id) => self.scroll_border = Some(id),
             Prop::Shadow(y, blur, color) => self.shadow = Some(Shadow { y, blur, color }),
             Prop::Opacity(opacity) => self.opacity = Some(opacity),

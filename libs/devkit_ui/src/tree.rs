@@ -1413,9 +1413,7 @@ impl Tree {
         let style = &node.style;
         style.background.is_some()
             || node.fades.as_ref().is_some_and(|f| f.background.is_some())
-            || (style.border_color.is_some() && style.border_width > 0)
-            || style.border_top.is_some()
-            || style.border_bottom.is_some()
+            || (style.border_color.is_some() && style.border_width > 0 && !style.border_sides.is_empty())
             || style.scroll_border.is_some()
             || style.shadow.is_some()
             || node.pose.is_some()
