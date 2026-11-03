@@ -22,10 +22,19 @@ pub struct Critical;
 pub static CRITICAL: Critical = Critical;
 
 impl CriticalSection for Critical {
+    #[cfg(target_os = "none")]
     fn with(&self, f: &mut dyn FnMut()) {
         unsafe { sys::idf_executor_critical_enter() };
         f();
         unsafe { sys::idf_executor_critical_exit() };
+    }
+
+    // Host tests do not link the shim.
+    #[cfg(not(target_os = "none"))]
+    fn with(&self, f: &mut dyn FnMut()) {
+        unsafe { sys::vPortEnterCritical() };
+        f();
+        unsafe { sys::vPortExitCritical() };
     }
 }
 

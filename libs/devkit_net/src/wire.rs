@@ -15,6 +15,8 @@ pub(crate) const ETHERTYPE_ARP: u16 = 0x0806;
 
 pub(crate) const IPV4_HEADER: usize = 20;
 pub(crate) const PROTO_ICMP: u8 = 1;
+pub(crate) const PROTO_UDP: u8 = 17;
+pub(crate) const UDP_HEADER: usize = 8;
 pub(crate) const DEFAULT_TTL: u8 = 64;
 
 pub(crate) const ICMP_ECHO_REPLY: u8 = 0;

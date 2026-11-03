@@ -7,12 +7,11 @@ use std::net::Ipv4Addr;
 use std::time::Duration;
 
 use crate::harness::{End, Net};
-use crate::stack::SendError;
 use crate::wire::{
     ARP_LEN, ARP_REPLY, ARP_REQUEST, Arp, BROADCAST_MAC, ETHERNET_HEADER, ETHERTYPE_ARP, ETHERTYPE_IPV4, Ethernet,
     ICMP_ECHO_REPLY, ICMP_ECHO_REQUEST, IPV4_HEADER, Ipv4, Mac, PROTO_ICMP, checksum, put16, sum,
 };
-use crate::{IfaceId, Instant, Ipv4Config, LinkInfo, Medium, Stack};
+use crate::{Error, IfaceId, Instant, Ipv4Config, LinkInfo, Medium, Stack};
 
 const MAC_A: Mac = [0x02, 0, 0, 0, 0, 0x0a];
 const MAC_B: Mac = [0x02, 0, 0, 0, 0, 0x0b];
@@ -174,7 +173,7 @@ fn second_echo_uses_the_cache() {
 fn unanswered_arp_retries_then_gives_up() {
     let (mut net, _, b) = pair();
     let silent = Ipv4Addr::new(192, 0, 2, 9);
-    let sent = net.with(b.0, |stack, now, tx| stack.send_ipv4(None, silent, PROTO_ICMP, 8, now, tx, |_| {}));
+    let sent = net.with(b.0, |stack, now, tx| stack.send_ipv4(None, silent, PROTO_ICMP, 8, now, tx, |_, _| {}));
     assert_eq!(sent, Ok(()));
     net.run_for(Duration::from_secs(10));
 
@@ -188,20 +187,20 @@ fn unanswered_arp_retries_then_gives_up() {
     assert_eq!(net.now, ms(10_000));
 
     let before = net.captured.len();
-    net.with(b.0, |stack, now, tx| stack.send_ipv4(None, silent, PROTO_ICMP, 8, now, tx, |_| {})).unwrap();
+    net.with(b.0, |stack, now, tx| stack.send_ipv4(None, silent, PROTO_ICMP, 8, now, tx, |_, _| {})).unwrap();
     assert_eq!(net.captured.len(), before + 1);
 }
 
 #[test]
 fn off_link_goes_through_the_gateway() {
     let (mut net, _, b) = pair();
-    net.with(b.0, |stack, now, tx| stack.send_ipv4(None, REMOTE, PROTO_ICMP, 8, now, tx, |_| {})).unwrap();
+    net.with(b.0, |stack, now, tx| stack.send_ipv4(None, REMOTE, PROTO_ICMP, 8, now, tx, |_, _| {})).unwrap();
     let (_, arp) = arp_of(&net.captured[0].frame).unwrap();
     assert_eq!(arp.tpa, GATEWAY);
 
     net.stacks[b.0].set_ipv4(b.1, Some(Ipv4Config { address: IP_B, prefix_len: 24, gateway: None }));
-    let sent = net.with(b.0, |stack, now, tx| stack.send_ipv4(None, REMOTE, PROTO_ICMP, 8, now, tx, |_| {}));
-    assert_eq!(sent, Err(SendError::NoRoute));
+    let sent = net.with(b.0, |stack, now, tx| stack.send_ipv4(None, REMOTE, PROTO_ICMP, 8, now, tx, |_, _| {}));
+    assert_eq!(sent, Err(Error::NoRoute));
 }
 
 #[test]
@@ -290,6 +289,6 @@ fn ip_medium_needs_no_arp() {
 #[test]
 fn too_big_is_refused() {
     let (mut net, _, b) = pair();
-    let sent = net.with(b.0, |stack, now, tx| stack.send_ipv4(None, IP_A, PROTO_ICMP, 1481, now, tx, |_| {}));
-    assert_eq!(sent, Err(SendError::TooBig));
+    let sent = net.with(b.0, |stack, now, tx| stack.send_ipv4(None, IP_A, PROTO_ICMP, 1481, now, tx, |_, _| {}));
+    assert_eq!(sent, Err(Error::MessageTooLarge));
 }

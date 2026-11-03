@@ -8,25 +8,36 @@ use alloc::vec::Vec;
 use core::mem;
 use core::net::Ipv4Addr;
 
+use crate::Error;
 use crate::arp::{self, Resolve};
 use crate::link::{LinkInfo, Medium};
 use crate::time::Instant;
+use crate::udp;
 use crate::wire::{
     ARP_LEN, ARP_REPLY, ARP_REQUEST, Arp, BROADCAST_MAC, DEFAULT_TTL, ETHERNET_HEADER, ETHERNET_MIN_FRAME,
-    ETHERTYPE_ARP, ETHERTYPE_IPV4, Ethernet, ICMP_ECHO_REPLY, ICMP_ECHO_REQUEST, IPV4_HEADER, Ipv4, Mac, PROTO_ICMP,
+    ETHERTYPE_ARP, ETHERTYPE_IPV4, Ethernet, ICMP_ECHO_REPLY, ICMP_ECHO_REQUEST, IPV4_HEADER, Ipv4, Mac, PROTO_ICMP, PROTO_UDP,
     checksum, put16, sum,
 };
 
 const LOOPBACK_MTU: usize = 16384;
 const LOOPBACK_QUEUE: usize = 16;
 
-type Tx<'a> = dyn FnMut(IfaceId, &[u8]) -> bool + 'a;
+pub(crate) type Tx<'a> = dyn FnMut(IfaceId, &[u8]) -> bool + 'a;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct IfaceId(u8);
 
 impl IfaceId {
     pub const LOOPBACK: IfaceId = IfaceId(0);
+
+    pub(crate) fn index(self) -> usize {
+        usize::from(self.0)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum SocketId {
+    Udp(usize),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
@@ -58,13 +69,6 @@ impl Ipv4Config {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum SendError {
-    NoRoute,
-    NoAddress,
-    TooBig,
-}
-
 struct Iface {
     name: &'static str,
     info: LinkInfo,
@@ -91,6 +95,8 @@ pub struct Stack {
     arp: arp::Cache,
     buf: Vec<u8>,
     ident: u16,
+    pub(crate) udp: udp::Sockets,
+    pub(crate) woken: Vec<SocketId>,
 }
 
 impl Default for Stack {
@@ -101,8 +107,15 @@ impl Default for Stack {
 
 impl Stack {
     pub fn new() -> Self {
-        let mut stack =
-            Self { ifaces: Vec::new(), loopback: VecDeque::new(), arp: arp::Cache::default(), buf: Vec::new(), ident: 0 };
+        let mut stack = Self {
+            ifaces: Vec::new(),
+            loopback: VecDeque::new(),
+            arp: arp::Cache::default(),
+            buf: Vec::new(),
+            ident: 0,
+            udp: udp::Sockets::default(),
+            woken: Vec::new(),
+        };
         let lo = stack.add_interface("lo", LinkInfo { medium: Medium::Ip, mac: [0; 6], mtu: LOOPBACK_MTU });
         stack.set_ipv4(lo, Some(Ipv4Config { address: Ipv4Addr::LOCALHOST, prefix_len: 8, gateway: None }));
         stack.set_link_up(lo, true);
@@ -197,16 +210,16 @@ impl Stack {
         len: usize,
         now: Instant,
         tx: &mut Tx,
-        fill: impl FnOnce(&mut [u8]),
-    ) -> Result<(), SendError> {
-        let (id, next_hop) = self.route_v4(dst).ok_or(SendError::NoRoute)?;
+        fill: impl FnOnce(&mut [u8], Ipv4Addr),
+    ) -> Result<(), Error> {
+        let (id, next_hop) = self.route_v4(dst).ok_or(Error::NoRoute)?;
         let iface = self.iface(id);
         let src = match src {
             Some(src) => src,
-            None => iface.ipv4.ok_or(SendError::NoAddress)?.address,
+            None => iface.ipv4.ok_or(Error::NoRoute)?.address,
         };
         if IPV4_HEADER + len > iface.info.mtu {
-            return Err(SendError::TooBig);
+            return Err(Error::MessageTooLarge);
         }
         let header = iface.header_len();
         let medium = iface.info.medium;
@@ -218,7 +231,7 @@ impl Stack {
         self.ident = self.ident.wrapping_add(1);
         let ip = Ipv4 { src, dst, protocol, ttl: DEFAULT_TTL, ident: self.ident, fragmented: false };
         ip.write_header(&mut buf[header..], len);
-        fill(&mut buf[header + IPV4_HEADER..]);
+        fill(&mut buf[header + IPV4_HEADER..], src);
         match medium {
             Medium::Ip => self.emit(id, &buf, tx),
             Medium::Ethernet if broadcast => self.emit_ethernet(id, BROADCAST_MAC, ETHERTYPE_IPV4, &mut buf, tx),
@@ -293,8 +306,10 @@ impl Stack {
         if !unicast && !ip.dst.is_broadcast() && ip.dst != config.broadcast() {
             return;
         }
-        if ip.protocol == PROTO_ICMP {
-            self.icmp_input(&ip, unicast, payload, now, tx);
+        match ip.protocol {
+            PROTO_ICMP => self.icmp_input(&ip, unicast, payload, now, tx),
+            PROTO_UDP => self.udp_input(&ip, payload),
+            _ => {}
         }
     }
 
@@ -303,7 +318,7 @@ impl Stack {
             return;
         }
         if p[0] == ICMP_ECHO_REQUEST && p[1] == 0 && unicast {
-            let _ = self.send_ipv4(Some(ip.dst), ip.src, PROTO_ICMP, p.len(), now, tx, |out| {
+            let _ = self.send_ipv4(Some(ip.dst), ip.src, PROTO_ICMP, p.len(), now, tx, |out, _| {
                 out.copy_from_slice(p);
                 out[0] = ICMP_ECHO_REPLY;
                 put16(out, 2, 0);
@@ -313,7 +328,12 @@ impl Stack {
         }
     }
 
-    fn is_own_address(&self, ip: Ipv4Addr) -> bool {
+    /// The largest IPv4 payload toward `dst`.
+    pub(crate) fn mtu_to(&self, dst: Ipv4Addr) -> Option<usize> {
+        self.route_v4(dst).map(|(id, _)| self.iface(id).info.mtu - IPV4_HEADER)
+    }
+
+    pub(crate) fn is_own_address(&self, ip: Ipv4Addr) -> bool {
         self.ifaces.iter().any(|i| i.ipv4.is_some_and(|c| c.address == ip))
     }
 
