@@ -148,6 +148,57 @@ fn any_split_paints_the_same_pixels() {
     assert_eq!(render::<Bgr888>(&list, &mut cache, 100, 80, &strips), full);
 }
 
+fn render_half<P: Pixel>(list: &DisplayList<'_>, cache: &mut GlyphCache, area: Rect, rows: i16) -> Vec<u8> {
+    let (width, stride) = (area.w as usize / 2, area.w as usize / 2 * P::BYTES);
+    let mut out = vec![0u8; stride * (area.h as usize / 2)];
+    let mut prepared = Prepared::new();
+    prepared.prepare(list, &[area], cache);
+    let mut store = ClipStore::new();
+    let mut y = 0;
+    while y < area.h {
+        let band = Rect::new(area.x, area.y + y, area.w, rows.min(area.h - y));
+        let surface = unsafe { Surface::half(out.as_mut_ptr().add(y as usize / 2 * stride), width * P::BYTES, band) };
+        draw::<P, _, _, _>(list, &prepared, &mut store, &surface);
+        y += rows;
+    }
+    out
+}
+
+#[test]
+fn half_size_draws_the_pixels_at_odd_offsets() {
+    fn picture<P: Pixel>() {
+        let chain = test_chain();
+        let scene = Scene::new(&chain);
+        let alpha: Vec<u8> = (0..10 * 9).map(|i| (i * 29) as u8).collect();
+        let ring = CornerMask::new_in(5, Global);
+        let mut list = scene.list();
+        list.border(Rect::new(3, 50, 25, 23), Some(ring), 2, Color::rgb(20, 120, 40));
+        list.gradient(Rect::new(70, 5, 27, 31), Some(scene.corner), Color::rgba(255, 0, 0, 40), Color::rgb(0, 0, 255), true);
+        list.arc(72, 50, ArcMask::new_in(12, 3, Global), 30.0, 250.0, Color::rgb(0, 200, 0), Color::rgb(200, 0, 200));
+        list.image(5, 30, Image::from_pixels(ImageFormat::A8, 10, 9, 10, &alpha), Color::rgb(90, 0, 0));
+        list.push_round_clip(Rect::new(41, 3, 27, 25), scene.corner);
+        list.fill(Rect::new(0, 0, 100, 80), Color::rgba(255, 200, 0, 180));
+        list.raster(Rect::new(40, 10, 30, 13), (40, 10), &Stripes);
+        list.pop_round_clip();
+        let mut cache = GlyphCache::new(4096);
+        let full = render::<P>(&list, &mut cache, 100, 80, &[Rect::new(0, 0, 100, 80)]);
+        let full_at = |x: usize, y: usize| &full[(y * 100 + x) * P::BYTES..][..P::BYTES];
+        for (area, rows) in [(Rect::new(0, 0, 100, 80), 80), (Rect::new(0, 0, 100, 80), 16), (Rect::new(7, 3, 90, 75), 16)] {
+            let half = render_half::<P>(&list, &mut cache, area, rows);
+            let width = area.w as usize / 2;
+            for v in 0..area.h as usize / 2 {
+                for u in 0..width {
+                    let (x, y) = (area.x as usize + u * 2 + 1, area.y as usize + v * 2 + 1);
+                    assert_eq!(&half[(v * width + u) * P::BYTES..][..P::BYTES], full_at(x, y), "{area:?} {rows} at {x},{y}");
+                }
+            }
+        }
+    }
+    picture::<Rgb565>();
+    picture::<Bgr888>();
+    picture::<Argb8888>();
+}
+
 #[test]
 fn formats_agree_within_quantization() {
     let chain = test_chain();

@@ -12,7 +12,8 @@ use idf::heap::Caps;
 const BACK_SCALE: f32 = 0.9;
 const FRONT_SCALE: f32 = 1.1;
 const OUTSIDE: u16 = u16::MAX;
-/// Size of both pictures against the pane, in the 2D engine's steps of 1/16.
+/// Size of both pictures against the pane: half, as `Surface::half` draws
+/// them, and in the 2D engine's steps of 1/16.
 pub(crate) const PICTURE_SCALE: f32 = 0.5;
 pub(crate) const CHUNK: usize = 128;
 
@@ -57,21 +58,6 @@ impl Picture {
 
     fn row(&self, y: u16) -> *const u16 {
         unsafe { self.blocks.as_ptr().cast::<u16>().add(usize::from(y) * self.width as usize) }
-    }
-
-    /// Picks the pixels of `rows` full-size rows of `width` from `band`, which
-    /// starts at full-size row `y`, a multiple of 16.
-    pub(crate) fn sample(&mut self, band: &[u16], width: usize, rows: usize, y: usize) {
-        let (first, end) = (scaled(y as i16) as usize, scaled((y + rows) as i16) as usize);
-        let columns = self.width as usize;
-        let pixels = self.as_mut_ptr();
-        for row in first..end {
-            let source = (((row as f32 + 0.5) / PICTURE_SCALE) as usize - y).min(rows - 1);
-            for column in 0..columns {
-                let x = (((column as f32 + 0.5) / PICTURE_SCALE) as usize).min(width - 1);
-                unsafe { pixels.add(row * columns + column).write(band[source * width + x]) };
-            }
-        }
     }
 }
 

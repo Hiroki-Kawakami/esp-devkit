@@ -16,7 +16,7 @@ use idf::heap::Caps;
 use crate::animate::faded;
 use crate::canvas::Canvas;
 use crate::node::{NONE, NodeContent, NodeIndex};
-use crate::presence::Snapshot;
+use crate::presence::{Snapshot, half};
 use crate::style::Shadow;
 use crate::theme::Transition;
 use crate::tree::{Tree, shadow_extent};
@@ -291,10 +291,6 @@ impl Tree {
         self.paint_node(self.root, 0, 0, self.area, Inherited { opacity: 255, foreground: None }, effects, regions, list);
     }
 
-    pub(crate) fn zooming(&self) -> bool {
-        self.navigators.iter().any(|&nav| self.transit(nav).is_some_and(|t| t.zoom.is_some()))
-    }
-
     pub(crate) fn zoom_pending(&self) -> bool {
         self.navigators.iter().any(|&nav| self.transit(nav).is_some_and(|t| t.kind == Transition::Zoom && t.zoom.is_none()))
     }
@@ -331,11 +327,8 @@ impl Tree {
         let mut entering = Picture::allocate(area)?;
         let mut leaving = Picture::allocate(area)?;
         let shown = self.shown_bands(nav, area, &transit.stale, effects);
-        let t0 = idf::time::Instant::now();
         self.take_picture(navigator.shown(), area, background, effects, cache, &mut entering, engine.as_deref_mut(), &[])?;
-        let t1 = idf::time::Instant::now();
         self.take_picture(transit.leaving, area, background, effects, cache, &mut leaving, engine, &shown)?;
-        idf::log::info!(c"ui", "ZPROBE capture entering={}us leaving={}us", t1.duration_since(t0).as_micros(), t1.elapsed().as_micros());
         Zoom::new(area, entering, leaving, background, transit.forward)
     }
 
@@ -379,9 +372,10 @@ impl Tree {
         let mut prepared = Prepared::new_in(self.caps);
         prepared.prepare(&list, &[area], cache);
         let mut clips = ClipStore::new_in(self.caps);
-        let count = area.w as usize * BAND_ROWS as usize;
+        let width = picture.width as usize;
+        let count = width * (BAND_ROWS / 2) as usize;
         let mut bands = [band_memory(count)?, band_memory(count)?];
-        let stride = area.w as usize * size_of::<u16>();
+        let stride = width * size_of::<u16>();
         let target = display::Picture {
             ptr: picture.as_mut_ptr().cast(),
             size: Size { width: picture.width as u16, height: picture.height as u16 },
@@ -413,30 +407,35 @@ impl Tree {
                 continue;
             }
             let rows = BAND_ROWS.min(area.h - y);
-            if let Some(engine) = engine.as_deref_mut() {
-                while engine.blitter.pending() > 1 {
-                    wait(engine.blitter);
-                }
-            }
-            let memory = &mut bands[turn];
-            let surface = unsafe { Surface::new(memory.as_mut_ptr().cast(), stride, Rect::new(area.x, area.y + y, area.w, rows)) };
-            draw::<Rgb565, _, _, _>(&list, &prepared, &mut clips, &surface);
+            let lines = scaled(y + rows) - scaled(y);
+            let band = Rect::new(area.x, area.y + y, area.w, rows);
             match engine.as_deref_mut() {
-                Some(engine) => {
+                Some(engine) if lines > 0 => {
+                    while engine.blitter.pending() > 1 {
+                        wait(engine.blitter);
+                    }
+                    let memory = &mut bands[turn];
+                    let surface = unsafe { Surface::half(memory.as_mut_ptr().cast(), stride, band) };
+                    draw::<Rgb565, _, _, _>(&list, &prepared, &mut clips, &surface);
                     let source = display::Picture {
                         ptr: memory.as_mut_ptr().cast(),
-                        size: Size { width: area.w as u16, height: rows as u16 },
+                        size: Size { width: width as u16, height: lines as u16 },
                         format: PixelFormat::Rgb565,
                         len: count * size_of::<u16>(),
                     };
-                    let block = display::Rect { x: 0, y: 0, width: area.w as u16, height: rows as u16 };
-                    if let Err(err) = unsafe { engine.blitter.start_scaled(source, block, Rotation::R0, PICTURE_SCALE, target, at) } {
+                    let block = display::Rect { x: 0, y: 0, width: width as u16, height: lines as u16 };
+                    if let Err(err) = unsafe { engine.blitter.start_scaled(source, block, Rotation::R0, 1.0, target, at) } {
                         idf::log::error!(c"ui", "zoom picture: {err}");
                         return None;
                     }
                     turn ^= 1;
                 }
-                None => picture.sample(memory, area.w as usize, rows as usize, y as usize),
+                Some(_) => {}
+                None => {
+                    let memory = unsafe { picture.as_mut_ptr().add(usize::from(at.1) * width) };
+                    let surface = unsafe { Surface::half(memory.cast(), stride, band) };
+                    draw::<Rgb565, _, _, _>(&list, &prepared, &mut clips, &surface);
+                }
             }
             y += rows;
         }
@@ -467,14 +466,15 @@ impl Tree {
         let mut prepared = Prepared::new_in(self.caps);
         prepared.prepare(&list, &[area], cache);
         let mut clips = ClipStore::new_in(self.caps);
-        let mut band = argb_band(area.w as usize * BAND_ROWS as usize)?;
+        let columns = half(area.w);
+        let mut band = argb_band(columns * (BAND_ROWS / 2) as usize)?;
         let mut y = 0;
         while y < area.h {
             let rows = BAND_ROWS.min(area.h - y);
             band.fill(0);
-            let surface = unsafe { Surface::new(band.as_mut_ptr().cast(), area.w as usize * size_of::<u32>(), Rect::new(area.x, area.y + y, area.w, rows)) };
+            let surface = unsafe { Surface::half(band.as_mut_ptr().cast(), columns * size_of::<u32>(), Rect::new(area.x, area.y + y, area.w, rows)) };
             draw::<Argb8888, _, _, _>(&list, &prepared, &mut clips, &surface);
-            snapshot.store(&band, rows as usize)?;
+            snapshot.store(&band, half(y + rows) - half(y))?;
             y += rows;
         }
         Some(snapshot)

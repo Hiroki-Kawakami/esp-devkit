@@ -15,7 +15,7 @@ use crate::glyph_cache::GlyphCache;
 use crate::list::{DisplayList, MAX_CLIPS, Op};
 use crate::math::{direction, sqrt};
 use crate::pixel::Pixel;
-use crate::raster::RasterTarget;
+use crate::raster::{Raster, RasterTarget};
 use crate::surface::Surface;
 use crate::text::PlacedGlyph;
 
@@ -78,7 +78,7 @@ impl RoundClip {
 
 fn open_round_clip<P: Pixel, A: Allocator>(surface: &Surface, clip: RoundClip, store: &mut ClipStore<A>) -> Option<RoundClip> {
     let corners = clip.corners();
-    let bytes: usize = corners.iter().filter(|c| !c.0.is_empty()).map(|c| c.0.area() as usize * P::BYTES).sum();
+    let bytes: usize = corners.iter().filter(|c| !c.0.is_empty()).map(|c| surface.cells(&c.0).area() as usize * P::BYTES).sum();
     if bytes == 0 || store.saved.try_reserve(bytes).is_err() {
         return None;
     }
@@ -95,7 +95,7 @@ fn close_round_clip<P: Pixel, A: Allocator>(surface: &Surface, clip: &RoundClip,
     for (part, mask, mask_stride) in clip.corners() {
         if !part.is_empty() {
             surface.restore::<P>(&part, unsafe { store.saved.as_ptr().add(at) }, mask, mask_stride);
-            at += part.area() as usize * P::BYTES;
+            at += surface.cells(&part).area() as usize * P::BYTES;
         }
     }
     store.saved.truncate(clip.start);
@@ -247,13 +247,15 @@ const SPAN: usize = 64;
 fn draw_pixels<P: Pixel>(s: &Surface, r: &Rect, solid: bool, base: Color, mut pixel: impl FnMut(i16, i16) -> (Color, u8)) {
     let packed = P::pack(base);
     let mut alphas = [0u8; SPAN];
-    for y in r.y..r.bottom() {
-        let mut x = r.x;
-        while x < r.right() {
-            let n = (r.right() - x).min(SPAN as i16);
-            let row = s.bytes::<P>(x, y, n as usize).cast::<u8>();
+    let cells = s.cells(r);
+    for v in cells.y..cells.bottom() {
+        let y = s.logical_y(v);
+        let mut u = cells.x;
+        while u < cells.right() {
+            let n = (cells.right() - u).min(SPAN as i16);
+            let row = s.at::<P>(u, v);
             for i in 0..n {
-                let (color, coverage) = pixel(x + i, y);
+                let (color, coverage) = pixel(s.logical_x(u + i), y);
                 let a = mul8(color.a, coverage);
                 if solid {
                     alphas[i as usize] = a;
@@ -264,7 +266,7 @@ fn draw_pixels<P: Pixel>(s: &Surface, r: &Rect, solid: bool, base: Color, mut pi
             if solid {
                 unsafe { P::blend_mask(row, alphas.as_ptr(), n as usize, packed) };
             }
-            x += n;
+            u += n;
         }
     }
 }
@@ -333,6 +335,33 @@ fn draw_text<P: Pixel>(s: &Surface, glyphs: &[PlacedGlyph], masks: &[*const u8],
         if !mask.is_null() {
             let rect = Rect::new(g.x + x, g.y + y, i16::from(g.w), i16::from(g.h));
             s.mask::<P>(&rect, clip, mask, isize::from(u8::from(g.w)), color);
+        }
+    }
+}
+
+/// Rasters the rows a surface at half size samples, at full size a piece at
+/// a time over what is below, and keeps the sampled pixels.
+fn sample_raster<P: Pixel>(s: &Surface, r: &Rect, origin: (i16, i16), raster: &dyn Raster) {
+    let mut line = [0u32; SPAN * 2];
+    let line_ptr = line.as_mut_ptr().cast::<u8>();
+    let cells = s.cells(r);
+    for v in cells.y..cells.bottom() {
+        let mut u = cells.x;
+        while u < cells.right() {
+            let n = (cells.right() - u).min(SPAN as i16);
+            let piece = Rect::new(s.logical_x(u), s.logical_y(v), n * 2 - 1, 1);
+            let row = s.at::<P>(u, v);
+            unsafe {
+                for i in 0..n as usize {
+                    ptr::copy_nonoverlapping(row.add(i * P::BYTES), line_ptr.add(i * 2 * P::BYTES), P::BYTES);
+                }
+                let full = Surface::new(line_ptr, SPAN * 2 * P::BYTES, piece);
+                raster.raster(&mut RasterTarget::new::<P>(&full, piece, origin));
+                for i in 0..n as usize {
+                    ptr::copy_nonoverlapping(line_ptr.add(i * 2 * P::BYTES), row.add(i * P::BYTES), P::BYTES);
+                }
+            }
+            u += n;
         }
     }
 }
@@ -411,9 +440,10 @@ fn draw_ops<P: Pixel, A: Allocator, L: Allocator, S: Allocator>(list: &DisplayLi
                     draw_text::<P>(surface, glyphs, masks, x, y, &clip, color);
                 }
             }
-            Op::Raster { rect, origin, raster } => {
+            Op::Raster { rect, origin, raster } if surface.shift() == 0 => {
                 raster.raster(&mut RasterTarget::new::<P>(surface, rect.intersect(&clip), origin));
             }
+            Op::Raster { rect, origin, raster } => sample_raster::<P>(surface, &rect.intersect(&clip), origin, raster),
             Op::PushClip(_) | Op::PopClip | Op::PushRoundClip { .. } | Op::PopRoundClip => {}
         }
     }

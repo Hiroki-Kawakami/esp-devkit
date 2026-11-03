@@ -36,6 +36,9 @@ draw::<Rgb565, _, _>(&list, &prepared, &surface);
   `Argb8888` (B, G, R, A, not premultiplied, for pictures laid over others).
 - A `Raster` writes pixels itself. It runs on every task that draws, each with
   its own part of the picture.
+- `Surface::half` draws at half size: each pixel is the logical pixel at odd
+  offsets from the area's top left, nothing averaged. A `Raster` there still
+  runs at full size, one row piece at a time.
 - `draw_from` draws from an operation on, in the clips open there. `overlap`
   finds what those operations paint inside a rectangle.
 - `simd` runs pixel loops on the chip's vector unit, built in for the chips

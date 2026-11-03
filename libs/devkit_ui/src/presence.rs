@@ -132,7 +132,7 @@ pub(crate) struct Snapshot {
     alpha: Vec<u8, Caps>,
     /// Where each row's alpha starts; `OPAQUE` for none.
     rows: Vec<u32, Caps>,
-    /// The node's size; the picture is half of it, rounded up.
+    /// The node's size; the picture is half of it, rounded down.
     width: i16,
     height: i16,
     scale: AtomicU32,
@@ -143,8 +143,8 @@ const OPAQUE: u32 = u32::MAX;
 
 const SHRINK: usize = 2;
 
-fn half(length: i16) -> usize {
-    (length as usize).div_ceil(SHRINK)
+pub(crate) fn half(length: i16) -> usize {
+    length as usize / SHRINK
 }
 
 fn reserve<T>(count: usize) -> Option<Vec<T, Caps>> {
@@ -159,32 +159,27 @@ fn reserve<T>(count: usize) -> Option<Vec<T, Caps>> {
 
 impl Snapshot {
     pub(crate) fn allocate(width: i16, height: i16) -> Option<Self> {
+        if half(width) == 0 || half(height) == 0 {
+            return None;
+        }
         let color: Vec<u16, Caps> = reserve(half(width) * half(height))?;
         let alpha = Vec::new_in(*color.allocator());
         let rows = reserve(half(height))?;
         Some(Self { color, alpha, rows, width, height, scale: AtomicU32::new(1.0f32.to_bits()), opacity: AtomicU8::new(255) })
     }
 
-    /// Adds `rows` rows of ARGB8888 `pixels`, an even number but at the
-    /// bottom, below those stored.
+    /// Adds `rows` rows of half-size ARGB8888 `pixels` below those stored.
     pub(crate) fn store(&mut self, pixels: &[u32], rows: usize) -> Option<()> {
-        let (width, columns) = (self.width as usize, half(self.width));
-        let mut line = Vec::with_capacity(columns);
-        for y in (0..rows).step_by(SHRINK) {
-            let (upper, lower) = (&pixels[y * width..][..width], &pixels[(y + SHRINK - 1).min(rows - 1) * width..][..width]);
-            line.clear();
-            line.extend((0..columns).map(|x| {
-                let right = (SHRINK * x + SHRINK - 1).min(width - 1);
-                average([upper[SHRINK * x], upper[right], lower[SHRINK * x], lower[right]])
-            }));
-            self.color.extend(line.iter().map(|&(v, _)| v));
-            if line.iter().all(|&(_, a)| a == 255) {
+        let columns = half(self.width);
+        for line in pixels[..rows * columns].chunks_exact(columns) {
+            self.color.extend(line.iter().map(|&argb| ((argb >> 19 & 0x1f) << 11 | (argb >> 10 & 0x3f) << 5 | (argb >> 3 & 0x1f)) as u16));
+            if line.iter().all(|&argb| argb >= 0xff00_0000) {
                 self.rows.push(OPAQUE);
                 continue;
             }
             self.rows.push(self.alpha.len() as u32);
             self.alpha.try_reserve(columns).ok()?;
-            self.alpha.extend(line.iter().map(|&(_, a)| a));
+            self.alpha.extend(line.iter().map(|&argb| (argb >> 24) as u8));
         }
         Some(())
     }
@@ -204,7 +199,7 @@ impl Snapshot {
         let area = target.area();
         let source = |at: i16, length: i16| {
             let s = ((f32::from(at) + 0.5) / scale) as i32;
-            (at >= 0 && s < i32::from(length)).then_some((s / SHRINK as i32) as u16)
+            (at >= 0 && s < i32::from(length)).then(|| (s as usize / SHRINK).min(half(length) - 1) as u16)
         };
         // The columns inside the picture are contiguous.
         let columns: Vec<(usize, u16)> = (area.x..area.right()).enumerate().filter_map(|(i, x)| source(x, self.width).map(|s| (i, s))).collect();
@@ -247,29 +242,6 @@ impl Snapshot {
             }
         }
     }
-}
-
-/// Four ARGB8888 pixels as one RGB565 color, weighted by their alpha, and the
-/// mean alpha.
-fn average(pixels: [u32; 4]) -> (u16, u8) {
-    if pixels.iter().all(|&argb| argb >= 0xff00_0000) {
-        let sum = |shift: u32| pixels.iter().fold(0u32, |sum, &argb| sum.wrapping_add((argb >> shift) & 0xff)) >> 2;
-        let (r, g, b) = (sum(16), sum(8), sum(0));
-        return (((r >> 3) << 11 | (g >> 2) << 5 | b >> 3) as u16, 255);
-    }
-    let (mut r, mut g, mut b, mut total) = (0, 0, 0, 0);
-    for argb in pixels {
-        let a = argb >> 24;
-        r += ((argb >> 16) & 0xff) * a;
-        g += ((argb >> 8) & 0xff) * a;
-        b += (argb & 0xff) * a;
-        total += a;
-    }
-    if total == 0 {
-        return (0, 0);
-    }
-    let (r, g, b) = (r / total, g / total, b / total);
-    (((r >> 3) << 11 | (g >> 2) << 5 | b >> 3) as u16, (total / 4) as u8)
 }
 
 /// `v` over the pixel at `out` by `a` of 256.

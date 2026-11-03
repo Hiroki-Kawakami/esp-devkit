@@ -3328,13 +3328,20 @@ fn a_zoom_draws_pictures_from_the_old_screen_to_the_new_one() {
 }
 
 #[test]
-fn a_picture_takes_every_other_pixel_at_half_size() {
-    let mut picture = crate::zoom::Picture::allocate(Rect::new(0, 0, 4, 2)).unwrap();
-    let band = [1, 2, 3, 4, 5, 6, 7, 8];
-    picture.sample(&band, 4, 2, 0);
-    assert_eq!((picture.width, picture.height), (2, 1));
-    let pixels = unsafe { core::slice::from_raw_parts(picture.as_mut_ptr(), 2) };
-    assert_eq!(pixels, [6, 8], "the pixel each output centre falls on");
+fn a_snapshot_of_an_odd_size_reaches_its_edges() {
+    let mut cache = devkit_gfx::GlyphCache::new_in(16 * 1024, Caps::INTERNAL);
+    let mut tree = Tree::new(Mover(0), SCREEN, Caps::INTERNAL, theme());
+    settle(&mut tree);
+    let mut effects = crate::paint::Effects::new(Caps::INTERNAL);
+    let shown = Rect::new(0, 0, 41, 31);
+    let snapshot = tree.snapshot(tree.find(id!("m0")).unwrap(), shown, &mut effects, &mut cache).unwrap();
+    assert_eq!(snapshot.size(), (41, 31));
+    let mut list = devkit_gfx::DisplayList::new_in(Caps::INTERNAL);
+    list.raster(shown, (0, 0), &snapshot);
+    let mut pixels = vec![0u16; shown.area() as usize];
+    let surface = unsafe { devkit_gfx::Surface::new(pixels.as_mut_ptr().cast(), shown.w as usize * 2, shown) };
+    devkit_gfx::draw::<devkit_gfx::Rgb565, _, _, _>(&list, &devkit_gfx::Prepared::new_in(Caps::INTERNAL), &mut devkit_gfx::ClipStore::new_in(Caps::INTERNAL), &surface);
+    assert!(pixels.iter().all(|&p| p == 0xf800), "red to the last row and column");
 }
 
 #[derive(Clone, Copy)]
