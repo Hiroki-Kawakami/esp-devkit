@@ -27,7 +27,7 @@ use core::time::Duration;
 use bsp_rs::Board;
 use bsp_rs::display::{Display, PixelFormat};
 use devkit::StaticLease;
-use devkit_ui::{App, AppConfig, AutoRotation, ColorMode, Insets, Rotation, SavedColorMode, Strips, TextInput};
+use devkit_ui::{App, AppConfig, AutoRotation, ColorMode, Rotation, SavedColorMode, Strips, TextInput};
 use idf::heap::Caps;
 use idf::log::{error, info};
 use idf::sync::{Mutex, Semaphore};
@@ -35,7 +35,7 @@ use idf::{system, thread};
 
 use bench::{Bench, Params, Present};
 use scene::Kind;
-use screens::{Home, INSET_TOP, SPARE_STRIPS, StatusBar, StatusMsg};
+use screens::{Home, SPARE_STRIPS, StatusBar, StatusMsg};
 
 const TAG: &CStr = c"ui_demo";
 const SETTINGS_VALID: u32 = 0x5549_4445;
@@ -209,7 +209,7 @@ fn run_demo(board: &Board, display: &'static Display, settings: &Settings) {
             Ok(None)
         }
     };
-    let status = app.chrome(StatusBar::new(), Insets { top: INSET_TOP, ..Insets::default() });
+    let status = app.chrome(StatusBar::new());
     let Some(sram) = SRAM.take() else {
         error!(TAG, "strips: taken");
         return;

@@ -165,11 +165,13 @@ app.run();
   detail. `show` changes the right at once unless asked.
 - A covered screen keeps its state and loses its nodes. List positions and
   nested navigators come back with it; state of its child components does not.
-- `App::chrome` adds a component above the screens that stays across navigation,
-  with the `Insets` it covers. Screens read them with `ui.insets()` and can avoid
-  them or draw beneath. `ui.insets()` is what the planes above cover: the
-  chrome's and the keyboard's under the chrome, only the keyboard's on the chrome
-  and the `Overlay`, so the chrome keeps its own size. `ScreenStyle` tells the chrome what the top root screen
+- `App::chrome` adds a component along the top, above the screens, that stays
+  across navigation. How tall it comes out is the top inset of the screens, 0
+  while it shows nothing; planes build from the top down, so screens see the
+  height of this update. Screens read it with `ui.insets()` and can avoid it or
+  draw beneath. `ui.insets()` is what the planes above cover: the chrome and the
+  keyboard under the chrome, only the keyboard on the chrome and the `Overlay`.
+  `ScreenStyle` tells the chrome what the top root screen
   wants. `Handle`s from `App::chrome` post to that component.
 - `Overlay` holds one screen over a scrim, `widgets.overlay.scrim`. The scrim
   fades with the first node in the screen that has a presence, and keeps

@@ -29,7 +29,6 @@ use crate::keyboard::KeyboardMode;
 use crate::plugin::{Plugin, PluginContext, PluginInit, Store, UiEvent};
 use crate::paint::{Effects, Engine};
 use crate::presenter::{Config, Presenter, ROW_GRID, Strips};
-use crate::style::Insets;
 use crate::text_buffer::TextInput;
 use crate::theme::{ColorMode, Theme};
 use crate::tree::Tree;
@@ -448,10 +447,10 @@ impl<C: Screen> AppState<C> {
         }
     }
 
-    /// Adds a component above the screens that stays across navigation, and
-    /// the space it covers.
-    pub fn chrome<B: Component>(&mut self, component: B, insets: Insets) -> Handle<B::Msg> {
-        let slot = self.tree.add_chrome(component, insets);
+    /// Adds a component along the top above the screens that stays across
+    /// navigation. How tall it comes out is the top inset of the screens.
+    pub fn chrome<B: Component>(&mut self, component: B) -> Handle<B::Msg> {
+        let slot = self.tree.add_chrome(component);
         Handle::new(self.tree.link.clone(), self.tree.host_id(slot))
     }
 

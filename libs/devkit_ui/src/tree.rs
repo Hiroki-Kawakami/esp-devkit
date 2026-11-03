@@ -224,7 +224,8 @@ pub(crate) struct Tree {
     pub(crate) color_mode: ColorMode,
     pub(crate) link: Link,
     pub(crate) root_id: u32,
-    insets: Insets,
+    /// How tall the chrome came out, the top inset of what is under it.
+    chrome_height: i16,
     pub(crate) render_request: Option<(u16, RenderRequest)>,
     pending_animations: Vec<(&'static str, Animation)>,
     pending_focus: Option<&'static str>,
@@ -283,7 +284,7 @@ impl Tree {
             color_mode: ColorMode::Light,
             link: Arc::new(OnceLock::new()),
             root_id: 0,
-            insets: Insets::default(),
+            chrome_height: 0,
             render_request: None,
             pending_animations: Vec::new(),
             pending_focus: None,
@@ -349,9 +350,9 @@ impl Tree {
         self.nodes[child as usize].next = node;
     }
 
-    /// Adds a component above the screens that stays across navigation, and
-    /// the space it covers. Must come before the first update.
-    pub(crate) fn add_chrome<C: crate::component::Component>(&mut self, component: C, insets: Insets) -> u16 {
+    /// Adds a component along the top above the screens that stays across
+    /// navigation. Must come before the first update.
+    pub(crate) fn add_chrome<C: crate::component::Component>(&mut self, component: C) -> u16 {
         let slot = self.alloc_slot();
         let node = self.alloc_node(Node::new(NodeContent::Child(slot), slot, self.caps));
         let index = usize::from(slot);
@@ -359,7 +360,6 @@ impl Tree {
         self.slots[index].node = node;
         self.slots[index].theme = self.theme;
         self.chrome.push(slot);
-        self.insets = insets;
         let overlay = self.navigators[self.navigators.len() - 1];
         self.nodes[node as usize].style.absolute = Some(crate::style::Inset {
             left: Some(0),
@@ -392,20 +392,40 @@ impl Tree {
         }
     }
 
-    /// What the planes above the one holding `slot` cover.
-    fn insets_above(&self, slot: u16) -> Insets {
+    fn plane_of(&self, slot: u16) -> NodeId {
         let mut plane = self.slots[usize::from(slot)].node;
         while plane != NONE && self.nodes[plane as usize].parent != self.root {
             plane = self.nodes[plane as usize].parent;
         }
-        let chrome = |node: NodeId| self.chrome.iter().any(|&c| self.slots[usize::from(c)].node == node);
+        plane
+    }
+
+    /// How many planes are under the one holding `slot`.
+    fn plane_rank(&self, slot: u16) -> usize {
+        let plane = self.plane_of(slot);
+        let mut rank = 0;
+        let mut below = self.nodes[self.root as usize].first_child;
+        while below != NONE && below != plane {
+            rank += 1;
+            below = self.nodes[below as usize].next;
+        }
+        if below == NONE { 0 } else { rank }
+    }
+
+    fn is_chrome(&self, node: NodeId) -> bool {
+        self.chrome.iter().any(|&c| self.slots[usize::from(c)].node == node)
+    }
+
+    /// What the planes above the one holding `slot` cover.
+    fn insets_above(&self, slot: u16) -> Insets {
+        let plane = self.plane_of(slot);
         let keyboard = self.keyboard_slot.map_or(NONE, |k| self.slots[usize::from(k)].node);
         // Not placed yet: under everything, as a screen is.
         let mut above = if plane == NONE { self.nodes[self.root as usize].first_child } else { self.nodes[plane as usize].next };
         let mut insets = Insets::default();
         while above != NONE {
-            if chrome(above) {
-                insets = self.insets;
+            if self.is_chrome(above) {
+                insets.top = self.chrome_height;
             }
             if above == keyboard {
                 insets.bottom = insets.bottom.max(self.keyboard_height);
@@ -1081,15 +1101,51 @@ impl Tree {
         }
     }
 
+    /// Builds from the top plane down, so what is under the chrome is built
+    /// with the height it came out.
+    fn build_dirty(&mut self) {
+        while !self.dirty.is_empty() {
+            let mut next = self.dirty.len() - 1;
+            let mut rank = self.plane_rank(self.dirty[next]);
+            for i in (0..next).rev() {
+                let r = self.plane_rank(self.dirty[i]);
+                if r > rank {
+                    (next, rank) = (i, r);
+                }
+            }
+            let slot = self.dirty.remove(next);
+            self.build_component(slot);
+            if self.chrome.contains(&slot) {
+                self.measure_chrome();
+            }
+        }
+    }
+
+    fn measure_chrome(&mut self) {
+        let width = self.area.w;
+        let mut height = 0;
+        for i in 0..self.chrome.len() {
+            let node = self.slots[usize::from(self.chrome[i])].node;
+            height = height.max(self.measure(node, width, crate::layout::UNBOUNDED).1);
+        }
+        if height == self.chrome_height {
+            return;
+        }
+        self.chrome_height = height;
+        for slot in 0..self.slots.len() as u16 {
+            if self.slots[usize::from(slot)].host.is_some() && !self.chrome.contains(&slot) {
+                self.mark_slot_dirty(slot);
+            }
+        }
+    }
+
     /// Applies what happened since the last call, leaving the damage to take.
     pub(crate) fn update(&mut self) {
         self.flush_gestures();
         while let Some((slot, msg, tap_rect)) = self.queue.pop_front() {
             self.dispatch(slot, msg, tap_rect);
         }
-        while let Some(slot) = self.dirty.pop() {
-            self.build_component(slot);
-        }
+        self.build_dirty();
         if self.sync_splits() {
             self.update();
             return;

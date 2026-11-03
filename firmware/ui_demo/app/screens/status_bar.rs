@@ -44,7 +44,7 @@ impl Component for StatusBar {
             ui.icon(small_icon(icons::BATTERY)).foreground(color),
             ui.text(&CAPTION, "78%").foreground(color),
         ])
-        .height(super::INSET_TOP)
+        .height(super::STATUS_BAR_HEIGHT)
         .padding_x(24)
         .gap(14)
         .align(Align::Center)

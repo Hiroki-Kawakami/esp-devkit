@@ -2014,28 +2014,51 @@ fn a_tap_in_a_field_places_the_cursor() {
     assert_eq!(text_of(&tree, "name"), "AxB");
 }
 
-struct Empty;
+struct TopChrome {
+    height: i16,
+}
 
-impl Component for Empty {
+impl Component for TopChrome {
+    type Msg = i16;
+
+    fn update(&mut self, height: i16, cx: &mut Cx<Self>) {
+        self.height = height;
+        cx.rebuild();
+    }
+
+    fn view<'a>(&'a self, ui: &'a Ui<i16>) -> Element<'a, i16> {
+        if self.height == 0 { ui.empty() } else { ui.column([]).height(self.height).id("chrome") }
+    }
+}
+
+struct Padded;
+
+impl Screen for Padded {}
+
+impl Component for Padded {
     type Msg = ();
 
     fn update(&mut self, _: (), _: &mut Cx<Self>) {}
 
     fn view<'a>(&'a self, ui: &'a Ui<()>) -> Element<'a, ()> {
-        ui.empty()
+        ui.column([ui.column([]).height(10).id("first")]).padding_each(0, ui.insets().top, 0, 0)
     }
 }
 
 #[test]
-fn the_bottom_inset_is_the_larger_of_chrome_and_keyboard() {
-    let mut tree = Tree::new(Form { name: TextBuffer::new(), pin: TextBuffer::new() }, SCREEN, Caps::INTERNAL, theme());
-    tree.add_chrome(Empty, Insets { top: 10, bottom: 30, ..Insets::default() });
-    tree.add_keyboard(crate::keyboard::KeyboardMode::Auto);
+fn the_chrome_is_as_tall_as_it_comes_out_and_screens_start_below_it() {
+    let mut tree = Tree::new(Padded, SCREEN, Caps::INTERNAL, theme());
+    let chrome = tree.add_chrome(TopChrome { height: 30 });
     run(&mut tree);
-    assert_eq!(tree.context(0).insets.bottom, 30);
-    tap(&mut tree, "name");
+    assert_eq!(tree.context(0).insets.top, 30);
+    assert_eq!(rect_of(&tree, "first").y, 30);
+    let id = tree.host_id(chrome);
+    tree.post(id, Erased::new(50i16));
     run(&mut tree);
-    assert_eq!(tree.context(0).insets.bottom, rect_of(&tree, "keyboard").h);
+    assert_eq!(rect_of(&tree, "first").y, 50, "built again with the new height in the same update");
+    tree.post(id, Erased::new(0i16));
+    run(&mut tree);
+    assert_eq!(rect_of(&tree, "first").y, 0, "a chrome showing nothing covers nothing");
 }
 
 #[test]
@@ -3138,7 +3161,7 @@ fn a_modal_moves_above_the_keyboard() {
 #[test]
 fn insets_are_what_the_planes_above_cover() {
     let mut tree = asked_with(false, |tree| {
-        tree.add_chrome(Empty, Insets { top: 40, ..Insets::default() });
+        tree.add_chrome(TopChrome { height: 40 });
         tree.add_keyboard(crate::keyboard::KeyboardMode::Auto);
     });
     let chrome = tree.chrome[0];

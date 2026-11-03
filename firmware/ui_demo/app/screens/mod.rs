@@ -34,4 +34,4 @@ const fn small_icon(glyph: char) -> Icon {
 /// The strip memory not in use.
 pub static SPARE_STRIPS: LazyLock<Mutex<Option<Strips>>> = LazyLock::new(|| Mutex::new(None));
 
-pub const INSET_TOP: i16 = 52;
+pub const STATUS_BAR_HEIGHT: i16 = 52;
