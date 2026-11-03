@@ -33,12 +33,12 @@ fn loopback_is_first_and_up() {
 fn receive_checks_state_and_length() {
     let mut stack = Stack::new();
     let eth = stack.add_interface("sta", ETH);
-    stack.receive(eth, &[0; 60], Instant::ZERO);
+    stack.receive(eth, &[0; 60], Instant::ZERO, &mut |_, _| true);
     stack.set_link_up(eth, true);
-    stack.receive(eth, &[0; 14], Instant::ZERO);
-    stack.receive(eth, &[0; 1515], Instant::ZERO);
-    stack.receive(eth, &[0; 1514], Instant::ZERO);
-    stack.receive(eth, &[0; 60], Instant::ZERO);
+    stack.receive(eth, &[0; 14], Instant::ZERO, &mut |_, _| true);
+    stack.receive(eth, &[0; 1515], Instant::ZERO, &mut |_, _| true);
+    stack.receive(eth, &[0; 1514], Instant::ZERO, &mut |_, _| true);
+    stack.receive(eth, &[0; 60], Instant::ZERO, &mut |_, _| true);
     assert_eq!(stack.stats(eth), stats(2, 3, 0, 0));
 }
 
