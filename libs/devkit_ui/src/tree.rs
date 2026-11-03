@@ -21,7 +21,7 @@ use idf::sync::OnceLock;
 
 use crate::app::Link;
 use crate::bump::Bump;
-use crate::component::{Animation, AnyHost, EventMap, Hook, Host, Property, RenderRequest, Requests, Screen, screen_host};
+use crate::component::{Animation, AnyHost, EventMap, Hook, Host, Property, RenderRequest, Requests, Screen, ScrollEdge, ScrollTarget, screen_host};
 use crate::element::{BuildContext, Content, Drag, Element, TaskSpec};
 use crate::gesture::{Gestures, Tracker};
 use crate::id::Id;
@@ -247,6 +247,7 @@ pub(crate) struct Tree {
     chrome_height: i16,
     pub(crate) render_request: Option<(u16, RenderRequest)>,
     pending_animations: Vec<(Id, Animation)>,
+    pending_scrolls: Vec<(Id, ScrollTarget, bool)>,
     pending_focus: Option<Id>,
     focus: NodeIndex,
     keyboard_changed: bool,
@@ -306,6 +307,7 @@ impl Tree {
             chrome_height: 0,
             render_request: None,
             pending_animations: Vec::new(),
+            pending_scrolls: Vec::new(),
             pending_focus: None,
             focus: NONE,
             keyboard_changed: false,
@@ -924,6 +926,7 @@ impl Tree {
         node.drag = element.drag;
         node.on_scroll = element.on_scroll;
         node.bounce = element.bounce;
+        node.anchor = element.anchor;
         node.gestures = element.gestures;
         node.size = element.size;
         node.input = element.input;
@@ -1114,11 +1117,16 @@ impl Tree {
             }
             Content::List { .. } => {
                 self.lists.push(id);
+                self.nodes[id as usize].pinned = element.anchor == ScrollEdge::End;
                 let saved = element.id.and_then(|wanted| self.restoring.last().and_then(|s| s.lists.iter().find(|l| l.0 == wanted)));
-                if let (Some(&(_, offset)), NodeContent::List(list)) = (saved, &mut self.nodes[id as usize].content) {
-                    list.offset = offset;
+                if let Some(&(_, offset, pinned)) = saved {
+                    self.nodes[id as usize].pinned = pinned;
+                    if let NodeContent::List(list) = &mut self.nodes[id as usize].content {
+                        list.offset = offset;
+                    }
                 }
             }
+            Content::Scroll => self.nodes[id as usize].pinned = element.anchor == ScrollEdge::End,
             Content::Navigator { key, initial, .. } => {
                 self.navigators.push(id);
                 if !self.restore_navigator(id, key)
@@ -1238,6 +1246,7 @@ impl Tree {
             self.render_request = Some((slot, render));
         }
         self.pending_animations.extend(requests.animations);
+        self.pending_scrolls.extend(requests.scrolls);
         if requests.focus.is_some() {
             self.pending_focus = requests.focus;
         }
@@ -1349,6 +1358,7 @@ impl Tree {
             self.arrange(self.root, area);
             self.resized = false;
         }
+        self.apply_scrolls();
         for i in 0..self.lists.len() {
             self.sync_list(self.lists[i]);
         }
@@ -1721,15 +1731,69 @@ impl Tree {
     }
 
     fn set_offset(&mut self, id: NodeIndex, offset: i32) {
+        let end = self.bounds(id).end;
         let node = &mut self.nodes[id as usize];
         let Some(at) = node.scroll_offset_mut() else { return };
         let before = core::mem::replace(at, offset);
+        node.pinned = offset as f32 >= end;
         if offset != before {
             node.scrolled = true;
             let screen = node.screen;
             self.damage.push(screen);
             self.scroll_moved(id, before);
         }
+    }
+
+    fn apply_scrolls(&mut self) {
+        for (target, to, animated) in core::mem::take(&mut self.pending_scrolls) {
+            let Some(id) = self.find(target).filter(|&id| self.nodes[id as usize].scroll_offset().is_some()) else {
+                idf::log::error!(c"ui", "scroll_to: no scroll or list {target:?}");
+                continue;
+            };
+            if self.contacts.iter().any(|c| c.scroller == id) {
+                continue;
+            }
+            let Some(offset) = self.scroll_target(id, to) else {
+                idf::log::error!(c"ui", "scroll_to: {to:?} on {target:?}");
+                continue;
+            };
+            self.stop_motions(id, |kind| matches!(kind, MotionKind::Fling(_)));
+            let current = self.nodes[id as usize].scroll_offset().unwrap_or(0);
+            if animated && offset != current {
+                self.fling(id, Fling { position: current as f32, velocity: 0.0, anchor: Some(offset as f32) });
+            } else {
+                self.set_offset(id, offset);
+            }
+        }
+    }
+
+    fn scroll_target(&self, id: NodeIndex, to: ScrollTarget) -> Option<i32> {
+        let bounds = self.bounds(id);
+        let (start, end) = (bounds.start.max(0.0) as i32, bounds.end as i32);
+        let node = &self.nodes[id as usize];
+        let current = node.scroll_offset()?;
+        let offset = match to {
+            ScrollTarget::Start => start,
+            ScrollTarget::End => end,
+            ScrollTarget::Offset(px) => px,
+            ScrollTarget::Index(index) => {
+                let NodeContent::List(list) = &node.content else { return None };
+                if list.count == 0 {
+                    return Some(current);
+                }
+                let height = i32::from(list.row_height);
+                let top = index.min(list.count - 1) as i32 * height;
+                let viewport = i32::from(node.rect.h);
+                if top < current {
+                    top
+                } else if top + height > current + viewport {
+                    top + height - viewport
+                } else {
+                    current
+                }
+            }
+        };
+        Some(offset.clamp(start, end.max(start)))
     }
 
     fn bounds(&self, id: NodeIndex) -> Bounds {
@@ -1757,10 +1821,17 @@ impl Tree {
             return;
         }
         let bounds = self.bounds(id);
-        let Some(at) = self.nodes[id as usize].scroll_offset_mut() else { return };
+        let node = &mut self.nodes[id as usize];
+        let anchored = node.anchor == ScrollEdge::End && node.pinned;
+        let Some(at) = node.scroll_offset_mut() else { return };
         let before = *at;
-        *at = (before as f32).clamp(bounds.start, bounds.end) as i32;
-        if *at != before {
+        *at = if anchored { bounds.end as i32 } else { (before as f32).clamp(bounds.start, bounds.end) as i32 };
+        let after = *at;
+        node.pinned = after as f32 >= bounds.end;
+        if after != before {
+            node.scrolled = true;
+            let screen = node.screen;
+            self.damage.push(screen);
             self.scroll_moved(id, before);
         }
     }

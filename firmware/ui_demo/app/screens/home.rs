@@ -11,6 +11,7 @@ use devkit_ui::{Component, Cx, Element, Id, Root, Screen, Ui};
 use super::canvas::CanvasDemo;
 use super::files::FileManager;
 use super::gestures::GestureDemo;
+use super::log::LogDemo;
 use super::presence::PresenceDemo;
 use super::settings::Settings;
 use super::transitions::TransitionDemo;
@@ -18,7 +19,7 @@ use super::video::VideoDemo;
 
 /// The root screen: pages fill the screen when upright, and sit next to the
 /// storage list when wide.
-const DEMOS: [(&str, &str); 7] = [
+const DEMOS: [(&str, &str); 8] = [
     ("Files", "open-files"),
     ("Settings", "open-settings"),
     ("Gestures", "open-gestures"),
@@ -26,6 +27,7 @@ const DEMOS: [(&str, &str); 7] = [
     ("Video", "open-video"),
     ("Transitions", "open-transitions"),
     ("Presence", "open-presence"),
+    ("Log", "open-log"),
 ];
 
 /// The way into each demo.
@@ -43,7 +45,8 @@ impl Component for Home {
             3 => nav.push(CanvasDemo::new()),
             4 => nav.push(VideoDemo::new()),
             5 => nav.push(TransitionDemo::new()),
-            _ => nav.push(PresenceDemo::new()),
+            6 => nav.push(PresenceDemo::new()),
+            _ => nav.push(LogDemo::new()),
         }
     }
 

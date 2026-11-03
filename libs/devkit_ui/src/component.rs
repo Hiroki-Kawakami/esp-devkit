@@ -123,7 +123,27 @@ pub(crate) struct Requests {
     pub(crate) focus: Option<Id>,
     pub(crate) input: Vec<TextInput>,
     pub(crate) redraw: Vec<(Id, Option<Rect>)>,
+    pub(crate) scrolls: Vec<(Id, ScrollTarget, bool)>,
     pub(crate) guards: Vec<Box<dyn Any>>,
+}
+
+/// Where `Cx::scroll_to` moves a `scroll` or `list`. `Index` is a row of a
+/// `list`, shown whole with as little movement as it takes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ScrollTarget {
+    Start,
+    End,
+    Offset(i32),
+    Index(usize),
+}
+
+/// The end a `scroll` or `list` starts at, and stays at while its content or
+/// size changes if it was there.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ScrollEdge {
+    #[default]
+    Start,
+    End,
 }
 
 /// What an animation moves, without running a view or layout.
@@ -217,6 +237,12 @@ impl<C: Component> Cx<C> {
     /// The same for a part of it, in its coordinates.
     pub fn redraw_rect(&mut self, id: impl Into<Id>, rect: Rect) {
         self.requests.redraw.push((id.into(), Some(rect)));
+    }
+
+    /// Scrolls the `scroll` or `list` with this id after the view and layout,
+    /// easing there when `animated`. A finger on it wins.
+    pub fn scroll_to(&mut self, id: impl Into<Id>, target: ScrollTarget, animated: bool) {
+        self.requests.scrolls.push((id.into(), target, animated));
     }
 
     /// Moves the focus to the node with this id, after the view has been built.

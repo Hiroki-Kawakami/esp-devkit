@@ -63,6 +63,13 @@ app.run();
   never bounces. `.pull(height, refreshing, msg)` sends `msg` when let go
   `height` past the start and stays that far open until a view gives
   `refreshing` false; the indicator is the app's, drawn from `on_scroll`.
+- `cx.scroll_to(id, target, animated)` moves a scroller after the view and
+  layout, so `ScrollTarget::End` is the end of what the view just added.
+  `Index` shows a row of a `list` whole, moving as little as it takes. A finger
+  on the scroller wins over it.
+- `.scroll_anchor(ScrollEdge::End)` starts a scroller at its end and keeps it
+  there as its content or size changes, while it is there; moved away, it stays
+  where it is until it comes back to the end.
 - `list` builds only the rows in view, through the row function given to it: a
   method of the component whose view holds the list, as a function pointer, so
   it can be called after the view is gone. Scrolling moves the rows without

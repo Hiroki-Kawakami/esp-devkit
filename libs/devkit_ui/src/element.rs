@@ -15,7 +15,7 @@ use core::ptr::{self, NonNull};
 use devkit_gfx::{Align as TextAlign, Color, Corners, Elide, FontChain, Image, ImageFormat, Overflow, Sides, TextOptions};
 
 use crate::bump::Bump;
-use crate::component::{AnyHost, Child, Component, EventMap, Host, Screen, call_event_map, screen_host};
+use crate::component::{AnyHost, Child, Component, EventMap, Host, Screen, ScrollEdge, call_event_map, screen_host};
 use crate::erased::Erased;
 use crate::id::Id;
 use crate::inbox::{Inbox, Reply, Token};
@@ -266,6 +266,7 @@ pub struct ElementData<'a, M: Copy> {
     pub(crate) drag: Option<DragMap>,
     pub(crate) on_scroll: Option<ScrollMap>,
     pub(crate) bounce: bool,
+    pub(crate) anchor: ScrollEdge,
     pub(crate) pull: Option<Pull>,
     pub(crate) gestures: Option<GestureMap>,
     pub(crate) size: Option<SizeMap>,
@@ -284,7 +285,7 @@ pub struct ElementData<'a, M: Copy> {
 
 impl<'a, M: Copy> Element<'a, M> {
     fn new(bump: NonNull<Bump>, content: Content<'a>, children: &'a mut [Element<'a, M>]) -> Self {
-        let data = ElementData { bump, content, children: NonNull::from(children), style: Style::default(), when: &[], inherit: State::empty(), state_source: false, id: None, part: None, role: Role::None, tap: None, drag: None, on_scroll: None, bounce: true, pull: None, gestures: None, size: None, input: None, focusable: false, keep_focus: false, keyboard: None, input_kind: InputKind::Text, repeat: false, state: State::empty(), appear: None, disappear: None, task: None, _msg: PhantomData };
+        let data = ElementData { bump, content, children: NonNull::from(children), style: Style::default(), when: &[], inherit: State::empty(), state_source: false, id: None, part: None, role: Role::None, tap: None, drag: None, on_scroll: None, bounce: true, anchor: ScrollEdge::Start, pull: None, gestures: None, size: None, input: None, focusable: false, keep_focus: false, keyboard: None, input_kind: InputKind::Text, repeat: false, state: State::empty(), appear: None, disappear: None, task: None, _msg: PhantomData };
         Self { data: unsafe { NonNull::new_unchecked(bump.as_ref().alloc(data)) } }
     }
 
@@ -391,6 +392,13 @@ impl<'a, M: Copy> Element<'a, M> {
     /// it springs back. On by default; content that fits never bounces.
     pub fn bounce(mut self, bounce: bool) -> Self {
         self.bounce = bounce;
+        self
+    }
+
+    /// On a `scroll` or `list`: the end it starts at and keeps to while it is
+    /// there, as its content grows or shrinks. `Start` by default.
+    pub fn scroll_anchor(mut self, edge: ScrollEdge) -> Self {
+        self.anchor = edge;
         self
     }
 

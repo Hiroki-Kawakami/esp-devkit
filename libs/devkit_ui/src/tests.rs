@@ -865,6 +865,117 @@ fn child_state_survives_and_events_reach_the_parent() {
     assert_eq!(rect_of(&tree, "counter").h, 21, "same props keep the child's state");
 }
 
+#[derive(Clone, Copy)]
+enum LogMsg {
+    Add(u16),
+    ToStart,
+    ToEnd,
+    ToIndex(u16),
+    EaseStart,
+}
+
+struct Log {
+    count: usize,
+}
+
+impl Screen for Log {}
+
+impl Component for Log {
+    type Msg = LogMsg;
+
+    fn update(&mut self, msg: LogMsg, cx: &mut Cx<Self>) {
+        match msg {
+            LogMsg::Add(n) => self.count += usize::from(n),
+            LogMsg::ToStart => cx.scroll_to(id!("log"), ScrollTarget::Start, false),
+            LogMsg::ToEnd => cx.scroll_to(id!("log"), ScrollTarget::End, false),
+            LogMsg::ToIndex(i) => cx.scroll_to(id!("log"), ScrollTarget::Index(usize::from(i)), false),
+            LogMsg::EaseStart => cx.scroll_to(id!("log"), ScrollTarget::Start, true),
+        }
+        cx.rebuild();
+    }
+
+    fn view<'a>(&'a self, ui: &'a Ui<LogMsg>) -> Element<'a, LogMsg> {
+        ui.column([ui.list(self.count, 50, log_row).height(400).scroll_anchor(ScrollEdge::End).id(id!("log"))])
+    }
+}
+
+fn log_row<'a>(_: &'a Log, _: usize, ui: &'a Ui<LogMsg>) -> Element<'a, LogMsg> {
+    ui.column([]).height(50)
+}
+
+fn log_offset(tree: &Tree) -> i32 {
+    tree.nodes[tree.find(id!("log")).unwrap() as usize].scroll_offset().unwrap()
+}
+
+fn log_send(tree: &mut Tree, msg: LogMsg) {
+    tree.post(tree.root_id, crate::erased::Erased::new(msg));
+    run(tree);
+}
+
+#[test]
+fn an_end_anchor_starts_there_and_follows_only_while_there() {
+    let mut tree = Tree::new(Log { count: 20 }, SCREEN, Caps::INTERNAL, theme());
+    run(&mut tree);
+    assert_eq!(log_offset(&tree), 600);
+    log_send(&mut tree, LogMsg::Add(5));
+    assert_eq!(log_offset(&tree), 850);
+    tree.touch(&[(0, (100, 100))], 0);
+    tree.touch(&[(0, (100, 300))], 16);
+    tree.touch(&[], 1000);
+    run(&mut tree);
+    let away = log_offset(&tree);
+    assert!(away < 850);
+    log_send(&mut tree, LogMsg::Add(5));
+    assert_eq!(log_offset(&tree), away, "away from the end, nothing follows");
+    log_send(&mut tree, LogMsg::ToEnd);
+    assert_eq!(log_offset(&tree), 1100);
+    log_send(&mut tree, LogMsg::Add(2));
+    assert_eq!(log_offset(&tree), 1200, "back at the end, it follows again");
+}
+
+#[test]
+fn a_scroll_starts_at_its_end_anchor() {
+    let tree = layout_tree(|ui, _| ui.column([ui.scroll(ui.column([ui.column([]).height(2000)])).height(500).scroll_anchor(ScrollEdge::End).id(id!("s"))]));
+    assert_eq!(tree.nodes[tree.find(id!("s")).unwrap() as usize].scroll_offset(), Some(1500));
+}
+
+#[test]
+fn scrolling_to_an_index_moves_only_as_far_as_the_row_needs() {
+    let mut tree = Tree::new(Log { count: 20 }, SCREEN, Caps::INTERNAL, theme());
+    run(&mut tree);
+    log_send(&mut tree, LogMsg::ToIndex(0));
+    assert_eq!(log_offset(&tree), 0);
+    log_send(&mut tree, LogMsg::ToIndex(9));
+    assert_eq!(log_offset(&tree), 100);
+    log_send(&mut tree, LogMsg::ToIndex(3));
+    assert_eq!(log_offset(&tree), 100, "a row in view stays");
+    log_send(&mut tree, LogMsg::ToIndex(99));
+    assert_eq!(log_offset(&tree), 600);
+}
+
+#[test]
+fn a_finger_on_the_list_wins_and_an_eased_scroll_gets_there() {
+    let mut tree = Tree::new(Log { count: 20 }, SCREEN, Caps::INTERNAL, theme());
+    run(&mut tree);
+    tree.touch(&[(0, (100, 100))], 0);
+    log_send(&mut tree, LogMsg::ToStart);
+    assert_eq!(log_offset(&tree), 600);
+    tree.touch(&[], 16);
+    run(&mut tree);
+    log_send(&mut tree, LogMsg::EaseStart);
+    tree.tick(16);
+    run(&mut tree);
+    let midway = log_offset(&tree);
+    assert!(midway > 0 && midway < 600, "{midway}");
+    for _ in 0..200 {
+        tree.tick(16);
+    }
+    run(&mut tree);
+    assert_eq!(log_offset(&tree), 0);
+    log_send(&mut tree, LogMsg::Add(1));
+    assert_eq!(log_offset(&tree), 0, "the start is not the end it keeps to");
+}
+
 #[test]
 fn list_builds_only_visible_rows_and_keeps_them_while_scrolling() {
     let mut tree = Tree::new(Sample::new(), SCREEN, Caps::INTERNAL, theme());

@@ -10,6 +10,7 @@ use core::cell::Cell;
 use devkit_gfx::{Color, FontChain, Image, Rect, TextOptions, TextRun};
 use idf::heap::Caps;
 
+use crate::component::ScrollEdge;
 use crate::animate::Fades;
 use crate::external::ExternalSurface;
 use crate::element::{DragMap, DrawMap, Edit, InputMap, RowMap, ScrollMap, SizeMap};
@@ -153,6 +154,9 @@ pub(crate) struct Node {
     pub(crate) drag: Option<DragMap>,
     pub(crate) on_scroll: Option<ScrollMap>,
     pub(crate) bounce: bool,
+    pub(crate) anchor: ScrollEdge,
+    /// At its end as of the last move, before content changed it.
+    pub(crate) pinned: bool,
     pub(crate) pull: Option<Pull>,
     pub(crate) gestures: Option<GestureMap>,
     pub(crate) size: Option<SizeMap>,
@@ -217,6 +221,8 @@ impl Node {
             drag: None,
             on_scroll: None,
             bounce: true,
+            anchor: ScrollEdge::Start,
+            pinned: false,
             pull: None,
             gestures: None,
             size: None,

@@ -43,7 +43,7 @@ mod tests;
 pub use app::{App, AppConfig, Handle, Input, Probe};
 pub use bsp_rs::display::Rotation;
 pub use canvas::Canvas;
-pub use component::{Animation, Child, Component, Cx, Nav, Property, RenderMode, Screen};
+pub use component::{Animation, Child, Component, Cx, Nav, Property, RenderMode, Screen, ScrollEdge, ScrollTarget};
 pub use devkit_gfx::{Corners, Elide, ImageFormat, Raster, RasterTarget, Rect, Sides};
 pub use element::{ChildElement, Children, Drag, Element, Ui};
 pub use external::{ExternalFrame, ExternalSurface, Policy};
