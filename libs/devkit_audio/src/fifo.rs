@@ -88,7 +88,7 @@ pub fn new<S: Sample>(config: &FifoConfig) -> Result<(Writer<S>, Reader<S>)> {
     buf.resize(config.capacity * channels, S::default());
     let state = State { buf, head: 0, count: 0, primed: config.prefill == 0, aborted: false, generation: 0 };
     let inner = Inner {
-        state: Mutex::try_new(state)?,
+        state: Mutex::new(state),
         readable: Semaphore::try_new(0, 1)?,
         writable: Semaphore::try_new(0, 1)?,
         channels,

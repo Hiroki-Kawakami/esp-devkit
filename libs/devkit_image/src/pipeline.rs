@@ -73,7 +73,7 @@ impl Ring {
         let buf = buffer(slots * options.row_bytes, options.caps)?;
         let state = RingState { buf, head: 0, tail: 0, count: 0, closed: false, aborted: false };
         Ok(Self {
-            state: Mutex::try_new(state)?,
+            state: Mutex::new(state),
             not_full: Semaphore::try_new(0, 1)?,
             not_empty: Semaphore::try_new(0, 1)?,
             row_bytes: options.row_bytes,

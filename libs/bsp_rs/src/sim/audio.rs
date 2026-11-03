@@ -67,7 +67,7 @@ impl SimAudio {
         Ok(Self {
             host,
             progress,
-            tx: Mutex::try_new(Tx { ring, offset, open: false, frame_bytes: 0, high_water: 0, written: 0 })?,
+            tx: Mutex::new(Tx { ring, offset, open: false, frame_bytes: 0, high_water: 0, written: 0 }),
             muted: AtomicBool::new(true),
             speaker: AtomicBool::new(false),
         })

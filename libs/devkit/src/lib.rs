@@ -16,6 +16,7 @@ pub mod executor;
 mod fmt_buf;
 pub mod math;
 mod static_lease;
+pub mod sync;
 mod zeroable;
 
 pub use align::A16;

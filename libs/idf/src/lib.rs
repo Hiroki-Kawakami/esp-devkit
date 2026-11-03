@@ -11,6 +11,7 @@ extern crate alloc;
 
 mod error;
 pub mod executor;
+pub mod freertos;
 pub mod fs;
 #[cfg(target_os = "none")]
 pub mod gpio;

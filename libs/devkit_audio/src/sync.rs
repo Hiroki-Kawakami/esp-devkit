@@ -20,7 +20,7 @@ pub(crate) struct Shared<T> {
 
 impl<T: Send> Shared<T> {
     pub(crate) fn new(value: T, caps: Caps) -> Result<Arc<Self, Caps>> {
-        let shared = Self { slot: Mutex::try_new(value)?, dirty: AtomicBool::new(false) };
+        let shared = Self { slot: Mutex::new(value), dirty: AtomicBool::new(false) };
         Arc::try_new_in(shared, caps).map_err(|_| Error::NoMemory)
     }
 

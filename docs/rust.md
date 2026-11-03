@@ -433,6 +433,31 @@ local.run();
   devkit's do: they wake a copy and leave the stored waker in place. There is
   no disconnection, as with `idf::sync::channel`.
 
+`devkit::sync` has `Mutex` and `RwLock` over a `Platform` (the calling task,
+its priority, park/unpark, a clock, a critical section); `idf::sync` fixes it
+to FreeRTOS.
+
+```rust
+static COUNT: Mutex<u32> = Mutex::new(0);
+*COUNT.lock() += 1;
+*COUNT.lock_async().await += 1;
+```
+
+- `new` is `const` and allocates nothing. Taking a free lock is one
+  compare-and-swap; a waiter spins only while the holder runs on another core,
+  then parks.
+- `lock()`/`read()`/`write()` block the calling task, and so every future of
+  an executor it runs; `lock_async()`/`read_async()`/`write_async()` wait as a
+  future. Tasks and futures queue on the same lock. Guards are `Send` and may
+  be dropped elsewhere, so a future may hold one across `.await`.
+- Waiters queue by priority (a future by its runner's), first come first
+  within one. An unlock wakes the first waiter and lets anyone take the lock
+  meanwhile, unless that waiter has waited 1 ms or more: then the lock is
+  handed to it. There is no priority inheritance.
+- `RwLock` prefers writers: once one waits, new readers wait too.
+- Dropping a waiting future passes on what was meant for it.
+- Not usable from an ISR.
+
 ### `idf` (`libs/idf`)
 
 Safe wrappers for ESP-IDF APIs. `idf::sys` is the raw bindgen output, public
@@ -570,11 +595,13 @@ let frames = h.join();
   rounding applies to every timeout in `idf::sync`. `yield_now()` is
   `vTaskDelay(0)`.
 
-`idf::sync` wraps FreeRTOS queue objects, created in `new` (`try_new` returns
-`NO_MEM` instead of panicking). In a `static`, wrap them in `LazyLock`:
+`idf::sync` has `devkit::sync`'s `Mutex` and `RwLock` on FreeRTOS, and wraps
+FreeRTOS queue objects (`Semaphore`, `channel`), created in `new` (`try_new`
+returns `NO_MEM` instead of panicking). In a `static`, wrap those in
+`LazyLock`:
 
 ```rust
-static STATE: LazyLock<Mutex<State>> = LazyLock::new(|| Mutex::new(State::default()));
+static DONE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(0, 1));
 static CONFIG: OnceLock<Config> = OnceLock::new();
 let cfg = CONFIG.get_or_try_init(load_config)?;
 ```
@@ -587,9 +614,12 @@ let cfg = CONFIG.get_or_try_init(load_config)?;
 - `OnceLock::get` never waits and is the only one usable from an ISR: `None`
   while uninitialized or being initialized.
 
-- `Mutex<T>`: a FreeRTOS mutex (priority inheritance). `lock()` returns the
-  guard directly; the guard is not `Send`, as the task that took the mutex
-  must give it.
+- `Mutex<T>` and `RwLock<T>` park on bit 1 of the notification value. A task
+  that waited on one must end through `idf::thread`, which waits for a
+  lock's last wakeup to reach it before deleting it.
+- `idf::freertos::Mutex<T>` is a FreeRTOS mutex, for a lock that needs
+  priority inheritance. `lock()` returns the guard directly; the guard is not
+  `Send`, as the task that took the mutex must give it.
 - `Semaphore::new(initial, max)`: a counting semaphore; `new(0, 1)` is a
   binary one. `give()` returns `false` at `max`.
 - `channel::<T>(capacity)`: a bounded FreeRTOS queue; values are moved in and
@@ -624,7 +654,8 @@ let answer = executor::block_on(async { local.spawn(compute()).await });
 - `TaskPark` waits for bit 0 of the task's notification value at index 0 and
   wakes from interrupts too; `CRITICAL` is one spinlock shared by every
   executor.
-- Rust code shares notification index 0 as bits, one per kind of waiter. A
+- Rust code shares notification index 0 as bits, one per kind of waiter
+  (bit 0 executors, bit 1 `idf::sync` locks). A
   Rust task must not wait on index 0 in a way that takes the whole value
   (`ulTaskNotifyTake`, stream and message buffers, `pthread_join`).
 

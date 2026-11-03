@@ -59,5 +59,5 @@ impl Sd {
 static SD: OnceLock<Sd> = OnceLock::new();
 
 pub(crate) fn start(driver: impl Driver) -> Result<&'static Sd> {
-    SD.get_or_try_init(|| Ok(Sd(Mutex::try_new(Box::new(driver) as Box<dyn Driver>)?)))
+    Ok(SD.get_or_init(|| Sd(Mutex::new(Box::new(driver) as Box<dyn Driver>))))
 }

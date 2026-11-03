@@ -69,7 +69,7 @@ fn connect() -> Option<Host> {
         error!(TAG, "receiver task: {err}");
         return None;
     }
-    let host = Host { fd, send_lock: Mutex::try_new(()).ok()?, psram_base: base as usize, psram_size: size };
+    let host = Host { fd, send_lock: Mutex::new(()), psram_base: base as usize, psram_size: size };
     host.send(&Event::Hello { version: VERSION });
     Some(host)
 }

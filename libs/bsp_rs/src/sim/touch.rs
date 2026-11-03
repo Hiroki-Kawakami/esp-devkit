@@ -26,7 +26,7 @@ impl Driver for SimTouch {
 }
 
 pub(crate) fn start(host: &'static Host, config: touch::Config) -> Result<&'static Touch> {
-    let latest = Arc::new(Mutex::try_new(Vec::new())?);
+    let latest = Arc::new(Mutex::new(Vec::new()));
     let touch = touch::start(SimTouch { latest: latest.clone(), points: Vec::new() }, config)?;
     host.set_touch_listener(Box::new(move |points| {
         let mut l = latest.lock();

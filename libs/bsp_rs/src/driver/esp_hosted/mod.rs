@@ -104,7 +104,7 @@ pub(crate) fn connect() -> Result<&'static EspHosted> {
         Ok::<_, Error>(EspHosted {
             transport: Transport::new(sdio, &DISPATCH)?,
             rpc: rpc::Client::new()?,
-            test_rx: Mutex::try_new(None)?,
+            test_rx: Mutex::new(None),
         })
     })?;
     hosted.transport.start()?;

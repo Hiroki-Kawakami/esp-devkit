@@ -214,17 +214,17 @@ pub struct Imu {
 impl Imu {
     fn new(driver: Box<dyn Driver>, axis_map: AxisMap) -> Result<Self> {
         Ok(Self {
-            inner: Mutex::try_new(Inner {
+            inner: Mutex::new(Inner {
                 driver,
                 axis_map,
                 last: None,
                 injected: None,
                 candidate: None,
                 candidate_since: Instant::now(),
-            })?,
+            }),
             enabled: AtomicBool::new(false),
             orientation: AtomicU8::new(0),
-            callback: Mutex::try_new(None)?,
+            callback: Mutex::new(None),
             callback_changed: AtomicBool::new(false),
             notifier: OnceLock::new(),
         })

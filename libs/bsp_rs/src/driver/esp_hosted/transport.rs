@@ -118,7 +118,7 @@ impl Transport {
             pending: Semaphore::try_new(0, (TX_BUF_NUM + CTRL_BUF_NUM) as u32)?,
             poll,
             poll_timer,
-            start_lock: Mutex::try_new(Started { tx: false, rx: false })?,
+            start_lock: Mutex::new(Started { tx: false, rx: false }),
             ready: AtomicBool::new(false),
             ready_signal: Semaphore::try_new(0, 1)?,
             caps: AtomicU8::new(0),

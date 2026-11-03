@@ -47,9 +47,17 @@ pub(crate) fn ticks_ceil(d: Duration) -> sys::TickType_t {
 // that takes the whole value would eat the others' wakeups.
 const NOTIFY_INDEX: sys::UBaseType_t = 0;
 pub(crate) const NOTIFY_EXECUTOR: u32 = 1 << 0;
+pub(crate) const NOTIFY_LOCK: u32 = 1 << 1;
 
+#[cfg(target_os = "none")]
 pub(crate) fn notify(task: sys::TaskHandle_t, bits: u32) {
     unsafe { sys::idf_task_notify(task, NOTIFY_INDEX, bits) }
+}
+
+// The host has no interrupts to tell apart, and host tests do not link the shim.
+#[cfg(not(target_os = "none"))]
+pub(crate) fn notify(task: sys::TaskHandle_t, bits: u32) {
+    unsafe { sys::xTaskGenericNotify(task, NOTIFY_INDEX, bits, sys::eNotifyAction_eSetBits, ptr::null_mut()) };
 }
 
 /// Takes `bits` off the calling task once any is set; false after `ticks`.
@@ -255,6 +263,7 @@ where
     F: FnOnce() -> T,
 {
     let with_caps = run::<F, T>(arg);
+    crate::sync::wait_unparks();
     unsafe {
         if with_caps {
             sys::vTaskDeleteWithCaps(ptr::null_mut());
@@ -362,7 +371,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{Builder, NAME_LEN, NOTIFY_EXECUTOR, NOTIFY_INDEX, current, scope, sleep, spawn, ticks, ticks_ceil, wait_notify};
+    use super::{Builder, NAME_LEN, NOTIFY_EXECUTOR, current, notify, scope, sleep, spawn, ticks, ticks_ceil, wait_notify};
     use crate::system::{CORE_COUNT, core_id};
     use crate::heap::Caps;
     use crate::time::Instant;
@@ -520,9 +529,6 @@ mod tests {
     #[test]
     fn wait_notify_takes_only_its_own_bits() {
         const OTHER: u32 = 1 << 5;
-        let notify = |task, bits| unsafe {
-            sys::xTaskGenericNotify(task, NOTIFY_INDEX, bits, sys::eNotifyAction_eSetBits, core::ptr::null_mut());
-        };
         let (tx, rx) = sync::channel(1);
         let h = spawn(move || {
             tx.send(unsafe { sys::xTaskGetCurrentTaskHandle() } as usize);

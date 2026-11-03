@@ -128,9 +128,9 @@ impl Touch {
             active: AtomicUsize::new(0),
             wait: OnceLock::new(),
             int_pending: AtomicBool::new(false),
-            callback: Mutex::try_new(None)?,
+            callback: Mutex::new(None),
             callback_changed: AtomicBool::new(false),
-            injected: Mutex::try_new(None)?,
+            injected: Mutex::new(None),
             has_injected: AtomicBool::new(false),
             notifier: OnceLock::new(),
         })

@@ -314,8 +314,8 @@ impl<D: Driver> Core<D> {
             dsp_mode: config.dsp_mode,
             controls,
             tracks_route: false,
-            pipeline: Mutex::try_new(Some(Pipeline { dsp, out }))?,
-            state: Mutex::try_new(State {
+            pipeline: Mutex::new(Some(Pipeline { dsp, out })),
+            state: Mutex::new(State {
                 volume: 0,
                 mute: false,
                 eq_override: None,
@@ -324,10 +324,10 @@ impl<D: Driver> Core<D> {
                 rate: NOMINAL_RATE,
                 gate_open: false,
                 held: None,
-            })?,
+            }),
             claimed: AtomicBool::new(false),
             zero_pcm: AtomicBool::new(false),
-            callback: Mutex::try_new(None)?,
+            callback: Mutex::new(None),
             callback_changed: AtomicBool::new(false),
             notifier: OnceLock::new(),
         };

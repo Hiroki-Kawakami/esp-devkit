@@ -6,6 +6,7 @@
 #include "executor_shim.h"
 
 static portMUX_TYPE s_mux __attribute__((unused)) = portMUX_INITIALIZER_UNLOCKED;
+static portMUX_TYPE s_sync_mux __attribute__((unused)) = portMUX_INITIALIZER_UNLOCKED;
 
 void idf_task_notify(TaskHandle_t task, UBaseType_t index, uint32_t bits) {
 #ifdef ESP_PLATFORM
@@ -25,4 +26,12 @@ void idf_executor_critical_enter(void) {
 
 void idf_executor_critical_exit(void) {
     portEXIT_CRITICAL_SAFE(&s_mux);
+}
+
+void idf_sync_critical_enter(void) {
+    portENTER_CRITICAL(&s_sync_mux);
+}
+
+void idf_sync_critical_exit(void) {
+    portEXIT_CRITICAL(&s_sync_mux);
 }

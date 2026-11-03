@@ -170,7 +170,7 @@ impl Rtc {
 static RTC: OnceLock<Rtc> = OnceLock::new();
 
 pub(crate) fn start(driver: impl Driver) -> Result<&'static Rtc> {
-    RTC.get_or_try_init(|| Ok(Rtc(Mutex::try_new(Box::new(driver) as Box<dyn Driver>)?)))
+    Ok(RTC.get_or_init(|| Rtc(Mutex::new(Box::new(driver) as Box<dyn Driver>))))
 }
 
 #[cfg(test)]

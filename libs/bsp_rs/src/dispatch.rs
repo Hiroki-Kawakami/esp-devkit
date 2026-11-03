@@ -99,7 +99,7 @@ pub(crate) fn add(source: Box<dyn Source>) -> Result<Notifier> {
 fn start() -> Result<Arc<Dispatcher>> {
     let d = Arc::new(Dispatcher {
         wake: Semaphore::try_new(0, 1)?,
-        added: Mutex::try_new(Vec::new())?,
+        added: Mutex::new(Vec::new()),
         has_added: AtomicBool::new(false),
     });
     let priority = match PRIORITY.load(Ordering::Relaxed) {

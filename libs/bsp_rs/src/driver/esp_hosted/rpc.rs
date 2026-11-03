@@ -55,11 +55,11 @@ pub(super) struct Client {
 impl Client {
     pub(super) fn new() -> Result<Self> {
         Ok(Self {
-            call_lock: Mutex::try_new(0)?,
+            call_lock: Mutex::new(0),
             done: Semaphore::try_new(0, 1)?,
             pending_uid: AtomicU32::new(0),
-            response: Mutex::try_new(None)?,
-            rx: Mutex::try_new(RxState { buf: Vec::new(), overflow: false })?,
+            response: Mutex::new(None),
+            rx: Mutex::new(RxState { buf: Vec::new(), overflow: false }),
         })
     }
 

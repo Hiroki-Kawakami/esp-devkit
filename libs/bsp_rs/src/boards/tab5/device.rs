@@ -98,8 +98,8 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
     let (mut pi4ioe1, pi4ioe2) =
         io_expanders_init(bus).inspect_err(|err| error!(TAG, "io expanders: {err}"))?;
     reset_panel_and_touch(&mut pi4ioe1)?;
-    let pi4ioe1 = PI4IOE1.get_or_try_init(|| Mutex::try_new(pi4ioe1))?;
-    let pi4ioe2 = PI4IOE2.get_or_try_init(|| Mutex::try_new(pi4ioe2))?;
+    let pi4ioe1 = PI4IOE1.get_or_init(|| Mutex::new(pi4ioe1));
+    let pi4ioe2 = PI4IOE2.get_or_init(|| Mutex::new(pi4ioe2));
 
     let display = panel_init(config, bus)?;
     let touch = touch_init(bus, &display);

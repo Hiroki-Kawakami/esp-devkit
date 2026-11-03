@@ -38,7 +38,7 @@ impl Driver for SimImu {
 }
 
 pub(crate) fn start(host: &'static Host) -> Result<&'static Imu> {
-    let latest = Arc::new(Mutex::try_new((UPRIGHT, Vec3::default()))?);
+    let latest = Arc::new(Mutex::new((UPRIGHT, Vec3::default())));
     let listener = latest.clone();
     host.set_imu_listener(Box::new(move |[ax, ay, az], [gx, gy, gz]| {
         *listener.lock() = (Vec3 { x: ax, y: ay, z: az }, Vec3 { x: gx, y: gy, z: gz });

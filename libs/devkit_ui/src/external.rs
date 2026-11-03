@@ -110,7 +110,7 @@ fn area_of(rect: Rect) -> display::Rect {
 
 impl ExternalSurface {
     pub fn new() -> Result<Self> {
-        Ok(Self(Arc::new(Inner { state: Mutex::try_new(State::default())?, blender: Mutex::try_new(None)? })))
+        Ok(Self(Arc::new(Inner { state: Mutex::new(State::default()), blender: Mutex::new(None) })))
     }
 
     pub fn set_policy(&self, policy: Policy) {

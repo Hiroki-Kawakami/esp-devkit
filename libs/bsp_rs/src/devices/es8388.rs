@@ -240,7 +240,7 @@ impl Es8388 {
             pins: config.pins,
             outputs: config.outputs,
             counters,
-            tx: Mutex::try_new(Tx { channel: None, enabled: false, ring_bytes: 0 })?,
+            tx: Mutex::new(Tx { channel: None, enabled: false, ring_bytes: 0 }),
             enabled: AtomicBool::new(false),
             rate: AtomicU32::new(INITIAL_FORMAT.sample_rate),
             frame_bytes: AtomicUsize::new(0),

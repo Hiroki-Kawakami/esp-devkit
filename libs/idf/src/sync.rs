@@ -10,18 +10,17 @@ use core::ffi::c_void;
 use core::fmt;
 use core::marker::PhantomData;
 use core::mem::{ManuallyDrop, MaybeUninit};
-use core::ops::{Deref, DerefMut};
+use core::ops::Deref;
 use core::ptr;
-use core::sync::atomic::{AtomicU8, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use core::time::Duration;
 
-use crate::thread::{MAX_DELAY, ticks, ticks_ceil};
+use crate::thread::{MAX_DELAY, NOTIFY_LOCK, notify, ticks, ticks_ceil, wait_notify};
 use crate::time::Instant;
 use crate::{Error, Result, sys};
 
 const PD_TRUE: sys::BaseType_t = 1;
 const QUEUE_TYPE_BASE: u8 = 0;
-const QUEUE_TYPE_MUTEX: u8 = 1;
 const SEND_TO_BACK: sys::BaseType_t = 0;
 
 #[cfg(all(target_os = "none", target_arch = "riscv32"))]
@@ -49,17 +48,17 @@ fn yield_from_isr(woken: sys::BaseType_t) {
     }
 }
 
-struct Queue(sys::QueueHandle_t);
+pub(crate) struct Queue(pub(crate) sys::QueueHandle_t);
 
 unsafe impl Send for Queue {}
 unsafe impl Sync for Queue {}
 
 impl Queue {
-    fn new(handle: sys::QueueHandle_t) -> Result<Self> {
+    pub(crate) fn new(handle: sys::QueueHandle_t) -> Result<Self> {
         if handle.is_null() { Err(Error::NO_MEM) } else { Ok(Self(handle)) }
     }
 
-    fn send(&self, item: *const c_void, ticks: sys::TickType_t) -> bool {
+    pub(crate) fn send(&self, item: *const c_void, ticks: sys::TickType_t) -> bool {
         unsafe { sys::xQueueGenericSend(self.0, item, ticks, SEND_TO_BACK) == PD_TRUE }
     }
 
@@ -67,7 +66,7 @@ impl Queue {
         unsafe { sys::xQueueReceive(self.0, buf, ticks) == PD_TRUE }
     }
 
-    fn take(&self, ticks: sys::TickType_t) -> bool {
+    pub(crate) fn take(&self, ticks: sys::TickType_t) -> bool {
         unsafe { sys::xQueueSemaphoreTake(self.0, ticks) == PD_TRUE }
     }
 
@@ -92,91 +91,83 @@ impl Drop for Queue {
     }
 }
 
-pub struct Mutex<T: ?Sized> {
-    queue: Queue,
-    data: UnsafeCell<T>,
-}
+/// The FreeRTOS side of `devkit::sync`; spins only while the holder runs on
+/// another core. A task that waited on a lock must end through `thread`, which
+/// lets the lock's last wakeup reach it first.
+pub struct FreeRtos;
 
-unsafe impl<T: ?Sized + Send> Send for Mutex<T> {}
-unsafe impl<T: ?Sized + Send> Sync for Mutex<T> {}
+static UNPARKING: AtomicUsize = AtomicUsize::new(0);
 
-impl<T> Mutex<T> {
-    pub fn new(value: T) -> Self {
-        match Self::try_new(value) {
-            Ok(m) => m,
-            Err(e) => panic!("failed to create mutex: {e}"),
-        }
-    }
-
-    pub fn try_new(value: T) -> Result<Self> {
-        let queue = Queue::new(unsafe { sys::xQueueCreateMutex(QUEUE_TYPE_MUTEX) })?;
-        Ok(Self { queue, data: UnsafeCell::new(value) })
-    }
-
-    pub fn into_inner(self) -> T {
-        let Self { queue, data } = self;
-        drop(queue);
-        data.into_inner()
+pub(crate) fn wait_unparks() {
+    while UNPARKING.load(Ordering::Acquire) != 0 {
+        unsafe { sys::vTaskDelay(1) };
     }
 }
 
-impl<T: ?Sized> Mutex<T> {
-    pub fn lock(&self) -> MutexGuard<'_, T> {
-        match self.lock_ticks(MAX_DELAY) {
-            Some(guard) => guard,
-            None => unreachable!(),
-        }
+impl devkit::sync::Platform for FreeRtos {
+    fn current() -> usize {
+        unsafe { sys::xTaskGetCurrentTaskHandle() as usize }
     }
 
-    pub fn try_lock(&self) -> Option<MutexGuard<'_, T>> {
-        self.lock_ticks(0)
+    fn priority() -> u32 {
+        unsafe { sys::uxTaskPriorityGet(ptr::null_mut()) as u32 }
     }
 
-    pub fn lock_timeout(&self, timeout: Duration) -> Option<MutexGuard<'_, T>> {
-        self.lock_ticks(ticks(timeout))
+    #[cfg(target_os = "none")]
+    fn running_elsewhere(task: usize) -> bool {
+        let me = crate::system::core_id();
+        (0..crate::system::CORE_COUNT)
+            .any(|core| core != me && unsafe { sys::xTaskGetCurrentTaskHandleForCore(core as _) } as usize == task)
     }
 
-    pub fn get_mut(&mut self) -> &mut T {
-        self.data.get_mut()
+    #[cfg(not(target_os = "none"))]
+    fn running_elsewhere(_task: usize) -> bool {
+        false
     }
 
-    fn lock_ticks(&self, ticks: sys::TickType_t) -> Option<MutexGuard<'_, T>> {
-        self.queue.take(ticks).then(|| MutexGuard { mutex: self, _not_send: PhantomData })
+    fn park() {
+        wait_notify(NOTIFY_LOCK, MAX_DELAY);
     }
-}
 
-impl<T: Default> Default for Mutex<T> {
-    fn default() -> Self {
-        Self::new(T::default())
+    fn hold(_task: usize) {
+        UNPARKING.fetch_add(1, Ordering::Relaxed);
     }
-}
 
-// A FreeRTOS mutex must be given back by the task that took it.
-pub struct MutexGuard<'a, T: ?Sized> {
-    mutex: &'a Mutex<T>,
-    _not_send: PhantomData<*const ()>,
-}
-
-unsafe impl<T: ?Sized + Sync> Sync for MutexGuard<'_, T> {}
-
-impl<T: ?Sized> Deref for MutexGuard<'_, T> {
-    type Target = T;
-    fn deref(&self) -> &T {
-        unsafe { &*self.mutex.data.get() }
+    fn unpark(task: usize) {
+        notify(task as sys::TaskHandle_t, NOTIFY_LOCK);
+        UNPARKING.fetch_sub(1, Ordering::Release);
     }
-}
 
-impl<T: ?Sized> DerefMut for MutexGuard<'_, T> {
-    fn deref_mut(&mut self) -> &mut T {
-        unsafe { &mut *self.mutex.data.get() }
+    fn now_us() -> u32 {
+        unsafe { sys::esp_timer_get_time() as u32 }
     }
-}
 
-impl<T: ?Sized> Drop for MutexGuard<'_, T> {
-    fn drop(&mut self) {
-        self.mutex.queue.send(ptr::null(), 0);
+    #[cfg(target_os = "none")]
+    fn critical<R>(f: impl FnOnce() -> R) -> R {
+        unsafe { sys::idf_sync_critical_enter() };
+        let out = f();
+        unsafe { sys::idf_sync_critical_exit() };
+        out
+    }
+
+    // Host tests do not link the shim.
+    #[cfg(not(target_os = "none"))]
+    fn critical<R>(f: impl FnOnce() -> R) -> R {
+        unsafe { sys::vPortEnterCritical() };
+        let out = f();
+        unsafe { sys::vPortExitCritical() };
+        out
     }
 }
+
+pub type Mutex<T> = devkit::sync::Mutex<T, FreeRtos>;
+pub type MutexGuard<'a, T> = devkit::sync::MutexGuard<'a, T, FreeRtos>;
+pub type MutexLock<'a, T> = devkit::sync::MutexLock<'a, T, FreeRtos>;
+pub type RwLock<T> = devkit::sync::RwLock<T, FreeRtos>;
+pub type RwLockReadGuard<'a, T> = devkit::sync::RwLockReadGuard<'a, T, FreeRtos>;
+pub type RwLockWriteGuard<'a, T> = devkit::sync::RwLockWriteGuard<'a, T, FreeRtos>;
+pub type RwLockRead<'a, T> = devkit::sync::RwLockRead<'a, T, FreeRtos>;
+pub type RwLockWrite<'a, T> = devkit::sync::RwLockWrite<'a, T, FreeRtos>;
 
 pub struct Semaphore {
     queue: Queue,
@@ -497,7 +488,7 @@ impl<T: fmt::Debug, F> fmt::Debug for LazyLock<T, F> {
 
 #[cfg(test)]
 mod tests {
-    use super::{LazyLock, Mutex, OnceLock, Semaphore, channel};
+    use super::{LazyLock, Mutex, OnceLock, RwLock, Semaphore, channel};
     use crate::thread::{sleep, spawn};
     use crate::time::Instant;
     use alloc::sync::Arc;
@@ -505,14 +496,13 @@ mod tests {
     use core::time::Duration;
 
     #[test]
-    fn mutex_excludes() {
-        let m = Arc::new(Mutex::new(0u32));
+    fn mutex_excludes_tasks() {
+        static M: Mutex<u32> = Mutex::new(0);
         let handles: Vec<_> = (0..4)
             .map(|_| {
-                let m = m.clone();
-                spawn(move || {
-                    for _ in 0..1000 {
-                        *m.lock() += 1;
+                spawn(|| {
+                    for _ in 0..2000 {
+                        *M.lock() += 1;
                     }
                 })
             })
@@ -520,26 +510,32 @@ mod tests {
         for h in handles {
             h.join();
         }
-        assert_eq!(*m.lock(), 4000);
+        assert_eq!(*M.lock(), 8000);
     }
 
     #[test]
-    fn mutex_try_and_timeout() {
-        let m = Arc::new(Mutex::new(1));
+    fn locks_wake_waiting_tasks() {
+        let m = Arc::new(Mutex::new(0u32));
+        let l = Arc::new(RwLock::new(0u32));
         let guard = m.lock();
-        let other = m.clone();
-        let h = spawn(move || {
-            assert!(other.try_lock().is_none());
-            let start = Instant::now();
-            assert!(other.lock_timeout(Duration::from_millis(20)).is_none());
-            assert!(start.elapsed() >= Duration::from_millis(20));
-        });
-        h.join();
+        let writer = l.write();
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                let (m, l) = (m.clone(), l.clone());
+                spawn(move || {
+                    *m.lock() += 1;
+                    *l.read()
+                })
+            })
+            .collect();
+        sleep(Duration::from_millis(20));
         drop(guard);
-        assert_eq!(*m.try_lock().unwrap(), 1);
-        let mut m = Arc::try_unwrap(m).ok().unwrap();
-        *m.get_mut() = 5;
-        assert_eq!(m.into_inner(), 5);
+        sleep(Duration::from_millis(20));
+        assert_eq!(*m.lock(), 4);
+        drop(writer);
+        for h in handles {
+            assert_eq!(h.join(), 0);
+        }
     }
 
     #[test]
