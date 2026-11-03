@@ -5,6 +5,7 @@
 
 use alloc::alloc::Global;
 use alloc::boxed::Box;
+use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -607,7 +608,7 @@ fn carets_follow_wrapped_lines_and_taps_find_them() {
 #[test]
 fn text_ellipsizes_on_the_last_line() {
     let chain = test_chain();
-    let options = TextOptions { max_width: Some(30), overflow: Overflow::Ellipsis, ..TextOptions::default() };
+    let options = TextOptions { max_width: Some(30), overflow: Overflow::Ellipsis(Elide::End), ..TextOptions::default() };
     let run = layout(&chain, "AAAAAAAA", options);
     assert_eq!(run.lines(), 1);
     assert!(run.width() <= 30);
@@ -617,6 +618,53 @@ fn text_ellipsizes_on_the_last_line() {
     let options = TextOptions { wrap: true, max_lines: 2, ..options };
     let run = layout(&chain, "AAAAAAAAAAAA", options);
     assert_eq!(run.lines(), 2);
+}
+
+fn letters(run: &TextRun) -> String {
+    run.glyphs().iter().map(|g| ['.', SOLID, HOLLOW, WIDE][g.glyph as usize - 1]).collect()
+}
+
+#[test]
+fn one_line_keeps_the_end_or_both_ends() {
+    let chain = test_chain();
+    let start = TextOptions { max_width: Some(40), overflow: Overflow::Ellipsis(Elide::Start), ..TextOptions::default() };
+    assert_eq!(letters(&layout(&chain, "AB", start)), "AB");
+    let run = layout(&chain, "BAAAAB", start);
+    assert_eq!(letters(&run), "...AAB");
+    assert!(run.width() <= 40);
+    let middle = TextOptions { overflow: Overflow::Ellipsis(Elide::Middle), ..start };
+    assert_eq!(letters(&layout(&chain, "ABAAAAAB", middle)), "A...AB");
+    let wrapped = TextOptions { wrap: true, max_lines: 1, ..middle };
+    assert_eq!(letters(&layout(&chain, "ABAAAAAB", wrapped)), "A...AB");
+}
+
+#[test]
+fn several_lines_keep_what_fills_them() {
+    let chain = test_chain();
+    let start = TextOptions { max_width: Some(40), wrap: true, max_lines: 2, overflow: Overflow::Ellipsis(Elide::Start), ..TextOptions::default() };
+    let run = layout(&chain, "BAAAAAAAAAAB", start);
+    assert_eq!(letters(&run), "...AAAAAAB");
+    assert_eq!(run.lines(), 2);
+    let middle = TextOptions { overflow: Overflow::Ellipsis(Elide::Middle), ..start };
+    let run = layout(&chain, "BAAAAAAAAAAB", middle);
+    assert_eq!(letters(&run), "BAA...AAB");
+    assert_eq!(run.lines(), 2);
+    let run = layout(&chain, "BA\nAA\nAB", middle);
+    assert_eq!(letters(&run), "BA...AB");
+    assert_eq!(run.lines(), 2);
+}
+
+#[test]
+fn line_breaks_stop_at_the_line_limit() {
+    let chain = test_chain();
+    let clip = TextOptions { max_lines: 2, ..TextOptions::default() };
+    let run = layout(&chain, "AB\nAB\nAB", clip);
+    assert_eq!((run.lines(), letters(&run).as_str()), (2, "ABAB"));
+    let end = TextOptions { overflow: Overflow::Ellipsis(Elide::End), ..clip };
+    let run = layout(&chain, "AB\nAB\nAB", end);
+    assert_eq!((run.lines(), letters(&run).as_str()), (2, "ABAB..."));
+    let one = TextOptions { max_lines: 1, ..end };
+    assert_eq!(letters(&layout(&chain, "AB\n", one)), "AB");
 }
 
 #[test]

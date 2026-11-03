@@ -37,7 +37,7 @@ pub use pixel::{Argb8888, Bgr888, Pixel, Rgb565};
 pub use raster::{Raster, RasterTarget};
 pub use render::{ClipStore, Prepared, draw, draw_from};
 pub use surface::Surface;
-pub use text::{Align, FontChain, Overflow, PlacedGlyph, TextOptions, TextRun};
+pub use text::{Align, Elide, FontChain, Overflow, PlacedGlyph, TextOptions, TextRun};
 
 #[cfg(test)]
 mod tests;

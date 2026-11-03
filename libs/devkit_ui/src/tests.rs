@@ -1033,7 +1033,7 @@ fn grid_and_absolute_inset() {
                 ])
                 .gap(10)
                 .padding_x(5),
-                ui.text(self.0, "ABCDEFGHIJ").width(50).ellipsis().id(id!("clipped")),
+                ui.text(self.0, "ABCDEFGHIJ").width(50).ellipsis(Elide::End).id(id!("clipped")),
                 ui.column([]).absolute(Some(0), Some(0), Some(0), Some(0)).id(id!("cover")),
             ])
         }
@@ -1695,8 +1695,21 @@ fn a_fixed_sibling_keeps_its_size_and_a_short_text_does_not_shrink() {
 
 #[test]
 fn ellipsis_applies_to_the_width_a_row_leaves() {
-    let tree = layout_tree(|ui, font| ui.row([ui.text(font, LONG).ellipsis().id(id!("t")), ui.column([]).size(300, 10)]));
+    let tree = layout_tree(|ui, font| ui.row([ui.text(font, LONG).ellipsis(Elide::End).id(id!("t")), ui.column([]).size(300, 10)]));
     assert_eq!(rect_of(&tree, "t").w, 100);
+}
+
+#[test]
+fn a_middle_ellipsis_grows_to_its_lines_in_a_row() {
+    let tree = layout_tree(|ui, font| {
+        ui.column([
+            ui.row([ui.text(font, LONG).ellipsis(Elide::Middle).id(id!("one")), ui.column([]).size(300, 10)]),
+            ui.row([ui.text(font, LONG).wrap().max_lines(3).ellipsis(Elide::Middle).id(id!("three")), ui.column([]).size(300, 10)]),
+        ])
+    });
+    let (one, three) = (rect_of(&tree, "one"), rect_of(&tree, "three"));
+    assert!(one.w <= 100 && one.h == chain().line_height(), "{one:?}");
+    assert!(three.w <= 100 && three.h == chain().line_height() * 3, "{three:?}");
 }
 
 #[test]

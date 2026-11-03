@@ -5,7 +5,7 @@
 
 use alloc::vec::Vec;
 
-use devkit_gfx::{Align, Color, CornerMask, DisplayList, FontChain, Image, ImageFormat, Overflow, Rect, ShadowMask, TextOptions, TextRun};
+use devkit_gfx::{Align, Color, CornerMask, DisplayList, FontChain, Image, ImageFormat, Elide, Overflow, Rect, ShadowMask, TextOptions, TextRun};
 use idf::heap::Caps;
 
 use crate::resources::*;
@@ -126,7 +126,7 @@ pub struct Assets {
 impl Assets {
     pub fn new(format: ImageFormat, width: i16) -> Self {
         let row_text = width - 88 - 64;
-        let name = TextOptions { max_width: Some(row_text), overflow: Overflow::Ellipsis, ..TextOptions::default() };
+        let name = TextOptions { max_width: Some(row_text), overflow: Overflow::Ellipsis(Elide::End), ..TextOptions::default() };
         let thumb_name = TextOptions { max_width: Some(width - 228 - 64), ..name };
         let columns = (width - 24) / 3;
         let dense = TextOptions { max_width: Some(columns - 8), ..name };

@@ -115,6 +115,9 @@ app.run();
 - `.foreground()` colors text and icons on the node and inside, where they set
   none. `.background()` and the other colors take a `Color` or a `ColorRole`, which
   follows the palette.
+- Text breaks only at `\n` unless `.wrap()`; `.max_lines(n)` lets it grow up to
+  `n` lines. `.ellipsis(Elide::End)`, `Start` or `Middle` shortens what goes past
+  that, keeping the beginning, the end or both.
 - `.radius()` rounds the corners `.corners()` names, all by default.
   `.border(color, width)` runs along the sides `.border_sides()` names, all by
   default.

@@ -12,7 +12,7 @@ use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
 use core::ptr::{self, NonNull};
 
-use devkit_gfx::{Align as TextAlign, Color, Corners, FontChain, Image, ImageFormat, Overflow, Sides, TextOptions};
+use devkit_gfx::{Align as TextAlign, Color, Corners, Elide, FontChain, Image, ImageFormat, Overflow, Sides, TextOptions};
 
 use crate::bump::Bump;
 use crate::component::{AnyHost, Child, Component, EventMap, Host, Screen, call_event_map, screen_host};
@@ -750,8 +750,9 @@ impl<'a, M: Copy> Element<'a, M> {
         self
     }
 
-    pub fn ellipsis(self) -> Self {
-        self.with_options(|o| o.overflow = Overflow::Ellipsis)
+    /// Replaces what does not fit with an ellipsis; not for editable text.
+    pub fn ellipsis(self, elide: Elide) -> Self {
+        self.with_options(|o| o.overflow = Overflow::Ellipsis(elide))
     }
 
     pub fn wrap(self) -> Self {

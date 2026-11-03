@@ -5,7 +5,7 @@
 
 use alloc::vec::Vec;
 
-use devkit_gfx::FontChain;
+use devkit_gfx::{Elide, FontChain};
 
 use crate::component::{Child, Component, Cx};
 use crate::element::{Element, Ui};
@@ -320,7 +320,7 @@ fn key_element<'a>(ui: &'a Ui<KeyboardMsg>, key: &Key, row: u8, column: u8, widt
     let label = match key.label {
         KeyLabel::None => ui.empty(),
         KeyLabel::Text(text) => {
-            let label = ui.text(theme.fonts.body, text).style(k.label).ellipsis();
+            let label = ui.text(theme.fonts.body, text).style(k.label).ellipsis(Elide::End);
             key.font.map_or(label, |font| label.font(font))
         }
         KeyLabel::Icon(pick) => ui.icon(pick(&theme.icons)),

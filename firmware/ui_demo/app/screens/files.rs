@@ -7,7 +7,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use devkit_ui::widgets::{Menu, button, checkbox, icon_button, list_item, modal, modal_actions, modal_message, modal_title, progress_bar, progress_indicator, slider, slider_value, switch, top_bar};
-use devkit_ui::{Align, Child, Component, Cx, Element, Handle, Id, Sides, Overlay, RenderMode, Root, Screen, SplitRole, Strips, Ui, id};
+use devkit_ui::{Align, Child, Component, Cx, Elide, Element, Handle, Id, Sides, Overlay, RenderMode, Root, Screen, SplitRole, Strips, Ui, id};
 use idf::heap::Caps;
 use idf::sync::{LazyLock, Mutex};
 
@@ -277,6 +277,8 @@ impl Component for Detail {
                     button(ui, "Delete", theme.widgets.button.primary, DetailMsg::Ask).grow(1).id(id!("delete")),
                 ])
                 .gap(m.gap),
+                ui.text(theme.fonts.caption, "/storage/emulated/0/Download/Archives/2026/October/screenshots/large/original.png").foreground(colors::MUTED).ellipsis(Elide::Start).id(id!("path")),
+                ui.text(theme.fonts.body, "A very long file name that should keep both of its ends in view when shortened.pdf").foreground(c.text).wrap().max_lines(2).ellipsis(Elide::Middle).id(id!("long-name")),
                 ui.text(theme.fonts.caption, "This note is long enough to wrap, and what follows it moves down with its height.").foreground(colors::MUTED).wrap().padding_each(m.gap, 0, 0, 0).border(c.primary, 4).border_sides(Sides::LEFT).id(id!("note")),
             ])
             .padding(m.padding)

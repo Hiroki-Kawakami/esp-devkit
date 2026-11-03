@@ -87,7 +87,16 @@ pub enum Align {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Overflow {
     Clip,
-    Ellipsis,
+    Ellipsis(Elide),
+}
+
+/// Where an ellipsis replaces what does not fit. `Middle` keeps about as wide
+/// a start as an end.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Elide {
+    End,
+    Start,
+    Middle,
 }
 
 #[derive(Clone, Copy)]
@@ -166,6 +175,87 @@ struct Line {
     top: i16,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Newline,
+    Space,
+    Wide,
+    Other,
+    Missing,
+}
+
+/// One character as layout sees it, a composed kana with its mark.
+#[derive(Clone, Copy)]
+struct Unit {
+    byte: u32,
+    kind: Kind,
+    advance: u16,
+    glyph: Option<(&'static Font, u32, GlyphRecord)>,
+}
+
+#[derive(Clone, Copy)]
+struct Measure {
+    byte: u32,
+    advance: u16,
+    kind: Kind,
+}
+
+impl Measure {
+    fn unit(&self) -> Unit {
+        Unit { byte: self.byte, kind: self.kind, advance: self.advance, glyph: None }
+    }
+}
+
+struct Units<'a> {
+    chain: &'a FontChain,
+    chars: core::iter::Peekable<core::str::CharIndices<'a>>,
+    offset: u32,
+}
+
+impl<'a> Units<'a> {
+    fn new(chain: &'a FontChain, text: &'a str, offset: u32) -> Self {
+        Self { chain, chars: text.char_indices().peekable(), offset }
+    }
+}
+
+impl Iterator for Units<'_> {
+    type Item = Unit;
+
+    fn next(&mut self) -> Option<Unit> {
+        loop {
+            let (byte, c) = self.chars.next()?;
+            let mut codepoint = c as u32;
+            if codepoint == VOICED_MARK || codepoint == SEMI_VOICED_MARK {
+                continue;
+            }
+            let byte = byte as u32 + self.offset;
+            if c == '\n' {
+                return Some(Unit { byte, kind: Kind::Newline, advance: 0, glyph: None });
+            }
+            if let Some(&(_, next)) = self.chars.peek()
+                && matches!(next as u32, VOICED_MARK | SEMI_VOICED_MARK)
+            {
+                codepoint = compose(codepoint, next as u32);
+            }
+            let Some(glyph) = self.chain.resolve(codepoint) else {
+                return Some(Unit { byte, kind: Kind::Missing, advance: 0, glyph: None });
+            };
+            let kind = if c == ' ' {
+                Kind::Space
+            } else if codepoint >= FIRST_WIDE {
+                Kind::Wide
+            } else {
+                Kind::Other
+            };
+            return Some(Unit { byte, kind, advance: glyph.2.advance, glyph: Some(glyph) });
+        }
+    }
+}
+
+fn ellipsis(chain: &FontChain) -> Option<((&'static Font, u32, GlyphRecord), usize)> {
+    chain.resolve('…' as u32).map(|m| (m, 1)).or_else(|| chain.resolve('.' as u32).map(|d| (d, 3)))
+}
+
 #[inline]
 fn px(pen: i32) -> i16 {
     ((pen + 8) >> 4) as i16
@@ -221,8 +311,10 @@ impl<A: Allocator> TextRun<A> {
         self.bounds
     }
 
-    fn place(&mut self, line: &mut Line, font: &'static Font, glyph: u32, record: &GlyphRecord) {
-        if record.width != 0 {
+    fn place(&mut self, line: &mut Line, advance: u16, glyph: Option<(&'static Font, u32, GlyphRecord)>) {
+        if let Some((font, glyph, record)) = glyph
+            && record.width != 0
+        {
             self.glyphs.push(PlacedGlyph {
                 font,
                 glyph,
@@ -232,7 +324,7 @@ impl<A: Allocator> TextRun<A> {
                 h: record.height,
             });
         }
-        line.pen += i32::from(record.advance);
+        line.pen += i32::from(advance);
     }
 
     /// Turns the glyphs from `line.start` to `end` into a finished line of
@@ -278,14 +370,8 @@ impl<A: Allocator> TextRun<A> {
     }
 
     fn ellipsize(&mut self, line: &mut Line, chain: &FontChain, limit: i32) {
-        let mark = chain.resolve('…' as u32);
-        let dot = chain.resolve('.' as u32);
-        let (glyphs, width) = match (&mark, &dot) {
-            (Some(m), _) => (core::slice::from_ref(m), i32::from(m.2.advance)),
-            (None, Some(d)) => (core::slice::from_ref(d), i32::from(d.2.advance) * 3),
-            (None, None) => return,
-        };
-        let repeat = if mark.is_some() { 1 } else { 3 };
+        let Some((mark, repeat)) = ellipsis(chain) else { return };
+        let width = i32::from(mark.2.advance) * repeat as i32;
         while self.glyphs.len() > line.start {
             let last = self.glyphs[self.glyphs.len() - 1];
             let end = (i32::from(last.x) + i32::from(last.w)) * 16;
@@ -297,13 +383,13 @@ impl<A: Allocator> TextRun<A> {
             line.pen = i32::from(last.x) * 16;
         }
         for _ in 0..repeat {
-            let (font, glyph, record) = &glyphs[0];
-            self.place(line, font, *glyph, record);
+            self.place(line, mark.2.advance, Some(mark));
         }
         line.ink = line.pen;
     }
 
-    pub fn layout(&mut self, chain: &FontChain, text: &str, options: &TextOptions) {
+    /// Lays `units` out and returns whether some did not fit.
+    fn flow(&mut self, chain: &FontChain, units: impl Iterator<Item = Unit>, end: usize, options: &TextOptions) -> bool {
         self.glyphs.clear();
         self.carets.clear();
         self.width = 0;
@@ -311,42 +397,44 @@ impl<A: Allocator> TextRun<A> {
         self.line_height = line_height;
         let limit = options.max_width.map_or(i32::MAX, |w| i32::from(w) * 16);
         let mut line = Line { start: 0, caret_start: 0, break_caret: 0, splitting: false, pen: 0, ink: 0, break_glyph: 0, break_pen: 0, break_ink: 0, number: 0, top: 0 };
-        let mut chars = text.char_indices().peekable();
-        while let Some((byte, c)) = chars.next() {
-            let mut codepoint = c as u32;
-            if codepoint == VOICED_MARK || codepoint == SEMI_VOICED_MARK {
-                continue;
-            }
+        let mut overflowed = false;
+        let mut units = units.peekable();
+        while let Some(unit) = units.next() {
             if options.carets {
-                self.carets.push(Caret { byte: byte as u32, x: px(line.pen), line: 0 });
+                self.carets.push(Caret { byte: unit.byte, x: px(line.pen), line: 0 });
             }
-            if c == '\n' {
-                let ink = line.ink;
-                let end = self.glyphs.len();
-                line.break_caret = self.carets.len();
-                line.splitting = true;
-                self.finish(&mut line, end, ink, chain, options, line_height);
-                line.splitting = false;
-                line.pen = 0;
-                self.start_next(&mut line, 0);
-                line.ink = 0;
-                continue;
+            let last_line = options.max_lines != 0 && line.number + 1 >= options.max_lines;
+            match unit.kind {
+                Kind::Newline if last_line && units.peek().is_some() => {
+                    overflowed = true;
+                    if options.overflow == Overflow::Ellipsis(Elide::End) {
+                        self.ellipsize(&mut line, chain, limit);
+                    }
+                    break;
+                }
+                Kind::Newline => {
+                    let ink = line.ink;
+                    let end = self.glyphs.len();
+                    line.break_caret = self.carets.len();
+                    line.splitting = true;
+                    self.finish(&mut line, end, ink, chain, options, line_height);
+                    line.splitting = false;
+                    line.pen = 0;
+                    self.start_next(&mut line, 0);
+                    line.ink = 0;
+                    continue;
+                }
+                Kind::Missing => continue,
+                _ => {}
             }
-            if let Some(&(_, next)) = chars.peek()
-                && matches!(next as u32, VOICED_MARK | SEMI_VOICED_MARK)
-            {
-                codepoint = compose(codepoint, next as u32);
-            }
-            let Some((font, glyph, record)) = chain.resolve(codepoint) else { continue };
-            let space = c == ' ';
-            if !space && codepoint >= FIRST_WIDE && line.pen > 0 {
+            let space = unit.kind == Kind::Space;
+            if unit.kind == Kind::Wide && line.pen > 0 {
                 line.break_caret = self.carets.len().saturating_sub(1);
                 line.break_glyph = self.glyphs.len();
                 line.break_pen = line.pen;
                 line.break_ink = line.ink;
             }
-            if !space && line.pen + i32::from(record.advance) > limit {
-                let last_line = options.max_lines != 0 && line.number + 1 >= options.max_lines;
+            if !space && line.pen + i32::from(unit.advance) > limit {
                 if options.wrap && !last_line {
                     let (end, from, ink) = if line.break_pen > 0 {
                         (line.break_glyph, line.break_pen, line.break_ink)
@@ -358,14 +446,20 @@ impl<A: Allocator> TextRun<A> {
                     self.finish(&mut line, end, ink, chain, options, line_height);
                     line.splitting = false;
                     self.start_next(&mut line, from);
-                } else if options.overflow == Overflow::Ellipsis {
-                    self.ellipsize(&mut line, chain, limit);
-                    break;
-                } else if options.wrap {
-                    break;
+                } else {
+                    overflowed = true;
+                    match options.overflow {
+                        Overflow::Ellipsis(Elide::End) => {
+                            self.ellipsize(&mut line, chain, limit);
+                            break;
+                        }
+                        Overflow::Ellipsis(_) => break,
+                        Overflow::Clip if options.wrap => break,
+                        Overflow::Clip => {}
+                    }
                 }
             }
-            self.place(&mut line, font, glyph, &record);
+            self.place(&mut line, unit.advance, unit.glyph);
             if space {
                 line.break_caret = self.carets.len();
                 line.break_glyph = self.glyphs.len();
@@ -376,7 +470,7 @@ impl<A: Allocator> TextRun<A> {
             }
         }
         if options.carets {
-            self.carets.push(Caret { byte: text.len() as u32, x: px(line.pen), line: 0 });
+            self.carets.push(Caret { byte: end as u32, x: px(line.pen), line: 0 });
         }
         let (end, ink) = (self.glyphs.len(), line.ink);
         self.finish(&mut line, end, ink, chain, options, line_height);
@@ -385,5 +479,77 @@ impl<A: Allocator> TextRun<A> {
         self.bounds = self.glyphs.iter().fold(Rect::default(), |bounds, g| {
             bounds.union(&Rect::new(g.x, g.y, i16::from(g.w), i16::from(g.h)))
         });
+        overflowed
+    }
+}
+
+impl<A: Allocator + Clone> TextRun<A> {
+    /// `Elide::Start` and `Elide::Middle` need `max_width` and leave carets out.
+    pub fn layout(&mut self, chain: &FontChain, text: &str, options: &TextOptions) {
+        let overflowed = self.flow(chain, Units::new(chain, text, 0), text.len(), options);
+        if let Overflow::Ellipsis(elide @ (Elide::Start | Elide::Middle)) = options.overflow
+            && overflowed
+            && let Some(max) = options.max_width
+        {
+            self.elide(chain, text, &TextOptions { carets: false, ..*options }, elide, i32::from(max) * 16);
+        }
+    }
+
+    fn elide(&mut self, chain: &FontChain, text: &str, options: &TextOptions, elide: Elide, limit: i32) {
+        let Some((mark, repeat)) = ellipsis(chain) else { return };
+        let mut measured = Vec::new_in(self.glyphs.allocator().clone());
+        measured.extend(Units::new(chain, text, 0).map(|u| Measure { byte: u.byte, advance: u.advance, kind: u.kind }));
+        let n = measured.len();
+        let advance = |i: usize| i32::from(measured[i].advance);
+        let head_within = |width: i32| {
+            let (mut i, mut sum) = (0, 0);
+            while i < n && sum + advance(i) <= width {
+                sum += advance(i);
+                i += 1;
+            }
+            (i, sum)
+        };
+        let tail_within = |width: i32, floor: usize| {
+            let (mut j, mut sum) = (n, 0);
+            while j > floor && sum + advance(j - 1) <= width {
+                sum += advance(j - 1);
+                j -= 1;
+            }
+            j
+        };
+        let split = |kept: usize| match elide {
+            Elide::Start => (0, n - kept),
+            _ => (kept, tail_within((0..kept).map(advance).sum(), kept)),
+        };
+        let marks = (0..repeat).map(|_| Unit { byte: 0, kind: Kind::Other, advance: mark.2.advance, glyph: None });
+        let (keep, from) = if (options.max_lines == 1 || !options.wrap) && !measured.iter().any(|m| m.kind == Kind::Newline) {
+            let room = limit - i32::from(mark.2.advance) * repeat as i32;
+            match elide {
+                Elide::Start => (0, tail_within(room, 0)),
+                _ => {
+                    let (i, width) = head_within(room / 2);
+                    (i, tail_within(room - width, i))
+                }
+            }
+        } else {
+            let (mut fits, mut over) = (0, n);
+            while over - fits > 1 {
+                let kept = (fits + over) / 2;
+                let (i, j) = split(kept);
+                let units = measured[..i].iter().map(Measure::unit).chain(marks.clone()).chain(measured[j..].iter().map(Measure::unit));
+                if self.flow(chain, units, 0, options) {
+                    over = kept;
+                } else {
+                    fits = kept;
+                }
+            }
+            split(fits)
+        };
+        let byte = |i: usize| measured.get(i).map_or(text.len(), |m| m.byte as usize);
+        let (head, tail) = (byte(keep), byte(from));
+        let marks = (0..repeat).map(|_| Unit { byte: head as u32, kind: Kind::Other, advance: mark.2.advance, glyph: Some(mark) });
+        drop(measured);
+        let units = Units::new(chain, &text[..head], 0).chain(marks).chain(Units::new(chain, &text[tail..], tail as u32));
+        self.flow(chain, units, text.len(), options);
     }
 }

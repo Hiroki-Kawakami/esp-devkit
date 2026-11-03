@@ -9,7 +9,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use devkit_gfx::Rect;
+use devkit_gfx::{Elide, Rect};
 
 use crate::app::Handle;
 use crate::id;
@@ -51,7 +51,7 @@ pub fn list_item<'a, M: Copy>(ui: &'a Ui<M>, leading: Option<Icon>, title: &'a s
     let lead = leading.map_or(ui.empty(), |icon| ui.icon(icon).style(t.leading).part_of(Part::Leading));
     let tail = trailing.map_or(ui.empty(), |icon| ui.icon(icon).style(t.trailing).part_of(Part::Trailing));
     let detail = meta.map_or(ui.empty(), |text| ui.text(theme.fonts.caption, text).style(t.meta).part_of(Part::Meta));
-    ui.row([lead, ui.column([ui.text(theme.fonts.body, title).style(t.title).ellipsis().part_of(Part::Title), detail]).style(t.text).grow(1), tail])
+    ui.row([lead, ui.column([ui.text(theme.fonts.body, title).style(t.title).ellipsis(Elide::End).part_of(Part::Title), detail]).style(t.text).grow(1), tail])
         .style(t.root)
         .align(Align::Center)
         .role(Role::Button)
@@ -62,7 +62,7 @@ pub fn list_item<'a, M: Copy>(ui: &'a Ui<M>, leading: Option<Icon>, title: &'a s
 pub fn top_bar<'a, M: Copy + 'static>(ui: &'a Ui<M>, back: Option<M>, title: &'a str, actions: Element<'a, M>) -> Element<'a, M> {
     let theme = ui.theme();
     let t = &theme.widgets.top_bar;
-    let label = ui.text(theme.fonts.title, title).style(t.title).ellipsis().part_of(Part::Title);
+    let label = ui.text(theme.fonts.title, title).style(t.title).ellipsis(Elide::End).part_of(Part::Title);
     let lead = match back {
         Some(msg) => {
             let left = (t.back_height - theme.icons.back.font.px() as i16) / 2;
@@ -162,7 +162,7 @@ pub fn segmented<'a, M: Copy>(ui: &'a Ui<M>, options: &[(&'a str, M)], selected:
 
 fn dropdown_row<'a, M: Copy>(ui: &'a Ui<M>, label: &'a str, style: &'static StateStyle, trailing: Element<'a, M>) -> Element<'a, M> {
     let theme = ui.theme();
-    ui.row([ui.text(theme.fonts.caption, label).style(theme.widgets.dropdown.label).ellipsis().grow(1), trailing]).style(style).align(Align::Center).role(Role::Button)
+    ui.row([ui.text(theme.fonts.caption, label).style(theme.widgets.dropdown.label).ellipsis(Elide::End).grow(1), trailing]).style(style).align(Align::Center).role(Role::Button)
 }
 
 /// Shows `label`; `on_open` is the tap opening a `DropdownMenu`.
@@ -261,7 +261,7 @@ pub fn table_row<'a, M: Copy>(ui: &'a Ui<M>, children: impl Children<'a, M>) -> 
 /// Text taking the room left in a `table_row`, which pushes what follows to the end.
 pub fn table_label<'a, M: Copy>(ui: &'a Ui<M>, text: &'a str) -> Element<'a, M> {
     let theme = ui.theme();
-    ui.text(theme.fonts.body, text).style(theme.widgets.table_row.label).ellipsis().grow(1)
+    ui.text(theme.fonts.body, text).style(theme.widgets.table_row.label).ellipsis(Elide::End).grow(1)
 }
 
 pub fn table_value<'a, M: Copy>(ui: &'a Ui<M>, text: &'a str) -> Element<'a, M> {
