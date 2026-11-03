@@ -139,6 +139,10 @@ impl Shared {
     }
 }
 
+pub(crate) fn post(link: &Link, id: u32, msg: Erased) -> bool {
+    link.get().is_some_and(|shared| shared.send(Event::Post(id, msg)))
+}
+
 /// Posts messages to a component from any task.
 pub struct Handle<M> {
     link: Link,
@@ -166,7 +170,7 @@ impl<M: Copy> Handle<M> {
     /// `false` when the queue is full, or before `App::new` has returned. A
     /// message for a component that has gone is dropped.
     pub fn post(&self, msg: M) -> bool {
-        self.link.get().is_some_and(|shared| shared.send(Event::Post(self.id, Erased::new(msg))))
+        post(&self.link, self.id, Erased::new(msg))
     }
 
     /// `Presenter::set_strips` between frames. Blocks for the running frame, so

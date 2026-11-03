@@ -4,6 +4,7 @@
  */
 
 use alloc::boxed::Box;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::any::{Any, TypeId};
 use core::fmt::{self, Write};
@@ -17,6 +18,7 @@ use crate::bump::Bump;
 use crate::component::{AnyHost, Child, Component, EventMap, Host, Screen, call_event_map, screen_host};
 use crate::erased::Erased;
 use crate::id::Id;
+use crate::inbox::{Inbox, Reply, Token};
 use crate::style::{Align, Animated, Direction, Inset, Insets, Justify, Part, Prop, Role, ScreenStyle, Shadow, State, StateStyle, Style};
 use crate::canvas::Canvas;
 use crate::external::ExternalSurface;
@@ -76,7 +78,7 @@ pub(crate) enum Content<'a> {
     Text { font: &'static FontChain, text: &'a str, options: TextOptions, edit: Option<Edit> },
     Image { image: Image<'static>, tint: Color },
     Scroll,
-    List { count: usize, row_height: i16, revision: Option<u32>, row: RowMap },
+    List { count: usize, row_height: i16, revision: Option<u32>, overscan: u8, row: RowMap },
     Canvas(DrawMap),
     External(&'a ExternalSurface),
     Progress { gauge: Gauge, value: Option<f32>, period_ms: u16 },
@@ -162,6 +164,23 @@ unsafe fn call_row_map<C: Component>(function: *const (), component: &dyn Any, t
     let ui = Ui::new(tree.bump(), tree.context(owner));
     let element = function(component, index, &ui);
     tree.reconcile(owner, row, &element);
+}
+
+pub(crate) trait TaskSpec {
+    fn start(&self) -> Arc<Token>;
+}
+
+struct TaskElement<'a, T, F> {
+    inbox: &'a Inbox<T>,
+    start: F,
+}
+
+impl<T: Send + 'static, F: Fn(Reply<T>)> TaskSpec for TaskElement<'_, T, F> {
+    fn start(&self) -> Arc<Token> {
+        let token = Arc::new(Token);
+        (self.start)(Reply::task(Arc::downgrade(&token), self.inbox.sender()));
+        token
+    }
 }
 
 type DrawFn<C> = for<'a, 'f> fn(&'a C, &mut Canvas<'a, 'f>);
@@ -258,13 +277,14 @@ pub struct ElementData<'a, M: Copy> {
     pub(crate) repeat: bool,
     pub(crate) state: State,
     pub(crate) appear: Option<Presence>,
+    pub(crate) task: Option<&'a dyn TaskSpec>,
     pub(crate) disappear: Option<Presence>,
     _msg: PhantomData<fn() -> M>,
 }
 
 impl<'a, M: Copy> Element<'a, M> {
     fn new(bump: NonNull<Bump>, content: Content<'a>, children: &'a mut [Element<'a, M>]) -> Self {
-        let data = ElementData { bump, content, children: NonNull::from(children), style: Style::default(), when: &[], inherit: State::empty(), state_source: false, id: None, part: None, role: Role::None, tap: None, drag: None, on_scroll: None, bounce: true, pull: None, gestures: None, size: None, input: None, focusable: false, keep_focus: false, keyboard: None, input_kind: InputKind::Text, repeat: false, state: State::empty(), appear: None, disappear: None, _msg: PhantomData };
+        let data = ElementData { bump, content, children: NonNull::from(children), style: Style::default(), when: &[], inherit: State::empty(), state_source: false, id: None, part: None, role: Role::None, tap: None, drag: None, on_scroll: None, bounce: true, pull: None, gestures: None, size: None, input: None, focusable: false, keep_focus: false, keyboard: None, input_kind: InputKind::Text, repeat: false, state: State::empty(), appear: None, disappear: None, task: None, _msg: PhantomData };
         Self { data: unsafe { NonNull::new_unchecked(bump.as_ref().alloc(data)) } }
     }
 
@@ -687,6 +707,25 @@ impl<'a, M: Copy> Element<'a, M> {
         self
     }
 
+    /// How many rows exist past each end of what shows, 1 by default.
+    pub fn overscan(mut self, rows: u8) -> Self {
+        if let Content::List { overscan, .. } = &mut self.content {
+            *overscan = rows;
+        }
+        self
+    }
+
+    /// Calls `start` once this node is made, and cancels its `Reply` once the
+    /// node goes: out of a list's rows, with its screen, or without the task in
+    /// the view. Values come through `inbox`. `start` is never dropped, so it
+    /// may hold only what needs no drop.
+    pub fn task<T: Send + 'static, F: Fn(Reply<T>) + 'a>(mut self, inbox: &'a Inbox<T>, start: F) -> Self {
+        const { assert!(!core::mem::needs_drop::<F>(), "a task's start must need no drop") };
+        let spec = unsafe { self.bump.as_ref() }.alloc(TaskElement { inbox, start });
+        self.task = Some(unsafe { &*spec });
+        self
+    }
+
     pub fn font(mut self, font: &'static FontChain) -> Self {
         if let Content::Text { font: f, .. } = &mut self.content {
             *f = font;
@@ -909,7 +948,7 @@ impl<M: Copy> Ui<M> {
     /// covered.
     pub fn list<'a, C: Component<Msg = M>>(&'a self, count: usize, row_height: i16, row: RowFn<C>) -> Element<'a, M> {
         let row = RowMap { function: row as *const (), call: call_row_map::<C> };
-        let mut element = Element::new(self.bump, Content::List { count, row_height, revision: None, row }, &mut []);
+        let mut element = Element::new(self.bump, Content::List { count, row_height, revision: None, overscan: 1, row }, &mut []);
         element.role = Role::List;
         element
     }

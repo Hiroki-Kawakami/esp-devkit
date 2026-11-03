@@ -9,7 +9,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::any::TypeId;
+use core::any::{Any, TypeId};
 use core::cell::Cell;
 use core::fmt::Write;
 use core::ptr::NonNull;
@@ -22,14 +22,15 @@ use idf::sync::OnceLock;
 use crate::app::Link;
 use crate::bump::Bump;
 use crate::component::{Animation, AnyHost, EventMap, Hook, Host, Property, RenderRequest, Requests, Screen, screen_host};
-use crate::element::{BuildContext, Content, Drag, Element};
+use crate::element::{BuildContext, Content, Drag, Element, TaskSpec};
 use crate::gesture::{Gestures, Tracker};
 use crate::id::Id;
+use crate::inbox::Token;
 use crate::external::ExternalSurface;
 use crate::keyboard::{InputKind, KeyboardMode, KeyboardPanel};
 use crate::erased::Erased;
 use crate::motion::{Clock, Motion, MotionKind};
-use crate::nav::{NavigatorNode, Overlay, Root, Saved};
+use crate::nav::{NavOp, NavigatorNode, Overlay, Root, Saved};
 use crate::node::{CanvasNode, ListNode, NONE, Node, NodeContent, NodeIndex, Pull, ScrollNode, TextNode};
 use crate::presenter::{ROW_GRID, Strips};
 use crate::progress::ProgressNode;
@@ -37,7 +38,6 @@ use crate::style::{Dimension, Insets, Role, ScreenStyle, State, Style};
 use crate::text_buffer::TextInput;
 use crate::theme::{ColorMode, Theme};
 
-const OVERSCAN_ROWS: i32 = 1;
 pub(crate) const TAP_SLOP: i32 = 12;
 const FLING_MIN: f32 = 0.05;
 /// Time constant of the speed average: older movement fades with this.
@@ -66,6 +66,22 @@ pub(crate) struct Slot {
     pub(crate) node: NodeIndex,
     pub(crate) events: Option<EventMap>,
     pub(crate) theme: &'static Theme,
+    /// Only for screens.
+    pub(crate) phase: Option<Phase>,
+    pub(crate) shown: Vec<Box<dyn Any>>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Phase {
+    Appearing,
+    Shown,
+    Disappearing,
+}
+
+/// What a hook asked of others, done once the move under way is.
+enum Deferred {
+    Post(u32, Erased),
+    Nav(u32, NavOp),
 }
 
 #[derive(Clone, Copy)]
@@ -198,6 +214,8 @@ pub(crate) struct Tree {
     pub(crate) slots: Vec<Slot>,
     lists: Vec<NodeIndex>,
     canvases: Vec<NodeIndex>,
+    tasks: Vec<(NodeIndex, Arc<Token>)>,
+    deferred: Vec<Deferred>,
     external: NodeIndex,
     pub(crate) external_split: Cell<usize>,
     /// A navigator, and where the display list is once it is painted.
@@ -312,6 +330,8 @@ impl Tree {
             external_split: Cell::new(0),
             zoom_split: Cell::new((NONE, 0)),
             pending_redraw: Vec::new(),
+            tasks: Vec::new(),
+            deferred: Vec::new(),
             format: ImageFormat::Rgb565,
             contacts: Vec::new(),
             trackers: Vec::new(),
@@ -483,18 +503,150 @@ impl Tree {
         match free {
             Some(slot) => slot as u16,
             None => {
-                self.slots.push(Slot { host: None, node: NONE, events: None, theme: self.theme });
+                self.slots.push(Slot { host: None, node: NONE, events: None, theme: self.theme, phase: None, shown: Vec::new() });
                 (self.slots.len() - 1) as u16
             }
         }
     }
 
-    pub(crate) fn run_hook(&mut self, slot: u16, hook: Hook) {
+    fn run_hook(&mut self, slot: u16, hook: Hook) {
         let index = usize::from(slot);
         let Some(mut host) = self.slots[index].host.take() else { return };
-        let requests = host.hook(hook, &self.link);
+        let id = host.id();
+        let mut requests = host.hook(hook, &self.link);
         self.slots[index].host = Some(host);
+        self.deferred.extend(requests.sends.drain(..).map(|msg| Deferred::Post(id, msg)));
+        self.deferred.extend(requests.posts.drain(..).map(|(to, msg)| Deferred::Post(to, msg)));
+        self.deferred.extend(requests.nav.drain(..).map(|op| Deferred::Nav(id, op)));
         self.apply_requests(slot, requests);
+    }
+
+    fn phase(&self, slot: u16) -> Option<Phase> {
+        self.slots[usize::from(slot)].phase
+    }
+
+    /// For a screen just mounted, before its view is built.
+    pub(crate) fn appear_begin(&mut self, slot: u16) {
+        self.slots[usize::from(slot)].phase = Some(Phase::Appearing);
+        self.run_hook(slot, Hook::WillAppear);
+    }
+
+    fn appear_end(&mut self, slot: u16) {
+        if self.phase(slot) != Some(Phase::Appearing) {
+            return;
+        }
+        self.slots[usize::from(slot)].phase = Some(Phase::Shown);
+        self.run_hook(slot, Hook::DidAppear);
+    }
+
+    fn disappear_begin(&mut self, slot: u16) {
+        match self.phase(slot) {
+            Some(Phase::Appearing) => self.appear_end(slot),
+            Some(Phase::Shown) => {}
+            _ => return,
+        }
+        self.run_hook(slot, Hook::WillDisappear);
+        let state = &mut self.slots[usize::from(slot)];
+        state.phase = Some(Phase::Disappearing);
+        state.shown.clear();
+    }
+
+    fn disappear_end(&mut self, slot: u16) {
+        if matches!(self.phase(slot), Some(Phase::Appearing | Phase::Shown)) {
+            self.disappear_begin(slot);
+        }
+        if self.phase(slot) != Some(Phase::Disappearing) {
+            return;
+        }
+        self.run_hook(slot, Hook::DidDisappear);
+        let state = &mut self.slots[usize::from(slot)];
+        state.phase = None;
+        state.shown.clear();
+    }
+
+    /// The screens in `id`, the outer ones first.
+    fn screens_in(&self, id: NodeIndex, found: &mut Vec<u16>) {
+        let node = &self.nodes[id as usize];
+        if let NodeContent::Child(slot) = node.content
+            && self.phase(slot).is_some()
+        {
+            found.push(slot);
+        }
+        if let NodeContent::List(list) = &node.content {
+            for &(_, row) in &list.rows {
+                self.screens_in(row, found);
+            }
+        }
+        let mut child = node.first_child;
+        while child != NONE {
+            self.screens_in(child, found);
+            child = self.nodes[child as usize].next;
+        }
+    }
+
+    pub(crate) fn disappear_begin_within(&mut self, id: NodeIndex) {
+        let mut found = Vec::new();
+        self.screens_in(id, &mut found);
+        for slot in found {
+            self.disappear_begin(slot);
+        }
+    }
+
+    pub(crate) fn disappear_end_within(&mut self, id: NodeIndex) {
+        let mut found = Vec::new();
+        self.screens_in(id, &mut found);
+        for slot in found {
+            self.disappear_end(slot);
+        }
+    }
+
+    /// A screen appears once no navigator around it is moving and, on the
+    /// overlay, its `.appear` has played.
+    fn appear_waits(&self, id: NodeIndex) -> bool {
+        let mut at = self.nodes[id as usize].parent;
+        while at != NONE {
+            if matches!(self.nodes[at as usize].content, NodeContent::Navigator(_)) && self.transit(at).is_some() {
+                return true;
+            }
+            at = self.nodes[at as usize].parent;
+        }
+        self.nodes[id as usize].parent == self.overlay && self.presence_within(id)
+    }
+
+    /// `true` when a screen did appear.
+    fn settle_appearing(&mut self) -> bool {
+        let mut settled = false;
+        let mut slot = 0;
+        while slot < self.slots.len() {
+            let state = &self.slots[slot];
+            if state.phase == Some(Phase::Appearing) && state.node != NONE && !self.appear_waits(state.node) {
+                self.appear_end(slot as u16);
+                settled = true;
+            }
+            slot += 1;
+        }
+        settled
+    }
+
+    pub(crate) fn slot_of(&self, id: u32) -> Option<u16> {
+        self.slots.iter().position(|s| s.host.as_ref().is_some_and(|host| host.id() == id)).map(|slot| slot as u16)
+    }
+
+    /// `false` when there was nothing to do.
+    fn flush_deferred(&mut self) -> bool {
+        if self.deferred.is_empty() {
+            return false;
+        }
+        for deferred in core::mem::take(&mut self.deferred) {
+            match deferred {
+                Deferred::Post(id, msg) => self.post(id, msg),
+                Deferred::Nav(id, op) => match self.slot_of(id) {
+                    Some(slot) => self.apply_nav(slot, op),
+                    None => idf::log::error!(c"ui", "a screen that is not shown cannot move between screens"),
+                },
+            }
+        }
+        true
     }
 
     pub(crate) fn host_id(&self, slot: u16) -> u32 {
@@ -537,12 +689,19 @@ impl Tree {
             NodeContent::External(_) if self.external == id => self.external = NONE,
             NodeContent::Navigator(_) => self.navigators.retain(|n| *n != id),
             NodeContent::Child(slot) => {
-                let slot = usize::from(*slot);
-                self.slots[slot].host = None;
-                self.slots[slot].events = None;
-                self.slots[slot].node = NONE;
+                let slot = *slot;
+                self.disappear_end(slot);
+                let state = &mut self.slots[usize::from(slot)];
+                state.host = None;
+                state.events = None;
+                state.node = NONE;
+                state.phase = None;
+                state.shown.clear();
             }
             _ => {}
+        }
+        if core::mem::take(&mut self.nodes[id as usize].task) {
+            self.tasks.retain(|(node, _)| *node != id);
         }
         let node = &mut self.nodes[id as usize];
         node.content = NodeContent::Box;
@@ -786,6 +945,22 @@ impl Tree {
         }
         self.restyle(id, element.style);
         self.sync_pull(id, element.pull);
+        self.sync_task(id, element.task);
+    }
+
+    fn sync_task(&mut self, id: NodeIndex, task: Option<&dyn TaskSpec>) {
+        match (self.nodes[id as usize].task, task) {
+            (false, Some(task)) => {
+                self.nodes[id as usize].task = true;
+                let token = task.start();
+                self.tasks.push((id, token));
+            }
+            (true, None) => {
+                self.nodes[id as usize].task = false;
+                self.tasks.retain(|(node, _)| *node != id);
+            }
+            _ => {}
+        }
     }
 
     fn update_node<M: Copy>(&mut self, owner: u16, id: NodeIndex, element: &Element<'_, M>) {
@@ -852,7 +1027,8 @@ impl Tree {
                     self.sync_progress(id);
                 }
             }
-            (NodeContent::List(list), Content::List { count, row_height, revision, row }) => {
+            (NodeContent::List(list), Content::List { count, row_height, revision, overscan, row }) => {
+                list.overscan = *overscan;
                 list.stale |= revision.is_none() || *revision != list.revision || list.row.function != row.function;
                 list.row = *row;
                 list.revision = *revision;
@@ -902,8 +1078,8 @@ impl Tree {
             }
             Content::Image { image, tint } => NodeContent::Image { image, tint },
             Content::Scroll => NodeContent::Scroll(ScrollNode { offset: 0, content: 0 }),
-            Content::List { count, row_height, revision, row } => {
-                NodeContent::List(ListNode { row, count, row_height, revision, offset: 0, rows: Vec::new_in(self.caps), stale: false })
+            Content::List { count, row_height, revision, overscan, row } => {
+                NodeContent::List(ListNode { row, overscan, count, row_height, revision, offset: 0, rows: Vec::new_in(self.caps), stale: false })
             }
             Content::Canvas(draw) => NodeContent::Canvas(CanvasNode { draw, reported: (0, 0) }),
             Content::External(surface) => NodeContent::External(surface.clone()),
@@ -956,7 +1132,7 @@ impl Tree {
                 let host = spec.create();
                 let slot = self.alloc_slot();
                 let theme = self.slots[usize::from(owner)].theme;
-                self.slots[usize::from(slot)] = Slot { host: Some(host), node: id, events: spec.event_map(owner), theme };
+                self.slots[usize::from(slot)] = Slot { host: Some(host), node: id, events: spec.event_map(owner), theme, phase: None, shown: Vec::new() };
                 self.nodes[id as usize].content = NodeContent::Child(slot);
                 self.build_component(slot);
                 return id;
@@ -972,12 +1148,12 @@ impl Tree {
     /// Builds the rows a list shows, given its current size and offset.
     fn sync_list(&mut self, id: NodeIndex) {
         let NodeContent::List(list) = &mut self.nodes[id as usize].content else { return };
-        let (row_height, count, row_map) = (i32::from(list.row_height), list.count as i32, list.row);
+        let (row_height, count, row_map, overscan) = (i32::from(list.row_height), list.count as i32, list.row, i32::from(list.overscan));
         let offset = list.offset;
         let stale = core::mem::take(&mut list.stale);
         let viewport = i32::from(self.nodes[id as usize].rect.h);
-        let first = (offset / row_height - OVERSCAN_ROWS).max(0);
-        let last = ((offset + viewport) / row_height + OVERSCAN_ROWS).min(count - 1);
+        let first = (offset / row_height - overscan).max(0);
+        let last = ((offset + viewport) / row_height + overscan).min(count - 1);
         let NodeContent::List(list) = &mut self.nodes[id as usize].content else { return };
         let mut rows = core::mem::replace(&mut list.rows, Vec::new_in(self.caps));
         rows.retain(|&(index, row)| {
@@ -1035,6 +1211,14 @@ impl Tree {
     fn apply_requests(&mut self, slot: u16, requests: Requests) {
         if requests.rebuild {
             self.mark_slot_dirty(slot);
+        }
+        if !requests.guards.is_empty() {
+            let state = &mut self.slots[usize::from(slot)];
+            if matches!(state.phase, Some(Phase::Appearing | Phase::Shown)) {
+                state.shown.extend(requests.guards);
+            } else {
+                idf::log::error!(c"ui", "while_shown: the screen is not shown");
+            }
         }
         let tap_rect = requests.tap_rect;
         self.queue.extend(requests.sends.into_iter().map(|m| (slot, m, tap_rect)));
@@ -1142,10 +1326,19 @@ impl Tree {
     /// Applies what happened since the last call, leaving the damage to take.
     pub(crate) fn update(&mut self) {
         self.flush_gestures();
-        while let Some((slot, msg, tap_rect)) = self.queue.pop_front() {
-            self.dispatch(slot, msg, tap_rect);
+        loop {
+            let flushed = self.flush_deferred();
+            match self.queue.pop_front() {
+                Some((slot, msg, tap_rect)) => self.dispatch(slot, msg, tap_rect),
+                None if flushed => {}
+                None => break,
+            }
         }
         self.build_dirty();
+        if !self.deferred.is_empty() {
+            self.update();
+            return;
+        }
         if self.sync_splits() {
             self.update();
             return;
@@ -1186,6 +1379,9 @@ impl Tree {
         }
         self.release_waiting();
         self.sync_scrim();
+        if self.settle_appearing() {
+            self.update();
+        }
     }
 
     fn sync_scrim(&mut self) {

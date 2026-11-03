@@ -90,6 +90,7 @@ pub(crate) struct ScrollNode {
 
 pub(crate) struct ListNode {
     pub(crate) row: RowMap,
+    pub(crate) overscan: u8,
     pub(crate) count: usize,
     pub(crate) row_height: i16,
     pub(crate) revision: Option<u32>,
@@ -171,6 +172,8 @@ pub(crate) struct Node {
     pub(crate) pose: Option<Pose>,
     /// Out of the view, kept until its disappearance ends.
     pub(crate) leaving: bool,
+    /// Has a token in `Tree::tasks`.
+    pub(crate) task: bool,
     /// Relative to the parent's origin.
     pub(crate) rect: Rect,
     /// Where it was last painted.
@@ -230,6 +233,7 @@ impl Node {
             disappear: None,
             pose: None,
             leaving: false,
+            task: false,
             rect: Rect::default(),
             screen: Rect::default(),
             paint_dirty: true,

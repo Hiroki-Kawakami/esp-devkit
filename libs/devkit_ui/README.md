@@ -68,7 +68,8 @@ app.run();
   it can be called after the view is gone. Scrolling moves the rows without
   running `view`. A rebuild of the owner rebuilds them, unless `revision` is
   given and did not change. A list keeps its scroll position while its screen
-  is covered only if it has an id.
+  is covered only if it has an id. Rows exist one past each end of what shows;
+  `.overscan(rows)` makes it more.
 - `.id` names a node. Among its siblings it matches the node of the last
   rebuild with the same id, and a different id makes a new node. `id!("name")`
   hashes a literal at compile time and keeps the name for `ui tree`;
@@ -78,6 +79,24 @@ app.run();
 - `app.handle()` and `cx.handle()` give a `Handle`, whose `post` reaches that
   component from any task. Its `update` runs even while a screen covers it, and
   the next `view` shows the result; a message for a closed screen is dropped.
+- Results from other tasks come back as values the component owns, not as
+  messages, which stay small. `cx.inbox(capacity, msg)` makes an `Inbox`:
+  `inbox.sender()` sends from any task, `msg` comes once for everything that
+  arrived until `inbox.drain()`, and nothing more comes until then. A full or
+  dropped inbox gives the value back. `cx.pending(msg)` pairs a `Pending` with
+  the `Reply` for one value. Dropping the `Pending` cancels the reply:
+  `reply.is_cancelled()` lets the worker stop early, and `send` gives the value
+  back. Keeping it in a field ties it to the component, replacing it drops an
+  older request.
+- `.task(&inbox, |reply| ...)` starts work for a node: the closure runs once
+  when the node is made, and the `Reply` sends into the inbox. Its node going
+  cancels it: a row leaving the list's rows, the screen leaving, or the view
+  dropping the task. The closure is never dropped, so it holds only what needs
+  no drop.
+
+  ```rust
+  ui.column([]).id(entry.id).task(&self.thumbs, |reply| THUMBS.push(entry.path(), reply))
+  ```
 
 ## Layout and state
 
@@ -176,6 +195,17 @@ app.run();
   detail. `show` changes the right at once unless asked.
 - A covered screen keeps its state and loses its nodes. List positions and
   nested navigators come back with it; state of its child components does not.
+  It is dropped once it leaves its stack.
+- `on_load` runs once, before anything else, with the first `cx` a screen
+  gets. `will_appear` runs before the view it is about to show is built,
+  `did_appear` once its transition ends, `will_disappear` as it starts to go
+  and `did_disappear` once its nodes are gone; on the `Overlay` the `.appear`
+  and `.disappear` of what it holds count as the transition. They come in that
+  order and in pairs, a move cut short included, and reach screens in nested
+  navigators with the screen around them. A move asked from a hook waits until
+  the one under way is done.
+- `cx.while_shown(guard)` keeps `guard` from now until the screen starts to
+  disappear, for what only runs while it shows: a listener, a timer.
 - `App::chrome` adds a component along the top, above the screens, that stays
   across navigation. How tall it comes out is the top inset of the screens, 0
   while it shows nothing; planes build from the top down, so screens see the

@@ -16,6 +16,7 @@ use core::marker::PhantomData;
 use crate::element::{Element, Ui};
 use crate::erased::Erased;
 use crate::id::Id;
+use crate::inbox::{Inbox, Pending, Reply};
 use crate::nav::{Action, NavOp};
 use crate::node::NodeIndex;
 use crate::presenter::Strips;
@@ -49,7 +50,10 @@ pub trait Child: Component + Sized {
 
 /// A component a navigator shows. Its state outlives its nodes while another
 /// screen covers it, and scroll positions of lists come back with it; state of
-/// child components does not.
+/// child components does not. It is dropped once it leaves its stack.
+///
+/// The appear and disappear hooks come in that order and in pairs. Moves
+/// between screens asked from any hook wait until the one under way is done.
 pub trait Screen: Component + Sized {
     fn style(&self) -> ScreenStyle {
         ScreenStyle::default()
@@ -66,25 +70,28 @@ pub trait Screen: Component + Sized {
         None
     }
 
-    /// Pushed onto a stack.
-    fn on_enter(&mut self, _cx: &mut Cx<Self>) {}
+    /// Once, before anything else, with the first `cx` it gets.
+    fn on_load(&mut self, _cx: &mut Cx<Self>) {}
 
-    /// Removed from its stack for good.
-    fn on_exit(&mut self, _cx: &mut Cx<Self>) {}
+    /// Before the view it is about to show is built.
+    fn will_appear(&mut self, _cx: &mut Cx<Self>) {}
 
-    /// Became the top of its stack.
-    fn on_appear(&mut self, _cx: &mut Cx<Self>) {}
+    /// Once it is in: after its transition, or right away without one.
+    fn did_appear(&mut self, _cx: &mut Cx<Self>) {}
 
-    /// Stopped being the top of its stack.
-    fn on_disappear(&mut self, _cx: &mut Cx<Self>) {}
+    /// As it starts to go, covered or removed.
+    fn will_disappear(&mut self, _cx: &mut Cx<Self>) {}
+
+    /// Once its nodes are gone.
+    fn did_disappear(&mut self, _cx: &mut Cx<Self>) {}
 }
 
 #[derive(Clone, Copy)]
 pub(crate) enum Hook {
-    Enter,
-    Exit,
-    Appear,
-    Disappear,
+    WillAppear,
+    DidAppear,
+    WillDisappear,
+    DidDisappear,
 }
 
 pub(crate) struct RenderRequest {
@@ -116,6 +123,7 @@ pub(crate) struct Requests {
     pub(crate) focus: Option<Id>,
     pub(crate) input: Vec<TextInput>,
     pub(crate) redraw: Vec<(Id, Option<Rect>)>,
+    pub(crate) guards: Vec<Box<dyn Any>>,
 }
 
 /// What an animation moves, without running a view or layout.
@@ -241,6 +249,23 @@ impl<C: Component> Cx<C> {
     pub fn take_strips(&mut self) -> Option<Strips> {
         self.requests.replaced.take()
     }
+
+    /// `msg` comes when values have arrived; at most `capacity` wait.
+    pub fn inbox<T: Send + 'static>(&self, capacity: usize, msg: C::Msg) -> Inbox<T> {
+        Inbox::new(capacity, self.link.clone(), self.id, Erased::new(msg))
+    }
+
+    /// `msg` comes once the reply has been sent.
+    pub fn pending<T>(&self, msg: C::Msg) -> (Pending<T>, Reply<T>) {
+        Pending::new(self.link.clone(), self.id, Erased::new(msg))
+    }
+}
+
+impl<C: Screen> Cx<C> {
+    /// Keeps `guard` until the screen starts to disappear.
+    pub fn while_shown<G: 'static>(&mut self, guard: G) {
+        self.requests.guards.push(Box::new(guard));
+    }
 }
 
 /// Moves between screens, after the current `update`.
@@ -289,7 +314,7 @@ impl Nav<'_> {
 }
 
 pub(crate) fn screen_host<S: Screen>(screen: S) -> Box<dyn AnyHost> {
-    Box::new(ScreenHost { inner: Host::new(screen, None) })
+    Box::new(ScreenHost { inner: Host::new(screen, None), loaded: false })
 }
 
 pub(crate) struct EventMap {
@@ -370,6 +395,7 @@ impl<C: Component> AnyHost for Host<C> {
 
 pub(crate) struct ScreenHost<S: Screen> {
     pub(crate) inner: Host<S>,
+    loaded: bool,
 }
 
 impl<S: Screen> AnyHost for ScreenHost<S> {
@@ -397,10 +423,15 @@ impl<S: Screen> AnyHost for ScreenHost<S> {
         let mut cx = Cx::<S>::new(None, None, self.inner.id(), link);
         let screen = &mut self.inner.component;
         match hook {
-            Hook::Enter => screen.on_enter(&mut cx),
-            Hook::Exit => screen.on_exit(&mut cx),
-            Hook::Appear => screen.on_appear(&mut cx),
-            Hook::Disappear => screen.on_disappear(&mut cx),
+            Hook::WillAppear => {
+                if !core::mem::replace(&mut self.loaded, true) {
+                    screen.on_load(&mut cx);
+                }
+                screen.will_appear(&mut cx);
+            }
+            Hook::DidAppear => screen.did_appear(&mut cx),
+            Hook::WillDisappear => screen.will_disappear(&mut cx),
+            Hook::DidDisappear => screen.did_disappear(&mut cx),
         }
         cx.requests
     }

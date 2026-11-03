@@ -8,7 +8,7 @@ use alloc::vec::Vec;
 use core::any::TypeId;
 
 use crate::app::Link;
-use crate::component::{AnyHost, Hook, Requests, Screen, screen_host};
+use crate::component::{AnyHost, Requests, Screen, screen_host};
 use crate::erased::Erased;
 use crate::id::Id;
 use crate::node::{NONE, Node, NodeContent, NodeIndex};
@@ -161,7 +161,7 @@ fn deliver(stack: &mut [Entry], id: u32, msg: Erased, replaced: &mut Option<Stri
             if let Some(mut requests) = deliver(nested, id, msg, replaced, link) {
                 for op in core::mem::take(&mut requests.nav) {
                     if matches!(op.action, Action::Root) && op.target.is_none_or(|target| target == *key) {
-                        drop_to_root(nested, link);
+                        nested.truncate(1);
                     } else {
                         idf::log::error!(c"ui", "a navigator inside a covered screen can only go to its root");
                     }
@@ -171,14 +171,6 @@ fn deliver(stack: &mut [Entry], id: u32, msg: Erased, replaced: &mut Option<Stri
         }
     }
     None
-}
-
-fn drop_to_root(stack: &mut Vec<Entry>, link: &Link) {
-    for mut entry in stack.drain(1..) {
-        if let Some(host) = &mut entry.host {
-            host.hook(Hook::Exit, link);
-        }
-    }
 }
 
 impl Tree {
@@ -330,7 +322,6 @@ impl Tree {
         if let Some(first) = self.navigator(nav).and_then(|n| n.stack.first_mut()) {
             first.node = node;
         }
-        self.hook(node, Hook::Appear);
     }
 
     fn close_split(&mut self, nav: NodeIndex) {
@@ -338,7 +329,7 @@ impl Tree {
         let Some(navigator) = self.navigator(nav) else { return };
         if navigator.stack.len() > 1 {
             let main = navigator.main();
-            self.hook(main, Hook::Disappear);
+            self.disappear_begin_within(main);
             self.retire(nav, main, false);
         }
     }
@@ -350,8 +341,6 @@ impl Tree {
         if let Some(navigator) = self.navigator(nav) {
             navigator.spare = node;
         }
-        self.hook(node, Hook::Enter);
-        self.hook(node, Hook::Appear);
         node
     }
 
@@ -359,8 +348,6 @@ impl Tree {
         let Some(navigator) = self.navigator(nav) else { return };
         let spare = core::mem::replace(&mut navigator.spare, NONE);
         if spare != NONE {
-            self.hook(spare, Hook::Disappear);
-            self.hook(spare, Hook::Exit);
             self.unmount(nav, spare);
         }
     }
@@ -368,8 +355,8 @@ impl Tree {
     /// Runs `msg` on the component `id`, shown or covered. Covered, it has no
     /// nodes to rebuild or animate: its next view shows what the message did.
     pub(crate) fn post(&mut self, id: u32, msg: Erased) {
-        if let Some(slot) = self.slots.iter().position(|s| s.host.as_ref().is_some_and(|host| host.id() == id)) {
-            self.dispatch(slot as u16, msg, None);
+        if let Some(slot) = self.slot_of(id) {
+            self.dispatch(slot, msg, None);
             return;
         }
         let mut replaced = self.parked_strips.take();
@@ -394,6 +381,9 @@ impl Tree {
         if !requests.popups.is_empty() {
             idf::log::error!(c"ui", "a covered screen cannot open a popup");
         }
+        if !requests.guards.is_empty() {
+            idf::log::error!(c"ui", "while_shown: the screen is not shown");
+        }
         for op in requests.nav {
             self.apply_nav_from(nav, op);
         }
@@ -405,11 +395,9 @@ impl Tree {
         }
     }
 
-    fn hook(&mut self, node: NodeIndex, hook: Hook) {
-        if node != NONE
-            && let NodeContent::Child(slot) = self.nodes[node as usize].content
-        {
-            self.run_hook(slot, hook);
+    fn disappear_begin_node(&mut self, node: NodeIndex) {
+        if node != NONE {
+            self.disappear_begin_within(node);
         }
     }
 
@@ -421,14 +409,14 @@ impl Tree {
         Style { width: Dimension::Auto, height: Dimension::Auto, ..Style::default() }
     }
 
-    /// Creates the nodes of `entry`'s screen, as a new last child of `nav`.
+    /// Creates the nodes of a screen, as a new last child of `nav`.
     pub(crate) fn mount(&mut self, nav: NodeIndex, host: Box<dyn AnyHost>, saved: Saved) -> NodeIndex {
         let parent_slot = self.nodes[nav as usize].owner;
         let inherited = self.slots.get(usize::from(parent_slot)).map_or(self.theme, |s| s.theme);
-        self.mount_themed(nav, host, saved, inherited)
+        self.mount_themed(nav, host, saved, inherited, true)
     }
 
-    fn mount_themed(&mut self, nav: NodeIndex, host: Box<dyn AnyHost>, saved: Saved, inherited: &'static Theme) -> NodeIndex {
+    fn mount_themed(&mut self, nav: NodeIndex, host: Box<dyn AnyHost>, saved: Saved, inherited: &'static Theme, screen: bool) -> NodeIndex {
         let theme = host.theme();
         let slot = self.alloc_slot();
         let node = self.alloc_node(Node::new(NodeContent::Child(slot), slot, self.caps));
@@ -438,8 +426,11 @@ impl Tree {
         self.slots[slot_index].host = Some(host);
         self.slots[slot_index].node = node;
         self.slots[slot_index].theme = theme.unwrap_or(inherited);
-        self.restoring.push(saved);
         self.link_last(nav, node);
+        if screen {
+            self.appear_begin(slot);
+        }
+        self.restoring.push(saved);
         self.build_component(slot);
         self.restoring.pop();
         self.layout_dirty = true;
@@ -449,7 +440,7 @@ impl Tree {
     /// Shows `host` above everything, in the theme of the component `from`.
     pub(crate) fn open_popup(&mut self, from: u16, host: Box<dyn AnyHost>) {
         let theme = self.slots[usize::from(from)].theme;
-        let node = self.mount_themed(self.popups, host, Saved::default(), theme);
+        let node = self.mount_themed(self.popups, host, Saved::default(), theme, false);
         self.nodes[node as usize].style.absolute = Some(crate::style::Inset { left: Some(0), top: Some(0), right: Some(0), bottom: Some(0) });
     }
 
@@ -505,8 +496,6 @@ impl Tree {
             self.retire(nav, departing, true);
         }
         for entry in stack.into_iter().filter(|e| e.node != NONE) {
-            self.hook(entry.node, Hook::Disappear);
-            self.hook(entry.node, Hook::Exit);
             self.unmount(nav, entry.node);
         }
     }
@@ -598,6 +587,7 @@ impl Tree {
 
     /// Removes a screen's nodes, keeping what it needs to come back.
     fn unmount(&mut self, nav: NodeIndex, node: NodeIndex) -> (Option<Box<dyn AnyHost>>, Saved) {
+        self.disappear_end_within(node);
         let mut saved = Saved::default();
         // Nested navigators' shown screens leave their nodes with this subtree.
         self.collect(node, &mut saved);
@@ -723,13 +713,11 @@ impl Tree {
             navigator.promoted = true;
         }
         let leaving = self.navigator(nav).map_or(NONE, |n| n.shown());
-        self.hook(leaving, Hook::Disappear);
+        self.disappear_begin_node(leaving);
         let node = self.mount(nav, host, Saved::default());
         if let Some(navigator) = self.navigator(nav) {
             navigator.stack.push(Entry::shown(node, asked));
         }
-        self.hook(node, Hook::Enter);
-        self.hook(node, Hook::Appear);
         let kind = self.pick(nav, asked, None, true);
         self.begin_transit(nav, leaving, false, true, kind);
     }
@@ -750,8 +738,7 @@ impl Tree {
         }
         let emptied = split && navigator.stack.len() == 1;
         let leaving = entry.node;
-        self.hook(leaving, Hook::Disappear);
-        self.hook(leaving, Hook::Exit);
+        self.disappear_begin_node(leaving);
         let top = if emptied { self.show_spare(nav) } else { self.show_top(nav) };
         if top == NONE {
             self.depart(nav, leaving);
@@ -781,25 +768,17 @@ impl Tree {
 
     /// Replaces everything above the bottom of the stack with `host`.
     fn show_screen(&mut self, nav: NodeIndex, host: Box<dyn AnyHost>, asked: Option<Transition>) {
-        let link = self.link.clone();
         let Some(navigator) = self.navigator(nav) else { return };
         let (main, leaving, split) = (navigator.main(), navigator.shown(), navigator.split.is_some());
         let dropped = leaving != main;
         navigator.promoted = false;
         navigator.spare = NONE;
-        if navigator.stack.len() > 1 {
-            drop_to_root(&mut navigator.stack, &link);
-        }
-        self.hook(leaving, Hook::Disappear);
-        if dropped {
-            self.hook(leaving, Hook::Exit);
-        }
+        navigator.stack.truncate(1);
+        self.disappear_begin_node(leaving);
         let node = self.mount(nav, host, Saved::default());
         if let Some(navigator) = self.navigator(nav) {
             navigator.stack.push(Entry::shown(node, asked));
         }
-        self.hook(node, Hook::Enter);
-        self.hook(node, Hook::Appear);
         // Next to the main screen this changes what is shown, not where we are.
         let kind = self.pick(nav, asked, None, !split);
         self.begin_transit(nav, leaving, dropped || split, true, kind);
@@ -814,14 +793,12 @@ impl Tree {
         if let Some(entry) = self.navigator(nav).and_then(|n| n.stack.last_mut()) {
             entry.node = node;
         }
-        self.hook(node, Hook::Appear);
         node
     }
 
     fn replace_screen(&mut self, nav: NodeIndex, host: Box<dyn AnyHost>, asked: Option<Transition>) {
         let leaving = self.top(nav);
-        self.hook(leaving, Hook::Disappear);
-        self.hook(leaving, Hook::Exit);
+        self.disappear_begin_node(leaving);
         let Some(navigator) = self.navigator(nav) else { return };
         let main = navigator.split.is_some() && leaving == navigator.main();
         let came_with = navigator.stack.pop().and_then(|e| e.transition);
@@ -829,8 +806,6 @@ impl Tree {
         if let Some(navigator) = self.navigator(nav) {
             navigator.stack.push(Entry::shown(node, came_with));
         }
-        self.hook(node, Hook::Enter);
-        self.hook(node, Hook::Appear);
         // The main screen of a split navigator does not move.
         let kind = if main { Transition::None } else { self.pick(nav, asked, None, false) };
         self.begin_transit(nav, leaving, true, true, kind);
@@ -861,8 +836,6 @@ impl Tree {
         if let Some(navigator) = self.navigator(nav) {
             navigator.stack.push(Entry::shown(node, None));
         }
-        self.hook(node, Hook::Enter);
-        self.hook(node, Hook::Appear);
     }
 
     /// Gives a navigator its hidden stack back, if the screen around it kept one.

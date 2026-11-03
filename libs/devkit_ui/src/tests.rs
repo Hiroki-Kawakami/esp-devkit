@@ -4,6 +4,7 @@
  */
 
 use alloc::boxed::Box;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::AtomicU32;
 use core::sync::atomic::Ordering::Relaxed;
@@ -1080,17 +1081,26 @@ fn page_row<'a, C>(_: &'a C, _: usize, ui: &'a Ui<PageMsg>) -> Element<'a, PageM
 }
 
 impl Screen for Page {
-    fn on_enter(&mut self, _: &mut Cx<Self>) {
-        self.note("enter");
+    fn on_load(&mut self, _: &mut Cx<Self>) {
+        self.note("load");
     }
-    fn on_exit(&mut self, _: &mut Cx<Self>) {
-        self.note("exit");
+    fn will_appear(&mut self, _: &mut Cx<Self>) {
+        self.note("will_appear");
     }
-    fn on_appear(&mut self, _: &mut Cx<Self>) {
-        self.note("appear");
+    fn did_appear(&mut self, _: &mut Cx<Self>) {
+        self.note("did_appear");
     }
-    fn on_disappear(&mut self, _: &mut Cx<Self>) {
-        self.note("disappear");
+    fn will_disappear(&mut self, _: &mut Cx<Self>) {
+        self.note("will_disappear");
+    }
+    fn did_disappear(&mut self, _: &mut Cx<Self>) {
+        self.note("did_disappear");
+    }
+}
+
+impl Drop for Page {
+    fn drop(&mut self) {
+        self.note("drop");
     }
 }
 
@@ -1157,7 +1167,7 @@ fn a_pane_navigates_inside_its_area_and_the_root_over_everything() {
     settle(&mut tree);
     assert!(tree.find(id!("pane")).is_some());
     assert!(tree.find(id!("detail")).is_none());
-    assert!(log.borrow().contains(&("detail", "exit")));
+    assert!(log.borrow().contains(&("detail", "drop")));
 
     tap(&mut tree, "open-root");
     settle(&mut tree);
@@ -1198,7 +1208,7 @@ fn state_and_scroll_position_come_back_and_taps_wait_for_the_slide() {
     let NodeContent::Text(text) = &tree.nodes[tree.find(id!("first")).unwrap() as usize].content else { panic!() };
     assert_eq!(text.text(), "first 0");
     let events: Vec<_> = log.borrow().iter().filter(|e| e.0 == "first").map(|e| e.1).collect();
-    assert_eq!(events, ["enter", "appear", "disappear", "appear"]);
+    assert_eq!(events, ["load", "will_appear", "did_appear", "will_disappear", "did_disappear", "will_appear", "did_appear"]);
 }
 
 struct PageRoot(Page);
@@ -1214,14 +1224,20 @@ impl Component for PageRoot {
 }
 
 impl Screen for PageRoot {
-    fn on_enter(&mut self, _: &mut Cx<Self>) {
-        self.0.note("enter");
+    fn on_load(&mut self, cx: &mut Cx<Self>) {
+        self.0.on_load(unsafe { &mut *(cx as *mut Cx<Self>).cast::<Cx<Page>>() });
     }
-    fn on_appear(&mut self, _: &mut Cx<Self>) {
-        self.0.note("appear");
+    fn will_appear(&mut self, cx: &mut Cx<Self>) {
+        self.0.will_appear(unsafe { &mut *(cx as *mut Cx<Self>).cast::<Cx<Page>>() });
     }
-    fn on_disappear(&mut self, _: &mut Cx<Self>) {
-        self.0.note("disappear");
+    fn did_appear(&mut self, cx: &mut Cx<Self>) {
+        self.0.did_appear(unsafe { &mut *(cx as *mut Cx<Self>).cast::<Cx<Page>>() });
+    }
+    fn will_disappear(&mut self, cx: &mut Cx<Self>) {
+        self.0.will_disappear(unsafe { &mut *(cx as *mut Cx<Self>).cast::<Cx<Page>>() });
+    }
+    fn did_disappear(&mut self, cx: &mut Cx<Self>) {
+        self.0.did_disappear(unsafe { &mut *(cx as *mut Cx<Self>).cast::<Cx<Page>>() });
     }
 }
 
@@ -2784,7 +2800,7 @@ impl Component for Leaf {
 }
 
 impl Screen for Leaf {
-    fn on_enter(&mut self, cx: &mut Cx<Self>) {
+    fn on_load(&mut self, cx: &mut Cx<Self>) {
         LEAF_ID.store(cx.handle().id(), Relaxed);
     }
 }
@@ -3078,7 +3094,7 @@ impl Child for Mover {
 }
 
 impl Screen for Mover {
-    fn on_appear(&mut self, cx: &mut Cx<Self>) {
+    fn will_appear(&mut self, cx: &mut Cx<Self>) {
         MOVER.with(|m| m.set(cx.handle().id()));
     }
 }
@@ -3699,7 +3715,7 @@ impl Component for Card {
 }
 
 impl Screen for Card {
-    fn on_appear(&mut self, cx: &mut Cx<Self>) {
+    fn will_appear(&mut self, cx: &mut Cx<Self>) {
         CARD.with(|c| c.set(cx.handle().id()));
     }
 
@@ -3847,4 +3863,213 @@ fn a_clear_scrim_damages_only_what_draws() {
         assert!(rect.w <= 200 && rect.y >= 300, "{rect:?} in {damage:?}");
     }
     assert_eq!(tree.scrim, 0);
+}
+
+std::thread_local! {
+    static LIFE: core::cell::RefCell<Vec<(&'static str, &'static str)>> = const { core::cell::RefCell::new(Vec::new()) };
+    static LIFE_IDS: core::cell::RefCell<Vec<(&'static str, u32)>> = const { core::cell::RefCell::new(Vec::new()) };
+}
+
+fn life_note(name: &'static str, event: &'static str) {
+    LIFE.with(|l| l.borrow_mut().push((name, event)));
+}
+
+fn life_events(name: &str) -> Vec<&'static str> {
+    LIFE.with(|l| l.borrow().iter().filter(|e| e.0 == name).map(|e| e.1).collect())
+}
+
+fn life_send(tree: &mut Tree, name: &str, msg: LifeMsg) {
+    let id = LIFE_IDS.with(|ids| ids.borrow().iter().rev().find(|e| e.0 == name).unwrap().1);
+    tree.post(id, Erased::new(msg));
+    tree.update();
+}
+
+#[derive(Clone, Copy)]
+enum LifeMsg {
+    Push(&'static str),
+    Pop,
+}
+
+struct Life {
+    name: &'static str,
+    viewed: core::cell::Cell<bool>,
+}
+
+impl Life {
+    fn new(name: &'static str) -> Self {
+        Self { name, viewed: core::cell::Cell::new(false) }
+    }
+}
+
+struct LifeGuard(&'static str);
+
+impl Drop for LifeGuard {
+    fn drop(&mut self) {
+        life_note(self.0, "guard dropped");
+    }
+}
+
+impl Drop for Life {
+    fn drop(&mut self) {
+        life_note(self.name, "drop");
+    }
+}
+
+impl Component for Life {
+    type Msg = LifeMsg;
+
+    fn update(&mut self, msg: LifeMsg, cx: &mut Cx<Self>) {
+        match msg {
+            LifeMsg::Push(name) => cx.nav().push(Life::new(name)),
+            LifeMsg::Pop => cx.nav().pop(),
+        }
+    }
+
+    fn view<'a>(&'a self, ui: &'a Ui<LifeMsg>) -> Element<'a, LifeMsg> {
+        if !self.viewed.replace(true) {
+            life_note(self.name, "view");
+        }
+        ui.column([]).grow(1).id(crate::Id::named(self.name))
+    }
+}
+
+impl Screen for Life {
+    fn on_load(&mut self, cx: &mut Cx<Self>) {
+        life_note(self.name, "load");
+        LIFE_IDS.with(|ids| ids.borrow_mut().push((self.name, cx.handle().id())));
+    }
+    fn will_appear(&mut self, _: &mut Cx<Self>) {
+        life_note(self.name, "will_appear");
+    }
+    fn did_appear(&mut self, cx: &mut Cx<Self>) {
+        life_note(self.name, "did_appear");
+        cx.while_shown(LifeGuard(self.name));
+    }
+    fn will_disappear(&mut self, _: &mut Cx<Self>) {
+        life_note(self.name, "will_disappear");
+    }
+    fn did_disappear(&mut self, _: &mut Cx<Self>) {
+        life_note(self.name, "did_disappear");
+    }
+}
+
+#[test]
+fn a_screen_loads_before_its_view_and_appears_once_its_transition_ends() {
+    let mut tree = Tree::new(Life::new("a"), SCREEN, Caps::INTERNAL, theme());
+    settle(&mut tree);
+    assert_eq!(life_events("a"), ["load", "will_appear", "view", "did_appear"]);
+
+    life_send(&mut tree, "a", LifeMsg::Push("b"));
+    assert!(tree.transiting());
+    assert_eq!(life_events("b"), ["load", "will_appear", "view"]);
+    assert_eq!(life_events("a")[4..], ["will_disappear", "guard dropped"]);
+    settle(&mut tree);
+    assert_eq!(life_events("b")[3..], ["did_appear"]);
+    assert_eq!(life_events("a")[6..], ["did_disappear"]);
+
+    life_send(&mut tree, "b", LifeMsg::Pop);
+    settle(&mut tree);
+    assert_eq!(life_events("b")[4..], ["will_disappear", "guard dropped", "did_disappear", "drop"]);
+    assert_eq!(life_events("a")[7..], ["will_appear", "did_appear"]);
+}
+
+#[test]
+fn a_move_cut_short_still_pairs_the_hooks() {
+    let mut tree = Tree::new(Life::new("a"), SCREEN, Caps::INTERNAL, theme());
+    settle(&mut tree);
+    life_send(&mut tree, "a", LifeMsg::Push("b"));
+    life_send(&mut tree, "b", LifeMsg::Push("c"));
+    settle(&mut tree);
+    assert_eq!(life_events("b"), ["load", "will_appear", "view", "did_appear", "will_disappear", "guard dropped", "did_disappear"]);
+    assert_eq!(life_events("c"), ["load", "will_appear", "view", "did_appear"]);
+}
+
+#[test]
+fn screens_inside_a_covered_screen_disappear_and_come_back_with_it() {
+    let log = SPLIT_LOG.with(|l| *l);
+    let mut tree = Tree::new(Split { page: Page::new("split", log) }, SCREEN, Caps::INTERNAL, theme());
+    settle(&mut tree);
+    let pane = || log.borrow().iter().filter(|e| e.0 == "pane").map(|e| e.1).collect::<Vec<_>>();
+    assert_eq!(pane(), ["load", "will_appear", "did_appear"]);
+    tap(&mut tree, "open-root");
+    settle(&mut tree);
+    assert_eq!(pane()[3..], ["will_disappear", "did_disappear"]);
+    tap(&mut tree, "back");
+    settle(&mut tree);
+    assert_eq!(pane()[5..], ["will_appear", "did_appear"]);
+}
+
+#[test]
+fn an_inbox_keeps_order_and_capacity_and_a_pending_cancels_when_dropped() {
+    let link: crate::app::Link = Arc::new(idf::sync::OnceLock::new());
+    let mut inbox = Inbox::<u32>::new(2, link.clone(), 1, Erased::new(()));
+    let sender = inbox.sender();
+    assert_eq!((sender.send(1), sender.send(2), sender.send(3)), (Ok(()), Ok(()), Err(3)));
+    assert_eq!(inbox.drain().collect::<Vec<_>>(), [1, 2]);
+    assert_eq!(sender.send(4), Ok(()));
+    drop(inbox);
+    assert_eq!(sender.send(5), Err(5));
+
+    let (pending, reply) = Pending::<u32>::new(link, 1, Erased::new(()));
+    assert!(!reply.is_cancelled());
+    drop(pending);
+    assert!(reply.is_cancelled());
+    assert_eq!(reply.send(1), Err(1));
+}
+
+std::thread_local! {
+    static REPLIES: core::cell::RefCell<Vec<(usize, Reply<u32>)>> = const { core::cell::RefCell::new(Vec::new()) };
+}
+
+struct Tasks {
+    inbox: Option<Inbox<u32>>,
+    overscan: u8,
+}
+
+impl Component for Tasks {
+    type Msg = ();
+
+    fn update(&mut self, _: (), _: &mut Cx<Self>) {}
+
+    fn view<'a>(&'a self, ui: &'a Ui<()>) -> Element<'a, ()> {
+        ui.list(100, 50, Self::row).overscan(self.overscan).id(id!("tasks")).grow(1)
+    }
+}
+
+impl Tasks {
+    fn row<'a>(&'a self, index: usize, ui: &'a Ui<()>) -> Element<'a, ()> {
+        let inbox = self.inbox.as_ref().unwrap();
+        ui.column([]).height(50).task(inbox, move |reply| REPLIES.with(|r| r.borrow_mut().push((index, reply))))
+    }
+}
+
+impl Screen for Tasks {
+    fn on_load(&mut self, cx: &mut Cx<Self>) {
+        self.inbox = Some(cx.inbox(16, ()));
+    }
+}
+
+fn task_rows(overscan: u8) -> (Tree, usize) {
+    REPLIES.with(|r| r.borrow_mut().clear());
+    let mut tree = Tree::new(Tasks { inbox: None, overscan }, SCREEN, Caps::INTERNAL, theme());
+    settle(&mut tree);
+    let started = REPLIES.with(|r| r.borrow().len());
+    (tree, started)
+}
+
+#[test]
+fn a_task_lives_while_its_row_does() {
+    let (mut tree, started) = task_rows(1);
+    assert!(REPLIES.with(|r| r.borrow().iter().all(|(_, reply)| !reply.is_cancelled())));
+    let list = tree.find(id!("tasks")).unwrap();
+    let NodeContent::List(rows) = &mut tree.nodes[list as usize].content else { panic!() };
+    rows.offset = 2000;
+    tree.update();
+    REPLIES.with(|r| {
+        let r = r.borrow();
+        assert!(r[..started].iter().all(|(_, reply)| reply.is_cancelled()), "rows scrolled away cancel");
+        assert!(r[started..].iter().all(|(index, reply)| *index >= 39 && !reply.is_cancelled()));
+    });
+    let (_, wider) = task_rows(3);
+    assert_eq!(wider, started + 2, "overscan reaches further past the end");
 }

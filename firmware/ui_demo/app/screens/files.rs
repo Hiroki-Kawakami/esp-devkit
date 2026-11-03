@@ -112,7 +112,7 @@ impl Component for Storages {
 }
 
 impl Screen for Storages {
-    fn on_enter(&mut self, cx: &mut Cx<Self>) {
+    fn on_load(&mut self, cx: &mut Cx<Self>) {
         *STORAGE_EVENTS.lock() = Some(cx.handle());
     }
 }
