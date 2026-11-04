@@ -224,12 +224,10 @@
         "radius": 32
       }
     },
-    "list": {
-      "row_height": 80
-    },
     "list_item": {
+      "height": 80,
       "root": {
-        "height": "widgets.list.row_height",
+        "height": "widgets.list_item.height",
         "padding_x": "widgets.unit.padding",
         "gap": "widgets.unit.padding",
         "background": "color.surface",

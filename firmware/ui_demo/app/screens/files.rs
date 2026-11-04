@@ -7,7 +7,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use devkit_ui::widgets::{Menu, button, checkbox, icon_button, list_item, modal, modal_actions, modal_message, modal_title, progress_bar, progress_indicator, slider, slider_value, switch, top_bar};
-use devkit_ui::{Align, Child, Component, Cx, Elide, Element, Handle, Id, Sides, Overlay, RenderMode, Root, Screen, SplitRole, Strips, Ui, id};
+use devkit_ui::{Align, Child, CollectionLayout, Component, Cx, Elide, Element, Handle, Id, Justify, Sides, Overlay, RenderMode, Root, Screen, SplitRole, Strips, Ui, id};
 use idf::heap::Caps;
 use idf::sync::{LazyLock, Mutex};
 
@@ -131,18 +131,35 @@ pub enum Msg {
     Back,
     OpenMenu,
     Compact,
+    Grid,
 }
+
+const CELL: (i16, i16) = (200, 264);
 
 pub struct Browser {
     names: Vec<String>,
     selected: Option<u16>,
     revision: u32,
+    grid: bool,
 }
 
 impl Browser {
     fn new() -> Self {
         let names = (0..FILE_COUNT).map(|i| alloc::format!("{:03} {}", i, NAMES[i % NAMES.len()])).collect();
-        Self { names, selected: None, revision: 0 }
+        Self { names, selected: None, revision: 0, grid: false }
+    }
+
+    fn cell<'a>(&'a self, index: usize, ui: &'a Ui<Msg>) -> Element<'a, Msg> {
+        let theme = ui.theme();
+        let c = ui.colors();
+        let thumb = ui.column([ui.icon(icon(FILE_ICONS[index % FILE_ICONS.len()])).foreground(colors::MUTED)]).aspect_ratio(1, 1).radius(12).background(c.background).align(Align::Center).justify(Justify::Center);
+        let name = ui.text(theme.fonts.caption, &self.names[index]).foreground(c.text).wrap().max_lines(2).ellipsis(Elide::Middle).text_center();
+        let cell = ui.column([thumb, name]).padding(8).gap(10).radius(16).on_tap(Msg::Open(index as u16));
+        let cell = if self.selected == Some(index as u16) { cell.background(colors::SELECTED) } else { cell };
+        match ROW_IDS.get(index) {
+            Some(id) => cell.id(Id::named(*id)),
+            None => cell,
+        }
     }
 
     fn row<'a>(&'a self, index: usize, ui: &'a Ui<Msg>) -> Element<'a, Msg> {
@@ -168,10 +185,11 @@ impl Component for Browser {
             Msg::Back => cx.nav().pop(),
             Msg::OpenMenu => {
                 if let Some(anchor) = cx.tap_rect() {
-                    cx.popup(Menu::new(anchor, &[("Compact", Msg::Compact)], cx.handle()));
+                    cx.popup(Menu::new(anchor, &[("Compact", Msg::Compact), ("Grid", Msg::Grid)], cx.handle()));
                 }
             }
-            Msg::Compact => {}
+            Msg::Compact => self.grid = false,
+            Msg::Grid => self.grid = true,
         }
         cx.rebuild();
     }
@@ -188,7 +206,12 @@ impl Component for Browser {
                 .padding_each(24, 13, 24, 0)
                 .border(ui.colors().divider, 1)
                 .border_sides(Sides::TOP),
-            ui.list(self.names.len(), theme.widgets.list.row_height, Self::row).revision(self.revision).id(id!("files")).grow(1).background(ui.colors().surface),
+            if self.grid {
+                ui.collection(self.names.len(), CollectionLayout::Grid { width: CELL.0, height: CELL.1 }, Self::cell).gap_xy(16, 20).padding_each(24, 8, 24, 24).revision(self.revision).id(id!("grid")).grow(1)
+            } else {
+                ui.collection(self.names.len(), CollectionLayout::List { row_height: theme.widgets.list_item.height }, Self::row).revision(self.revision).id(id!("files")).grow(1)
+            }
+            .background(ui.colors().surface),
         ])
         .padding_each(0, ui.insets().top, 0, 0)
         .background(ui.colors().surface)

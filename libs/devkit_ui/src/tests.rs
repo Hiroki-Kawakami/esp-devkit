@@ -134,8 +134,7 @@ static WIDGETS: Widgets = Widgets {
     unit: UnitTheme { padding: 24, gap: 12, radius: 14 },
     button: ButtonTheme { root: &EMPTY, label: &EMPTY, primary: &EMPTY, secondary: &EMPTY, destructive: &EMPTY, plain: &EMPTY, navigation: &EMPTY, primary_outline: &EMPTY, secondary_outline: &EMPTY, destructive_outline: &EMPTY, plain_outline: &EMPTY },
     icon_button: IconButtonTheme { root: &ICON_BUTTON },
-    list: ListTheme { row_height: 80 },
-    list_item: ListItemTheme { root: &EMPTY, text: &EMPTY, title: &EMPTY, meta: &EMPTY, leading: &EMPTY, trailing: &EMPTY },
+    list_item: ListItemTheme { height: 80, root: &EMPTY, text: &EMPTY, title: &EMPTY, meta: &EMPTY, leading: &EMPTY, trailing: &EMPTY },
     top_bar: TopBarTheme { back_height: 64, padding_x: 8, root: &TOP_BAR, title: &EMPTY, back: &TOP_BAR_BACK },
     switch: SwitchTheme { root: &EMPTY, thumb: &EMPTY },
     checkbox: CheckboxTheme { root: &EMPTY, mark: &EMPTY },
@@ -269,7 +268,7 @@ impl Component for Sample {
             .align(Align::Center),
             ui.row([first, second]).gap(4).id(id!("pair")),
             ui.child_mapped::<Counter>(self.count > 100, Msg::FromChild).id(id!("child")),
-            ui.list(1000, 50, Self::row).id(id!("list")).grow(1),
+            ui.collection(1000, CollectionLayout::List { row_height: 50 }, Self::row).id(id!("list")).grow(1),
             if self.panel {
                 ui.column([ui.text(self.font, &self.label)]).size(100, 100).absolute(None, Some(20), Some(10), None).background(WHITE).id(id!("panel")).on_tap(Msg::Toggle)
             } else {
@@ -895,7 +894,7 @@ impl Component for Log {
     }
 
     fn view<'a>(&'a self, ui: &'a Ui<LogMsg>) -> Element<'a, LogMsg> {
-        ui.column([ui.list(self.count, 50, log_row).height(400).scroll_anchor(ScrollEdge::End).id(id!("log"))])
+        ui.column([ui.collection(self.count, CollectionLayout::List { row_height: 50 }, log_row).height(400).scroll_anchor(ScrollEdge::End).id(id!("log"))])
     }
 }
 
@@ -976,13 +975,121 @@ fn a_finger_on_the_list_wins_and_an_eased_scroll_gets_there() {
     assert_eq!(log_offset(&tree), 0, "the start is not the end it keeps to");
 }
 
+#[derive(Clone, Copy)]
+enum CellMsg {
+    Tap(u16),
+    Narrow,
+    ToIndex(u16),
+    ToEnd,
+}
+
+struct Cells {
+    count: usize,
+    width: i16,
+    tapped: &'static core::cell::Cell<Option<u16>>,
+}
+
+impl Screen for Cells {}
+
+impl Component for Cells {
+    type Msg = CellMsg;
+
+    fn update(&mut self, msg: CellMsg, cx: &mut Cx<Self>) {
+        match msg {
+            CellMsg::Tap(i) => self.tapped.set(Some(i)),
+            CellMsg::Narrow => self.width = 250,
+            CellMsg::ToIndex(i) => cx.scroll_to(id!("grid"), ScrollTarget::Index(usize::from(i)), false),
+            CellMsg::ToEnd => cx.scroll_to(id!("grid"), ScrollTarget::End, false),
+        }
+        cx.rebuild();
+    }
+
+    fn view<'a>(&'a self, ui: &'a Ui<CellMsg>) -> Element<'a, CellMsg> {
+        let grid = ui.collection(self.count, CollectionLayout::Grid { width: 100, height: 120 }, cell).gap_xy(16, 20).padding_each(24, 8, 24, 24);
+        ui.column([grid.width(self.width).height(500).id(id!("grid"))])
+    }
+}
+
+fn cell<'a>(_: &'a Cells, index: usize, ui: &'a Ui<CellMsg>) -> Element<'a, CellMsg> {
+    ui.column([]).id(crate::Id::of(ui.format(format_args!("cell{index}")))).on_tap(CellMsg::Tap(index as u16))
+}
+
+fn cells(count: usize) -> (Tree, &'static core::cell::Cell<Option<u16>>) {
+    let tapped = Box::leak(Box::new(core::cell::Cell::new(None)));
+    let mut tree = Tree::new(Cells { count, width: 400, tapped }, SCREEN, Caps::INTERNAL, theme());
+    run(&mut tree);
+    (tree, tapped)
+}
+
+fn shown_cells(tree: &Tree) -> Vec<u32> {
+    match &tree.nodes[tree.find(id!("grid")).unwrap() as usize].content {
+        NodeContent::Collection(c) => c.items.iter().map(|i| i.0).collect(),
+        _ => panic!(),
+    }
+}
+
+#[test]
+fn a_grid_fits_columns_and_spreads_what_is_left() {
+    let (mut tree, tapped) = cells(9);
+    assert_eq!(rect_of(&tree, "cell0"), Rect::new(74, 8, 100, 120));
+    assert_eq!(rect_of(&tree, "cell1"), Rect::new(224, 8, 100, 120));
+    assert_eq!(rect_of(&tree, "cell2"), Rect::new(74, 148, 100, 120));
+    assert!(tree.find(id!("cell9")).is_none());
+    tap(&mut tree, "cell3");
+    assert_eq!(tapped.get(), Some(3));
+    let offset = |tree: &Tree| tree.nodes[tree.find(id!("grid")).unwrap() as usize].scroll_offset();
+    tree.post(tree.root_id, crate::erased::Erased::new(CellMsg::ToIndex(8)));
+    run(&mut tree);
+    assert_eq!(offset(&tree), Some(8 + 4 * 140 + 120 - 500));
+    tree.post(tree.root_id, crate::erased::Erased::new(CellMsg::ToEnd));
+    run(&mut tree);
+    assert_eq!(offset(&tree), Some(8 + 5 * 140 - 20 + 24 - 500), "the bottom padding scrolls in too");
+}
+
+#[test]
+fn a_grid_builds_only_the_rows_in_view_and_scrolls_to_an_item() {
+    let (mut tree, _) = cells(100);
+    assert_eq!(shown_cells(&tree), (0..10).collect::<Vec<_>>(), "four rows in view and one past");
+    tree.post(tree.root_id, crate::erased::Erased::new(CellMsg::ToIndex(41)));
+    run(&mut tree);
+    let shown = shown_cells(&tree);
+    assert!(shown.contains(&41) && shown.len() <= 12, "{shown:?}");
+    let cell = rect_of(&tree, "cell41");
+    assert!(cell.y >= 0 && cell.bottom() <= 500, "{cell:?}");
+}
+
+#[test]
+fn items_far_down_a_long_collection_show_and_take_taps() {
+    let (mut tree, tapped) = cells(1000);
+    tree.post(tree.root_id, crate::erased::Erased::new(CellMsg::ToIndex(900)));
+    run(&mut tree);
+    let cell = rect_of(&tree, "cell900");
+    assert!(8 + 450 * 140 > i32::from(i16::MAX));
+    assert!(cell.y >= 0 && cell.bottom() <= 500, "{cell:?}");
+    tap(&mut tree, "cell900");
+    assert_eq!(tapped.get(), Some(900));
+}
+
+#[test]
+fn fewer_columns_keep_the_first_item_in_view() {
+    let (mut tree, _) = cells(100);
+    tree.post(tree.root_id, crate::erased::Erased::new(CellMsg::ToIndex(41)));
+    run(&mut tree);
+    let first = |tree: &Tree| (0..100).find(|i| tree.find(crate::Id::of(&alloc::format!("cell{i}"))).is_some_and(|n| tree.nodes[n as usize].screen.bottom() > 0)).unwrap();
+    let before = first(&tree);
+    tree.post(tree.root_id, crate::erased::Erased::new(CellMsg::Narrow));
+    run(&mut tree);
+    let after = rect_of(&tree, &alloc::format!("cell{before}"));
+    assert!(after.y <= 0 && after.bottom() > 0, "{before} at {after:?}");
+}
+
 #[test]
 fn list_builds_only_visible_rows_and_keeps_them_while_scrolling() {
     let mut tree = Tree::new(Sample::new(), SCREEN, Caps::INTERNAL, theme());
     run(&mut tree);
     let list_id = tree.find(id!("list")).unwrap();
     let rows = |tree: &Tree| match &tree.nodes[list_id as usize].content {
-        NodeContent::List(list) => list.rows.iter().map(|r| r.0).collect::<Vec<_>>(),
+        NodeContent::Collection(list) => list.items.iter().map(|r| r.0).collect::<Vec<_>>(),
         _ => panic!(),
     };
     let viewport = rect_of(&tree, "list");
@@ -1029,7 +1136,7 @@ fn a_new_string_of_the_same_box_skips_layout_and_a_revision_keeps_rows() {
         fn view<'a>(&'a self, ui: &'a Ui<Set>) -> Element<'a, Set> {
             ui.column([
                 ui.row([ui.text(self.font, ui.format(format_args!("{}", "x".repeat(usize::from(self.value))))).grow(1).id(id!("label"))]),
-                ui.list(100, 50, Self::row).grow(1).revision(self.revision),
+                ui.collection(100, CollectionLayout::List { row_height: 50 }, Self::row).grow(1).revision(self.revision),
             ])
         }
     }
@@ -1090,7 +1197,7 @@ fn repeated_samples_leave_the_speed_alone_and_a_short_tick_keeps_the_fling() {
     tree.touch(&[(0, (x, viewport.y + 220))], 40);
     tree.touch(&[], 45);
     let offset = |tree: &Tree| match &tree.nodes[tree.find(id!("list")).unwrap() as usize].content {
-        NodeContent::List(list) => list.offset,
+        NodeContent::Collection(list) => list.offset,
         _ => panic!(),
     };
     tree.tick(0);
@@ -1214,7 +1321,7 @@ impl Page {
             ui.row([]).size(40, 40).id(id!("open-root")).on_tap(PageMsg::OpenRoot),
             ui.row([]).size(40, 40).id(id!("back")).on_tap(PageMsg::Back),
             widgets::slider(ui, self.value, |d| PageMsg::Slide(widgets::slider_value(d))).width(200).id(id!("slider")),
-            ui.list(100, 50, page_row::<C>).id(id!("rows")).grow(1),
+            ui.collection(100, CollectionLayout::List { row_height: 50 }, page_row::<C>).id(id!("rows")).grow(1),
         ])
     }
 }
@@ -1335,7 +1442,7 @@ fn state_and_scroll_position_come_back_and_taps_wait_for_the_slide() {
     tree.touch(&[], 2000);
     settle(&mut tree);
     let offset = |tree: &Tree, name: &str| match &tree.nodes[tree.find(crate::Id::of(name)).unwrap() as usize].content {
-        NodeContent::List(list) => list.offset,
+        NodeContent::Collection(list) => list.offset,
         _ => panic!(),
     };
     let before = offset(&tree, "rows");
@@ -2378,7 +2485,7 @@ impl Component for Pair {
     fn update(&mut self, _: (), _: &mut Cx<Self>) {}
 
     fn view<'a>(&'a self, ui: &'a Ui<()>) -> Element<'a, ()> {
-        ui.row([ui.list(100, 40, Self::row).grow(1).id(id!("left")), ui.list(100, 40, Self::row).grow(1).id(id!("right"))])
+        ui.row([ui.collection(100, CollectionLayout::List { row_height: 40 }, Self::row).grow(1).id(id!("left")), ui.collection(100, CollectionLayout::List { row_height: 40 }, Self::row).grow(1).id(id!("right"))])
     }
 }
 
@@ -2391,7 +2498,7 @@ impl Pair {
 impl Screen for Pair {}
 
 fn offset_of(tree: &Tree, id: &str) -> i32 {
-    let NodeContent::List(list) = &tree.nodes[tree.find(crate::Id::of(id)).unwrap() as usize].content else { panic!() };
+    let NodeContent::Collection(list) = &tree.nodes[tree.find(crate::Id::of(id)).unwrap() as usize].content else { panic!() };
     list.offset
 }
 
@@ -2675,7 +2782,7 @@ impl Component for Photos {
     }
 
     fn view<'a>(&'a self, ui: &'a Ui<Gesture>) -> Element<'a, Gesture> {
-        ui.list(20, 300, Self::row).grow(1).id(id!("photos"))
+        ui.collection(20, CollectionLayout::List { row_height: 300 }, Self::row).grow(1).id(id!("photos"))
     }
 }
 
@@ -3539,7 +3646,7 @@ impl Component for Puller {
     }
 
     fn view<'a>(&'a self, ui: &'a Ui<PullMsg>) -> Element<'a, PullMsg> {
-        let list = ui.list(self.count, 40, Self::row).grow(1).bounce(self.bounce).id(id!("list"));
+        let list = ui.collection(self.count, CollectionLayout::List { row_height: 40 }, Self::row).grow(1).bounce(self.bounce).id(id!("list"));
         if self.pull { list.pull(60, self.refreshing, PullMsg::Refresh) } else { list }
     }
 }
@@ -3685,8 +3792,8 @@ fn rows_follow_past_the_start() {
     tree.touch(&[(0, (r.x + 10, r.y + 400))], 32);
     run(&mut tree);
     let offset = offset_of(&tree, "list");
-    let NodeContent::List(list) = &tree.nodes[tree.find(id!("list")).unwrap() as usize].content else { panic!() };
-    let (index, row) = list.rows[0];
+    let NodeContent::Collection(list) = &tree.nodes[tree.find(id!("list")).unwrap() as usize].content else { panic!() };
+    let (index, row) = list.items[0];
     assert_eq!(index, 0);
     assert_eq!(i32::from(tree.nodes[row as usize].screen.y), i32::from(r.y) - offset);
     tree.touch(&[], 400);
@@ -4195,7 +4302,7 @@ impl Component for Tasks {
     fn update(&mut self, _: (), _: &mut Cx<Self>) {}
 
     fn view<'a>(&'a self, ui: &'a Ui<()>) -> Element<'a, ()> {
-        ui.list(100, 50, Self::row).overscan(self.overscan).id(id!("tasks")).grow(1)
+        ui.collection(100, CollectionLayout::List { row_height: 50 }, Self::row).overscan(self.overscan).id(id!("tasks")).grow(1)
     }
 }
 
@@ -4225,7 +4332,7 @@ fn a_task_lives_while_its_row_does() {
     let (mut tree, started) = task_rows(1);
     assert!(REPLIES.with(|r| r.borrow().iter().all(|(_, reply)| !reply.is_cancelled())));
     let list = tree.find(id!("tasks")).unwrap();
-    let NodeContent::List(rows) = &mut tree.nodes[list as usize].content else { panic!() };
+    let NodeContent::Collection(rows) = &mut tree.nodes[list as usize].content else { panic!() };
     rows.offset = 2000;
     tree.update();
     REPLIES.with(|r| {

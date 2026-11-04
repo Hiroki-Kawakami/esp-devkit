@@ -78,7 +78,7 @@ pub(crate) enum Content<'a> {
     Text { font: &'static FontChain, text: &'a str, options: TextOptions, edit: Option<Edit> },
     Image { image: Image<'static>, tint: Color },
     Scroll,
-    List { count: usize, row_height: i16, revision: Option<u32>, overscan: u8, row: RowMap },
+    Collection { count: usize, layout: CollectionLayout, revision: Option<u32>, overscan: u8, item: ItemMap },
     Canvas(DrawMap),
     External(&'a ExternalSurface),
     Progress { gauge: Gauge, value: Option<f32>, period_ms: u16 },
@@ -147,20 +147,30 @@ unsafe fn call_scroll_map<M: Copy>(function: *const (), offset: i32) -> Erased {
     Erased::new(function(offset))
 }
 
-type RowFn<C> = for<'r> fn(&'r C, usize, &'r Ui<<C as Component>::Msg>) -> Element<'r, <C as Component>::Msg>;
+type ItemFn<C> = for<'r> fn(&'r C, usize, &'r Ui<<C as Component>::Msg>) -> Element<'r, <C as Component>::Msg>;
+
+/// How a `collection` places its items: rows across its width, or cells of one
+/// size with as many columns as fit at least the horizontal gap apart, the
+/// width left over spread between them and at both sides. The vertical gap goes
+/// between rows.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CollectionLayout {
+    List { row_height: i16 },
+    Grid { width: i16, height: i16 },
+}
 
 #[derive(Clone, Copy)]
-pub(crate) struct RowMap {
+pub(crate) struct ItemMap {
     pub(crate) function: *const (),
     pub(crate) call: unsafe fn(*const (), &dyn Any, &mut Tree, u16, usize, NodeIndex),
 }
 
-unsafe fn call_row_map<C: Component>(function: *const (), component: &dyn Any, tree: &mut Tree, owner: u16, index: usize, row: NodeIndex) {
+unsafe fn call_item_map<C: Component>(function: *const (), component: &dyn Any, tree: &mut Tree, owner: u16, index: usize, row: NodeIndex) {
     let Some(component) = component.downcast_ref::<C>() else {
-        idf::log::error!(c"ui", "list: the row function belongs to another component");
+        idf::log::error!(c"ui", "collection: the item function belongs to another component");
         return;
     };
-    let function: RowFn<C> = unsafe { core::mem::transmute(function) };
+    let function: ItemFn<C> = unsafe { core::mem::transmute(function) };
     let ui = Ui::new(tree.bump(), tree.context(owner));
     let element = function(component, index, &ui);
     tree.reconcile(owner, row, &element);
@@ -709,10 +719,10 @@ impl<'a, M: Copy> Element<'a, M> {
         self.prop(Prop::Clip(true))
     }
 
-    /// Rows are built again only when this changes, instead of on every
-    /// rebuild of the owner. Change it whenever rows would look different.
+    /// Items are built again only when this changes, instead of on every
+    /// rebuild of the owner. Change it whenever items would look different.
     pub fn revision(mut self, revision: u32) -> Self {
-        if let Content::List { revision: r, .. } = &mut self.content {
+        if let Content::Collection { revision: r, .. } = &mut self.content {
             *r = Some(revision);
         }
         self
@@ -720,14 +730,14 @@ impl<'a, M: Copy> Element<'a, M> {
 
     /// How many rows exist past each end of what shows, 1 by default.
     pub fn overscan(mut self, rows: u8) -> Self {
-        if let Content::List { overscan, .. } = &mut self.content {
+        if let Content::Collection { overscan, .. } = &mut self.content {
             *overscan = rows;
         }
         self
     }
 
     /// Calls `start` once this node is made, and cancels its `Reply` once the
-    /// node goes: out of a list's rows, with its screen, or without the task in
+    /// node goes: out of a collection's rows, with its screen, or without the task in
     /// the view. Values come through `inbox`. `start` is never dropped, so it
     /// may hold only what needs no drop.
     pub fn task<T: Send + 'static, F: Fn(Reply<T>) + 'a>(mut self, inbox: &'a Inbox<T>, start: F) -> Self {
@@ -955,13 +965,14 @@ impl<M: Copy> Ui<M> {
         Element::new(self.bump, Content::Scroll, self.place_slice(&[child]))
     }
 
-    /// Only visible rows exist, each made by `row` of the component whose view
-    /// this is. A list with an id keeps its scroll position while its screen is
-    /// covered.
-    pub fn list<'a, C: Component<Msg = M>>(&'a self, count: usize, row_height: i16, row: RowFn<C>) -> Element<'a, M> {
-        let row = RowMap { function: row as *const (), call: call_row_map::<C> };
-        let mut element = Element::new(self.bump, Content::List { count, row_height, revision: None, overscan: 1, row }, &mut []);
-        element.role = Role::List;
+    /// `count` items placed by `layout`, scrolling vertically. Only the rows in
+    /// view exist, each item made by `item` of the component whose view this
+    /// is. Padding scrolls with the items. One with an id keeps its scroll
+    /// position while its screen is covered.
+    pub fn collection<'a, C: Component<Msg = M>>(&'a self, count: usize, layout: CollectionLayout, item: ItemFn<C>) -> Element<'a, M> {
+        let item = ItemMap { function: item as *const (), call: call_item_map::<C> };
+        let mut element = Element::new(self.bump, Content::Collection { count, layout, revision: None, overscan: 1, item }, &mut []);
+        element.role = Role::Collection;
         element
     }
 

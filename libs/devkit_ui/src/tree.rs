@@ -31,7 +31,7 @@ use crate::keyboard::{InputKind, KeyboardMode, KeyboardPanel};
 use crate::erased::Erased;
 use crate::motion::{Clock, Motion, MotionKind};
 use crate::nav::{NavOp, NavigatorNode, Overlay, Root, Saved};
-use crate::node::{CanvasNode, ListNode, NONE, Node, NodeContent, NodeIndex, Pull, ScrollNode, TextNode};
+use crate::node::{CanvasNode, CollectionNode, NONE, Node, NodeContent, NodeIndex, Placement, Pull, ScrollNode, TextNode};
 use crate::presenter::{ROW_GRID, Strips};
 use crate::progress::ProgressNode;
 use crate::style::{Dimension, Insets, Role, ScreenStyle, State, Style};
@@ -212,7 +212,7 @@ pub(crate) struct Tree {
     pub(crate) root: NodeIndex,
     pub(crate) area: Rect,
     pub(crate) slots: Vec<Slot>,
-    lists: Vec<NodeIndex>,
+    collections: Vec<NodeIndex>,
     canvases: Vec<NodeIndex>,
     tasks: Vec<(NodeIndex, Arc<Token>)>,
     deferred: Vec<Deferred>,
@@ -285,7 +285,7 @@ impl Tree {
             root: NONE,
             area,
             slots: Vec::new(),
-            lists: Vec::new(),
+            collections: Vec::new(),
             navigators: Vec::new(),
             root_navigator: NONE,
             chrome: Vec::new(),
@@ -574,8 +574,8 @@ impl Tree {
         {
             found.push(slot);
         }
-        if let NodeContent::List(list) = &node.content {
-            for &(_, row) in &list.rows {
+        if let NodeContent::Collection(list) = &node.content {
+            for &(_, row) in &list.items {
                 self.screens_in(row, found);
             }
         }
@@ -680,12 +680,12 @@ impl Tree {
             child = next;
         }
         match &self.nodes[id as usize].content {
-            NodeContent::List(list) => {
-                let rows = list.rows.clone();
+            NodeContent::Collection(list) => {
+                let rows = list.items.clone();
                 for (_, row) in rows {
                     self.free_subtree(row);
                 }
-                self.lists.retain(|l| *l != id);
+                self.collections.retain(|l| *l != id);
             }
             NodeContent::Canvas(_) => self.canvases.retain(|c| *c != id),
             NodeContent::External(_) if self.external == id => self.external = NONE,
@@ -1030,14 +1030,14 @@ impl Tree {
                     self.sync_progress(id);
                 }
             }
-            (NodeContent::List(list), Content::List { count, row_height, revision, overscan, row }) => {
+            (NodeContent::Collection(list), Content::Collection { count, layout, revision, overscan, item }) => {
                 list.overscan = *overscan;
-                list.stale |= revision.is_none() || *revision != list.revision || list.row.function != row.function;
-                list.row = *row;
+                list.stale |= revision.is_none() || *revision != list.revision || list.item.function != item.function;
+                list.item = *item;
                 list.revision = *revision;
-                if list.count != *count || list.row_height != *row_height {
+                if list.count != *count || list.layout != *layout {
                     list.count = *count;
-                    list.row_height = *row_height;
+                    list.layout = *layout;
                     node.paint_dirty = true;
                     self.layout_dirty = true;
                 }
@@ -1081,8 +1081,9 @@ impl Tree {
             }
             Content::Image { image, tint } => NodeContent::Image { image, tint },
             Content::Scroll => NodeContent::Scroll(ScrollNode { offset: 0, content: 0 }),
-            Content::List { count, row_height, revision, overscan, row } => {
-                NodeContent::List(ListNode { row, overscan, count, row_height, revision, offset: 0, rows: Vec::new_in(self.caps), stale: false })
+            Content::Collection { count, layout, revision, overscan, item } => {
+                let grid = Placement::new(layout, &element.style, 0);
+                NodeContent::Collection(CollectionNode { item, overscan, count, layout, revision, offset: 0, grid, placed: false, items: Vec::new_in(self.caps), stale: false })
             }
             Content::Canvas(draw) => NodeContent::Canvas(CanvasNode { draw, reported: (0, 0) }),
             Content::External(surface) => NodeContent::External(surface.clone()),
@@ -1115,13 +1116,13 @@ impl Tree {
                 }
                 self.external = id;
             }
-            Content::List { .. } => {
-                self.lists.push(id);
+            Content::Collection { .. } => {
+                self.collections.push(id);
                 self.nodes[id as usize].pinned = element.anchor == ScrollEdge::End;
-                let saved = element.id.and_then(|wanted| self.restoring.last().and_then(|s| s.lists.iter().find(|l| l.0 == wanted)));
+                let saved = element.id.and_then(|wanted| self.restoring.last().and_then(|s| s.collections.iter().find(|l| l.0 == wanted)));
                 if let Some(&(_, offset, pinned)) = saved {
                     self.nodes[id as usize].pinned = pinned;
-                    if let NodeContent::List(list) = &mut self.nodes[id as usize].content {
+                    if let NodeContent::Collection(list) = &mut self.nodes[id as usize].content {
                         list.offset = offset;
                     }
                 }
@@ -1153,36 +1154,33 @@ impl Tree {
         id
     }
 
-    /// Builds the rows a list shows, given its current size and offset.
-    fn sync_list(&mut self, id: NodeIndex) {
-        let NodeContent::List(list) = &mut self.nodes[id as usize].content else { return };
-        let (row_height, count, row_map, overscan) = (i32::from(list.row_height), list.count as i32, list.row, i32::from(list.overscan));
-        let offset = list.offset;
+    /// Builds the items a collection shows, given its current size and offset.
+    fn sync_collection(&mut self, id: NodeIndex) {
+        let NodeContent::Collection(list) = &mut self.nodes[id as usize].content else { return };
+        let (grid, count, item_map, overscan, offset) = (list.grid, list.count, list.item, i32::from(list.overscan), list.offset);
         let stale = core::mem::take(&mut list.stale);
         let viewport = i32::from(self.nodes[id as usize].rect.h);
-        let first = (offset / row_height - overscan).max(0);
-        let last = ((offset + viewport) / row_height + overscan).min(count - 1);
-        let NodeContent::List(list) = &mut self.nodes[id as usize].content else { return };
-        let mut rows = core::mem::replace(&mut list.rows, Vec::new_in(self.caps));
-        rows.retain(|&(index, row)| {
-            let keep = (first..=last).contains(&(index as i32));
+        let shown = grid.shown(count, offset, viewport, overscan);
+        let NodeContent::Collection(list) = &mut self.nodes[id as usize].content else { return };
+        let mut items = core::mem::replace(&mut list.items, Vec::new_in(self.caps));
+        items.retain(|&(index, node)| {
+            let keep = shown.contains(&(index as usize));
             if !keep {
-                self.free_subtree(row);
+                self.free_subtree(node);
             }
             keep
         });
         let owner = self.nodes[id as usize].owner;
-        let width = self.nodes[id as usize].rect.w;
-        for index in first..=last {
-            let found = rows.binary_search_by_key(&(index as u32), |r| r.0);
+        for index in shown {
+            let found = items.binary_search_by_key(&(index as u32), |r| r.0);
             let created = found.is_err();
-            let row = match found {
-                Ok(at) => rows[at].1,
+            let node = match found {
+                Ok(at) => items[at].1,
                 Err(at) => {
-                    let row = self.alloc_node(Node::new(NodeContent::Box, owner, self.caps));
-                    self.nodes[row as usize].parent = id;
-                    rows.insert(at, (index as u32, row));
-                    row
+                    let node = self.alloc_node(Node::new(NodeContent::Box, owner, self.caps));
+                    self.nodes[node as usize].parent = id;
+                    items.insert(at, (index as u32, node));
+                    node
                 }
             };
             if stale || created {
@@ -1190,18 +1188,18 @@ impl Tree {
                 let host = self.slots[usize::from(owner)].host.take();
                 if let Some(host) = host {
                     self.depth += 1;
-                    unsafe { (row_map.call)(row_map.function, host.component(), self, owner, index as usize, row) };
+                    unsafe { (item_map.call)(item_map.function, host.component(), self, owner, index, node) };
                     self.depth -= 1;
                     self.slots[usize::from(owner)].host = Some(host);
                 }
-                if core::mem::replace(&mut self.layout_dirty, outer_layout) {
-                    self.clear_measured(row);
-                    self.arrange(row, Rect::new(0, 0, width, row_height as i16));
+                if core::mem::replace(&mut self.layout_dirty, outer_layout) || created {
+                    self.clear_measured(node);
+                    self.arrange_item(node, grid.cell);
                 }
             }
         }
-        let NodeContent::List(list) = &mut self.nodes[id as usize].content else { return };
-        list.rows = rows;
+        let NodeContent::Collection(list) = &mut self.nodes[id as usize].content else { return };
+        list.items = items;
         if self.depth == 0 {
             self.bump.reset();
         }
@@ -1359,8 +1357,8 @@ impl Tree {
             self.resized = false;
         }
         self.apply_scrolls();
-        for i in 0..self.lists.len() {
-            self.sync_list(self.lists[i]);
+        for i in 0..self.collections.len() {
+            self.sync_collection(self.collections[i]);
         }
         self.sync_screen(self.root, 0, 0, self.area, false);
         if self.report_sizes() {
@@ -1440,8 +1438,8 @@ impl Tree {
         if !node.screen.is_empty() && self.paints(id) {
             self.damage.push(node.screen.expand(Self::damage_extent(node)));
         }
-        if let NodeContent::List(list) = &self.nodes[id as usize].content {
-            for (_, row) in list.rows.clone() {
+        if let NodeContent::Collection(list) = &self.nodes[id as usize].content {
+            for (_, row) in list.items.clone() {
                 self.damage_painted(row);
             }
         }
@@ -1690,10 +1688,11 @@ impl Tree {
                 let offset = scroll.offset;
                 self.sync_children(id, cx, cy - offset, viewport, quiet);
             }
-            NodeContent::List(list) => {
-                let (rows, row_height, offset) = (list.rows.clone(), i32::from(list.row_height), list.offset);
-                for (index, row) in rows {
-                    self.sync_screen(row, cx, cy + index as i32 * row_height - offset, viewport, quiet);
+            NodeContent::Collection(list) => {
+                let (items, grid, offset) = (list.items.clone(), list.grid, list.offset);
+                for (index, item) in items {
+                    let (px, py) = grid.place(index as usize);
+                    self.sync_screen(item, x + px, y + py - offset, viewport, quiet);
                 }
             }
             _ => self.sync_children(id, x, y, clip, quiet),
@@ -1777,17 +1776,16 @@ impl Tree {
             ScrollTarget::End => end,
             ScrollTarget::Offset(px) => px,
             ScrollTarget::Index(index) => {
-                let NodeContent::List(list) = &node.content else { return None };
+                let NodeContent::Collection(list) = &node.content else { return None };
                 if list.count == 0 {
                     return Some(current);
                 }
-                let height = i32::from(list.row_height);
-                let top = index.min(list.count - 1) as i32 * height;
+                let (top, bottom) = list.grid.row_span(index.min(list.count - 1));
                 let viewport = i32::from(node.rect.h);
                 if top < current {
                     top
-                } else if top + height > current + viewport {
-                    top + height - viewport
+                } else if bottom > current + viewport {
+                    bottom - viewport
                 } else {
                     current
                 }
@@ -1801,7 +1799,7 @@ impl Tree {
         let span = i32::from(node.rect.h);
         let content = match &node.content {
             NodeContent::Scroll(s) => s.content,
-            NodeContent::List(l) => l.count as i32 * i32::from(l.row_height),
+            NodeContent::Collection(l) => l.grid.height(l.count),
             _ => 0,
         };
         let end = (content - span).max(0);
@@ -1982,7 +1980,7 @@ impl Tree {
         let right = left + i32::from(node.rect.w);
         let bottom = top + i32::from(node.rect.h);
         let inside = x >= left && x < right && y >= top && y < bottom;
-        let clips = node.style.clip || matches!(node.content, NodeContent::Scroll(_) | NodeContent::List(_));
+        let clips = node.style.clip || matches!(node.content, NodeContent::Scroll(_) | NodeContent::Collection(_));
         if !inside && clips {
             return None;
         }
@@ -1994,9 +1992,9 @@ impl Tree {
         }
         let [pad_left, pad_top, _, _] = node.style.padding;
         let mut found = match &node.content {
-            NodeContent::List(list) => list.rows.iter().rev().find_map(|&(index, row)| {
-                let row_y = top + i32::from(pad_top) + index as i32 * i32::from(list.row_height) - list.offset;
-                self.hit(row, left + i32::from(pad_left), row_y, x, y)
+            NodeContent::Collection(list) => list.items.iter().rev().find_map(|&(index, item)| {
+                let (px, py) = list.grid.place(index as usize);
+                self.hit(item, left + px, top + py - list.offset, x, y)
             }),
             NodeContent::Scroll(scroll) => {
                 self.hit_children(id, left + i32::from(pad_left), top + i32::from(pad_top) - scroll.offset, x, y)
@@ -2004,7 +2002,7 @@ impl Tree {
             _ => self.hit_children(id, left, top, x, y),
         };
         if inside {
-            let scrollable = matches!(node.content, NodeContent::Scroll(_) | NodeContent::List(_));
+            let scrollable = matches!(node.content, NodeContent::Scroll(_) | NodeContent::Collection(_));
             if let Some(hit) = &mut found {
                 let panned = hit.gesture != NONE && self.gestures_of(hit.gesture).contains(Gestures::PAN);
                 if hit.scroller == NONE && scrollable && !panned {
@@ -2243,8 +2241,8 @@ impl Tree {
             return;
         }
         f(id, node);
-        if let NodeContent::List(list) = &node.content {
-            for &(_, row) in &list.rows {
+        if let NodeContent::Collection(list) = &node.content {
+            for &(_, row) in &list.items {
                 self.walk(row, f);
             }
         }

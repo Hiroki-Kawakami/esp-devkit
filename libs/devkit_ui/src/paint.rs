@@ -208,12 +208,12 @@ impl Tree {
                 self.paint_children(id, cx, cy - scroll.offset, viewport, down, effects, regions, list);
                 list.pop_clip();
             }
-            NodeContent::List(l) => {
+            NodeContent::Collection(l) => {
                 let viewport = rect.intersect(&clip);
                 list.push_clip(viewport);
-                for &(index, row) in &l.rows {
-                    let row_y = cy + index as i32 * i32::from(l.row_height) - l.offset;
-                    self.paint_node(row, cx, row_y, viewport, down, effects, regions, list);
+                for &(index, item) in &l.items {
+                    let (px, py) = l.grid.place(index as usize);
+                    self.paint_node(item, x + px, y + py - l.offset, viewport, down, effects, regions, list);
                 }
                 list.pop_clip();
             }

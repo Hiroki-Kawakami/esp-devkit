@@ -333,8 +333,8 @@ impl Tree {
         if let Some(presence) = self.leaving_presence(id) {
             found.push((id, presence));
         }
-        if let NodeContent::List(list) = &self.nodes[id as usize].content {
-            for &(_, row) in &list.rows {
+        if let NodeContent::Collection(list) = &self.nodes[id as usize].content {
+            for &(_, row) in &list.items {
                 self.collect_presences(row, found);
             }
         }

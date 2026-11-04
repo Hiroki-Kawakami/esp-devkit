@@ -5,7 +5,7 @@
 
 use devkit_gfx::{Align as TextAlign, Rect};
 
-use crate::node::{NONE, NodeContent, NodeIndex};
+use crate::node::{NONE, NodeContent, NodeIndex, Placement};
 use crate::style::{Align, Animated, Dimension, Direction, Justify, Style};
 use crate::tree::Tree;
 
@@ -71,7 +71,7 @@ impl Tree {
         let (w, h) = match &self.nodes[id as usize].content {
             NodeContent::Text(_) => self.measure_text(id, content_w),
             NodeContent::Image { image, .. } => (image.width() as i16, image.height() as i16),
-            NodeContent::Scroll(_) | NodeContent::List(_) | NodeContent::Canvas(_) | NodeContent::External(_) | NodeContent::Progress(_) | NodeContent::Navigator(_) => (content_w.min(0), content_h.min(0)),
+            NodeContent::Scroll(_) | NodeContent::Collection(_) | NodeContent::Canvas(_) | NodeContent::External(_) | NodeContent::Progress(_) | NodeContent::Navigator(_) => (content_w.min(0), content_h.min(0)),
             NodeContent::Child(_) => {
                 let child = self.nodes[id as usize].first_child;
                 if child == NONE { (0, 0) } else { self.measure(child, content_w, content_h) }
@@ -130,6 +130,16 @@ impl Tree {
     }
 
     /// Gives `id` its rectangle, relative to the parent's content.
+    /// The item fills its cell, whatever its own content measures.
+    pub(crate) fn arrange_item(&mut self, item: NodeIndex, (w, h): (i16, i16)) {
+        let cell = Rect::new(0, 0, w, h);
+        self.nodes[item as usize].rect = cell;
+        let child = self.first_flow(item);
+        if child != NONE {
+            self.arrange(child, cell);
+        }
+    }
+
     pub(crate) fn arrange(&mut self, id: NodeIndex, rect: Rect) {
         let old = core::mem::replace(&mut self.nodes[id as usize].rect, rect);
         let style = self.nodes[id as usize].style;
@@ -168,10 +178,19 @@ impl Tree {
                     self.keep_in_range(id);
                 }
             }
-            NodeContent::List(list) => {
-                let (row_height, rows) = (list.row_height, list.rows.clone());
-                for (_, row) in rows {
-                    self.arrange(row, Rect::new(0, 0, content.w, row_height));
+            NodeContent::Collection(_) => {
+                let style = self.nodes[id as usize].style;
+                let NodeContent::Collection(list) = &mut self.nodes[id as usize].content else { unreachable!() };
+                let (old, grid) = (list.grid, Placement::new(list.layout, &style, content.w));
+                if list.placed && grid.columns != old.columns && list.offset > i32::from(old.top) {
+                    let row = (list.offset - i32::from(old.top)).div_euclid(old.step_y.max(1));
+                    let within = list.offset - i32::from(old.top) - row * old.step_y;
+                    let first = row as usize * usize::from(old.columns);
+                    list.offset = i32::from(grid.top) + (first / usize::from(grid.columns)) as i32 * grid.step_y + within;
+                }
+                (list.grid, list.placed) = (grid, true);
+                for (_, item) in list.items.clone() {
+                    self.arrange_item(item, grid.cell);
                 }
                 self.keep_in_range(id);
             }

@@ -71,7 +71,7 @@ pub enum Role {
     None,
     Button,
     Text,
-    List,
+    Collection,
     Header,
     TextField,
 }
@@ -82,7 +82,7 @@ impl Role {
             Self::None => "box",
             Self::Button => "button",
             Self::Text => "text",
-            Self::List => "list",
+            Self::Collection => "collection",
             Self::Header => "header",
             Self::TextField => "text-field",
         }

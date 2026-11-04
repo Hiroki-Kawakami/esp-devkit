@@ -31,7 +31,7 @@ pub struct Overlay;
 /// A list's scroll position and a nested navigator, kept while hidden.
 #[derive(Default)]
 pub(crate) struct Saved {
-    pub(crate) lists: Vec<(Id, i32, bool)>,
+    pub(crate) collections: Vec<(Id, i32, bool)>,
     pub(crate) navigators: Vec<(TypeId, Vec<Entry>)>,
 }
 
@@ -572,9 +572,9 @@ impl Tree {
         let node = &mut self.nodes[id as usize];
         let pinned = node.pinned;
         match &mut node.content {
-            NodeContent::List(list) => {
+            NodeContent::Collection(list) => {
                 if let Some(list_id) = node.id {
-                    saved.lists.push((list_id, list.offset.max(0), pinned));
+                    saved.collections.push((list_id, list.offset.max(0), pinned));
                 }
             }
             NodeContent::Navigator(nav) => {

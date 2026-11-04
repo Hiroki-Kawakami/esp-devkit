@@ -29,7 +29,7 @@ impl Component for FileBrowser {
                 ui.text(&TITLE, "Download").foreground(INK).grow(1),
                 ui.icon(&ICONS, icons::MORE).id(id!("more")).on_tap(Msg::OpenMenu),
             ]).height(80).align(Align::Center),
-            ui.list(self.names.len(), 80, Self::row).grow(1),
+            ui.collection(self.names.len(), CollectionLayout::List { row_height: 80 }, Self::row).grow(1),
         ])
     }
 }
@@ -53,7 +53,7 @@ app.run();
   `ui.child_mapped` to turn its `cx.emit` events into the parent's messages. It
   keeps its state and rebuilds only when its props differ or it asks to.
 - Widgets are functions returning an `Element`; the primitives are boxes, text,
-  images, `scroll` and `list`.
+  images, `scroll` and `collection`.
 - `on_scroll` reports a scroller's offset as it moves, below 0 or above the end
   while it is stretched past one. `scroll_border(id)` shows a divider under a
   node while the scroller with that id is past its start, without a message
@@ -65,18 +65,24 @@ app.run();
   `refreshing` false; the indicator is the app's, drawn from `on_scroll`.
 - `cx.scroll_to(id, target, animated)` moves a scroller after the view and
   layout, so `ScrollTarget::End` is the end of what the view just added.
-  `Index` shows a row of a `list` whole, moving as little as it takes. A finger
+  `Index` shows an item of a `collection` whole, moving as little as it takes. A finger
   on the scroller wins over it.
 - `.scroll_anchor(ScrollEdge::End)` starts a scroller at its end and keeps it
   there as its content or size changes, while it is there; moved away, it stays
   where it is until it comes back to the end.
-- `list` builds only the rows in view, through the row function given to it: a
-  method of the component whose view holds the list, as a function pointer, so
-  it can be called after the view is gone. Scrolling moves the rows without
-  running `view`. A rebuild of the owner rebuilds them, unless `revision` is
-  given and did not change. A list keeps its scroll position while its screen
-  is covered only if it has an id. Rows exist one past each end of what shows;
-  `.overscan(rows)` makes it more.
+- `collection` builds only the items in view, through the item function given
+  to it: a method of the component whose view holds the collection, as a
+  function pointer, so it can be called after the view is gone. Scrolling moves
+  the items without running `view`. A rebuild of the owner rebuilds them, unless
+  `revision` is given and did not change. A collection keeps its scroll position
+  while its screen is covered only if it has an id. Rows exist one past each end
+  of what shows; `.overscan(rows)` makes it more. Each item fills its cell, and
+  padding scrolls with the items.
+- `CollectionLayout::List { row_height }` stacks rows across the width;
+  `Grid { width, height }` fits as many cells of that size as stay at least the
+  horizontal gap apart, spreads the width left over between them and at both
+  sides, and keeps the first item in view when the column count changes.
+  `.gap_xy(x, y)` sets the gaps; the vertical one goes between rows in both.
 - `.id` names a node. Among its siblings it matches the node of the last
   rebuild with the same id, and a different id makes a new node. `id!("name")`
   hashes a literal at compile time and keeps the name for `ui tree`;
@@ -97,7 +103,7 @@ app.run();
   older request.
 - `.task(&inbox, |reply| ...)` starts work for a node: the closure runs once
   when the node is made, and the `Reply` sends into the inbox. Its node going
-  cancels it: a row leaving the list's rows, the screen leaving, or the view
+  cancels it: an item leaving a collection's rows, the screen leaving, or the view
   dropping the task. The closure is never dropped, so it holds only what needs
   no drop.
 
@@ -163,7 +169,7 @@ app.run();
   on a node and reports a `Gesture`; what they do to the view is the caller's.
   `PRESS` reports `Down` and `Up` whatever else is recognized. With `DOUBLE_TAP`,
   the node's own `on_tap` comes after the double tap window.
-- Both fingers of a `PINCH` or `ROTATE` start on the node. Inside a list one
+- Both fingers of a `PINCH` or `ROTATE` start on the node. Inside a collection one
   finger scrolls; a second stops that and pinches. A `PAN` takes the finger from
   a scrolling parent when it lands. Once a pinch ends, the finger left behind
   does nothing until it lifts.
@@ -252,7 +258,8 @@ app.run();
 - `theme.widgets` has one struct per widget: a `StateStyle` for each of its pieces,
   and numbers where code calculates with them. `unit` has the base values of a
   theme, `padding`, `gap` and `radius`, for views of their own. Touch sizes go by
-  `widgets.button`, and `widgets.list.row_height` is a default for `ui.list`.
+  `widgets.button`, and `widgets.list_item.height` is the row height for a
+  collection of `list_item`s.
   `Input::set_color_mode` swaps the palette and repaints; a theme without
   dark colors stays light. `ui.colors()` gives the palette in use and
   `ui.color_mode()` the mode. `SavedColorMode` keeps it across restarts.
@@ -289,7 +296,7 @@ app.run();
 - `table` lays out a scrolling form: `table_section` is a rounded panel of rows and
   `table_header` the title above one. `table_row` holds any children, and
   `table_label`, `table_value` and `table_chevron` are the usual ones. Unlike
-  `list`, every row exists.
+  `collection`, every row exists.
 - `modal` is a dialog for a screen on the `Overlay`, centered in what
   `ui.insets()` leave, so it moves above the keyboard. What it holds stacks as
   it is: `modal_title`, `modal_message`, `modal_actions` with buttons side by

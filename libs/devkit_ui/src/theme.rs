@@ -154,12 +154,8 @@ pub struct IconButtonTheme {
 }
 
 #[derive(Clone, Copy)]
-pub struct ListTheme {
-    pub row_height: i16,
-}
-
-#[derive(Clone, Copy)]
 pub struct ListItemTheme {
+    pub height: i16,
     pub root: &'static StateStyle,
     pub text: &'static StateStyle,
     pub title: &'static StateStyle,
@@ -334,7 +330,6 @@ pub struct Widgets {
     pub unit: UnitTheme,
     pub button: ButtonTheme,
     pub icon_button: IconButtonTheme,
-    pub list: ListTheme,
     pub list_item: ListItemTheme,
     pub top_bar: TopBarTheme,
     pub switch: SwitchTheme,

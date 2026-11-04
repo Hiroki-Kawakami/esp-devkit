@@ -4,7 +4,7 @@
  */
 
 use devkit_ui::widgets::{button, list_item, top_bar};
-use devkit_ui::{Component, Cx, Element, Root, Screen, ScrollEdge, ScrollTarget, Ui, id};
+use devkit_ui::{CollectionLayout, Component, Cx, Element, Root, Screen, ScrollEdge, ScrollTarget, Ui, id};
 
 #[derive(Clone, Copy)]
 pub enum LogMsg {
@@ -57,7 +57,7 @@ impl Component for LogDemo {
         .gap(theme.widgets.unit.gap);
         ui.column([
             top_bar(ui, Some(LogMsg::Back), "Log", actions),
-            ui.list(self.lines, theme.widgets.list.row_height, Self::row).scroll_anchor(ScrollEdge::End).grow(1).id(id!("log")),
+            ui.collection(self.lines, CollectionLayout::List { row_height: theme.widgets.list_item.height }, Self::row).scroll_anchor(ScrollEdge::End).grow(1).id(id!("log")),
         ])
         .padding_each(0, ui.insets().top, 0, 0)
         .background(ui.colors().surface)

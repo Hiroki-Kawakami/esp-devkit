@@ -13,7 +13,7 @@ use idf::heap::Caps;
 use crate::component::ScrollEdge;
 use crate::animate::Fades;
 use crate::external::ExternalSurface;
-use crate::element::{DragMap, DrawMap, Edit, InputMap, RowMap, ScrollMap, SizeMap};
+use crate::element::{CollectionLayout, DragMap, DrawMap, Edit, InputMap, ItemMap, ScrollMap, SizeMap};
 use crate::erased::Erased;
 use crate::gesture::GestureMap;
 use crate::id::Id;
@@ -43,7 +43,7 @@ impl Node {
     pub(crate) fn scroll_offset_mut(&mut self) -> Option<&mut i32> {
         match &mut self.content {
             NodeContent::Scroll(scroll) => Some(&mut scroll.offset),
-            NodeContent::List(list) => Some(&mut list.offset),
+            NodeContent::Collection(collection) => Some(&mut collection.offset),
             _ => None,
         }
     }
@@ -51,7 +51,7 @@ impl Node {
     pub(crate) fn scroll_offset(&self) -> Option<i32> {
         match &self.content {
             NodeContent::Scroll(scroll) => Some(scroll.offset),
-            NodeContent::List(list) => Some(list.offset),
+            NodeContent::Collection(collection) => Some(collection.offset),
             _ => None,
         }
     }
@@ -89,17 +89,83 @@ pub(crate) struct ScrollNode {
     pub(crate) content: i32,
 }
 
-pub(crate) struct ListNode {
-    pub(crate) row: RowMap,
+pub(crate) struct CollectionNode {
+    pub(crate) item: ItemMap,
     pub(crate) overscan: u8,
     pub(crate) count: usize,
-    pub(crate) row_height: i16,
+    pub(crate) layout: CollectionLayout,
     pub(crate) revision: Option<u32>,
     pub(crate) offset: i32,
-    /// Row index and node of what exists, in row order.
-    pub(crate) rows: Vec<(u32, NodeIndex), Caps>,
-    /// The owner's view ran, so the rows must be built again.
+    pub(crate) grid: Placement,
+    /// `grid` comes from a layout, not the start.
+    pub(crate) placed: bool,
+    /// Item index and node of what exists, in index order.
+    pub(crate) items: Vec<(u32, NodeIndex), Caps>,
+    /// The owner's view ran, so the items must be built again.
     pub(crate) stale: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct Placement {
+    pub(crate) columns: u16,
+    pub(crate) left: i16,
+    pub(crate) step_x: i16,
+    pub(crate) top: i16,
+    pub(crate) step_y: i32,
+    pub(crate) cell: (i16, i16),
+    pub(crate) bottom: i16,
+}
+
+impl Placement {
+    pub(crate) fn new(layout: CollectionLayout, style: &Style, width: i16) -> Self {
+        let [left, top, _, bottom] = style.padding;
+        match layout {
+            CollectionLayout::List { row_height } => {
+                Self { columns: 1, left, step_x: 0, top, step_y: i32::from(row_height) + i32::from(style.gap_y), cell: (width, row_height), bottom }
+            }
+            CollectionLayout::Grid { width: cell_w, height } => {
+                let spacing = style.gap_x;
+                let columns = ((width - spacing) / (cell_w + spacing).max(1)).max(1);
+                let gap = ((width - columns * cell_w) / (columns + 1)).max(0);
+                Self { columns: columns as u16, left: left + gap, step_x: cell_w + gap, top, step_y: i32::from(height) + i32::from(style.gap_y), cell: (cell_w, height), bottom }
+            }
+        }
+    }
+
+    pub(crate) fn rows(&self, count: usize) -> usize {
+        count.div_ceil(usize::from(self.columns))
+    }
+
+    /// The item's top left, from the collection's top left with nothing
+    /// scrolled; past `i16` far down a long collection.
+    pub(crate) fn place(&self, index: usize) -> (i32, i32) {
+        let (row, column) = (index / usize::from(self.columns), index % usize::from(self.columns));
+        (i32::from(self.left) + column as i32 * i32::from(self.step_x), i32::from(self.top) + row as i32 * self.step_y)
+    }
+
+    pub(crate) fn row_span(&self, index: usize) -> (i32, i32) {
+        let top = i32::from(self.top) + (index / usize::from(self.columns)) as i32 * self.step_y;
+        (top, top + i32::from(self.cell.1))
+    }
+
+    pub(crate) fn height(&self, count: usize) -> i32 {
+        let rows = self.rows(count) as i32;
+        let gap = self.step_y - i32::from(self.cell.1);
+        i32::from(self.top) + i32::from(self.bottom) + (rows * self.step_y - gap).max(0)
+    }
+
+    /// The rows from `offset` down `viewport`, as item indices, `overscan`
+    /// rows wider on each side.
+    pub(crate) fn shown(&self, count: usize, offset: i32, viewport: i32, overscan: i32) -> core::ops::Range<usize> {
+        if count == 0 {
+            return 0..0;
+        }
+        let rows = self.rows(count) as i32;
+        let first = ((offset - i32::from(self.top)).div_euclid(self.step_y.max(1)) - overscan).clamp(0, rows - 1);
+        let last = ((offset + viewport - i32::from(self.top)).div_euclid(self.step_y.max(1)) + overscan).clamp(0, rows - 1);
+        let columns = usize::from(self.columns);
+        first as usize * columns..((last as usize + 1) * columns).min(count)
+    }
 }
 
 pub(crate) struct CanvasNode {
@@ -112,7 +178,7 @@ pub(crate) enum NodeContent {
     Text(TextNode),
     Image { image: Image<'static>, tint: Color },
     Scroll(ScrollNode),
-    List(ListNode),
+    Collection(CollectionNode),
     Canvas(CanvasNode),
     External(ExternalSurface),
     Progress(ProgressNode),
@@ -129,7 +195,7 @@ impl NodeContent {
                 | (Self::Text(_), C::Text { .. })
                 | (Self::Image { .. }, C::Image { .. })
                 | (Self::Scroll(_), C::Scroll)
-                | (Self::List(_), C::List { .. })
+                | (Self::Collection(_), C::Collection { .. })
                 | (Self::Canvas(_), C::Canvas(_))
                 | (Self::External(_), C::External(_))
                 | (Self::Progress(_), C::Progress { .. })
