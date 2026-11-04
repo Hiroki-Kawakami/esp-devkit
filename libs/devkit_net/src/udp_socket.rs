@@ -114,7 +114,7 @@ impl UdpSocket {
     }
 
     pub async fn recv_from_async(&self, buf: &mut [u8]) -> Result<(usize, SocketAddr)> {
-        let (n, from) = wait_for(self.net, SocketId::Udp(self.id), |inner, _| inner.stack.udp_recv(self.id, buf)).await;
+        let (n, from) = wait_for(self.net, SocketId::Udp(self.id), |inner, _| inner.stack.udp_recv(self.id, buf)).await?;
         Ok((n, from.into()))
     }
 

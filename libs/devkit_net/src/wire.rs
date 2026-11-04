@@ -128,7 +128,8 @@ pub(crate) struct Ipv4 {
     pub protocol: u8,
     pub ttl: u8,
     pub ident: u16,
-    pub fragmented: bool,
+    /// Flags and fragment offset as on the wire; 0 for a whole datagram.
+    pub frag: u16,
 }
 
 impl Ipv4 {
@@ -143,16 +144,39 @@ impl Ipv4 {
         if header < IPV4_HEADER || total < header || total > p.len() || checksum(sum(&p[..header], 0)) != 0 {
             return None;
         }
-        let flags = be16(p, 6);
         let ip = Self {
             src: ipv4_at(p, 12),
             dst: ipv4_at(p, 16),
             protocol: p[9],
             ttl: p[8],
             ident: be16(p, 4),
-            fragmented: flags & 0x2000 != 0 || flags & 0x1fff != 0,
+            frag: be16(p, 6) & 0x3fff,
         };
         Some((ip, &p[header..total]))
+    }
+
+    /// The header quoted in an ICMP error, which may be cut short, and what
+    /// follows it.
+    pub fn parse_quoted(p: &[u8]) -> Option<(Self, &[u8])> {
+        if p.len() < IPV4_HEADER || p[0] >> 4 != 4 {
+            return None;
+        }
+        let header = usize::from(p[0] & 0x0f) * 4;
+        let ip = Self { src: ipv4_at(p, 12), dst: ipv4_at(p, 16), protocol: p[9], ttl: p[8], ident: be16(p, 4), frag: 0 };
+        Some((ip, p.get(header..)?))
+    }
+
+    pub fn is_fragment(&self) -> bool {
+        self.frag & 0x3fff != 0
+    }
+
+    pub fn more_fragments(&self) -> bool {
+        self.frag & 0x2000 != 0
+    }
+
+    /// In bytes.
+    pub fn fragment_offset(&self) -> usize {
+        usize::from(self.frag & 0x1fff) * 8
     }
 
     pub fn write_header(&self, p: &mut [u8], payload_len: usize) {
@@ -160,7 +184,7 @@ impl Ipv4 {
         p[1] = 0;
         put16(p, 2, (IPV4_HEADER + payload_len) as u16);
         put16(p, 4, self.ident);
-        put16(p, 6, 0);
+        put16(p, 6, self.frag);
         p[8] = self.ttl;
         p[9] = self.protocol;
         put16(p, 10, 0);

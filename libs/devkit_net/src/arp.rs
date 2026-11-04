@@ -15,10 +15,12 @@ const CAPACITY: usize = 16;
 pub(crate) const RETRY: Duration = Duration::from_secs(1);
 pub(crate) const MAX_REQUESTS: u8 = 3;
 pub(crate) const LIFETIME: Duration = Duration::from_secs(300);
+/// An entry in use is asked about again this long before it expires.
+const REFRESH: Duration = Duration::from_secs(30);
 
 enum State {
     Resolving { next: Instant, sent: u8 },
-    Resolved { mac: Mac, expires: Instant },
+    Resolved { mac: Mac, expires: Instant, refreshing: bool },
 }
 
 struct Entry {
@@ -30,6 +32,8 @@ struct Entry {
 
 pub(crate) enum Resolve {
     Known(Mac),
+    /// Known, but ask `Mac` for itself again so the entry does not lapse.
+    Refresh(Mac),
     /// Send a request now.
     Request,
     Waiting,
@@ -44,8 +48,15 @@ impl Cache {
     /// On a miss, keeps `packet` (the latest one only) until the reply.
     pub fn resolve(&mut self, iface: IfaceId, ip: Ipv4Addr, now: Instant, packet: &[u8]) -> Resolve {
         if let Some(e) = self.find(iface, ip) {
-            return match e.state {
-                State::Resolved { mac, expires } if expires > now => Resolve::Known(mac),
+            return match &mut e.state {
+                State::Resolved { mac, expires, refreshing } if *expires > now => {
+                    if *expires - now < REFRESH && !*refreshing {
+                        *refreshing = true;
+                        Resolve::Refresh(*mac)
+                    } else {
+                        Resolve::Known(*mac)
+                    }
+                }
                 State::Resolved { .. } => {
                     e.state = State::Resolving { next: now + RETRY, sent: 1 };
                     e.pending = Some(packet.to_vec());
@@ -70,7 +81,7 @@ impl Cache {
     /// Records `ip` at `mac` if it is known already or `create`; returns the
     /// packet that waited for it.
     pub fn update(&mut self, iface: IfaceId, ip: Ipv4Addr, mac: Mac, now: Instant, create: bool) -> Option<Vec<u8>> {
-        let state = State::Resolved { mac, expires: now + LIFETIME };
+        let state = State::Resolved { mac, expires: now + LIFETIME, refreshing: false };
         if let Some(e) = self.find(iface, ip) {
             e.state = state;
             return e.pending.take();

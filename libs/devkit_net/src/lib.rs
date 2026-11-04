@@ -12,9 +12,11 @@ extern crate alloc;
 mod arp;
 mod dhcp;
 mod error;
+mod frag;
 #[cfg(test)]
 mod harness;
 mod iface;
+mod icmp;
 mod link;
 mod net;
 mod ring;

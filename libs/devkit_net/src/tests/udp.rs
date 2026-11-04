@@ -43,7 +43,7 @@ fn send(net: &mut Wires, end: End, id: usize, to: SocketAddrV4, data: &[u8]) -> 
 
 fn recv(net: &mut Wires, end: End, id: usize, len: usize) -> Option<(Vec<u8>, SocketAddrV4)> {
     let mut buf = vec![0; len];
-    let (n, from) = net.stacks[end.0].udp_recv(id, &mut buf)?;
+    let (n, from) = net.stacks[end.0].udp_recv(id, &mut buf)?.unwrap();
     buf.truncate(n);
     Some((buf, from))
 }
@@ -64,7 +64,7 @@ fn raw_udp(dst_ip: Ipv4Addr, sport: u16, dport: u16, data: &[u8], checksum_on: b
     let mut frame = vec![0; ETHERNET_HEADER + IPV4_HEADER];
     let dst_mac = if dst_ip.is_broadcast() { [0xff; 6] } else { MAC_B };
     Ethernet::write_header(&mut frame, dst_mac, MAC_A, ETHERTYPE_IPV4);
-    Ipv4 { src: IP_A, dst: dst_ip, protocol: PROTO_UDP, ttl: 64, ident: 9, fragmented: false }
+    Ipv4 { src: IP_A, dst: dst_ip, protocol: PROTO_UDP, ttl: 64, ident: 9, frag: 0 }
         .write_header(&mut frame[ETHERNET_HEADER..], len);
     frame.extend_from_slice(&udp);
     frame

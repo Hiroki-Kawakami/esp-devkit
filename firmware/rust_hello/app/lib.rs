@@ -140,6 +140,7 @@ pub fn run() {
         info!(TAG, "async: channel sum={sum} jobs (value, core)={done:?} local hits={}", hits.get());
         info!(TAG, "uptime={}ms", Instant::now().since_boot().as_millis());
 
+        shared.spawn(net::join_saved());
         net::serve_echo(&shared).await
     })
 }

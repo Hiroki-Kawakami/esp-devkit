@@ -9,6 +9,7 @@ use core::net::{Ipv4Addr, SocketAddrV4};
 
 use idf::heap::Caps;
 
+use crate::icmp::Reported;
 use crate::ring::Ring;
 use crate::stack::{IfaceId, SocketId, Stack, Tx};
 use crate::time::Instant;
@@ -24,12 +25,12 @@ pub(crate) struct Socket {
     remote: Option<SocketAddrV4>,
     rx: Ring,
     queue: VecDeque<(SocketAddrV4, usize)>,
+    error: Option<Error>,
 }
 
 #[derive(Default)]
 pub(crate) struct Sockets {
     slots: Vec<Option<Socket>>,
-    next_port: u16,
 }
 
 impl Sockets {
@@ -45,16 +46,14 @@ impl Sockets {
         })
     }
 
+    /// RFC 6056: from a random point of the range.
     fn ephemeral(&mut self) -> Result<u16> {
-        let span = u16::MAX - EPHEMERAL_FIRST + 1;
-        for _ in 0..span {
-            let port = EPHEMERAL_FIRST + self.next_port % span;
-            self.next_port = self.next_port.wrapping_add(1);
-            if !self.in_use(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port), None) {
-                return Ok(port);
-            }
-        }
-        Err(Error::AddrInUse)
+        let span = u32::from(u16::MAX - EPHEMERAL_FIRST) + 1;
+        let start = idf::system::random() % span;
+        (0..span)
+            .map(|i| EPHEMERAL_FIRST + ((start + i) % span) as u16)
+            .find(|&port| !self.in_use(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port), None))
+            .ok_or(Error::AddrInUse)
     }
 }
 
@@ -90,6 +89,7 @@ impl Stack {
             remote: None,
             rx: Ring::new(rx_size, caps)?,
             queue: VecDeque::new(),
+            error: None,
         };
         let slots = &mut self.udp.slots;
         match slots.iter().position(Option::is_none) {
@@ -150,24 +150,47 @@ impl Stack {
         })
     }
 
-    /// Copies the oldest datagram into `buf`, dropping what does not fit.
-    pub(crate) fn udp_recv(&mut self, id: usize, buf: &mut [u8]) -> Option<(usize, SocketAddrV4)> {
+    /// Copies the oldest datagram into `buf`, dropping what does not fit. An
+    /// ICMP error about the connected peer is returned once, first.
+    pub(crate) fn udp_recv(&mut self, id: usize, buf: &mut [u8]) -> Option<Result<(usize, SocketAddrV4)>> {
         let socket = self.udp.get(id);
+        if let Some(error) = socket.error.take() {
+            return Some(Err(error));
+        }
         let (from, len) = socket.queue.pop_front()?;
-        Some((socket.rx.pop(len, buf), from))
+        Some(Ok((socket.rx.pop(len, buf), from)))
     }
 
-    pub(crate) fn udp_input(&mut self, arrived: IfaceId, ip: &Ipv4, p: &[u8]) {
+    /// Only connected sockets hear of errors (RFC 1122 4.1.3.3 leaves the
+    /// others to time out).
+    pub(crate) fn udp_icmp_error(&mut self, local: SocketAddrV4, remote: SocketAddrV4, reported: Reported) {
+        let found = self.udp.slots.iter().position(|s| {
+            s.as_ref().is_some_and(|s| {
+                s.local.port() == local.port()
+                    && (s.local.ip().is_unspecified() || s.local.ip() == local.ip())
+                    && s.remote == Some(remote)
+            })
+        });
+        if let Some(id) = found {
+            self.udp.get(id).error = Some(reported.into());
+            if !self.woken.contains(&SocketId::Udp(id)) {
+                self.woken.push(SocketId::Udp(id));
+            }
+        }
+    }
+
+    /// `false` when no socket is bound to the destination port.
+    pub(crate) fn udp_input(&mut self, arrived: IfaceId, ip: &Ipv4, p: &[u8]) -> bool {
         if p.len() < UDP_HEADER {
-            return;
+            return true;
         }
         let len = usize::from(be16(p, 4));
         if len < UDP_HEADER || len > p.len() {
-            return;
+            return true;
         }
         let p = &p[..len];
         if be16(p, 6) != 0 && checksum(sum(p, pseudo_sum(ip.src, ip.dst, len))) != 0 {
-            return;
+            return true;
         }
         let from = SocketAddrV4::new(ip.src, be16(p, 0));
         let port = be16(p, 2);
@@ -179,17 +202,18 @@ impl Stack {
                     && s.remote.is_none_or(|r| r == from)
             })
         }) else {
-            return;
+            return false;
         };
         let data = &p[UDP_HEADER..];
         let socket = self.udp.get(id);
         if socket.rx.free() < data.len() || socket.queue.len() >= MAX_QUEUED {
-            return;
+            return true;
         }
         socket.rx.push(data);
         socket.queue.push_back((from, data.len()));
         if !self.woken.contains(&SocketId::Udp(id)) {
             self.woken.push(SocketId::Udp(id));
         }
+        true
     }
 }

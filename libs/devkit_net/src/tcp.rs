@@ -10,6 +10,7 @@ use core::time::Duration;
 
 use idf::heap::Caps;
 
+use crate::icmp::Reported;
 use crate::ring::Ring;
 use crate::stack::{SocketId, Stack, Tx};
 use crate::time::Instant;
@@ -30,12 +31,72 @@ const RTO_INITIAL: Duration = Duration::from_secs(1);
 const RTO_MIN: Duration = Duration::from_millis(200);
 const RTO_MAX: Duration = Duration::from_secs(60);
 const MAX_RETRIES: u8 = 12;
-const MAX_SYN_RETRIES: u8 = 6;
+const MAX_SYN_RETRIES: u8 = 7;
 const DELAYED_ACK: Duration = Duration::from_millis(40);
 const TIME_WAIT: Duration = Duration::from_secs(60);
 const FIN_WAIT_2: Duration = Duration::from_secs(60);
 const EPHEMERAL_FIRST: u16 = 49152;
 const MAX_WINDOW_SCALE: u8 = 14;
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(75);
+const KEEPALIVE_PROBES: u8 = 9;
+
+/// SipHash-2-4.
+fn siphash(k0: u64, k1: u64, data: &[u8]) -> u64 {
+    let mut v = [k0 ^ 0x736f6d6570736575, k1 ^ 0x646f72616e646f6d, k0 ^ 0x6c7967656e657261, k1 ^ 0x7465646279746573];
+    let round = |v: &mut [u64; 4]| {
+        v[0] = v[0].wrapping_add(v[1]);
+        v[1] = v[1].rotate_left(13) ^ v[0];
+        v[0] = v[0].rotate_left(32);
+        v[2] = v[2].wrapping_add(v[3]);
+        v[3] = v[3].rotate_left(16) ^ v[2];
+        v[0] = v[0].wrapping_add(v[3]);
+        v[3] = v[3].rotate_left(21) ^ v[0];
+        v[2] = v[2].wrapping_add(v[1]);
+        v[1] = v[1].rotate_left(17) ^ v[2];
+        v[2] = v[2].rotate_left(32);
+    };
+    let mut chunks = data.chunks_exact(8);
+    for chunk in &mut chunks {
+        let m = u64::from_le_bytes(chunk.try_into().unwrap());
+        v[3] ^= m;
+        round(&mut v);
+        round(&mut v);
+        v[0] ^= m;
+    }
+    let mut last = [0u8; 8];
+    last[..chunks.remainder().len()].copy_from_slice(chunks.remainder());
+    last[7] = data.len() as u8;
+    let m = u64::from_le_bytes(last);
+    v[3] ^= m;
+    round(&mut v);
+    round(&mut v);
+    v[0] ^= m;
+    v[2] ^= 0xff;
+    for _ in 0..4 {
+        round(&mut v);
+    }
+    v[0] ^ v[1] ^ v[2] ^ v[3]
+}
+
+/// RFC 3390.
+fn initial_window(mss: usize) -> usize {
+    (4 * mss).min((2 * mss).max(4380))
+}
+
+/// Whether `n` of the `unsent` bytes go out now: RFC 1122 4.2.3.4 (sender
+/// silly window avoidance) and Nagle. `forced` is the override timer firing.
+pub(crate) fn worth_sending(n: usize, unsent: usize, mss: usize, max_window: usize, in_flight: usize, nodelay: bool, forced: bool) -> bool {
+    if n == 0 {
+        return false;
+    }
+    if n >= mss || forced {
+        return true;
+    }
+    if n == unsent {
+        return in_flight == 0 || nodelay;
+    }
+    n * 2 >= max_window
+}
 
 fn lt(a: u32, b: u32) -> bool {
     (a.wrapping_sub(b) as i32) < 0
@@ -189,6 +250,8 @@ pub(crate) struct Tcb {
     listener: Option<usize>,
     released: bool,
     error: Option<Error>,
+    /// From an ICMP error; reported if the connection times out.
+    soft_error: Option<Error>,
     rx: Ring,
     tx: Ring,
     assembler: Assembler,
@@ -224,6 +287,11 @@ pub(crate) struct Tcb {
     unacked_segments: u8,
     probe: bool,
     persist_at: Option<Instant>,
+    max_window: u32,
+    last_sent: Instant,
+    keepalive: Option<Duration>,
+    heard: Instant,
+    keepalive_probes: u8,
     close_at: Option<Instant>,
 
     cwnd: usize,
@@ -234,8 +302,14 @@ pub(crate) struct Tcb {
 }
 
 impl Tcb {
-    fn new(local: SocketAddrV4, remote: SocketAddrV4, state: State, buffers: Buffers, rcv_mss: usize) -> Result<Self> {
-        let iss = idf::system::random();
+    fn new(
+        local: SocketAddrV4,
+        remote: SocketAddrV4,
+        state: State,
+        buffers: Buffers,
+        rcv_mss: usize,
+        iss: u32,
+    ) -> Result<Self> {
         let rcv_scale = (0..=MAX_WINDOW_SCALE).find(|s| (buffers.rx >> s) <= 0xffff).unwrap_or(MAX_WINDOW_SCALE);
         Ok(Self {
             state,
@@ -244,6 +318,7 @@ impl Tcb {
             listener: None,
             released: false,
             error: None,
+            soft_error: None,
             rx: Ring::new(buffers.rx, buffers.caps)?,
             tx: Ring::new(buffers.tx, buffers.caps)?,
             assembler: Assembler::default(),
@@ -277,6 +352,11 @@ impl Tcb {
             unacked_segments: 0,
             probe: false,
             persist_at: None,
+            max_window: 0,
+            last_sent: Instant::ZERO,
+            keepalive: None,
+            heard: Instant::ZERO,
+            keepalive_probes: 0,
             close_at: None,
             cwnd: 0,
             ssthresh: usize::MAX,
@@ -325,7 +405,8 @@ impl Tcb {
         self.snd_wnd = u32::from(seg.window);
         self.snd_wl1 = seg.seq;
         self.snd_wl2 = seg.ack;
-        self.cwnd = (4 * self.snd_mss).min((2 * self.snd_mss).max(4380));
+        self.cwnd = initial_window(self.snd_mss);
+        self.max_window = self.snd_wnd;
     }
 
     /// The window to advertise, in bytes, moving the right edge only by a
@@ -377,8 +458,17 @@ impl Tcb {
         self.close_at = None;
     }
 
+    /// When to probe an idle connection next, or give it up.
+    fn keepalive_at(&self) -> Option<Instant> {
+        let idle = self.keepalive?;
+        let quiet = matches!(self.state, State::Established | State::CloseWait)
+            && self.snd_una == self.snd_max
+            && self.unsent() == 0;
+        quiet.then(|| self.heard + idle + KEEPALIVE_INTERVAL * u32::from(self.keepalive_probes))
+    }
+
     fn deadline(&self) -> Option<Instant> {
-        [self.retransmit_at, self.ack_at, self.persist_at, self.close_at].into_iter().flatten().min()
+        [self.retransmit_at, self.ack_at, self.persist_at, self.close_at, self.keepalive_at()].into_iter().flatten().min()
     }
 }
 
@@ -393,7 +483,7 @@ pub(crate) struct Listener {
 pub(crate) struct Sockets {
     tcbs: Vec<Option<Tcb>>,
     listeners: Vec<Option<Listener>>,
-    next_port: u16,
+    isn_key: Option<(u64, u64)>,
 }
 
 impl Sockets {
@@ -402,16 +492,28 @@ impl Sockets {
             || self.tcbs.iter().flatten().any(|t| t.local.port() == port)
     }
 
+    /// RFC 6056: from a random point of the range.
     fn ephemeral(&mut self) -> Result<u16> {
-        let span = u16::MAX - EPHEMERAL_FIRST + 1;
-        for _ in 0..span {
-            let port = EPHEMERAL_FIRST + self.next_port % span;
-            self.next_port = self.next_port.wrapping_add(1);
-            if !self.port_in_use(port) {
-                return Ok(port);
-            }
-        }
-        Err(Error::AddrInUse)
+        let span = u32::from(u16::MAX - EPHEMERAL_FIRST) + 1;
+        let start = idf::system::random() % span;
+        (0..span)
+            .map(|i| EPHEMERAL_FIRST + ((start + i) % span) as u16)
+            .find(|&port| !self.port_in_use(port))
+            .ok_or(Error::AddrInUse)
+    }
+
+    /// RFC 6528: a 4 µs clock plus a keyed hash of the connection.
+    pub(crate) fn isn(&mut self, local: SocketAddrV4, remote: SocketAddrV4, now: Instant) -> u32 {
+        let (k0, k1) = *self.isn_key.get_or_insert_with(|| {
+            let word = || u64::from(idf::system::random()) << 32 | u64::from(idf::system::random());
+            (word(), word())
+        });
+        let mut tuple = [0u8; 12];
+        tuple[..4].copy_from_slice(&local.ip().octets());
+        tuple[4..6].copy_from_slice(&local.port().to_be_bytes());
+        tuple[6..10].copy_from_slice(&remote.ip().octets());
+        tuple[10..].copy_from_slice(&remote.port().to_be_bytes());
+        ((now.as_micros() >> 2) as u32).wrapping_add(siphash(k0, k1, &tuple) as u32)
     }
 
     fn insert(&mut self, tcb: Tcb) -> usize {
@@ -519,10 +621,26 @@ impl Stack {
     }
 
     pub(crate) fn tcp_connect(&mut self, remote: SocketAddrV4, buffers: Buffers, now: Instant, tx: &mut Tx) -> Result<usize> {
+        self.tcp_connect_from(None, remote, buffers, now, tx)
+    }
+
+    /// `local_port` `None` picks a free one.
+    pub(crate) fn tcp_connect_from(
+        &mut self,
+        local_port: Option<u16>,
+        remote: SocketAddrV4,
+        buffers: Buffers,
+        now: Instant,
+        tx: &mut Tx,
+    ) -> Result<usize> {
         let src = self.source_for(*remote.ip()).ok_or(Error::NoRoute)?;
         let mss = self.mtu_to(*remote.ip()).ok_or(Error::NoRoute)? - HEADER;
-        let local = SocketAddrV4::new(src, self.tcp.ephemeral()?);
-        let mut tcb = Tcb::new(local, remote, State::SynSent, buffers, mss)?;
+        let local = SocketAddrV4::new(src, match local_port {
+            Some(port) => port,
+            None => self.tcp.ephemeral()?,
+        });
+        let iss = self.tcp.isn(local, remote, now);
+        let mut tcb = Tcb::new(local, remote, State::SynSent, buffers, mss, iss)?;
         tcb.cwnd = mss;
         let id = self.tcp.insert(tcb);
         self.with_tcb(id, |stack, tcb| stack.tcp_output(tcb, now, tx));
@@ -566,6 +684,16 @@ impl Stack {
 
     pub(crate) fn tcp_nodelay(&mut self, id: usize) -> bool {
         self.tcp.tcb(id).nodelay
+    }
+
+    pub(crate) fn tcp_set_keepalive(&mut self, id: usize, idle: Option<Duration>) {
+        let tcb = self.tcp.tcb(id);
+        tcb.keepalive = idle;
+        tcb.keepalive_probes = 0;
+    }
+
+    pub(crate) fn tcp_keepalive(&mut self, id: usize) -> Option<Duration> {
+        self.tcp.tcb(id).keepalive
     }
 
     /// `None` when nothing can be read yet; `Ok(0)` at the end of the stream.
@@ -698,11 +826,40 @@ impl Stack {
         }
         let buffers = listener.buffers;
         let Some(mss) = self.mtu_to(*remote.ip()) else { return };
-        let Ok(mut tcb) = Tcb::new(local, remote, State::SynReceived, buffers, mss - HEADER) else { return };
+        let iss = self.tcp.isn(local, remote, now);
+        let Ok(mut tcb) = Tcb::new(local, remote, State::SynReceived, buffers, mss - HEADER, iss) else { return };
         tcb.listener = Some(l);
         tcb.on_syn(seg);
         let id = self.tcp.insert(tcb);
         self.with_tcb(id, |stack, tcb| stack.tcp_output(tcb, now, tx));
+    }
+
+    /// RFC 5927: only for a sequence number in flight. Nobody listening ends a
+    /// handshake; anything else waits for the connection's own timeout.
+    pub(crate) fn tcp_icmp_error(
+        &mut self,
+        local: SocketAddrV4,
+        remote: SocketAddrV4,
+        seq: u32,
+        reported: Reported,
+        _now: Instant,
+        _tx: &mut Tx,
+    ) {
+        let Some(id) = self.tcp.tcbs.iter().position(|t| {
+            t.as_ref().is_some_and(|t| t.state != State::Closed && t.local == local && t.remote == remote)
+        }) else {
+            return;
+        };
+        self.with_tcb(id, |_, tcb| {
+            if !(le(tcb.snd_una, seq) && lt(seq, tcb.snd_max)) {
+                return;
+            }
+            if tcb.state == State::SynSent && reported == Reported::Refused {
+                tcb.close_with(Some(Error::ConnectionRefused));
+            } else {
+                tcb.soft_error = Some(reported.into());
+            }
+        });
     }
 
     fn send_reset(&mut self, local: SocketAddrV4, remote: SocketAddrV4, seg: &Segment, now: Instant, tx: &mut Tx) {
@@ -715,10 +872,23 @@ impl Stack {
     }
 
     fn tcp_process(&mut self, id: usize, tcb: &mut Tcb, seg: &Segment, now: Instant, tx: &mut Tx) {
+        tcb.heard = now;
+        tcb.keepalive_probes = 0;
         if tcb.state == State::SynSent {
             self.tcp_syn_sent(tcb, seg, now, tx);
             return;
         }
+        let trimmed;
+        let seg = if tcb.state == State::SynReceived
+            && seg.flags & SYN != 0
+            && seg.seq.wrapping_add(1) == tcb.rcv_nxt
+            && tcb.listener.is_none()
+        {
+            trimmed = Segment { seq: tcb.rcv_nxt, flags: seg.flags & !SYN, ..*seg };
+            &trimmed
+        } else {
+            seg
+        };
 
         let window = tcb.rx.free() as u32;
         let len = seg.len();
@@ -770,6 +940,7 @@ impl Stack {
             tcb.state = State::Established;
             tcb.snd_una = seg.ack;
             tcb.snd_wnd = u32::from(seg.window) << tcb.snd_scale;
+            tcb.max_window = tcb.max_window.max(tcb.snd_wnd);
             tcb.snd_wl1 = seg.seq;
             tcb.snd_wl2 = seg.ack;
             tcb.retransmit_at = None;
@@ -783,12 +954,15 @@ impl Stack {
             }
         }
 
-        if lt(tcb.snd_max, seg.ack) {
+        if lt(tcb.snd_max, seg.ack) || lt(seg.ack, tcb.snd_una.wrapping_sub(tcb.max_window)) {
             tcb.ack_now = true;
             self.tcp_output(tcb, now, tx);
             return;
         }
         let window_update = u32::from(seg.window) << tcb.snd_scale;
+        if window_update == 0 {
+            tcb.retries = 0;
+        }
         if lt(tcb.snd_una, seg.ack) {
             self.tcp_acked(tcb, seg.ack, now, tx);
         } else if seg.ack == tcb.snd_una
@@ -809,6 +983,7 @@ impl Stack {
         }
         if lt(tcb.snd_wl1, seg.seq) || (tcb.snd_wl1 == seg.seq && le(tcb.snd_wl2, seg.ack)) {
             tcb.snd_wnd = window_update;
+            tcb.max_window = tcb.max_window.max(window_update);
             tcb.snd_wl1 = seg.seq;
             tcb.snd_wl2 = seg.ack;
             if tcb.snd_wnd > 0 {
@@ -853,7 +1028,14 @@ impl Stack {
             }
             return;
         }
-        if seg.flags & (SYN | ACK) != SYN | ACK {
+        if seg.flags & SYN == 0 {
+            return;
+        }
+        if seg.flags & ACK == 0 {
+            tcb.on_syn(seg);
+            tcb.state = State::SynReceived;
+            tcb.snd_nxt = tcb.iss;
+            self.tcp_output(tcb, now, tx);
             return;
         }
         tcb.on_syn(seg);
@@ -978,17 +1160,19 @@ impl Stack {
             _ => {}
         }
 
+        if tcb.in_flight() == 0 && tcb.unsent() > 0 && now - tcb.last_sent > tcb.rto {
+            tcb.cwnd = tcb.cwnd.min(initial_window(tcb.snd_mss));
+        }
         while !tcb.fin_sent {
             let unsent = tcb.unsent();
             let offset = tcb.snd_nxt.wrapping_sub(tcb.tx_base) as usize;
             let in_flight = tcb.in_flight();
-            let allowed = if tcb.probe { 1 } else { (tcb.snd_wnd as usize).min(tcb.cwnd).saturating_sub(in_flight) };
+            let window = (tcb.snd_wnd as usize).min(tcb.cwnd).saturating_sub(in_flight);
+            let allowed = if tcb.probe { window.max(1) } else { window };
             let n = unsent.min(tcb.snd_mss).min(allowed);
             let fin = tcb.fin_queued && n == unsent;
-            if n == 0 && !fin {
-                break;
-            }
-            if n < tcb.snd_mss && n == unsent && in_flight > 0 && !tcb.nodelay && !fin {
+            let max_window = tcb.max_window as usize;
+            if !fin && !worth_sending(n, unsent, tcb.snd_mss, max_window, in_flight, tcb.nodelay, tcb.probe) {
                 break;
             }
             let mut flags = ACK;
@@ -1014,7 +1198,7 @@ impl Stack {
         if tcb.ack_now {
             self.send_tcp(tcb, tcb.snd_nxt, ACK, 0, 0, now, tx);
         }
-        if tcb.snd_wnd == 0 && tcb.unsent() > 0 && tcb.in_flight() == 0 && tcb.persist_at.is_none() {
+        if tcb.unsent() > 0 && tcb.in_flight() == 0 && tcb.persist_at.is_none() {
             tcb.persist_at = Some(now + tcb.rto);
         }
     }
@@ -1046,6 +1230,9 @@ impl Stack {
             tcb.ack_at = None;
             tcb.unacked_segments = 0;
         }
+        if len > 0 {
+            tcb.last_sent = now;
+        }
     }
 
     pub(crate) fn tcp_poll(&mut self, now: Instant, tx: &mut Tx) -> Option<Instant> {
@@ -1076,7 +1263,8 @@ impl Stack {
             let limit = if tcb.state.synchronized() { MAX_RETRIES } else { MAX_SYN_RETRIES };
             tcb.retries += 1;
             if tcb.retries > limit {
-                let error = if tcb.state == State::SynSent { Error::TimedOut } else { Error::ConnectionAborted };
+                let timeout = if tcb.state == State::SynSent { Error::TimedOut } else { Error::ConnectionAborted };
+                let error = tcb.soft_error.unwrap_or(timeout);
                 tcb.released |= tcb.listener.is_some();
                 tcb.close_with(Some(error));
                 return;
@@ -1096,7 +1284,15 @@ impl Stack {
         }
         if tcb.persist_at.is_some_and(|t| t <= now) {
             tcb.persist_at = None;
-            tcb.probe = tcb.snd_wnd == 0 && tcb.unsent() > 0;
+            tcb.probe = tcb.unsent() > 0;
+        }
+        if tcb.keepalive_at().is_some_and(|t| t <= now) {
+            if tcb.keepalive_probes >= KEEPALIVE_PROBES {
+                tcb.close_with(Some(tcb.soft_error.unwrap_or(Error::TimedOut)));
+                return;
+            }
+            tcb.keepalive_probes += 1;
+            self.send_tcp(tcb, tcb.snd_una.wrapping_sub(1), ACK, 0, 0, now, tx);
         }
         self.tcp_output(tcb, now, tx);
     }

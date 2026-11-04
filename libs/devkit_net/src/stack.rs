@@ -8,19 +8,23 @@ use alloc::vec::Vec;
 use core::mem;
 use core::net::Ipv4Addr;
 
+use core::time::Duration;
+
 use crate::Error;
 use crate::arp::{self, Resolve};
+use crate::icmp::{self, CODE_PORT, CODE_PROTOCOL};
 use crate::link::{LinkInfo, Medium};
 use crate::time::Instant;
-use crate::{tcp, udp};
+use crate::{frag, tcp, udp};
 use crate::wire::{
     ARP_LEN, ARP_REPLY, ARP_REQUEST, Arp, BROADCAST_MAC, DEFAULT_TTL, ETHERNET_HEADER, ETHERNET_MIN_FRAME,
-    ETHERTYPE_ARP, ETHERTYPE_IPV4, Ethernet, ICMP_ECHO_REPLY, ICMP_ECHO_REQUEST, IPV4_HEADER, Ipv4, Mac, PROTO_ICMP, PROTO_TCP, PROTO_UDP,
-    checksum, put16, sum,
+    ETHERTYPE_ARP, ETHERTYPE_IPV4, Ethernet, IPV4_HEADER, Ipv4, Mac, PROTO_ICMP, PROTO_TCP, PROTO_UDP,
 };
 
 const LOOPBACK_MTU: usize = 16384;
 const LOOPBACK_QUEUE: usize = 16;
+const ANNOUNCEMENTS: u8 = 2;
+const ANNOUNCE_INTERVAL: Duration = Duration::from_secs(2);
 
 pub(crate) type Tx<'a> = dyn FnMut(IfaceId, &[u8]) -> bool + 'a;
 
@@ -79,9 +83,21 @@ struct Iface {
     ipv4: Option<Ipv4Config>,
     dns: Vec<Ipv4Addr>,
     stats: IfaceStats,
+    /// Gratuitous ARPs still to send for the address, from `announce_at`.
+    announce: u8,
+    announce_at: Instant,
+    /// An address being checked before use, and whether someone else has it.
+    probing: Option<Ipv4Addr>,
+    conflict: bool,
 }
 
 impl Iface {
+    fn announce_soon(&mut self) {
+        let announce = self.up && self.info.medium == Medium::Ethernet && self.ipv4.is_some();
+        self.announce = if announce { ANNOUNCEMENTS } else { 0 };
+        self.announce_at = Instant::ZERO;
+    }
+
     fn header_len(&self) -> usize {
         match self.info.medium {
             Medium::Ethernet => ETHERNET_HEADER,
@@ -99,6 +115,8 @@ pub struct Stack {
     arp: arp::Cache,
     buf: Vec<u8>,
     ident: u16,
+    frag: frag::Reassembly,
+    pub(crate) icmp_limit: icmp::Limiter,
     pub(crate) udp: udp::Sockets,
     pub(crate) tcp: tcp::Sockets,
     pub(crate) woken: Vec<SocketId>,
@@ -118,6 +136,8 @@ impl Stack {
             arp: arp::Cache::default(),
             buf: Vec::new(),
             ident: 0,
+            frag: frag::Reassembly::default(),
+            icmp_limit: icmp::Limiter::default(),
             udp: udp::Sockets::default(),
             tcp: tcp::Sockets::default(),
             woken: Vec::new(),
@@ -131,12 +151,25 @@ impl Stack {
     /// The interface starts down, without an address.
     pub fn add_interface(&mut self, name: &'static str, info: LinkInfo) -> IfaceId {
         let id = IfaceId(u8::try_from(self.ifaces.len()).expect("too many interfaces"));
-        self.ifaces.push(Iface { name, info, up: false, ipv4: None, dns: Vec::new(), stats: IfaceStats::default() });
+        self.ifaces.push(Iface {
+            name,
+            info,
+            up: false,
+            ipv4: None,
+            dns: Vec::new(),
+            stats: IfaceStats::default(),
+            announce: 0,
+            announce_at: Instant::ZERO,
+            probing: None,
+            conflict: false,
+        });
         id
     }
 
     pub fn set_link_up(&mut self, id: IfaceId, up: bool) {
-        self.iface_mut(id).up = up;
+        let iface = self.iface_mut(id);
+        iface.up = up;
+        iface.announce_soon();
         if !up {
             self.arp.forget_iface(id);
         }
@@ -148,7 +181,9 @@ impl Stack {
 
     pub fn set_ipv4(&mut self, id: IfaceId, config: Option<Ipv4Config>) {
         assert!(config.is_none_or(|c| c.prefix_len <= 32));
-        self.iface_mut(id).ipv4 = config;
+        let iface = self.iface_mut(id);
+        iface.ipv4 = config;
+        iface.announce_soon();
         self.arp.forget_iface(id);
         if !self.woken.contains(&SocketId::Iface(id)) {
             self.woken.push(SocketId::Iface(id));
@@ -227,8 +262,10 @@ impl Stack {
         for (id, ip) in requests {
             self.send_arp_request(id, ip, tx);
         }
+        let announce = self.announce(now, tx);
+        let frag = self.frag.poll(now);
         let tcp = self.tcp_poll(now, tx);
-        let next = [arp, tcp].into_iter().flatten().min();
+        let next = [arp, announce, frag, tcp].into_iter().flatten().min();
         if self.loopback.is_empty() { next } else { Some(now) }
     }
 
@@ -284,7 +321,7 @@ impl Stack {
         buf.clear();
         buf.resize(header + IPV4_HEADER + len, 0);
         self.ident = self.ident.wrapping_add(1);
-        let ip = Ipv4 { src, dst, protocol, ttl: DEFAULT_TTL, ident: self.ident, fragmented: false };
+        let ip = Ipv4 { src, dst, protocol, ttl: DEFAULT_TTL, ident: self.ident, frag: 0 };
         ip.write_header(&mut buf[header..], len);
         fill(&mut buf[header + IPV4_HEADER..], src);
         match medium {
@@ -292,6 +329,10 @@ impl Stack {
             Medium::Ethernet if broadcast => self.emit_ethernet(id, BROADCAST_MAC, ETHERTYPE_IPV4, &mut buf, tx),
             Medium::Ethernet => match self.arp.resolve(id, next_hop, now, &buf[header..]) {
                 Resolve::Known(mac) => self.emit_ethernet(id, mac, ETHERTYPE_IPV4, &mut buf, tx),
+                Resolve::Refresh(mac) => {
+                    self.emit_ethernet(id, mac, ETHERTYPE_IPV4, &mut buf, tx);
+                    self.send_arp_to(id, mac, next_hop, tx);
+                }
                 Resolve::Request => self.send_arp_request(id, next_hop, tx),
                 Resolve::Waiting => {}
             },
@@ -300,8 +341,34 @@ impl Stack {
         Ok(())
     }
 
+    /// RFC 5227: asks who has `address` without claiming it. Answers and
+    /// other probes for it count until `arp_probe_done`.
+    pub(crate) fn arp_probe(&mut self, id: IfaceId, address: Ipv4Addr, tx: &mut Tx) {
+        let iface = self.iface_mut(id);
+        if iface.probing != Some(address) {
+            iface.probing = Some(address);
+            iface.conflict = false;
+        }
+        let probe = Arp { op: ARP_REQUEST, sha: iface.info.mac, spa: Ipv4Addr::UNSPECIFIED, tha: [0; 6], tpa: address };
+        self.send_arp(id, BROADCAST_MAC, &probe, tx);
+    }
+
+    /// Whether another host claimed the probed address.
+    pub(crate) fn arp_probe_done(&mut self, id: IfaceId) -> bool {
+        let iface = self.iface_mut(id);
+        iface.probing = None;
+        mem::take(&mut iface.conflict)
+    }
+
     fn arp_input(&mut self, id: IfaceId, p: &[u8], now: Instant, tx: &mut Tx) {
         let Some(arp) = Arp::parse(p) else { return };
+        let iface = self.iface_mut(id);
+        if let Some(probed) = iface.probing
+            && arp.sha != iface.info.mac
+            && (arp.spa == probed || (arp.spa.is_unspecified() && arp.tpa == probed))
+        {
+            iface.conflict = true;
+        }
         let iface = self.iface(id);
         let Some(config) = iface.ipv4 else { return };
         let mac = iface.info.mac;
@@ -323,10 +390,38 @@ impl Stack {
     }
 
     fn send_arp_request(&mut self, id: IfaceId, ip: Ipv4Addr, tx: &mut Tx) {
+        self.send_arp_to(id, BROADCAST_MAC, ip, tx);
+    }
+
+    fn send_arp_to(&mut self, id: IfaceId, dst: Mac, ip: Ipv4Addr, tx: &mut Tx) {
         let iface = self.iface(id);
         let spa = iface.ipv4.map_or(Ipv4Addr::UNSPECIFIED, |c| c.address);
         let request = Arp { op: ARP_REQUEST, sha: iface.info.mac, spa, tha: [0; 6], tpa: ip };
-        self.send_arp(id, BROADCAST_MAC, &request, tx);
+        self.send_arp(id, dst, &request, tx);
+    }
+
+    /// Sends the gratuitous ARPs that are due; returns when the next is.
+    fn announce(&mut self, now: Instant, tx: &mut Tx) -> Option<Instant> {
+        let mut next: Option<Instant> = None;
+        for n in 0..self.ifaces.len() {
+            let id = IfaceId(n as u8);
+            let iface = &mut self.ifaces[n];
+            if iface.announce == 0 {
+                continue;
+            }
+            if iface.announce_at <= now {
+                iface.announce -= 1;
+                iface.announce_at = now + ANNOUNCE_INTERVAL;
+                let (mac, address) = (iface.info.mac, iface.ipv4.unwrap().address);
+                let gratuitous = Arp { op: ARP_REQUEST, sha: mac, spa: address, tha: [0; 6], tpa: address };
+                self.send_arp(id, BROADCAST_MAC, &gratuitous, tx);
+            }
+            let iface = &self.ifaces[n];
+            if iface.announce > 0 {
+                next = Some(next.map_or(iface.announce_at, |t: Instant| t.min(iface.announce_at)));
+            }
+        }
+        next
     }
 
     fn send_arp(&mut self, id: IfaceId, dst: Mac, arp: &Arp, tx: &mut Tx) {
@@ -349,9 +444,17 @@ impl Stack {
 
     fn ipv4_input(&mut self, id: IfaceId, p: &[u8], now: Instant, tx: &mut Tx) {
         let Some((ip, payload)) = Ipv4::parse(p) else { return };
-        if ip.fragmented {
+        if !self.valid_source(id, ip.src) {
             return;
         }
+        let whole;
+        let payload = if ip.is_fragment() {
+            let Some(data) = self.frag.add(&ip, payload, now) else { return };
+            whole = data;
+            &whole[..]
+        } else {
+            payload
+        };
         let Some(config) = self.iface(id).ipv4 else {
             if ip.protocol == PROTO_UDP {
                 self.udp_input(id, &ip, payload);
@@ -368,25 +471,28 @@ impl Stack {
         }
         match ip.protocol {
             PROTO_ICMP => self.icmp_input(&ip, unicast, payload, now, tx),
-            PROTO_UDP => self.udp_input(id, &ip, payload),
+            PROTO_UDP => {
+                if !self.udp_input(id, &ip, payload) && unicast {
+                    self.send_unreachable(&ip, payload, CODE_PORT, now, tx);
+                }
+            }
             PROTO_TCP => self.tcp_input(&ip, unicast, payload, now, tx),
+            _ if unicast => self.send_unreachable(&ip, payload, CODE_PROTOCOL, now, tx),
             _ => {}
         }
     }
 
-    fn icmp_input(&mut self, ip: &Ipv4, unicast: bool, p: &[u8], now: Instant, tx: &mut Tx) {
-        if p.len() < 8 || checksum(sum(p, 0)) != 0 {
-            return;
+    /// RFC 1122 3.2.1.3: no host sends from a broadcast or multicast address,
+    /// and 127/8 never arrives from outside.
+    fn valid_source(&self, id: IfaceId, src: Ipv4Addr) -> bool {
+        if src.is_broadcast() || src.is_multicast() || src.octets()[0] >= 240 {
+            return false;
         }
-        if p[0] == ICMP_ECHO_REQUEST && p[1] == 0 && unicast {
-            let _ = self.send_ipv4(Some(ip.dst), ip.src, PROTO_ICMP, p.len(), now, tx, |out, _| {
-                out.copy_from_slice(p);
-                out[0] = ICMP_ECHO_REPLY;
-                put16(out, 2, 0);
-                let c = checksum(sum(out, 0));
-                put16(out, 2, c);
-            });
+        if id == IfaceId::LOOPBACK {
+            return true;
         }
+        let subnet_broadcast = self.iface(id).ipv4.is_some_and(|c| c.prefix_len < 31 && src == c.broadcast());
+        !src.is_loopback() && !subnet_broadcast
     }
 
     /// The largest IPv4 payload toward `dst`.

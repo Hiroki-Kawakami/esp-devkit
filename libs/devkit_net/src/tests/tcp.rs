@@ -13,6 +13,7 @@ use super::{IP_A, IP_B, Live, MAC_A, MAC_B, config, eth, in_task, v4};
 use crate::harness::{End, Net as Wires};
 use crate::tcp::{Buffers, State};
 use crate::wire::{ETHERTYPE_IPV4, Ethernet, Ipv4, PROTO_TCP};
+use crate::Instant;
 use crate::{Error, Stack, TcpBuilder};
 
 const ANY: Ipv4Addr = Ipv4Addr::UNSPECIFIED;
@@ -173,9 +174,9 @@ fn closed_port_refuses() {
 fn silent_peer_times_out() {
     let (mut net, a, _) = pair();
     let c = connect(&mut net, a, Ipv4Addr::new(192, 0, 2, 9), buffers(1024, 1024));
-    net.run_for(Duration::from_secs(60));
+    net.run_for(Duration::from_secs(180));
     assert_eq!(net.stacks[a.0].tcp_connected(c), None);
-    net.run_for(Duration::from_secs(120));
+    net.run_for(Duration::from_secs(20));
     assert_eq!(net.stacks[a.0].tcp_connected(c), Some(Err(Error::TimedOut)));
 }
 
@@ -375,4 +376,145 @@ fn live_errors_and_timeouts() {
         drop(client);
         assert_eq!(server.read_timeout(&mut buf, Duration::from_secs(1)), Ok(0));
     });
+}
+
+#[test]
+fn isn_follows_the_clock_per_connection() {
+    let mut sockets = crate::tcp::Sockets::default();
+    let a = SocketAddrV4::new(IP_A, 40000);
+    let b = SocketAddrV4::new(IP_B, PORT);
+    let t = Instant::from_micros(1_000_000);
+    let first = sockets.isn(a, b, t);
+    assert_eq!(sockets.isn(a, b, t + Duration::from_millis(4)).wrapping_sub(first), 1000);
+    assert_ne!(sockets.isn(SocketAddrV4::new(IP_A, 40001), b, t), first);
+}
+
+#[test]
+fn small_windows_wait_for_a_worthwhile_send() {
+    use crate::tcp::worth_sending as worth;
+    assert!(worth(1460, 5000, 1460, 4096, 2000, false, false));
+    assert!(!worth(100, 5000, 1460, 4096, 2000, false, false));
+    assert!(worth(2048, 5000, 4096, 4096, 0, false, false));
+    assert!(worth(100, 5000, 1460, 4096, 0, false, true));
+    assert!(worth(10, 10, 1460, 4096, 0, false, false));
+    assert!(!worth(10, 10, 1460, 4096, 500, false, false));
+    assert!(worth(10, 10, 1460, 4096, 500, true, false));
+    assert!(!worth(0, 10, 1460, 4096, 0, true, true));
+}
+
+#[test]
+fn zero_window_holds_without_giving_up() {
+    let (mut net, a, b) = pair();
+    let (c, s) = established(&mut net, a, b, buffers(2048, 2048), buffers(2048, 2048));
+    let data = pattern(2048 + 2048);
+    let mut sent = 0;
+    for _ in 0..100 {
+        if let Some(r) = write(&mut net, a, c, &data[sent..]) {
+            sent += r.unwrap();
+        }
+        net.run_for(Duration::from_millis(10));
+    }
+    net.run_for(Duration::from_secs(900));
+    assert_eq!(net.stacks[a.0].tcp_state(c), Some(State::Established));
+    let mut got = Vec::new();
+    while got.len() < sent {
+        while let Some(r) = read(&mut net, b, s, 4096) {
+            got.extend_from_slice(&r.unwrap());
+        }
+        net.run_for(Duration::from_millis(100));
+    }
+    assert!(got == data[..sent]);
+}
+
+#[test]
+fn simultaneous_open_connects_both_sides() {
+    let (mut net, a, b) = pair();
+    let b_port = 6000;
+    let b_end = SocketAddrV4::new(IP_B, b_port);
+    let a_end = SocketAddrV4::new(IP_A, 5000);
+    net.run_for(Duration::from_millis(10));
+    let c = net.with(a.0, |stack, now, tx| stack.tcp_connect_from(Some(5000), b_end, buffers(1024, 1024), now, tx)).unwrap();
+    let s = net.with(b.0, |stack, now, tx| stack.tcp_connect_from(Some(b_port), a_end, buffers(1024, 1024), now, tx)).unwrap();
+    net.run_for(Duration::from_millis(20));
+    assert_eq!(net.stacks[a.0].tcp_connected(c), Some(Ok(())));
+    assert_eq!(net.stacks[b.0].tcp_connected(s), Some(Ok(())));
+    write(&mut net, a, c, b"both");
+    net.run_for(Duration::from_millis(10));
+    assert_eq!(read(&mut net, b, s, 16), Some(Ok(b"both".to_vec())));
+}
+
+fn segment(src: SocketAddrV4, dst: SocketAddrV4, seq: u32, ack: u32, data: &[u8]) -> Vec<u8> {
+    use crate::wire::{put16, sum, checksum};
+    let mut tcp = vec![0u8; 20];
+    put16(&mut tcp, 0, src.port());
+    put16(&mut tcp, 2, dst.port());
+    tcp[4..8].copy_from_slice(&seq.to_be_bytes());
+    tcp[8..12].copy_from_slice(&ack.to_be_bytes());
+    tcp[12] = 5 << 4;
+    tcp[13] = 0x10;
+    put16(&mut tcp, 14, 4096);
+    tcp.extend_from_slice(data);
+    let pseudo = sum(&dst.ip().octets(), sum(&src.ip().octets(), 0)) + u32::from(PROTO_TCP) + tcp.len() as u32;
+    let c = checksum(sum(&tcp, pseudo));
+    put16(&mut tcp, 16, c);
+    let mut ip = vec![0u8; 20];
+    Ipv4 { src: *src.ip(), dst: *dst.ip(), protocol: PROTO_TCP, ttl: 64, ident: 1, frag: 0 }.write_header(&mut ip, tcp.len());
+    ip.extend_from_slice(&tcp);
+    let mut frame = vec![0u8; 14];
+    Ethernet::write_header(&mut frame, MAC_B, MAC_A, ETHERTYPE_IPV4);
+    frame.extend_from_slice(&ip);
+    frame
+}
+
+fn syn_seqs(net: &Wires, a: End, b: End) -> (u32, u32) {
+    let seq = |end: End| {
+        net.captured.iter().filter(|c| c.from == end).find_map(|c| {
+            let eth = Ethernet::parse(&c.frame)?;
+            let (ip, p) = Ipv4::parse(eth.payload)?;
+            (ip.protocol == PROTO_TCP && p[13] & 0x02 != 0).then(|| u32::from_be_bytes(p[4..8].try_into().unwrap()))
+        })
+    };
+    (seq(a).unwrap(), seq(b).unwrap())
+}
+
+#[test]
+fn ack_far_behind_is_challenged() {
+    let (mut net, a, b) = pair();
+    let (c, s) = established(&mut net, a, b, buffers(1024, 1024), buffers(1024, 1024));
+    let (a_iss, b_iss) = syn_seqs(&net, a, b);
+    let (a_end, b_end) = net.stacks[a.0].tcp_addrs(c);
+    let before = segments_from(&net, b).len();
+    net.send(a, &segment(a_end, b_end, a_iss.wrapping_add(1), b_iss.wrapping_sub(1_000_000), b"x"));
+    net.run_for(Duration::from_millis(10));
+    assert_eq!(read(&mut net, b, s, 16), None);
+    let answers = &segments_from(&net, b)[before..];
+    assert_eq!(answers.len(), 1);
+    assert_eq!(answers[0].0, 0x10);
+}
+
+#[test]
+fn idle_connection_restarts_from_the_initial_window() {
+    let (mut net, a, b) = pair();
+    let (c, s) = established(&mut net, a, b, buffers(65536, 65536), buffers(65536, 65536));
+    transfer(&mut net, (a, c), (b, s), &pattern(200 * 1024), Duration::from_secs(10));
+    net.run_for(Duration::from_secs(10));
+    net.stacks[a.0].tcp_set_nodelay(c, true);
+    let before = segments_from(&net, a).iter().filter(|s| s.1 > 0).count();
+    write(&mut net, a, c, &pattern(20 * 1024));
+    let burst = segments_from(&net, a).iter().filter(|s| s.1 > 0).count() - before;
+    assert_eq!(burst, 3);
+}
+
+#[test]
+fn keepalive_probes_and_gives_up_on_a_dead_peer() {
+    let (mut net, a, b) = pair();
+    let (c, _s) = established(&mut net, a, b, buffers(1024, 1024), buffers(1024, 1024));
+    net.stacks[a.0].tcp_set_keepalive(c, Some(Duration::from_secs(10)));
+    net.run_for(Duration::from_secs(200));
+    assert_eq!(net.stacks[a.0].tcp_state(c), Some(State::Established));
+    let probes = segments_from(&net, a).iter().filter(|s| s.0 == 0x10 && s.1 == 0).count();
+    assert!(probes >= 2, "{probes} probes");
+    net.set_loss(|_| true);
+    net.run_for(Duration::from_secs(10 + 9 * 75 + 10));
+    assert_eq!(read(&mut net, a, c, 16), Some(Err(Error::TimedOut)));
 }

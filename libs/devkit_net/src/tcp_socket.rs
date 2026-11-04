@@ -256,6 +256,18 @@ impl TcpStream {
         Ok(self.conn.net.lock().stack.tcp_nodelay(self.conn.id))
     }
 
+    /// Probes the peer after `idle` without traffic, every 75 s, and gives the
+    /// connection up with `TimedOut` after 9 unanswered probes. Off by default.
+    pub fn set_keepalive(&self, idle: Option<Duration>) -> Result<()> {
+        self.conn.net.lock().stack.tcp_set_keepalive(self.conn.id, idle);
+        self.conn.net.kick();
+        Ok(())
+    }
+
+    pub fn keepalive(&self) -> Result<Option<Duration>> {
+        Ok(self.conn.net.lock().stack.tcp_keepalive(self.conn.id))
+    }
+
     /// `Ok(0)` once the peer has closed its side.
     pub fn read(&self, buf: &mut [u8]) -> Result<usize> {
         blocking(self.conn.read(buf))

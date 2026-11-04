@@ -7,6 +7,7 @@ use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::future::{Future, pending, poll_fn};
+use core::net::Ipv4Addr;
 use core::pin::pin;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::{Poll, Waker};
@@ -38,6 +39,8 @@ pub struct Config {
     pub task_priority: u32,
     pub task_core: Option<u32>,
     pub task_stack: usize,
+    /// Sent to DHCP servers.
+    pub hostname: Option<&'static str>,
 }
 
 impl Default for Config {
@@ -50,6 +53,7 @@ impl Default for Config {
             task_priority: 18,
             task_core: None,
             task_stack: 8192,
+            hostname: None,
         }
     }
 }
@@ -66,6 +70,8 @@ pub(crate) struct Inner {
     pub stack: Stack,
     links: Vec<Option<&'static dyn Link>>,
     pub modes: Vec<Ipv4Mode>,
+    /// The address DHCP last held on each interface, to ask for again.
+    pub dhcp_last: Vec<Option<Ipv4Addr>>,
     waiters: Vec<(SocketId, Waker)>,
     kick: &'static Signal<()>,
 }
@@ -199,7 +205,14 @@ impl Net {
     pub fn new() -> Self {
         let kick: &'static Signal<()> = Box::leak(Box::new(Signal::new(&CRITICAL)));
         let (rx, rx_queue) = executor::channel(RX_QUEUE);
-        let inner = Inner { stack: Stack::new(), links: Vec::new(), modes: Vec::new(), waiters: Vec::new(), kick };
+        let inner = Inner {
+            stack: Stack::new(),
+            links: Vec::new(),
+            modes: Vec::new(),
+            dhcp_last: Vec::new(),
+            waiters: Vec::new(),
+            kick,
+        };
         Self {
             config: OnceLock::new(),
             started: AtomicBool::new(false),
@@ -241,6 +254,7 @@ impl Net {
         if inner.links.len() <= index {
             inner.links.resize(index + 1, None);
             inner.modes.resize(index + 1, Ipv4Mode::Off);
+            inner.dhcp_last.resize(index + 1, None);
         }
         inner.links[index] = Some(link);
         drop(inner);
