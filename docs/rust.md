@@ -504,7 +504,12 @@ microsecond resolution, plus `since_boot()`. `idf::system::restart()` calls
 `esp_restart()`; in the simulator it exits with status 0.
 `idf::system::CORE_COUNT` is `CONFIG_FREERTOS_NUMBER_OF_CORES` and `core_id()`
 the core running the caller, which an unpinned task may leave right after the
-call.
+call. `idf::system::random()` is `esp_random()`, from the OS entropy source in
+the simulator.
+
+`idf::nvs::init()` initializes the default NVS partition for every user of it
+and may be called by each of them; it does the work once. A partition without
+free pages or written by a newer IDF is erased first, losing what it held.
 
 `idf::fs` follows `std::fs` over the POSIX calls, with `&CStr` paths:
 

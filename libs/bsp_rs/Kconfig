@@ -7,6 +7,10 @@ choice BSP_RS_BOARD
     prompt "Target board"
     default BSP_RS_BOARD_TAB5
 
+    config BSP_RS_BOARD_ATOM_S3_LITE
+        bool "M5Stack AtomS3 Lite (ESP32-S3)"
+        depends on IDF_TARGET_ESP32S3
+
     config BSP_RS_BOARD_TAB5
         bool "M5Stack Tab5 (ESP32-P4)"
         depends on DEVKIT_SIMULATOR || IDF_TARGET_ESP32P4

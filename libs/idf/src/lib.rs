@@ -26,6 +26,7 @@ pub mod ldo;
 #[cfg(target_os = "none")]
 pub mod ledc;
 pub mod log;
+pub mod nvs;
 #[cfg(any(not(target_os = "none"), CONFIG_SOC_PPA_SUPPORTED))]
 pub mod ppa;
 #[cfg(all(target_os = "none", CONFIG_SOC_SDMMC_HOST_SUPPORTED))]

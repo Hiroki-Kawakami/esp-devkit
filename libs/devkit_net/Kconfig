@@ -1,0 +1,10 @@
+menu "devkit_net"
+
+config DEVKIT_NET_WIFI
+    bool "Built-in Wi-Fi"
+    depends on SOC_WIFI_SUPPORTED
+    default y
+    help
+        Registers the chip's own Wi-Fi as the station interface "sta".
+
+endmenu

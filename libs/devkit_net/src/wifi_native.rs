@@ -1,0 +1,225 @@
+/*
+ * SPDX-License-Identifier: MIT
+ * Copyright (c) 2026 Hiroki Kawakami
+ *
+ * The chip's own Wi-Fi station.
+ */
+
+use alloc::vec::Vec;
+use core::ffi::{CStr, c_void};
+use core::ptr::{self, NonNull};
+use core::sync::atomic::{AtomicBool, Ordering};
+use core::time::Duration;
+
+use idf::log::{info, warn};
+use idf::sync::{Mutex, OnceLock};
+use idf::time::Instant;
+use idf::{Error, Result, thread};
+
+use crate::link::{Link, LinkInfo, LinkRx, Medium, RxFrame, TxError};
+use crate::wifi::{Auth, BoxFuture, DisconnectReason, StaConfig, WifiDriver, WifiEvents, WifiState, offload};
+
+#[allow(
+    dead_code,
+    non_camel_case_types,
+    non_snake_case,
+    non_upper_case_globals,
+    unnecessary_transmutes,
+    unsafe_op_in_unsafe_fn
+)]
+mod ffi {
+    include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
+}
+
+const TAG: &CStr = c"devkit_net_wifi";
+
+const MTU: usize = 1500;
+const START_WAIT: Duration = Duration::from_secs(5);
+
+struct Sta;
+struct Native;
+
+static STA: Sta = Sta;
+static NATIVE: Native = Native;
+static LINK_RX: OnceLock<LinkRx> = OnceLock::new();
+static EVENTS: OnceLock<WifiEvents> = OnceLock::new();
+static RADIO: Mutex<bool> = Mutex::new(false);
+static STARTED: AtomicBool = AtomicBool::new(false);
+static UP: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn register() {
+    crate::wifi::register_wifi(&NATIVE);
+}
+
+fn sta_mac() -> [u8; 6] {
+    let mut mac = [0; 6];
+    if unsafe { ffi::esp_read_mac(mac.as_mut_ptr(), ffi::esp_mac_type_t_ESP_MAC_WIFI_STA) } != 0 {
+        warn!(TAG, "no station mac");
+    }
+    mac
+}
+
+impl Link for Sta {
+    fn info(&self) -> LinkInfo {
+        LinkInfo { medium: Medium::Ethernet, mac: sta_mac(), mtu: MTU }
+    }
+
+    fn attach(&self, rx: LinkRx) {
+        let _ = LINK_RX.set(rx);
+    }
+
+    fn transmit(&self, frame: &[u8]) -> core::result::Result<(), TxError> {
+        if !UP.load(Ordering::Acquire) {
+            return Err(TxError::Down);
+        }
+        let len = u16::try_from(frame.len()).map_err(|_| TxError::Busy)?;
+        match unsafe { ffi::esp_wifi_internal_tx(ffi::wifi_interface_t_WIFI_IF_STA, frame.as_ptr().cast_mut().cast(), len) } {
+            0 => Ok(()),
+            _ => Err(TxError::Busy),
+        }
+    }
+}
+
+unsafe fn release(_: NonNull<u8>, _: usize, eb: usize) {
+    unsafe { ffi::esp_wifi_internal_free_rx_buffer(eb as *mut c_void) };
+}
+
+/// On the Wi-Fi task. The frame stays in the driver's buffer until the stack
+/// has processed it.
+unsafe extern "C" fn on_rx(buffer: *mut c_void, len: u16, eb: *mut c_void) -> ffi::esp_err_t {
+    let (Some(rx), Some(data)) = (LINK_RX.get(), NonNull::new(buffer.cast::<u8>())) else {
+        unsafe { ffi::esp_wifi_internal_free_rx_buffer(eb) };
+        return 0;
+    };
+    rx.deliver(unsafe { RxFrame::from_raw(data, usize::from(len), eb as usize, release) });
+    0
+}
+
+/// On the default event loop's task.
+unsafe extern "C" fn on_event(_: *mut c_void, base: ffi::esp_event_base_t, id: i32, data: *mut c_void) {
+    if base != unsafe { ffi::WIFI_EVENT } {
+        return;
+    }
+    match id as u32 {
+        ffi::wifi_event_t_WIFI_EVENT_STA_START => STARTED.store(true, Ordering::Release),
+        ffi::wifi_event_t_WIFI_EVENT_STA_STOP => STARTED.store(false, Ordering::Release),
+        ffi::wifi_event_t_WIFI_EVENT_STA_CONNECTED => {
+            let e = unsafe { &*data.cast::<ffi::wifi_event_sta_connected_t>() };
+            if let Some(events) = EVENTS.get() {
+                events.set_state(WifiState::Connected { bssid: e.bssid, channel: e.channel });
+            }
+            UP.store(true, Ordering::Release);
+            if let Some(rx) = LINK_RX.get() {
+                rx.set_up(true);
+            }
+        }
+        ffi::wifi_event_t_WIFI_EVENT_STA_DISCONNECTED => {
+            let e = unsafe { &*data.cast::<ffi::wifi_event_sta_disconnected_t>() };
+            UP.store(false, Ordering::Release);
+            if let Some(rx) = LINK_RX.get() {
+                rx.set_up(false);
+            }
+            if let Some(events) = EVENTS.get() {
+                events.set_state(WifiState::Disconnected(Some(DisconnectReason::from_code(e.reason.into()))));
+            }
+        }
+        _ => {}
+    }
+}
+
+fn check(code: ffi::esp_err_t) -> Result<()> {
+    Error::check(code)
+}
+
+fn start_radio() -> Result<()> {
+    let mut started = RADIO.lock();
+    if *started {
+        return Ok(());
+    }
+    let loop_err = unsafe { ffi::esp_event_loop_create_default() };
+    if loop_err != 0 && loop_err != Error::INVALID_STATE.code() {
+        check(loop_err)?;
+    }
+    check(unsafe {
+        ffi::esp_event_handler_register(ffi::WIFI_EVENT, ffi::ESP_EVENT_ANY_ID, Some(on_event), ptr::null_mut())
+    })?;
+    if let Err(err) = idf::nvs::init() {
+        warn!(TAG, "nvs: {err}; RF calibration runs in full");
+    }
+    let mut init: ffi::wifi_init_config_t = unsafe { core::mem::zeroed() };
+    unsafe { ffi::devkit_net_wifi_init_default(&mut init) };
+    init.nvs_enable = 0;
+    check(unsafe { ffi::esp_wifi_init(&init) })?;
+    check(unsafe { ffi::esp_wifi_set_storage(ffi::wifi_storage_t_WIFI_STORAGE_RAM) })?;
+    check(unsafe { ffi::esp_wifi_set_mode(ffi::wifi_mode_t_WIFI_MODE_STA) })?;
+    check(unsafe { ffi::esp_wifi_internal_reg_rxcb(ffi::wifi_interface_t_WIFI_IF_STA, Some(on_rx)) })?;
+    check(unsafe { ffi::esp_wifi_start() })?;
+    let deadline = Instant::now() + START_WAIT;
+    while !STARTED.load(Ordering::Acquire) {
+        if Instant::now() >= deadline {
+            return Err(Error::TIMEOUT);
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    *started = true;
+    info!(TAG, "station up");
+    Ok(())
+}
+
+struct Owned {
+    ssid: Vec<u8>,
+    password: Option<Vec<u8>>,
+    bssid: Option<[u8; 6]>,
+    channel: Option<u8>,
+}
+
+fn join(config: &Owned) -> Result<()> {
+    start_radio()?;
+    let password = config.password.as_ref().map(|p| {
+        let mut p = p.clone();
+        p.push(0);
+        p
+    });
+    check(unsafe {
+        ffi::devkit_net_wifi_set_sta(
+            config.ssid.as_ptr(),
+            config.ssid.len(),
+            password.as_ref().map_or(ptr::null(), |p| p.as_ptr().cast()),
+            config.bssid.as_ref().map_or(ptr::null(), |b| b.as_ptr()),
+            config.channel.unwrap_or(0),
+        )
+    })?;
+    check(unsafe { ffi::esp_wifi_connect() })
+}
+
+impl WifiDriver for Native {
+    fn sta(&self) -> &'static dyn Link {
+        &STA
+    }
+
+    fn attach(&self, events: WifiEvents) {
+        let _ = EVENTS.set(events);
+    }
+
+    fn connect<'a>(&'a self, config: &'a StaConfig<'a>) -> BoxFuture<'a, core::result::Result<(), i32>> {
+        let owned = Owned {
+            ssid: config.ssid.to_vec(),
+            password: match config.auth {
+                Auth::Open => None,
+                Auth::Psk(p) => Some(p.as_bytes().to_vec()),
+            },
+            bssid: config.bssid,
+            channel: config.channel,
+        };
+        offload("wifi_join", move || join(&owned))
+    }
+
+    fn disconnect(&self) -> BoxFuture<'_, core::result::Result<(), i32>> {
+        offload("wifi_leave", || {
+            if !*RADIO.lock() {
+                return Ok(());
+            }
+            check(unsafe { ffi::esp_wifi_disconnect() })
+        })
+    }
+}

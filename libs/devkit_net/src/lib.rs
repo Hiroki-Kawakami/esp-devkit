@@ -4,6 +4,8 @@
  */
 
 #![cfg_attr(not(test), no_std)]
+// CONFIG_SOC_* and CONFIG_DEVKIT_NET_WIFI exist only where the chip has Wi-Fi.
+#![allow(unexpected_cfgs)]
 
 extern crate alloc;
 
@@ -25,6 +27,8 @@ mod time;
 mod udp;
 mod udp_socket;
 mod wifi;
+#[cfg(CONFIG_DEVKIT_NET_WIFI)]
+mod wifi_native;
 mod wire;
 
 pub use error::{Error, Result};

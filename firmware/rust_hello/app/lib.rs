@@ -4,8 +4,6 @@
  */
 
 #![cfg_attr(not(test), no_std)]
-// CONFIG_BSP_RS_* exist only on targets that build bsp_rs.
-#![allow(unexpected_cfgs)]
 
 extern crate alloc;
 
@@ -40,7 +38,6 @@ pub extern "C" fn rust_hello_weight(byte: u8) -> u32 {
 }
 
 pub fn run() {
-    #[cfg(CONFIG_BSP_RS_BOARD_TAB5)]
     let board = match bsp_rs::init(&bsp_rs::Config::default()) {
         Ok(board) => Some(board),
         Err(err) => {
@@ -51,7 +48,6 @@ pub fn run() {
     if let Err(err) = devkit_net::start(devkit_net::Config::default()) {
         error!(TAG, "devkit_net::start: {err}");
     }
-    #[cfg(CONFIG_BSP_RS_BOARD_TAB5)]
     if let Some(board) = &board {
         net::register_commands();
         if let Err(err) = harness_rs::start(board) {

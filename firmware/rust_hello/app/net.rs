@@ -3,17 +3,14 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
-#[cfg(CONFIG_BSP_RS_BOARD_TAB5)]
 use alloc::format;
-#[cfg(CONFIG_BSP_RS_BOARD_TAB5)]
 use alloc::string::String;
+use alloc::vec;
 use core::ffi::CStr;
 use core::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 
 use devkit_net::{TcpListener, TcpStream, UdpSocket};
-#[cfg(CONFIG_BSP_RS_BOARD_TAB5)]
-use idf::executor;
-use idf::executor::Spawner;
+use idf::executor::{self, Spawner};
 use idf::log::{error, info};
 
 const TAG: &CStr = c"rust_hello_net";
@@ -24,7 +21,7 @@ fn any(port: u16) -> SocketAddr {
 }
 
 async fn echo_tcp(stream: TcpStream) {
-    let mut buf = [0u8; 1460];
+    let mut buf = vec![0u8; 1460];
     loop {
         match stream.read_async(&mut buf).await {
             Ok(0) | Err(_) => return,
@@ -38,7 +35,7 @@ async fn echo_tcp(stream: TcpStream) {
 }
 
 async fn echo_udp(socket: UdpSocket) {
-    let mut buf = [0u8; 1472];
+    let mut buf = vec![0u8; 1472];
     loop {
         if let Ok((n, from)) = socket.recv_from_async(&mut buf).await {
             let _ = socket.send_to(&buf[..n], from);
@@ -75,7 +72,6 @@ pub async fn serve_echo(spawner: &Spawner) {
     }
 }
 
-#[cfg(CONFIG_BSP_RS_BOARD_TAB5)]
 fn wifi_command(args: &[&str]) -> Result<Option<String>, String> {
     let wifi = devkit_net::wifi().ok_or("no wifi")?;
     match args {
@@ -98,7 +94,6 @@ fn wifi_command(args: &[&str]) -> Result<Option<String>, String> {
     }
 }
 
-#[cfg(CONFIG_BSP_RS_BOARD_TAB5)]
 fn net_command(_: &[&str]) -> Result<Option<String>, String> {
     let mut out = String::new();
     for iface in devkit_net::interfaces() {
@@ -119,7 +114,6 @@ fn net_command(_: &[&str]) -> Result<Option<String>, String> {
     Ok(Some(out))
 }
 
-#[cfg(CONFIG_BSP_RS_BOARD_TAB5)]
 pub fn register_commands() {
     harness_rs::register("wifi", wifi_command);
     harness_rs::register("net", net_command);

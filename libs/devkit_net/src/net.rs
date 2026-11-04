@@ -123,9 +123,17 @@ pub(crate) struct Net {
 
 static GLOBAL: LazyLock<Net> = LazyLock::new(Net::new);
 
+#[cfg(CONFIG_DEVKIT_NET_WIFI)]
+static NATIVE_WIFI: AtomicBool = AtomicBool::new(false);
+
 /// Where links are registered, started or not.
 pub(crate) fn registry() -> &'static Net {
-    &GLOBAL
+    let net = &*GLOBAL;
+    #[cfg(CONFIG_DEVKIT_NET_WIFI)]
+    if !NATIVE_WIFI.swap(true, Ordering::AcqRel) {
+        crate::wifi_native::register();
+    }
+    net
 }
 
 pub(crate) fn global() -> Result<&'static Net> {

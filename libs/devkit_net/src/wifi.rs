@@ -4,14 +4,17 @@
  */
 
 use alloc::boxed::Box;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::future::{Future, poll_fn};
 use core::pin::Pin;
 use core::task::{Poll, Waker};
 use core::time::Duration;
 
-use idf::executor;
+use idf::executor::{self, CRITICAL, Signal};
+use idf::log::error;
 use idf::sync::{Mutex, OnceLock};
+use idf::{Error, thread};
 
 use crate::iface::{Interface, add_link};
 use crate::link::Link;
@@ -20,6 +23,7 @@ use crate::net::Ipv4Mode;
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 const DISCONNECT_WAIT: Duration = Duration::from_secs(2);
+const CONTROL_STACK: usize = 6144;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Auth<'a> {
@@ -174,7 +178,32 @@ pub fn register_wifi(driver: &'static dyn WifiDriver) -> Option<Interface> {
 }
 
 pub fn wifi() -> Option<&'static Wifi> {
+    crate::net::registry();
     WIFI.get()
+}
+
+/// Runs the blocking calls of `f` on a task of their own, so the caller's
+/// executor goes on meanwhile.
+#[cfg_attr(not(CONFIG_DEVKIT_NET_WIFI), allow(dead_code))]
+pub(crate) fn offload(
+    name: &'static str,
+    f: impl FnOnce() -> idf::Result<()> + Send + 'static,
+) -> BoxFuture<'static, Result<(), i32>> {
+    let done = Arc::new(Signal::new(&CRITICAL));
+    let tx = done.clone();
+    let spawned = thread::Builder::new().name(name).stack_size(CONTROL_STACK).spawn(move || {
+        let result = f();
+        if let Err(err) = result {
+            error!(c"devkit_net_wifi", "{name}: {err}");
+        }
+        tx.signal(result.map_err(Error::code));
+    });
+    Box::pin(async move {
+        match spawned {
+            Ok(_) => done.wait().await,
+            Err(err) => Err(err.code()),
+        }
+    })
 }
 
 impl Wifi {

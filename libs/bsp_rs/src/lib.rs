@@ -33,6 +33,8 @@ mod sim;
 #[cfg_attr(not(target_os = "none"), allow(dead_code))]
 pub mod touch;
 
+#[cfg(CONFIG_BSP_RS_BOARD_ATOM_S3_LITE)]
+use boards::atom_s3_lite as board;
 #[cfg(CONFIG_BSP_RS_BOARD_TAB5)]
 use boards::tab5 as board;
 
