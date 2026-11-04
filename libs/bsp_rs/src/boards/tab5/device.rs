@@ -273,8 +273,9 @@ fn sd_init() -> Option<&'static Sd> {
 fn coprocessor_init() {
     let config =
         esp_hosted::Config { slot: C6_SLOT, pins: C6_PINS, freq_khz: C6_FREQ_KHZ, reset_pin: Some(C6_PIN_EN) };
-    if let Err(err) = sdmmc::controller().and_then(|controller| esp_hosted::configure(controller, config)) {
-        warn!(TAG, "coprocessor unavailable: {err}");
+    match sdmmc::controller().and_then(|controller| esp_hosted::configure(controller, config)) {
+        Ok(()) => esp_hosted::register_net(),
+        Err(err) => warn!(TAG, "coprocessor unavailable: {err}"),
     }
 }
 

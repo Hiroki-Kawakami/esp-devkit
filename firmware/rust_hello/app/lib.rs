@@ -4,6 +4,8 @@
  */
 
 #![cfg_attr(not(test), no_std)]
+// CONFIG_BSP_RS_* exist only on targets that build bsp_rs.
+#![allow(unexpected_cfgs)]
 
 extern crate alloc;
 
@@ -21,6 +23,8 @@ use idf::system::{CORE_COUNT, core_id};
 use idf::thread::{self, Builder};
 use idf::time::Instant;
 
+mod net;
+
 mod ffi {
     #![allow(dead_code, non_camel_case_types, non_snake_case, non_upper_case_globals)]
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
@@ -36,9 +40,23 @@ pub extern "C" fn rust_hello_weight(byte: u8) -> u32 {
 }
 
 pub fn run() {
-    let config: ffi::bsp_config_t = unsafe { core::mem::zeroed() };
-    if let Err(err) = idf::Error::check(unsafe { ffi::bsp_init(&config) }) {
-        error!(TAG, "bsp_init failed: {err}");
+    #[cfg(CONFIG_BSP_RS_BOARD_TAB5)]
+    let board = match bsp_rs::init(&bsp_rs::Config::default()) {
+        Ok(board) => Some(board),
+        Err(err) => {
+            error!(TAG, "bsp_rs::init: {err}");
+            None
+        }
+    };
+    if let Err(err) = devkit_net::start(devkit_net::Config::default()) {
+        error!(TAG, "devkit_net::start: {err}");
+    }
+    #[cfg(CONFIG_BSP_RS_BOARD_TAB5)]
+    if let Some(board) = &board {
+        net::register_commands();
+        if let Err(err) = harness_rs::start(board) {
+            error!(TAG, "harness_rs::start: {err}");
+        }
     }
 
     let bytes: Vec<u8> = (0..=255).collect();
@@ -124,13 +142,9 @@ pub fn run() {
             counter.await;
         }
         info!(TAG, "async: channel sum={sum} jobs (value, core)={done:?} local hits={}", hits.get());
+        info!(TAG, "uptime={}ms", Instant::now().since_boot().as_millis());
 
-        let mut seconds = 0u32;
-        loop {
-            info!(TAG, "{seconds}s uptime={}ms", Instant::now().since_boot().as_millis());
-            seconds += 1;
-            executor::sleep(Duration::from_secs(1)).await;
-        }
+        net::serve_echo(&shared).await
     })
 }
 

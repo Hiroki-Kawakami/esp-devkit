@@ -6,6 +6,7 @@
 mod dhcp;
 mod ipv4;
 mod link;
+mod runner;
 mod tcp;
 mod udp;
 
@@ -70,9 +71,9 @@ impl Live {
         let mut nets = Vec::new();
         let mut links = Vec::new();
         for (mac, ip) in [(MAC_A, a), (MAC_B, b)] {
-            let net: &'static Net = Box::leak(Box::new(Net::new(Config::default())));
-            let link = Arc::new(TestLink { info: eth(mac), out: Mutex::new(VecDeque::new()) });
-            let id = net.add_link("eth", link.clone());
+            let net: &'static Net = Box::leak(Box::new(Net::with_config(Config::default())));
+            let link: &'static TestLink = Box::leak(Box::new(TestLink { info: eth(mac), out: Mutex::new(VecDeque::new()) }));
+            let id = net.add_link("eth", link);
             let mut inner = net.lock();
             inner.stack.set_ipv4(id, ip);
             inner.stack.set_link_up(id, true);

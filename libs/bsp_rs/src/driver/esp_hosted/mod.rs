@@ -16,6 +16,7 @@ use crate::driver::sdmmc::Controller;
 
 #[cfg(all(CONFIG_BT_NIMBLE_ENABLED, CONFIG_BT_CONTROLLER_DISABLED, not(CONFIG_BT_NIMBLE_TRANSPORT_UART)))]
 mod bt;
+mod net;
 mod rpc;
 mod sdio;
 mod transport;
@@ -70,6 +71,7 @@ mod proto {
     include!(concat!(env!("OUT_DIR"), "/protogen/esp_hosted_rpc.pb.rs"));
 }
 
+pub(crate) use net::register as register_net;
 pub(crate) use sdio::Config;
 
 use proto::{RpcId, RpcPayload};

@@ -40,6 +40,7 @@ pub(crate) enum SocketId {
     Udp(usize),
     Tcp(usize),
     Listener(usize),
+    Iface(IfaceId),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
@@ -149,6 +150,9 @@ impl Stack {
         assert!(config.is_none_or(|c| c.prefix_len <= 32));
         self.iface_mut(id).ipv4 = config;
         self.arp.forget_iface(id);
+        if !self.woken.contains(&SocketId::Iface(id)) {
+            self.woken.push(SocketId::Iface(id));
+        }
     }
 
     pub fn ipv4(&self, id: IfaceId) -> Option<Ipv4Config> {
@@ -171,6 +175,15 @@ impl Stack {
 
     pub fn link_info(&self, id: IfaceId) -> LinkInfo {
         self.iface(id).info
+    }
+
+    /// A link may learn its address only once it comes up.
+    pub(crate) fn set_link_info(&mut self, id: IfaceId, info: LinkInfo) {
+        self.iface_mut(id).info = info;
+    }
+
+    pub(crate) fn iface_ids(&self) -> impl Iterator<Item = IfaceId> + use<> {
+        (1..self.ifaces.len()).map(|i| IfaceId(i as u8))
     }
 
     pub fn stats(&self, id: IfaceId) -> IfaceStats {

@@ -15,7 +15,7 @@ use crate::dhcp::{self, ACK, CLIENT_PORT, DISCOVER, Message, NAK, OFFER, REQUEST
 use crate::net::Net;
 use crate::{Ipv4Config, UdpBuilder};
 
-const LEASED: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 100);
+pub(super) const LEASED: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 100);
 const ROUTER: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 254);
 const DNS: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 53);
 
@@ -44,14 +44,14 @@ fn messages_round_trip() {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum Renewals {
+pub(super) enum Renewals {
     Answer,
     Ignore,
 }
 
 /// Leases `LEASED` for `lease` seconds; counts the renewals it saw. With
 /// `Ignore`, it leases only once.
-fn serve(net: &'static Net, lease: u32, renewals: Renewals, run: Duration) -> Arc<AtomicUsize> {
+pub(super) fn serve(net: &'static Net, lease: u32, renewals: Renewals, run: Duration) -> Arc<AtomicUsize> {
     let renewed = Arc::new(AtomicUsize::new(0));
     let count = renewed.clone();
     let any = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, SERVER_PORT));

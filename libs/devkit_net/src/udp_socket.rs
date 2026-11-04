@@ -50,8 +50,8 @@ impl UdpBuilder {
 
     pub(crate) fn bind_in(self, net: &'static Net, addr: SocketAddr) -> Result<UdpSocket> {
         let addr = v4(addr)?;
-        let size = self.rx_buffer.unwrap_or(net.config.udp_rx_buffer);
-        let caps = self.caps.unwrap_or(net.config.caps);
+        let size = self.rx_buffer.unwrap_or(net.config().udp_rx_buffer);
+        let caps = self.caps.unwrap_or(net.config().caps);
         let id = net.lock().stack.udp_bind(addr, self.iface, size, caps)?;
         Ok(UdpSocket { net, id })
     }

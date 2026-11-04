@@ -319,6 +319,7 @@ impl Client {
             inner.stack.set_ipv4(self.iface, config);
         }
         inner.stack.set_dns_servers(self.iface, lease.map_or(&[][..], |l| &l.dns));
+        inner.wake();
     }
 }
 

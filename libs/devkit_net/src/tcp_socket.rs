@@ -75,9 +75,9 @@ impl TcpBuilder {
 
     fn buffers(&self, net: &Net) -> Buffers {
         Buffers {
-            rx: self.rx_buffer.unwrap_or(net.config.tcp_rx_buffer),
-            tx: self.tx_buffer.unwrap_or(net.config.tcp_tx_buffer),
-            caps: self.caps.unwrap_or(net.config.caps),
+            rx: self.rx_buffer.unwrap_or(net.config().tcp_rx_buffer),
+            tx: self.tx_buffer.unwrap_or(net.config().tcp_tx_buffer),
+            caps: self.caps.unwrap_or(net.config().caps),
         }
     }
 

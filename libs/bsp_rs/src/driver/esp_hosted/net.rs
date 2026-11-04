@@ -1,0 +1,221 @@
+/*
+ * SPDX-License-Identifier: MIT
+ * Copyright (c) 2026 Hiroki Kawakami
+ *
+ * The coprocessor's station as a devkit_net radio.
+ */
+
+use alloc::boxed::Box;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+use core::ffi::CStr;
+use core::mem;
+use core::ptr::{self, NonNull};
+use core::sync::atomic::{AtomicBool, Ordering};
+use core::time::Duration;
+
+use devkit_net::{
+    Auth, BoxFuture, DisconnectReason, Link, LinkInfo, LinkRx, Medium, RxFrame, StaConfig, TxError, WifiDriver,
+    WifiEvents, WifiState,
+};
+use idf::executor::{CRITICAL, Signal};
+use idf::log::{error, info};
+use idf::sync::{Mutex, OnceLock};
+use idf::time::Instant;
+use idf::{Error, Result, sys, thread};
+
+use super::ffi;
+use super::wire::If;
+use super::wifi;
+
+const TAG: &CStr = c"esp_hosted_net";
+
+const MTU: usize = 1500;
+const TX_WAIT: Duration = Duration::from_millis(20);
+const START_WAIT: Duration = Duration::from_secs(5);
+const CONTROL_STACK: usize = 6144;
+
+struct Sta;
+
+struct Radio {
+    started: bool,
+    mac: [u8; 6],
+}
+
+struct Hosted;
+
+static STA: Sta = Sta;
+static HOSTED: Hosted = Hosted;
+static LINK_RX: OnceLock<LinkRx> = OnceLock::new();
+static EVENTS: OnceLock<WifiEvents> = OnceLock::new();
+static RADIO: Mutex<Radio> = Mutex::new(Radio { started: false, mac: [0; 6] });
+static UP: AtomicBool = AtomicBool::new(false);
+
+/// Makes the coprocessor the firmware's Wi-Fi radio. Nothing reaches the
+/// coprocessor until the first connect.
+pub(crate) fn register() {
+    devkit_net::register_wifi(&HOSTED);
+}
+
+fn check(code: sys::esp_err_t) -> Result<()> {
+    Error::check(code)
+}
+
+fn link_info() -> LinkInfo {
+    LinkInfo { medium: Medium::Ethernet, mac: RADIO.lock().mac, mtu: MTU }
+}
+
+impl Link for Sta {
+    fn info(&self) -> LinkInfo {
+        link_info()
+    }
+
+    fn attach(&self, rx: LinkRx) {
+        let _ = LINK_RX.set(rx);
+    }
+
+    fn transmit(&self, frame: &[u8]) -> core::result::Result<(), TxError> {
+        if !UP.load(Ordering::Acquire) {
+            return Err(TxError::Down);
+        }
+        let hosted = super::linked().map_err(|_| TxError::Down)?;
+        hosted.transport.send(If::Sta, 0, frame, Some(TX_WAIT)).map_err(|_| TxError::Busy)
+    }
+}
+
+/// On the transport rx task; `false` when no stack took the frame.
+pub(super) fn on_sta(frame: &[u8]) -> bool {
+    let Some(rx) = LINK_RX.get() else { return false };
+    unsafe fn release(ptr: NonNull<u8>, _: usize, _: usize) {
+        unsafe { sys::heap_caps_free(ptr.as_ptr().cast()) };
+    }
+    let buf = unsafe { sys::heap_caps_malloc(frame.len(), sys::MALLOC_CAP_SPIRAM) }.cast::<u8>();
+    let Some(buf) = NonNull::new(buf) else { return true };
+    unsafe { ptr::copy_nonoverlapping(frame.as_ptr(), buf.as_ptr(), frame.len()) };
+    rx.deliver(unsafe { RxFrame::from_raw(buf, frame.len(), 0, release) });
+    true
+}
+
+pub(super) fn on_connected(bssid: [u8; 6], channel: u8) {
+    if let Some(events) = EVENTS.get() {
+        events.set_state(WifiState::Connected { bssid, channel });
+    }
+    UP.store(true, Ordering::Release);
+    if let Some(rx) = LINK_RX.get() {
+        rx.set_up(true);
+    }
+}
+
+pub(super) fn on_disconnected(reason: u16) {
+    UP.store(false, Ordering::Release);
+    if let Some(rx) = LINK_RX.get() {
+        rx.set_up(false);
+    }
+    if let Some(events) = EVENTS.get() {
+        events.set_state(WifiState::Disconnected(Some(DisconnectReason::from_code(reason))));
+    }
+}
+
+/// Runs the blocking RPCs of `f` on a task of their own, so the caller's
+/// executor goes on meanwhile.
+fn offload(name: &'static str, f: impl FnOnce() -> Result<()> + Send + 'static) -> BoxFuture<'static, core::result::Result<(), i32>> {
+    let done = Arc::new(Signal::new(&CRITICAL));
+    let tx = done.clone();
+    let spawned = thread::Builder::new().name(name).stack_size(CONTROL_STACK).spawn(move || {
+        let result = f();
+        if let Err(err) = result {
+            error!(TAG, "{name}: {err}");
+        }
+        tx.signal(result.map_err(Error::code));
+    });
+    Box::pin(async move {
+        match spawned {
+            Ok(_) => done.wait().await,
+            Err(err) => Err(err.code()),
+        }
+    })
+}
+
+fn start_radio() -> Result<()> {
+    let mut radio = RADIO.lock();
+    if radio.started {
+        return Ok(());
+    }
+    let mut init: ffi::wifi_init_config_t = unsafe { mem::zeroed() };
+    unsafe { ffi::bsp_rs_wifi_init_default(&mut init) };
+    wifi::init(&init)?;
+    check(unsafe { wifi::esp_wifi_remote_set_mode(ffi::wifi_mode_t_WIFI_MODE_STA) })?;
+    check(unsafe { wifi::esp_wifi_remote_start() })?;
+    let deadline = Instant::now() + START_WAIT;
+    while !wifi::sta_started() {
+        if Instant::now() >= deadline {
+            return Err(Error::TIMEOUT);
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    check(unsafe { wifi::esp_wifi_remote_get_mac(ffi::wifi_interface_t_WIFI_IF_STA, radio.mac.as_mut_ptr()) })?;
+    radio.started = true;
+    info!(TAG, "station up, mac {:02x?}", radio.mac);
+    Ok(())
+}
+
+struct Owned {
+    ssid: Vec<u8>,
+    password: Option<Vec<u8>>,
+    bssid: Option<[u8; 6]>,
+    channel: Option<u8>,
+}
+
+fn join(config: &Owned) -> Result<()> {
+    start_radio()?;
+    let mut sta: ffi::wifi_sta_config_t = unsafe { mem::zeroed() };
+    let ssid = &config.ssid[..config.ssid.len().min(sta.ssid.len())];
+    sta.ssid[..ssid.len()].copy_from_slice(ssid);
+    if let Some(password) = &config.password {
+        let password = &password[..password.len().min(sta.password.len() - 1)];
+        sta.password[..password.len()].copy_from_slice(password);
+        sta.threshold.authmode = ffi::wifi_auth_mode_t_WIFI_AUTH_WPA2_PSK;
+    }
+    sta.scan_method = ffi::wifi_scan_method_t_WIFI_ALL_CHANNEL_SCAN;
+    sta.pmf_cfg.capable = true;
+    sta.sae_pwe_h2e = ffi::wifi_sae_pwe_method_t_WPA3_SAE_PWE_BOTH;
+    if let Some(bssid) = config.bssid {
+        sta.bssid_set = true;
+        sta.bssid = bssid;
+    }
+    sta.channel = config.channel.unwrap_or(0);
+    wifi::set_config(&sta)?;
+    check(unsafe { wifi::esp_wifi_remote_connect() })
+}
+
+impl WifiDriver for Hosted {
+    fn sta(&self) -> &'static dyn Link {
+        &STA
+    }
+
+    fn attach(&self, events: WifiEvents) {
+        let _ = EVENTS.set(events);
+    }
+
+    fn connect<'a>(&'a self, config: &'a StaConfig<'a>) -> BoxFuture<'a, core::result::Result<(), i32>> {
+        let owned = Owned {
+            ssid: config.ssid.to_vec(),
+            password: match config.auth {
+                Auth::Open => None,
+                Auth::Psk(p) => Some(p.as_bytes().to_vec()),
+            },
+            bssid: config.bssid,
+            channel: config.channel,
+        };
+        offload("hosted_join", move || join(&owned))
+    }
+
+    fn disconnect(&self) -> BoxFuture<'_, core::result::Result<(), i32>> {
+        offload("hosted_leave", || {
+            if !RADIO.lock().started {
+                return Ok(());
+            }
+            check(unsafe { wifi::esp_wifi_remote_disconnect() })
+        })
+    }
+}

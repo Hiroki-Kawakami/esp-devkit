@@ -80,7 +80,7 @@ fn datagrams_cross_both_ways() {
 
     send(&mut net, a, sa, SocketAddrV4::new(IP_B, 7), b"hello").unwrap();
     net.run_for(Duration::from_millis(10));
-    assert_eq!(net.stacks[b.0].woken, vec![SocketId::Udp(sb)]);
+    assert!(net.stacks[b.0].woken.contains(&SocketId::Udp(sb)));
     let (data, from) = recv(&mut net, b, sb, 64).unwrap();
     assert_eq!((&data[..], from), (&b"hello"[..], SocketAddrV4::new(IP_A, local_a.port())));
     assert!(recv(&mut net, b, sb, 64).is_none());

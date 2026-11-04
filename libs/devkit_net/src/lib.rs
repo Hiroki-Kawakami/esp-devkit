@@ -12,6 +12,7 @@ mod dhcp;
 mod error;
 #[cfg(test)]
 mod harness;
+mod iface;
 mod link;
 mod net;
 mod ring;
@@ -23,12 +24,17 @@ mod tests;
 mod time;
 mod udp;
 mod udp_socket;
+mod wifi;
 mod wire;
 
 pub use error::{Error, Result};
 pub use link::{Link, LinkInfo, LinkRx, Medium, RxFrame, TxError};
-pub use net::Config;
+pub use iface::{Interface, add_link, interfaces, start};
+pub use net::{Config, Ipv4Mode};
 pub use stack::{IfaceId, IfaceStats, Ipv4Config, Stack};
 pub use tcp_socket::{Shutdown, TcpBuilder, TcpListener, TcpReader, TcpStream, TcpWriter};
 pub use time::Instant;
 pub use udp_socket::{UdpBuilder, UdpSocket};
+pub use wifi::{
+    Auth, BoxFuture, ConnectError, DisconnectReason, StaConfig, Wifi, WifiDriver, WifiEvents, WifiState, register_wifi, wifi,
+};

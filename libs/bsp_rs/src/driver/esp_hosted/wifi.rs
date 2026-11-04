@@ -50,6 +50,7 @@ type EspErr = sys::esp_err_t;
 static STA_RX: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
 static STA_STARTED: AtomicBool = AtomicBool::new(false);
 static STA_CONNECTED: AtomicBool = AtomicBool::new(false);
+static C_API: AtomicBool = AtomicBool::new(false);
 
 fn code(result: Result<()>) -> EspErr {
     result.err().map_or(0, Error::code)
@@ -81,9 +82,14 @@ unsafe extern "C" fn esp_wifi_internal_reg_rxcb(ifx: ffi::wifi_interface_t, f: f
     0
 }
 
+pub(super) fn sta_started() -> bool {
+    STA_STARTED.load(Ordering::Acquire)
+}
+
 pub(super) fn on_sta(frame: &[u8]) {
     let rx = STA_RX.load(Ordering::Acquire);
     if rx.is_null() {
+        super::net::on_sta(frame);
         return;
     }
     let rx: unsafe extern "C" fn(*mut c_void, u16, *mut c_void) -> EspErr = unsafe { mem::transmute(rx) };
@@ -135,6 +141,9 @@ unsafe extern "C" fn esp_wifi_internal_set_sta_ip() -> EspErr {
 }
 
 fn post<T>(id: u32, data: Option<&T>) {
+    if !C_API.load(Ordering::Acquire) {
+        return;
+    }
     let (data, size) = data.map_or((ptr::null(), 0), |d| (ptr::from_ref(d).cast::<c_void>(), mem::size_of::<T>()));
     let ticks = EVENT_POST_WAIT_MS * sdkconfig::CONFIG_FREERTOS_HZ as u32 / 1000;
     if unsafe { ffi::esp_event_post(ffi::WIFI_EVENT, id as i32, data, size, ticks) } != 0 {
@@ -176,6 +185,7 @@ pub(super) fn on_event(ev: &p::Rpc<'_>) {
             copy_bytes(&mut out.bssid, c.bssid);
             STA_CONNECTED.store(true, Ordering::Release);
             post(ffi::wifi_event_t_WIFI_EVENT_STA_CONNECTED, Some(&out));
+            super::net::on_connected(out.bssid, out.channel);
         }
         RpcPayload::EventStaDisconnected(l) => {
             let Ok(e) = l.get() else { return };
@@ -188,6 +198,7 @@ pub(super) fn on_event(ev: &p::Rpc<'_>) {
             copy_bytes(&mut out.bssid, d.bssid);
             STA_CONNECTED.store(false, Ordering::Release);
             post(ffi::wifi_event_t_WIFI_EVENT_STA_DISCONNECTED, Some(&out));
+            super::net::on_disconnected(u16::from(out.reason));
         }
         RpcPayload::EventStaScanDone(l) => {
             let Ok(e) = l.get() else { return };
@@ -203,7 +214,7 @@ pub(super) fn on_event(ev: &p::Rpc<'_>) {
     }
 }
 
-fn wifi_init(c: &ffi::wifi_init_config_t) -> Result<()> {
+pub(super) fn init(c: &ffi::wifi_init_config_t) -> Result<()> {
     let hosted = super::connect()?;
     let cfg = p::WifiInitConfig {
         static_rx_buf_num: c.static_rx_buf_num,
@@ -237,7 +248,8 @@ fn wifi_init(c: &ffi::wifi_init_config_t) -> Result<()> {
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn esp_wifi_remote_init(config: *const ffi::wifi_init_config_t) -> EspErr {
-    code(wifi_init(unsafe { &*config }))
+    C_API.store(true, Ordering::Release);
+    code(init(unsafe { &*config }))
 }
 
 #[unsafe(no_mangle)]
@@ -246,7 +258,7 @@ unsafe extern "C" fn esp_wifi_remote_deinit() -> EspErr {
 }
 
 #[unsafe(no_mangle)]
-unsafe extern "C" fn esp_wifi_remote_set_mode(mode: ffi::wifi_mode_t) -> EspErr {
+pub(super) unsafe extern "C" fn esp_wifi_remote_set_mode(mode: ffi::wifi_mode_t) -> EspErr {
     let req = p::RpcReqSetMode { mode: mode as i32 };
     code(linked().and_then(|h| {
         status_call!(h, Req_SetWifiMode, Some(RpcPayload::ReqSetWifiMode(Lazy::new(&req))), RespSetWifiMode, rpc::TIMEOUT)
@@ -287,7 +299,7 @@ unsafe extern "C" fn esp_wifi_remote_set_storage(storage: ffi::wifi_storage_t) -
 }
 
 #[unsafe(no_mangle)]
-unsafe extern "C" fn esp_wifi_remote_get_mac(ifx: ffi::wifi_interface_t, mac: *mut u8) -> EspErr {
+pub(super) unsafe extern "C" fn esp_wifi_remote_get_mac(ifx: ffi::wifi_interface_t, mac: *mut u8) -> EspErr {
     let req = p::RpcReqGetMacAddress { mode: ifx as i32 };
     let result = linked().and_then(|h| {
         h.call(RpcId::Req_GetMACAddress, Some(RpcPayload::ReqGetMacAddress(Lazy::new(&req))), rpc::TIMEOUT, |p| {
@@ -324,7 +336,7 @@ unsafe extern "C" fn esp_wifi_remote_set_mac(ifx: ffi::wifi_interface_t, mac: *c
 }
 
 #[unsafe(no_mangle)]
-unsafe extern "C" fn esp_wifi_remote_start() -> EspErr {
+pub(super) unsafe extern "C" fn esp_wifi_remote_start() -> EspErr {
     code(linked().and_then(|h| status_call!(h, Req_WifiStart, None, RespWifiStart, rpc::TIMEOUT)))
 }
 
@@ -334,12 +346,12 @@ unsafe extern "C" fn esp_wifi_remote_stop() -> EspErr {
 }
 
 #[unsafe(no_mangle)]
-unsafe extern "C" fn esp_wifi_remote_connect() -> EspErr {
+pub(super) unsafe extern "C" fn esp_wifi_remote_connect() -> EspErr {
     code(linked().and_then(|h| status_call!(h, Req_WifiConnect, None, RespWifiConnect, rpc::TIMEOUT)))
 }
 
 #[unsafe(no_mangle)]
-unsafe extern "C" fn esp_wifi_remote_disconnect() -> EspErr {
+pub(super) unsafe extern "C" fn esp_wifi_remote_disconnect() -> EspErr {
     code(linked().and_then(|h| status_call!(h, Req_WifiDisconnect, None, RespWifiDisconnect, rpc::TIMEOUT)))
 }
 
@@ -370,7 +382,7 @@ unsafe extern "C" fn esp_wifi_remote_get_ps(ty: *mut ffi::wifi_ps_type_t) -> Esp
     }
 }
 
-fn set_config(a: &ffi::wifi_sta_config_t) -> Result<()> {
+pub(super) fn set_config(a: &ffi::wifi_sta_config_t) -> Result<()> {
     let sta = p::WifiStaConfig {
         ssid: cstr_bytes(&a.ssid),
         password: cstr_bytes(&a.password),

@@ -2,6 +2,7 @@
 set(srcs "/dev/null")
 set(bindgen_headers "")
 set(bindgen_options "")
+set(priv_include_dirs "")
 if(ESP_PLATFORM)
     set(target_requires esp_psram)
     if(CONFIG_BSP_RS_DRIVER_ESP_HOSTED)
@@ -16,7 +17,9 @@ if(ESP_PLATFORM)
             list(APPEND srcs "${CMAKE_CURRENT_BINARY_DIR}/${src}")
         endforeach()
         list(REMOVE_ITEM srcs "/dev/null")
-        set(bindgen_headers "esp_event.h" "esp_wifi_types_generic.h" "esp_wifi.h" "esp_private/wifi.h"
+        list(APPEND srcs "src/driver/esp_hosted/wifi_default.c")
+        set(priv_include_dirs "src/driver/esp_hosted")
+        set(bindgen_headers "esp_event.h" "esp_wifi_types_generic.h" "esp_wifi.h" "esp_private/wifi.h" "wifi_default.h"
                             "soc/sdmmc_struct.h" "hal/sdmmc_ll.h" "esp_private/sd_host_private.h")
         # The clock functions are shadowed by macros that only work inside
         # PERIPH_RCC_ATOMIC(), which breaks bindgen's wrappers for them.
@@ -28,8 +31,9 @@ else()
 endif()
 idf_component_register(
     SRCS ${srcs}
+    PRIV_INCLUDE_DIRS ${priv_include_dirs}
     REQUIRES devkit_audio idf
-    PRIV_REQUIRES devkit rust_rt ${target_requires})
+    PRIV_REQUIRES devkit devkit_net rust_rt ${target_requires})
 
 set(depends "")
 if(CONFIG_BSP_RS_DRIVER_ESP_HOSTED)
