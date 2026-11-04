@@ -66,10 +66,10 @@ pub fn top_bar<'a, M: Copy + 'static>(ui: &'a Ui<M>, back: Option<M>, title: &'a
     let label = ui.text(theme.fonts.title, title).style(t.title).ellipsis(Elide::End).part_of(Part::Title);
     let lead = match back {
         Some(msg) => {
-            let left = (t.back_height - theme.icons.back.font.px() as i16) / 2;
+            let left = (t.back_height - t.back_icon.font.px() as i16) / 2;
             let right = (t.back_height - label.font_px()) / 2;
             let button = ui
-                .row([ui.icon(theme.icons.back).shrink(0), label])
+                .row([ui.icon(t.back_icon).shrink(0), label])
                 .style(t.back)
                 .padding_each(left, 0, right, 0)
                 .shrink(1)
@@ -170,7 +170,7 @@ fn dropdown_row<'a, M: Copy>(ui: &'a Ui<M>, label: &'a str, style: &'static Stat
 pub fn dropdown<'a, M: Copy>(ui: &'a Ui<M>, label: &'a str, on_open: M) -> Element<'a, M> {
     let theme = ui.theme();
     let t = &theme.widgets.dropdown;
-    dropdown_row(ui, label, t.root, ui.icon(theme.icons.expand).style(t.icon).shrink(0)).on_tap(on_open)
+    dropdown_row(ui, label, t.root, ui.icon(t.expand_icon).style(t.icon).shrink(0)).on_tap(on_open)
 }
 
 /// `panel`, of `size`, touching `anchor`: under it or else above it, from its
@@ -263,8 +263,8 @@ pub fn table_value<'a, M: Copy>(ui: &'a Ui<M>, text: &'a str) -> Element<'a, M> 
 }
 
 pub fn table_chevron<'a, M: Copy>(ui: &'a Ui<M>) -> Element<'a, M> {
-    let theme = ui.theme();
-    ui.icon(theme.icons.chevron).style(theme.widgets.table_row.chevron).shrink(0)
+    let t = &ui.theme().widgets.table_row;
+    ui.icon(t.chevron_icon).style(t.chevron).shrink(0)
 }
 
 /// The panel of a `Popover` menu; `children` scroll inside it when it is
@@ -279,7 +279,7 @@ pub fn menu_item<'a, M: Copy>(ui: &'a Ui<M>, leading: Option<Icon>, label: &'a s
     let theme = ui.theme();
     let t = &theme.widgets.menu;
     let lead = leading.map_or(ui.empty(), |icon| ui.icon(icon).style(t.icon).shrink(0).part_of(Part::Leading));
-    let check = ui.icon(theme.icons.check).style(t.check).inherit_state(PART_STATES).shrink(0).part_of(Part::Trailing);
+    let check = ui.icon(t.check_icon).style(t.check).inherit_state(PART_STATES).shrink(0).part_of(Part::Trailing);
     ui.row([lead, ui.text(theme.fonts.body, label).style(t.label).ellipsis(Elide::End).grow(1).part_of(Part::Label), check])
         .style(t.item)
         .align(Align::Center)
@@ -363,7 +363,7 @@ pub fn password_field<'a, M: Copy>(ui: &'a Ui<M>, buffer: &'a TextBuffer, shown:
     let t = &theme.widgets.text_field;
     let field = editable(ui, buffer.as_str(), buffer.cursor(), None, t.password, on_input);
     let field = if shown { field } else { field.secure() };
-    let icon = if shown { theme.icons.hide } else { theme.icons.show };
+    let icon = if shown { t.hide_icon } else { t.show_icon };
     let toggle = ui.row([ui.icon(icon)]).style(t.reveal).keep_focus().role(Role::Button).on_tap(on_toggle).absolute(None, Some(0), Some(0), Some(0)).part_of(Part::Trailing);
     ui.column([field, toggle])
 }

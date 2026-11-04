@@ -238,6 +238,8 @@ enum Token {
     Color(String),
     Font(String),
     Style(String),
+    /// A name of `icons`, made into code where the theme's icons are known.
+    Icon(String),
     /// A value of an enum, or a bool.
     Literal(String),
 }
@@ -249,6 +251,7 @@ impl Token {
             Self::Color(code) | Self::Literal(code) => code.clone(),
             Self::Font(slot) => format!("&{}", chain_symbol(symbol, slot)),
             Self::Style(path) => format!("&{}", style_symbol(symbol, path)),
+            Self::Icon(name) => format!("icon.{name}"),
         }
     }
 }
@@ -323,6 +326,12 @@ impl Resolver<'_> {
                 return Err(self.error(path, format!("no color {color}")));
             }
             return Ok(Token::Color(format!("colors::{}", color.to_uppercase())));
+        }
+        if let Some(icon) = text.strip_prefix("icon.") {
+            if !THEME_ICONS.contains(&icon) {
+                return Err(self.error(path, format!("no icon {icon}")));
+            }
+            return Ok(Token::Icon(icon.to_string()));
         }
         if let Some(font) = text.strip_prefix("font.") {
             self.used_fonts.insert(font.to_string());
@@ -580,6 +589,7 @@ impl Resolver<'_> {
             for value in values {
                 match self.value(path, value)? {
                     Token::Style(_) => return Err(self.error(path, format!("{key}: a style is no value of a style"))),
+                    Token::Icon(_) => return Err(self.error(path, format!("{key}: an icon is no value of a style"))),
                     token => arguments.push(token.code(&self.symbol)),
                 }
             }
@@ -987,7 +997,13 @@ fn theme_code(context: &Context, name: &str, theme: &Theme) -> String {
         .widgets
         .iter()
         .map(|(widget, fields)| {
-            let fields: Vec<String> = fields.iter().map(|(field, token)| format!("{field}: {}", token.code(&symbol))).collect();
+            let fields: Vec<String> = fields
+                .iter()
+                .map(|(field, token)| match token {
+                    Token::Icon(icon) => format!("{field}: {}", icon_code(context, theme, icon)),
+                    token => format!("{field}: {}", token.code(&symbol)),
+                })
+                .collect();
             format!("{widget}: devkit_ui::{}Theme {{ {} }}", type_name(widget), fields.join(", "))
         })
         .collect();

@@ -274,7 +274,8 @@ app.run();
   ```
 
 - `theme.widgets` has one struct per widget: a `StateStyle` for each of its pieces,
-  and numbers where code calculates with them. `unit` has the base values of a
+  numbers where code calculates with them, and the icons it shows, so a theme
+  gives one widget another icon without changing `icons`. `unit` has the base values of a
   theme, `padding`, `gap` and `radius`, for views of their own. Touch sizes go by
   `widgets.button`, and `widgets.list_item.height` is the row height for a
   collection of `list_item`s.

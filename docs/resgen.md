@@ -352,6 +352,7 @@ let config = AppConfig::new(&resources::TOUCH);
   | `"#rrggbb"`, `"#rrggbbaa"` | a color for both modes (`ColorRole::Fixed`) |
   | `"color.x"` | a name of `colors` (a `ColorRole`) |
   | `"font.x"` | a name of `fonts` |
+  | `"icon.x"` | a name of `icons` (an `Icon`), for a widget's own value but not in a style |
   | `"Align.Center"` | a value of a `devkit_ui` enum |
   | `"vars.x"`, `"widgets.y.z"` | that value |
   | an object | a `StateStyle` |

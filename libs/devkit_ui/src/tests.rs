@@ -134,32 +134,34 @@ static NUMBER_KEYS: Keyboard = Keyboard {
     layers: &[Layer { columns: 3, rows: &[&[Key::text("1"), Key::text("2"), Key::text("3")]] }],
 };
 
-static WIDGETS: Widgets = Widgets {
+fn widgets(icon: Icon) -> Widgets {
+    Widgets {
     unit: UnitTheme { padding: 24, gap: 12, radius: 14 },
     button: ButtonTheme { root: &EMPTY, label: &EMPTY, primary: &EMPTY, secondary: &EMPTY, destructive: &EMPTY, plain: &EMPTY, navigation: &EMPTY, primary_outline: &EMPTY, secondary_outline: &EMPTY, destructive_outline: &EMPTY, plain_outline: &EMPTY },
     icon_button: IconButtonTheme { root: &ICON_BUTTON },
     list_item: ListItemTheme { height: 80, root: &EMPTY, text: &EMPTY, title: &EMPTY, meta: &EMPTY, leading: &EMPTY, trailing: &EMPTY },
-    top_bar: TopBarTheme { back_height: 64, padding_x: 8, root: &TOP_BAR, title: &EMPTY, back: &TOP_BAR_BACK },
+    top_bar: TopBarTheme { back_height: 64, padding_x: 8, back_icon: icon, root: &TOP_BAR, title: &EMPTY, back: &TOP_BAR_BACK },
     switch: SwitchTheme { root: &EMPTY, thumb: &EMPTY },
     checkbox: CheckboxTheme { root: &EMPTY, mark: &EMPTY },
     slider: SliderTheme { inset: 14, track_inset: 4, root: &SLIDER_ROOT, track: &SLIDER_TRACK, fill: &SLIDER_FILL, thumb: &SLIDER_THUMB },
     progress_bar: ProgressBarTheme { segment: 30, period_ms: 1000, track: &EMPTY, fill: &EMPTY },
     progress_indicator: ProgressIndicatorTheme { stroke: 4, sweep: 270, period_ms: 1000, track_color: ColorRole::Divider, fill_color: ColorRole::Primary, root: &EMPTY },
     segmented: SegmentedTheme { root: &EMPTY, item: &EMPTY, label: &EMPTY },
-    dropdown: DropdownTheme { height: 56, root: &DROPDOWN_ITEM, label: &EMPTY, icon: &EMPTY },
+    dropdown: DropdownTheme { height: 56, expand_icon: icon, root: &DROPDOWN_ITEM, label: &EMPTY, icon: &EMPTY },
     dropdown_menu: DropdownMenuTheme { root: &DROPDOWN_MENU, item: &DROPDOWN_ITEM },
     divider: DividerTheme { thickness: 1, horizontal: &EMPTY, vertical: &DIVIDER_VERTICAL, line: &EMPTY },
     table: TableTheme { padding: 24 },
     table_header: TableHeaderTheme { root: &EMPTY },
     table_section: TableSectionTheme { root: &EMPTY },
-    table_row: TableRowTheme { root: &TABLE_ROW, label: &EMPTY, value: &EMPTY, chevron: &EMPTY },
-    menu: MenuTheme { panel: &MENU_PANEL, item: &MENU_ITEM, icon: &EMPTY, label: &EMPTY, check: &MENU_CHECK, header: &EMPTY, divider: &EMPTY },
+    table_row: TableRowTheme { chevron_icon: icon, root: &TABLE_ROW, label: &EMPTY, value: &EMPTY, chevron: &EMPTY },
+    menu: MenuTheme { check_icon: icon, panel: &MENU_PANEL, item: &MENU_ITEM, icon: &EMPTY, label: &EMPTY, check: &MENU_CHECK, header: &EMPTY, divider: &EMPTY },
     modal: ModalTheme { width: 360, margin: 24, panel: &EMPTY, title: &EMPTY, message: &EMPTY, actions: &EMPTY },
     overlay: OverlayTheme { scrim: ColorRole::Fixed(Color::rgba(0, 0, 0, 128)) },
     toast: ToastTheme { root: &EMPTY, label: &EMPTY },
-    text_field: TextFieldTheme { placeholder_color: ColorRole::Custom(2), caret_color: ColorRole::Primary, underline_color: ColorRole::Primary, area_min_height: 160, reveal_ms: 1500, root: &EMPTY, password: &PASSWORD, reveal: &REVEAL },
+    text_field: TextFieldTheme { placeholder_color: ColorRole::Custom(2), caret_color: ColorRole::Primary, underline_color: ColorRole::Primary, area_min_height: 160, reveal_ms: 1500, show_icon: icon, hide_icon: icon, root: &EMPTY, password: &PASSWORD, reveal: &REVEAL },
     keyboard: KeyboardTheme { gap: 8, root: &EMPTY, label: &EMPTY, key: &KEY, special: &KEY, primary: &KEY },
-};
+    }
+}
 
 static CUSTOM_COLORS: [Color; 3] = [Color::rgb(227, 242, 253), Color::rgb(223, 227, 230), Color::rgb(120, 144, 156)];
 
@@ -180,7 +182,7 @@ fn theme() -> &'static Theme {
         dark: None,
         fonts: Fonts { title: chain, body: chain, caption: chain },
         icons,
-        widgets: WIDGETS,
+        widgets: widgets(icon),
         keyboards: Keyboards { text: &TEXT_KEYS, number: &NUMBER_KEYS },
         motion: Motion::DEFAULT,
     }))

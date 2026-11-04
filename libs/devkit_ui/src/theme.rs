@@ -170,6 +170,7 @@ pub struct ListItemTheme {
 pub struct TopBarTheme {
     pub back_height: i16,
     pub padding_x: i16,
+    pub back_icon: Icon,
     pub root: &'static StateStyle,
     pub title: &'static StateStyle,
     pub back: &'static StateStyle,
@@ -229,6 +230,7 @@ pub struct SegmentedTheme {
 #[derive(Clone, Copy)]
 pub struct DropdownTheme {
     pub height: i16,
+    pub expand_icon: Icon,
     pub root: &'static StateStyle,
     pub label: &'static StateStyle,
     pub icon: &'static StateStyle,
@@ -265,6 +267,7 @@ pub struct TableSectionTheme {
 
 #[derive(Clone, Copy)]
 pub struct TableRowTheme {
+    pub chevron_icon: Icon,
     pub root: &'static StateStyle,
     pub label: &'static StateStyle,
     pub value: &'static StateStyle,
@@ -273,6 +276,7 @@ pub struct TableRowTheme {
 
 #[derive(Clone, Copy)]
 pub struct MenuTheme {
+    pub check_icon: Icon,
     pub panel: &'static StateStyle,
     pub item: &'static StateStyle,
     pub icon: &'static StateStyle,
@@ -312,6 +316,8 @@ pub struct TextFieldTheme {
     pub area_min_height: i16,
     /// How long a character typed into a `password_field` shows; 0 never.
     pub reveal_ms: u16,
+    pub show_icon: Icon,
+    pub hide_icon: Icon,
     pub root: &'static StateStyle,
     /// A `password_field`: `root` with room at the end for `reveal`.
     pub password: &'static StateStyle,
