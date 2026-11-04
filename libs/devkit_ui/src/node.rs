@@ -67,7 +67,7 @@ impl TextNode {
     }
 
     pub(crate) fn secure(&self) -> bool {
-        self.edit.is_some_and(|e| e.secure)
+        self.edit.is_some_and(|e| e.secure && !e.placeholder)
     }
 
     fn mark(&self) -> char {

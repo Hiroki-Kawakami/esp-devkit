@@ -362,7 +362,7 @@ pub fn password_field<'a, M: Copy>(ui: &'a Ui<M>, buffer: &'a TextBuffer, shown:
     let theme = ui.theme();
     let t = &theme.widgets.text_field;
     let field = editable(ui, buffer.as_str(), buffer.cursor(), None, t.password, on_input);
-    let field = if shown || buffer.as_str().is_empty() { field } else { field.secure() };
+    let field = if shown { field } else { field.secure() };
     let icon = if shown { theme.icons.hide } else { theme.icons.show };
     let toggle = ui.row([ui.icon(icon)]).style(t.reveal).keep_focus().role(Role::Button).on_tap(on_toggle).absolute(None, Some(0), Some(0), Some(0)).part_of(Part::Trailing);
     ui.column([field, toggle])

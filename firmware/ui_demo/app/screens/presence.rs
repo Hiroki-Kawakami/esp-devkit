@@ -208,6 +208,14 @@ impl Component for Shown {
 }
 
 impl Screen for Shown {
+    fn will_appear(&mut self, cx: &mut Cx<Self>) {
+        match self.kind {
+            Kind::Input => cx.focus(id!("name")),
+            Kind::Password => cx.focus(id!("password")),
+            _ => {}
+        }
+    }
+
     fn scrim_tap(&self) -> Option<ShownMsg> {
         match self.kind {
             Kind::Kept => None,

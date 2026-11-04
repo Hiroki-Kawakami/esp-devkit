@@ -2281,6 +2281,98 @@ fn a_placeholder_reaches_the_input_inside_a_password_field() {
 }
 
 #[test]
+fn the_first_character_typed_over_a_placeholder_shows_too() {
+    struct Placeheld(TextBuffer);
+    impl Screen for Placeheld {}
+    impl Component for Placeheld {
+        type Msg = SecretMsg;
+        fn update(&mut self, msg: SecretMsg, cx: &mut Cx<Self>) {
+            if let SecretMsg::Input(input) = msg {
+                self.0.apply(input);
+            }
+            cx.rebuild();
+        }
+        fn view<'a>(&'a self, ui: &'a Ui<SecretMsg>) -> Element<'a, SecretMsg> {
+            ui.column([widgets::password_field(ui, &self.0, false, SecretMsg::Input, SecretMsg::Toggle).placeholder("Password").id(id!("secret"))])
+        }
+    }
+    let mut tree = Tree::new(Placeheld(TextBuffer::new()), SCREEN, Caps::INTERNAL, theme());
+    run(&mut tree);
+    let text = tree.nodes[tree.find(id!("secret")).unwrap() as usize].first_child;
+    let screen = tree.nodes[text as usize].screen;
+    tap_at(&mut tree, (screen.x + 10, screen.y + 5));
+    run(&mut tree);
+    tree.input(TextInput::Char('a'));
+    run(&mut tree);
+    assert_eq!(secret_text(&tree).shown(), "a");
+    tree.input(TextInput::Backspace);
+    run(&mut tree);
+    assert_eq!(secret_text(&tree).text(), "Password", "empty again, the placeholder shows as it is");
+    assert!(!secret_text(&tree).secure());
+}
+
+struct Opener {
+    late: bool,
+}
+
+impl Screen for Opener {}
+
+impl Component for Opener {
+    type Msg = ();
+
+    fn update(&mut self, _: (), cx: &mut Cx<Self>) {
+        cx.nav_of::<Overlay>().push(Prompt { late: self.late, secret: TextBuffer::new() });
+    }
+
+    fn view<'a>(&'a self, ui: &'a Ui<()>) -> Element<'a, ()> {
+        ui.column([ui.row([]).size(40, 40).id(id!("open")).on_tap(())])
+    }
+}
+
+struct Prompt {
+    late: bool,
+    secret: TextBuffer,
+}
+
+impl Component for Prompt {
+    type Msg = SecretMsg;
+
+    fn update(&mut self, _: SecretMsg, _: &mut Cx<Self>) {}
+
+    fn view<'a>(&'a self, ui: &'a Ui<SecretMsg>) -> Element<'a, SecretMsg> {
+        widgets::modal(ui, [widgets::password_field(ui, &self.secret, false, SecretMsg::Input, SecretMsg::Toggle).id(id!("pw"))])
+    }
+}
+
+impl Screen for Prompt {
+    fn will_appear(&mut self, cx: &mut Cx<Self>) {
+        if !self.late {
+            cx.focus(id!("pw"));
+        }
+    }
+
+    fn did_appear(&mut self, cx: &mut Cx<Self>) {
+        if self.late {
+            cx.focus(id!("pw"));
+        }
+    }
+}
+
+#[test]
+fn a_modal_focuses_its_input_from_either_appear_hook() {
+    for late in [false, true] {
+        let mut tree = Tree::new(Opener { late }, SCREEN, Caps::INTERNAL, theme());
+        run(&mut tree);
+        tap(&mut tree, "open");
+        settle(&mut tree);
+        assert!(tree.has_caret(), "late: {late}");
+        let field = tree.find(id!("pw")).unwrap();
+        let text = tree.nodes[field as usize].first_child;
+        assert!(tree.nodes[text as usize].state.contains(State::FOCUSED), "the input inside the field, late: {late}");
+    }
+}
+
+#[test]
 fn a_password_toggles_to_plain_text_and_maps_positions_by_character() {
     let mut tree = secret_tree("a\u{3042}b");
     let text = secret_text(&tree);

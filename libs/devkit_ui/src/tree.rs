@@ -980,7 +980,8 @@ impl Tree {
         let node = &mut self.nodes[id as usize];
         match (&mut node.content, &element.content) {
             (NodeContent::Text(text), Content::Text { font, text: string, options, edit }) => {
-                let secure_changed = text.secure() != edit.is_some_and(|e| e.secure);
+                let secure_changed = text.secure() != edit.is_some_and(|e| e.secure && !e.placeholder);
+                let typed_before = if text.edit.is_some_and(|e| e.placeholder) { 0 } else { text.text().chars().count() };
                 if text.edit != *edit {
                     text.edit = *edit;
                     node.paint_dirty = true;
@@ -991,7 +992,7 @@ impl Tree {
                     && text.options.align == options.align;
                 let changed = text.string != string.as_bytes();
                 if changed || secure_changed || !core::ptr::eq(text.font, *font) || !same_options {
-                    let typed = typing && text.secure() && string.chars().count() == text.text().chars().count() + 1;
+                    let typed = typing && text.secure() && string.chars().count() == typed_before + 1;
                     text.reveal = match (typed, edit) {
                         (true, Some(edit)) if reveal_ms > 0 => string[..(edit.cursor as usize).min(string.len())].char_indices().last().map(|(byte, _)| (byte as u32, reveal_ms)),
                         _ if changed || secure_changed => None,
@@ -1383,9 +1384,9 @@ impl Tree {
         }
         self.apply_redraws();
         if let Some(target) = self.pending_focus.take() {
-            match self.find(target) {
+            match self.find(target).and_then(|id| self.focus_within(id)) {
                 Some(id) => self.set_focus(id),
-                None => idf::log::error!(c"ui", "focus: no node {target:?}"),
+                None => idf::log::error!(c"ui", "focus: no input at {target:?}"),
             }
         }
         if core::mem::take(&mut self.keyboard_changed) {
@@ -1575,6 +1576,22 @@ impl Tree {
 
     pub(crate) fn has_caret(&self) -> bool {
         self.focus != NONE && matches!(&self.nodes[self.focus as usize].content, NodeContent::Text(text) if text.edit.is_some())
+    }
+
+    /// `id` if it takes focus, else the first node inside that does.
+    fn focus_within(&self, id: NodeIndex) -> Option<NodeIndex> {
+        let node = &self.nodes[id as usize];
+        if node.input.is_some() || node.focusable {
+            return Some(id);
+        }
+        let mut child = node.first_child;
+        while child != NONE {
+            if let Some(found) = self.focus_within(child) {
+                return Some(found);
+            }
+            child = self.nodes[child as usize].next;
+        }
+        None
     }
 
     fn set_focus(&mut self, id: NodeIndex) {

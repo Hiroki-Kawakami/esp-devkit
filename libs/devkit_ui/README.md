@@ -423,7 +423,10 @@ config.plugins.push(Box::new(SavedColorMode::new()));
 - Text comes through one path: the on-screen keyboard and `App::input` (a
   physical keyboard, a test harness) both reach the focused node as `TextInput`.
   A tap on another node ends the input unless it has `.keep_focus()`;
-  `cx.focus(id!("name"))` moves the focus from `update`.
+  `cx.focus(id!("name"))` moves the focus from `update`, to the first input
+  inside when the node takes none. A screen focusing an input as it opens, a
+  modal with a field, calls it from `will_appear`, so the keyboard comes up as
+  the screen does.
 - `TextBuffer` stays with the caller, which applies what the input reports.
   `Enter` and `Custom` are left to it. The caret blinks without a view.
 

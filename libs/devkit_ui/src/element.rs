@@ -105,6 +105,8 @@ pub(crate) struct Edit {
     pub(crate) underline: Option<(u32, u32)>,
     /// Shown as a mark per character.
     pub(crate) secure: bool,
+    /// The text is the placeholder, standing in for nothing typed.
+    pub(crate) placeholder: bool,
 }
 
 /// Where a focused input's text comes from.
@@ -516,9 +518,12 @@ impl<'a, M: Copy> Element<'a, M> {
     /// Shown while the text is empty. On a widget around an input, it reaches
     /// the editable text inside.
     pub fn placeholder(mut self, placeholder: &'a str) -> Self {
-        if let Content::Text { text, .. } = &mut self.content {
+        if let Content::Text { text, edit, .. } = &mut self.content {
             if text.is_empty() {
                 *text = placeholder;
+                if let Some(edit) = edit {
+                    edit.placeholder = true;
+                }
             }
         } else {
             self.placeholder_inside(placeholder);
@@ -528,9 +533,10 @@ impl<'a, M: Copy> Element<'a, M> {
 
     fn placeholder_inside(&mut self, placeholder: &'a str) -> bool {
         unsafe { self.children.as_mut() }.iter_mut().any(|child| match &mut child.content {
-            Content::Text { text, edit: Some(_), .. } => {
+            Content::Text { text, edit: Some(edit), .. } => {
                 if text.is_empty() {
                     *text = placeholder;
+                    edit.placeholder = true;
                 }
                 true
             }
@@ -560,7 +566,7 @@ impl<'a, M: Copy> Element<'a, M> {
     }
 
     pub(crate) fn edit(self, cursor: usize, underline: Option<(usize, usize)>) -> Self {
-        let edit = Edit { cursor: cursor as u32, underline: underline.map(|(a, b)| (a as u32, b as u32)), secure: false };
+        let edit = Edit { cursor: cursor as u32, underline: underline.map(|(a, b)| (a as u32, b as u32)), secure: false, placeholder: false };
         let mut element = self.with_options(|o| o.carets = true);
         if let Content::Text { edit: slot, .. } = &mut element.content {
             *slot = Some(edit);
