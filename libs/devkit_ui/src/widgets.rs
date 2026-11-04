@@ -341,10 +341,10 @@ pub fn toast<'a, M: Copy>(ui: &'a Ui<M>, text: &'a str) -> Element<'a, M> {
     ui.row([ui.text(theme.fonts.caption, text).style(t.label)]).style(t.root)
 }
 
-fn editable<'a, M: Copy>(ui: &'a Ui<M>, text: &'a str, cursor: usize, underline: Option<(usize, usize)>, on_input: fn(TextInput) -> M) -> Element<'a, M> {
+fn editable<'a, M: Copy>(ui: &'a Ui<M>, text: &'a str, cursor: usize, underline: Option<(usize, usize)>, style: &'static StateStyle, on_input: fn(TextInput) -> M) -> Element<'a, M> {
     let theme = ui.theme();
     let t = &theme.widgets.text_field;
-    let element = ui.text(theme.fonts.body, text).edit(cursor, underline).style(t.root);
+    let element = ui.text(theme.fonts.body, text).edit(cursor, underline).style(style);
     let element = if text.is_empty() { element.foreground(t.placeholder_color) } else { element };
     element.role(Role::TextField).on_input(on_input)
 }
@@ -352,13 +352,20 @@ fn editable<'a, M: Copy>(ui: &'a Ui<M>, text: &'a str, cursor: usize, underline:
 /// One line of text. `buffer` belongs to the caller, which applies what
 /// `on_input` reports.
 pub fn text_field<'a, M: Copy>(ui: &'a Ui<M>, buffer: &'a TextBuffer, on_input: fn(TextInput) -> M) -> Element<'a, M> {
-    editable(ui, buffer.as_str(), buffer.cursor(), buffer.composing(), on_input)
+    editable(ui, buffer.as_str(), buffer.cursor(), buffer.composing(), ui.theme().widgets.text_field.root, on_input)
 }
 
-/// A field showing one mark per byte, so tap positions stay byte offsets.
-pub fn password_field<'a, M: Copy>(ui: &'a Ui<M>, buffer: &'a TextBuffer, on_input: fn(TextInput) -> M) -> Element<'a, M> {
-    let marks = "*".repeat(buffer.as_str().len());
-    editable(ui, ui.store(&marks), buffer.cursor(), None, on_input)
+/// One line of text shown as a mark per character unless `shown`, with a
+/// button at its end sending `on_toggle`. A character typed into it shows for
+/// the theme's `reveal_ms`.
+pub fn password_field<'a, M: Copy>(ui: &'a Ui<M>, buffer: &'a TextBuffer, shown: bool, on_input: fn(TextInput) -> M, on_toggle: M) -> Element<'a, M> {
+    let theme = ui.theme();
+    let t = &theme.widgets.text_field;
+    let field = editable(ui, buffer.as_str(), buffer.cursor(), None, t.password, on_input);
+    let field = if shown || buffer.as_str().is_empty() { field } else { field.secure() };
+    let icon = if shown { theme.icons.hide } else { theme.icons.show };
+    let toggle = ui.row([ui.icon(icon)]).style(t.reveal).keep_focus().role(Role::Button).on_tap(on_toggle).absolute(None, Some(0), Some(0), Some(0)).part_of(Part::Trailing);
+    ui.column([field, toggle])
 }
 
 /// Text over several lines, wrapping at the width it is given.

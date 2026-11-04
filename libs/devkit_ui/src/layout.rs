@@ -107,7 +107,7 @@ impl Tree {
         if text.laid_out != Some(width) && !fits {
             let mut options = text.options;
             options.max_width = (width != UNBOUNDED).then_some(width);
-            text.run.layout(text.font, unsafe { core::str::from_utf8_unchecked(&text.string) }, &options);
+            text.lay_out(&options);
             text.laid_out = Some(width);
         }
         (text.run.width(), text.run.height())

@@ -249,6 +249,8 @@ pub(crate) struct Tree {
     pending_animations: Vec<(Id, Animation)>,
     pending_scrolls: Vec<(Id, ScrollTarget, bool)>,
     pending_focus: Option<Id>,
+    /// Typed into, so the next change of its text may show the new character.
+    reveal_next: NodeIndex,
     focus: NodeIndex,
     keyboard_changed: bool,
     caret_on: bool,
@@ -309,6 +311,7 @@ impl Tree {
             pending_animations: Vec::new(),
             pending_scrolls: Vec::new(),
             pending_focus: None,
+            reveal_next: NONE,
             focus: NONE,
             keyboard_changed: false,
             caret_on: true,
@@ -972,9 +975,12 @@ impl Tree {
     fn update_node<M: Copy>(&mut self, owner: u16, id: NodeIndex, element: &Element<'_, M>) {
         self.apply_common(id, element);
         self.nodes[id as usize].owner = owner;
+        let typing = self.reveal_next == id;
+        let reveal_ms = u32::from(self.theme.widgets.text_field.reveal_ms);
         let node = &mut self.nodes[id as usize];
         match (&mut node.content, &element.content) {
             (NodeContent::Text(text), Content::Text { font, text: string, options, edit }) => {
+                let secure_changed = text.secure() != edit.is_some_and(|e| e.secure);
                 if text.edit != *edit {
                     text.edit = *edit;
                     node.paint_dirty = true;
@@ -983,7 +989,14 @@ impl Tree {
                     && text.options.max_lines == options.max_lines
                     && text.options.overflow == options.overflow
                     && text.options.align == options.align;
-                if text.string != string.as_bytes() || !core::ptr::eq(text.font, *font) || !same_options {
+                let changed = text.string != string.as_bytes();
+                if changed || secure_changed || !core::ptr::eq(text.font, *font) || !same_options {
+                    let typed = typing && text.secure() && string.chars().count() == text.text().chars().count() + 1;
+                    text.reveal = match (typed, edit) {
+                        (true, Some(edit)) if reveal_ms > 0 => string[..(edit.cursor as usize).min(string.len())].char_indices().last().map(|(byte, _)| (byte as u32, reveal_ms)),
+                        _ if changed || secure_changed => None,
+                        _ => text.reveal,
+                    };
                     text.string.clear();
                     text.string.extend_from_slice(string.as_bytes());
                     node.paint_dirty = true;
@@ -995,7 +1008,7 @@ impl Tree {
                     if let (true, Some(width)) = (same_font, text.laid_out) {
                         let mut options = *options;
                         options.max_width = (width != i16::MAX).then_some(width);
-                        text.run.layout(font, string, &options);
+                        text.lay_out(&options);
                         let same_size = text.run.height() == size.1 && (width_free || text.run.width() == size.0);
                         self.layout_dirty |= !same_size;
                     } else {
@@ -1080,7 +1093,7 @@ impl Tree {
                 let run = devkit_gfx::TextRun::new_in(self.caps);
                 let mut string = Vec::with_capacity_in(text.len(), self.caps);
                 string.extend_from_slice(text.as_bytes());
-                NodeContent::Text(TextNode { font, string, options, run, laid_out: None, edit, scroll: Cell::new(0) })
+                NodeContent::Text(TextNode { font, string, options, run, laid_out: None, edit, scroll: Cell::new(0), reveal: None })
             }
             Content::Image { image, tint } => NodeContent::Image { image, tint },
             Content::Scroll => NodeContent::Scroll(ScrollNode { offset: 0, content: 0 }),
@@ -1388,6 +1401,7 @@ impl Tree {
         if appearing || animating {
             self.sync_screen(self.root, 0, 0, self.area, false);
         }
+        self.reveal_next = NONE;
         self.release_waiting();
         self.sync_scrim();
         if self.settle_appearing() {
@@ -1568,6 +1582,7 @@ impl Tree {
             return;
         }
         if self.focus != NONE {
+            self.hide_reveal(self.focus);
             self.set_state(self.focus, State::FOCUSED, false);
             self.nodes[self.focus as usize].paint_dirty = true;
         }
@@ -1584,6 +1599,12 @@ impl Tree {
     pub(crate) fn input(&mut self, input: TextInput) {
         if self.focus == NONE {
             return;
+        }
+        if matches!(input, TextInput::Char(_)) {
+            self.reveal_next = self.focus;
+        } else {
+            self.reveal_next = NONE;
+            self.hide_reveal(self.focus);
         }
         let node = &self.nodes[self.focus as usize];
         let Some(map) = node.input else { return };
@@ -2168,7 +2189,7 @@ impl Tree {
                 NodeContent::Text(text) if node.input.is_some() => {
                     let [left, top, right, _] = node.style.padding;
                     let scroll = text.scroll(node.screen.w - left - right);
-                    Some(text.run.byte_at(point.0 - node.screen.x - left + scroll, point.1 - node.screen.y - top))
+                    Some(text.text_byte(text.run.byte_at(point.0 - node.screen.x - left + scroll, point.1 - node.screen.y - top)))
                 }
                 _ => None,
             };
@@ -2204,6 +2225,37 @@ impl Tree {
         }
     }
 
+    fn hide_reveal(&mut self, id: NodeIndex) {
+        let node = &mut self.nodes[id as usize];
+        let NodeContent::Text(text) = &mut node.content else { return };
+        if text.reveal.take().is_none() {
+            return;
+        }
+        node.paint_dirty = true;
+        let size = (text.run.width(), text.run.height());
+        match text.laid_out {
+            Some(width) => {
+                let options = devkit_gfx::TextOptions { max_width: (width != i16::MAX).then_some(width), ..text.options };
+                text.lay_out(&options);
+                self.layout_dirty |= text.run.height() != size.1;
+            }
+            None => self.layout_dirty = true,
+        }
+    }
+
+    fn tick_reveal(&mut self, dt_ms: u32) {
+        if self.focus == NONE {
+            return;
+        }
+        let NodeContent::Text(text) = &mut self.nodes[self.focus as usize].content else { return };
+        let Some((_, left)) = &mut text.reveal else { return };
+        if *left > dt_ms {
+            *left -= dt_ms;
+            return;
+        }
+        self.hide_reveal(self.focus);
+    }
+
     fn tick_caret(&mut self, dt_ms: u32) {
         if !self.has_caret() {
             return;
@@ -2236,6 +2288,7 @@ impl Tree {
         self.tick_repeat(dt_ms);
         self.tick_gestures(dt_ms);
         self.tick_caret(dt_ms);
+        self.tick_reveal(dt_ms);
     }
 
     pub(crate) fn walk(&self, id: NodeIndex, f: &mut impl FnMut(NodeIndex, &Node)) {
@@ -2290,7 +2343,11 @@ impl Tree {
                 out.push_str(" disabled");
             }
             if let NodeContent::Text(text) = &node.content {
-                let _ = write!(out, " {:?}", text.text());
+                if text.secure() {
+                    let _ = write!(out, " {:?}", text.shown());
+                } else {
+                    let _ = write!(out, " {:?}", text.text());
+                }
             }
         });
         out

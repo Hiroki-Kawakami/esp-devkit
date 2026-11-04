@@ -120,7 +120,7 @@ impl FontChoice {
 
 const THEME_DIR: &str = "themes";
 const THEME_FONTS: [&str; 3] = ["title", "body", "caption"];
-const THEME_ICONS: [&str; 9] = ["back", "more", "close", "check", "chevron", "expand", "shift", "backspace", "enter"];
+const THEME_ICONS: [&str; 11] = ["back", "more", "close", "check", "show", "hide", "chevron", "expand", "shift", "backspace", "enter"];
 const THEME_COLORS: [&str; 5] = ["text", "primary", "surface", "background", "divider"];
 const THEME_KEYBOARDS: [&str; 2] = ["text", "number"];
 const THEME_ANIMATED: [&str; 3] = ["color", "opacity", "position"];

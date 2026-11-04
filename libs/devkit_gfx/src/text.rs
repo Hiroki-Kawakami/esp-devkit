@@ -69,6 +69,10 @@ impl FontChain {
         self.ascent + self.descent
     }
 
+    pub fn has(&self, c: char) -> bool {
+        self.resolve(c as u32).is_some()
+    }
+
     fn resolve(&self, codepoint: u32) -> Option<(&'static Font, u32, GlyphRecord)> {
         self.fonts.iter().find_map(|font| {
             let index = font.find(codepoint)?;

@@ -41,6 +41,8 @@
     "more": "tabler/dots.svg",
     "close": "tabler/x.svg",
     "check": "tabler/check.svg",
+    "show": "tabler/eye.svg",
+    "hide": "tabler/eye-off.svg",
     "chevron": "tabler/chevron-right.svg",
     "expand": "tabler/chevron-down.svg",
     "shift": "tabler/arrow-big-up.svg",
@@ -52,7 +54,9 @@
     "expand": 28,
     "shift": 28,
     "backspace": 28,
-    "enter": 28
+    "enter": 28,
+    "show": 28,
+    "hide": 28
   },
   "colors": {
     "light": {
@@ -583,6 +587,7 @@
       "caret_color": "color.primary",
       "underline_color": "color.primary",
       "area_min_height": 160,
+      "reveal_ms": 1500,
       "root": {
         "font": "font.body",
         "padding_x": "widgets.unit.gap",
@@ -599,6 +604,26 @@
             "border_color": "color.primary"
           },
           "disabled": "vars.dimmed"
+        }
+      },
+      "password": {
+        "extends": "widgets.text_field.root",
+        "padding_each": [
+          "widgets.unit.gap",
+          "widgets.unit.gap",
+          64,
+          "widgets.unit.gap"
+        ]
+      },
+      "reveal": {
+        "width": 64,
+        "align": "Align.Center",
+        "justify": "Justify.Center",
+        "foreground": "vars.text_secondary",
+        "states": {
+          "pressed": {
+            "opacity": 160
+          }
         }
       }
     },

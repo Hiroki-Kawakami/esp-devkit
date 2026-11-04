@@ -5,7 +5,7 @@
 
 use alloc::vec::Vec;
 
-use devkit_ui::widgets::{button, list_item, modal, modal_actions, modal_message, modal_title, progress_bar, progress_indicator, text_field, toast, top_bar};
+use devkit_ui::widgets::{button, list_item, modal, modal_actions, modal_message, modal_title, password_field, progress_bar, progress_indicator, text_field, toast, top_bar};
 use devkit_ui::{Align, Component, Corners, Cx, Edge, Element, Id, Overlay, Part, Presence, Root, Screen, TextBuffer, TextInput, Ui, id};
 
 use crate::resources::colors;
@@ -19,11 +19,12 @@ pub enum Kind {
     Sheet,
     Side,
     Input,
+    Password,
     Progress,
     Busy,
 }
 
-const KINDS: [(&str, &str, Kind); 9] = [
+const KINDS: [(&str, &str, Kind); 10] = [
     ("Modal", "open-modal", Kind::Modal),
     ("Modal: scrim does nothing", "open-kept", Kind::Kept),
     ("Modal: at once in, scale out", "open-scale-out", Kind::ScaleOut),
@@ -31,6 +32,7 @@ const KINDS: [(&str, &str, Kind); 9] = [
     ("Bottom sheet", "open-sheet", Kind::Sheet),
     ("Side panel", "open-side", Kind::Side),
     ("Modal: text field", "open-input", Kind::Input),
+    ("Modal: password", "open-password", Kind::Password),
     ("Modal: progress", "open-progress", Kind::Progress),
     ("Modal: busy", "open-busy", Kind::Busy),
 ];
@@ -83,17 +85,21 @@ pub enum ShownMsg {
     Close,
     Open(Kind),
     Name(TextInput),
+    Secret(TextInput),
+    Reveal,
 }
 
 /// What a `Kind` puts on the overlay.
 pub struct Shown {
     kind: Kind,
     name: TextBuffer,
+    secret: TextBuffer,
+    shown: bool,
 }
 
 impl Shown {
     fn new(kind: Kind) -> Self {
-        Self { kind, name: TextBuffer::new() }
+        Self { kind, name: TextBuffer::new(), secret: TextBuffer::new(), shown: false }
     }
 
     fn content<'a>(&self, ui: &'a Ui<ShownMsg>, title: &'a str, text: &'a str) -> [Element<'a, ShownMsg>; 3] {
@@ -122,6 +128,17 @@ impl Shown {
     }
 }
 
+impl Shown {
+    fn password<'a>(&'a self, ui: &'a Ui<ShownMsg>) -> Element<'a, ShownMsg> {
+        let b = &ui.theme().widgets.button;
+        modal(ui, [
+            modal_title(ui, "Connect"),
+            password_field(ui, &self.secret, self.shown, ShownMsg::Secret, ShownMsg::Reveal).placeholder("Password").id(id!("password")),
+            modal_actions(ui, [button(ui, "Cancel", b.secondary, ShownMsg::Close).id(id!("close")), button(ui, "Connect", b.primary, ShownMsg::Close)]),
+        ])
+    }
+}
+
 impl Component for Shown {
     type Msg = ShownMsg;
 
@@ -131,6 +148,14 @@ impl Component for Shown {
             ShownMsg::Open(kind) => cx.nav_of::<Overlay>().push(Shown::new(kind)),
             ShownMsg::Name(input) => {
                 self.name.apply(input);
+                cx.rebuild();
+            }
+            ShownMsg::Secret(input) => {
+                self.secret.apply(input);
+                cx.rebuild();
+            }
+            ShownMsg::Reveal => {
+                self.shown = !self.shown;
                 cx.rebuild();
             }
         }
@@ -145,6 +170,7 @@ impl Component for Shown {
             Kind::ScaleOut => self.dialog(ui, "At once in", "Shows at once, and scales down as it fades out.", Presence::none(), Presence::fade().scale(0.9)),
             Kind::ShrinkIn => self.dialog(ui, "Shrink in", "Comes from 1.1 times its size, and goes the same way.", Presence::fade().scale(1.1), Presence::fade().scale(1.1)),
             Kind::Input => self.input(ui),
+            Kind::Password => self.password(ui),
             Kind::Progress => modal(ui, [
                 modal_title(ui, "Copying"),
                 modal_message(ui, "1/1 big.bin"),

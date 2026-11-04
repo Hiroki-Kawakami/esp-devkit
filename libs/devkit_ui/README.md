@@ -433,6 +433,13 @@ config.plugins.push(Box::new(SavedColorMode::new()));
   // Msg::Name(input) => { self.name.apply(input); cx.rebuild(); }
   ```
 
+- `password_field(ui, &self.secret, self.shown, Msg::Secret, Msg::Reveal)` takes
+  the plain text and shows a mark per character unless `shown`, with the theme's
+  `show` or `hide` icon at its end sending the last message without taking the
+  focus. A character typed into it shows for `text_field.reveal_ms`, until the
+  next input or the focus moves on. `.placeholder()` on it reaches the text
+  inside, as on any widget around an input.
+
 - `AppConfig::keyboard` says when the docked keyboard shows: with
   `KeyboardMode::Auto`, while an input has focus and no physical keyboard is
   reported by `Input::set_keyboard_connected`. It raises `insets().bottom` of

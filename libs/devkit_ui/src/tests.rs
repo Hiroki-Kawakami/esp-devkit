@@ -16,6 +16,7 @@ use idf::heap::Caps;
 use crate::*;
 use crate::id;
 use crate::erased::Erased;
+use crate::node::TextNode;
 use crate::external::ExternalSurface;
 use crate::nav::SplitRole;
 use crate::rotation::Rotations;
@@ -80,6 +81,8 @@ static DROPDOWN_ITEM: StateStyle = StateStyle { base: &[Prop::Height(56)], ..Sta
 static DROPDOWN_MENU: StateStyle = StateStyle { base: &[Prop::Radius(14), Prop::Border(ColorRole::Divider, 2)], ..StateStyle::EMPTY };
 static MENU_PANEL: StateStyle = StateStyle { base: &[Prop::Width(200), Prop::PaddingY(8)], ..StateStyle::EMPTY };
 static MENU_ITEM: StateStyle = StateStyle { base: &[Prop::Height(50)], ..StateStyle::EMPTY };
+static PASSWORD: StateStyle = StateStyle { base: &[Prop::PaddingEach(4, 4, 40, 4)], ..StateStyle::EMPTY };
+static REVEAL: StateStyle = StateStyle { base: &[Prop::Width(40)], ..StateStyle::EMPTY };
 static MENU_CHECK: StateStyle = StateStyle { base: &[Prop::Width(0), Prop::Opacity(0)], states: &[(State::CHECKED, &[Prop::Width(20), Prop::Opacity(255)])], ..StateStyle::EMPTY };
 static TABLE_ROW: StateStyle = StateStyle { base: &[Prop::MinHeight(88), Prop::PaddingX(24), Prop::Gap(12)], ..StateStyle::EMPTY };
 static DIVIDER_VERTICAL: StateStyle = StateStyle { base: &[Prop::PaddingY(12)], ..StateStyle::EMPTY };
@@ -154,7 +157,7 @@ static WIDGETS: Widgets = Widgets {
     modal: ModalTheme { width: 360, margin: 24, panel: &EMPTY, title: &EMPTY, message: &EMPTY, actions: &EMPTY },
     overlay: OverlayTheme { scrim: ColorRole::Fixed(Color::rgba(0, 0, 0, 128)) },
     toast: ToastTheme { root: &EMPTY, label: &EMPTY },
-    text_field: TextFieldTheme { placeholder_color: ColorRole::Custom(2), caret_color: ColorRole::Primary, underline_color: ColorRole::Primary, area_min_height: 160, root: &EMPTY },
+    text_field: TextFieldTheme { placeholder_color: ColorRole::Custom(2), caret_color: ColorRole::Primary, underline_color: ColorRole::Primary, area_min_height: 160, reveal_ms: 1500, root: &EMPTY, password: &PASSWORD, reveal: &REVEAL },
     keyboard: KeyboardTheme { gap: 8, root: &EMPTY, label: &EMPTY, key: &KEY, special: &KEY, primary: &KEY },
 };
 
@@ -163,7 +166,7 @@ static CUSTOM_COLORS: [Color; 3] = [Color::rgb(227, 242, 253), Color::rgb(223, 2
 fn theme() -> &'static Theme {
     let chain = chain();
     let icon = Icon { font: chain, glyph: 'A' };
-    let icons = Icons { back: icon, more: icon, close: icon, check: icon, chevron: icon, expand: icon, shift: icon, backspace: icon, enter: icon };
+    let icons = Icons { back: icon, more: icon, close: icon, check: icon, show: icon, hide: icon, chevron: icon, expand: icon, shift: icon, backspace: icon, enter: icon };
     let colors = Palette {
         text: Color::rgb(29, 33, 38),
         primary: Color::rgb(33, 150, 243),
@@ -2185,6 +2188,114 @@ enum FormMsg {
     Name(TextInput),
     Pin(TextInput),
     Other,
+}
+
+#[derive(Clone, Copy)]
+enum SecretMsg {
+    Input(TextInput),
+    Toggle,
+}
+
+struct Secret {
+    buffer: TextBuffer,
+    shown: bool,
+}
+
+impl Screen for Secret {}
+
+impl Component for Secret {
+    type Msg = SecretMsg;
+
+    fn update(&mut self, msg: SecretMsg, cx: &mut Cx<Self>) {
+        match msg {
+            SecretMsg::Input(input) => {
+                self.buffer.apply(input);
+            }
+            SecretMsg::Toggle => self.shown = !self.shown,
+        }
+        cx.rebuild();
+    }
+
+    fn view<'a>(&'a self, ui: &'a Ui<SecretMsg>) -> Element<'a, SecretMsg> {
+        ui.column([widgets::password_field(ui, &self.buffer, self.shown, SecretMsg::Input, SecretMsg::Toggle).id(id!("secret"))]).width(300)
+    }
+}
+
+fn secret_text(tree: &Tree) -> &TextNode {
+    let field = tree.find(id!("secret")).unwrap();
+    let text = tree.nodes[field as usize].first_child;
+    let NodeContent::Text(text) = &tree.nodes[text as usize].content else { panic!() };
+    text
+}
+
+fn secret_tree(text: &str) -> Tree {
+    let mut buffer = TextBuffer::new();
+    buffer.set_text(text);
+    let mut tree = Tree::new(Secret { buffer, shown: false }, SCREEN, Caps::INTERNAL, theme());
+    run(&mut tree);
+    let field = tree.find(id!("secret")).unwrap();
+    let text = tree.nodes[field as usize].first_child;
+    let screen = tree.nodes[text as usize].screen;
+    tap_at(&mut tree, (screen.x + 10, screen.y + 5));
+    run(&mut tree);
+    tree
+}
+
+#[test]
+fn a_password_shows_a_typed_character_for_a_while() {
+    let mut tree = secret_tree("");
+    tree.input(TextInput::Char('a'));
+    run(&mut tree);
+    assert_eq!(secret_text(&tree).shown(), "a");
+    tree.input(TextInput::Char('b'));
+    run(&mut tree);
+    assert_eq!(secret_text(&tree).shown(), "*b");
+    tree.tick(1000);
+    run(&mut tree);
+    assert_eq!(secret_text(&tree).shown(), "*b");
+    tree.tick(600);
+    run(&mut tree);
+    assert_eq!(secret_text(&tree).shown(), "**");
+    tree.input(TextInput::Char('c'));
+    run(&mut tree);
+    tree.input(TextInput::Left);
+    run(&mut tree);
+    assert_eq!(secret_text(&tree).shown(), "***", "moving the cursor hides it at once");
+}
+
+#[test]
+fn a_placeholder_reaches_the_input_inside_a_password_field() {
+    struct Empty(TextBuffer);
+    impl Screen for Empty {}
+    impl Component for Empty {
+        type Msg = SecretMsg;
+        fn update(&mut self, _: SecretMsg, _: &mut Cx<Self>) {}
+        fn view<'a>(&'a self, ui: &'a Ui<SecretMsg>) -> Element<'a, SecretMsg> {
+            ui.column([widgets::password_field(ui, &self.0, false, SecretMsg::Input, SecretMsg::Toggle).placeholder("Password").id(id!("secret"))])
+        }
+    }
+    let mut tree = Tree::new(Empty(TextBuffer::new()), SCREEN, Caps::INTERNAL, theme());
+    run(&mut tree);
+    assert_eq!(secret_text(&tree).text(), "Password");
+    assert!(!secret_text(&tree).secure());
+}
+
+#[test]
+fn a_password_toggles_to_plain_text_and_maps_positions_by_character() {
+    let mut tree = secret_tree("a\u{3042}b");
+    let text = secret_text(&tree);
+    assert_eq!(text.shown(), "***");
+    assert_eq!((text.shown_byte(4), text.text_byte(2)), (2, 4), "a three byte character is one mark");
+    assert_eq!(text.shown_byte(5), 3);
+    let toggle = {
+        let field = tree.find(id!("secret")).unwrap();
+        tree.nodes[tree.nodes[tree.nodes[field as usize].first_child as usize].next as usize].screen
+    };
+    tap_at(&mut tree, (toggle.x + 5, toggle.y + 5));
+    run(&mut tree);
+    assert!(!secret_text(&tree).secure());
+    assert_eq!(secret_text(&tree).text(), "a\u{3042}b");
+    assert!(tree.has_caret(), "the toggle keeps the focus");
 }
 
 struct Form {

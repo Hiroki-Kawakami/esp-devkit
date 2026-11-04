@@ -103,6 +103,8 @@ unsafe fn call_size_map<M: Copy>(function: *const (), width: i16, height: i16) -
 pub(crate) struct Edit {
     pub(crate) cursor: u32,
     pub(crate) underline: Option<(u32, u32)>,
+    /// Shown as a mark per character.
+    pub(crate) secure: bool,
 }
 
 /// Where a focused input's text comes from.
@@ -511,14 +513,29 @@ impl<'a, M: Copy> Element<'a, M> {
         self
     }
 
-    /// Shown while the text is empty.
+    /// Shown while the text is empty. On a widget around an input, it reaches
+    /// the editable text inside.
     pub fn placeholder(mut self, placeholder: &'a str) -> Self {
-        if let Content::Text { text, .. } = &mut self.content
-            && text.is_empty()
-        {
-            *text = placeholder;
+        if let Content::Text { text, .. } = &mut self.content {
+            if text.is_empty() {
+                *text = placeholder;
+            }
+        } else {
+            self.placeholder_inside(placeholder);
         }
         self
+    }
+
+    fn placeholder_inside(&mut self, placeholder: &'a str) -> bool {
+        unsafe { self.children.as_mut() }.iter_mut().any(|child| match &mut child.content {
+            Content::Text { text, edit: Some(_), .. } => {
+                if text.is_empty() {
+                    *text = placeholder;
+                }
+                true
+            }
+            _ => child.placeholder_inside(placeholder),
+        })
     }
 
     /// The ring width of a `progress_indicator`.
@@ -535,8 +552,15 @@ impl<'a, M: Copy> Element<'a, M> {
         self
     }
 
+    pub(crate) fn secure(mut self) -> Self {
+        if let Content::Text { edit: Some(edit), .. } = &mut self.content {
+            edit.secure = true;
+        }
+        self
+    }
+
     pub(crate) fn edit(self, cursor: usize, underline: Option<(usize, usize)>) -> Self {
-        let edit = Edit { cursor: cursor as u32, underline: underline.map(|(a, b)| (a as u32, b as u32)) };
+        let edit = Edit { cursor: cursor as u32, underline: underline.map(|(a, b)| (a as u32, b as u32)), secure: false };
         let mut element = self.with_options(|o| o.carets = true);
         if let Content::Text { edit: slot, .. } = &mut element.content {
             *slot = Some(edit);

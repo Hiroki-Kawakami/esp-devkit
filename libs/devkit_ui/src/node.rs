@@ -4,6 +4,7 @@
  */
 
 use alloc::boxed::Box;
+use alloc::string::String;
 use alloc::vec::Vec;
 use core::cell::Cell;
 
@@ -38,6 +39,8 @@ pub(crate) struct TextNode {
     pub(crate) laid_out: Option<i16>,
     pub(crate) edit: Option<Edit>,
     pub(crate) scroll: Cell<i16>,
+    /// The secure character shown as it is, by its byte, and for how long.
+    pub(crate) reveal: Option<(u32, u32)>,
 }
 
 impl Node {
@@ -63,6 +66,56 @@ impl TextNode {
         unsafe { core::str::from_utf8_unchecked(&self.string) }
     }
 
+    pub(crate) fn secure(&self) -> bool {
+        self.edit.is_some_and(|e| e.secure)
+    }
+
+    fn mark(&self) -> char {
+        if self.font.has('\u{2022}') { '\u{2022}' } else { '*' }
+    }
+
+    fn shown_bytes(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+        let mark = self.mark().len_utf8();
+        let reveal = self.reveal.map(|(byte, _)| byte as usize);
+        let mut shown = 0;
+        self.text().char_indices().map(move |(byte, c)| {
+            let at = shown;
+            shown += if Some(byte) == reveal { c.len_utf8() } else { mark };
+            (byte, at)
+        })
+    }
+
+    pub(crate) fn lay_out(&mut self, options: &TextOptions) {
+        if !self.secure() {
+            self.run.layout(self.font, unsafe { core::str::from_utf8_unchecked(&self.string) }, options);
+            return;
+        }
+        let shown = self.shown();
+        self.run.layout(self.font, &shown, options);
+    }
+
+    pub(crate) fn shown(&self) -> String {
+        let (mark, reveal) = (self.mark(), self.reveal.map(|(byte, _)| byte as usize));
+        self.text().char_indices().map(|(byte, c)| if Some(byte) == reveal { c } else { mark }).collect()
+    }
+
+    /// Where the character at `byte` of the text starts in what shows.
+    pub(crate) fn shown_byte(&self, byte: u32) -> u32 {
+        if !self.secure() {
+            return byte;
+        }
+        self.shown_bytes().find(|&(at, _)| at >= byte as usize).map_or_else(|| self.shown().len(), |(_, shown)| shown) as u32
+    }
+
+
+    /// The byte of the text whose character shows at `shown`.
+    pub(crate) fn text_byte(&self, shown: usize) -> usize {
+        if !self.secure() {
+            return shown;
+        }
+        self.shown_bytes().find(|&(_, at)| at >= shown).map_or(self.string.len(), |(byte, _)| byte)
+    }
+
     /// How far a single line moves left, which changes only as far as it
     /// takes to keep the cursor in `width`.
     pub(crate) fn scroll(&self, width: i16) -> i16 {
@@ -70,7 +123,7 @@ impl TextNode {
         if self.options.wrap {
             return 0;
         }
-        let (x, _) = self.run.caret(edit.cursor as usize).unwrap_or((0, 0));
+        let (x, _) = self.run.caret(self.shown_byte(edit.cursor) as usize).unwrap_or((0, 0));
         let offset = self.scroll.get().min(x).max(x + CARET_WIDTH - width);
         let offset = offset.min(self.run.width() + CARET_WIDTH - width).max(0);
         self.scroll.set(offset);

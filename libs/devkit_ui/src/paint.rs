@@ -165,7 +165,7 @@ impl Tree {
                     list.push_clip(content.intersect(&clip));
                     list.text(cx as i16 - scroll, cy as i16, &text.run, color);
                     let line = text.font.line_height();
-                    let at = |byte: u32| text.run.caret(byte as usize).unwrap_or((0, 0));
+                    let at = |byte: u32| text.run.caret(text.shown_byte(byte) as usize).unwrap_or((0, 0));
                     if let Some((from, to)) = edit.underline {
                         let (a, b) = (at(from), at(to));
                         let underline = Rect::new(cx as i16 - scroll + a.0, cy as i16 + a.1 + line - 2, b.0 - a.0, 2);

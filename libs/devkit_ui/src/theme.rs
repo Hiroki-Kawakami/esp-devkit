@@ -78,6 +78,8 @@ pub struct Icons {
     pub more: Icon,
     pub close: Icon,
     pub check: Icon,
+    pub show: Icon,
+    pub hide: Icon,
     pub chevron: Icon,
     pub expand: Icon,
     pub shift: Icon,
@@ -308,7 +310,12 @@ pub struct TextFieldTheme {
     pub caret_color: ColorRole,
     pub underline_color: ColorRole,
     pub area_min_height: i16,
+    /// How long a character typed into a `password_field` shows; 0 never.
+    pub reveal_ms: u16,
     pub root: &'static StateStyle,
+    /// A `password_field`: `root` with room at the end for `reveal`.
+    pub password: &'static StateStyle,
+    pub reveal: &'static StateStyle,
 }
 
 #[derive(Clone, Copy)]
