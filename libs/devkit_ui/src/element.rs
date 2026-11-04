@@ -15,6 +15,7 @@ use core::ptr::{self, NonNull};
 use devkit_gfx::{Align as TextAlign, Color, Corners, Elide, FontChain, Image, ImageFormat, Overflow, Sides, TextOptions};
 
 use crate::bump::Bump;
+use crate::popover::Anchored;
 use crate::component::{AnyHost, Child, Component, EventMap, Host, Screen, ScrollEdge, call_event_map, screen_host};
 use crate::erased::Erased;
 use crate::id::Id;
@@ -277,6 +278,7 @@ pub struct ElementData<'a, M: Copy> {
     pub(crate) on_scroll: Option<ScrollMap>,
     pub(crate) bounce: bool,
     pub(crate) anchor: ScrollEdge,
+    pub(crate) anchored: Option<Anchored>,
     pub(crate) pull: Option<Pull>,
     pub(crate) gestures: Option<GestureMap>,
     pub(crate) size: Option<SizeMap>,
@@ -295,7 +297,7 @@ pub struct ElementData<'a, M: Copy> {
 
 impl<'a, M: Copy> Element<'a, M> {
     fn new(bump: NonNull<Bump>, content: Content<'a>, children: &'a mut [Element<'a, M>]) -> Self {
-        let data = ElementData { bump, content, children: NonNull::from(children), style: Style::default(), when: &[], inherit: State::empty(), state_source: false, id: None, part: None, role: Role::None, tap: None, drag: None, on_scroll: None, bounce: true, anchor: ScrollEdge::Start, pull: None, gestures: None, size: None, input: None, focusable: false, keep_focus: false, keyboard: None, input_kind: InputKind::Text, repeat: false, state: State::empty(), appear: None, disappear: None, task: None, _msg: PhantomData };
+        let data = ElementData { bump, content, children: NonNull::from(children), style: Style::default(), when: &[], inherit: State::empty(), state_source: false, id: None, part: None, role: Role::None, tap: None, drag: None, on_scroll: None, bounce: true, anchor: ScrollEdge::Start, anchored: None, pull: None, gestures: None, size: None, input: None, focusable: false, keep_focus: false, keyboard: None, input_kind: InputKind::Text, repeat: false, state: State::empty(), appear: None, disappear: None, task: None, _msg: PhantomData };
         Self { data: unsafe { NonNull::new_unchecked(bump.as_ref().alloc(data)) } }
     }
 
@@ -634,6 +636,12 @@ impl<'a, M: Copy> Element<'a, M> {
     }
 
     /// Takes the node out of the flow, placed by distances from the parent.
+    pub(crate) fn anchored(mut self, anchored: Anchored) -> Self {
+        self.anchored = Some(anchored);
+        self.style.absolute = Some(Inset::default());
+        self
+    }
+
     pub fn absolute(mut self, left: Option<i16>, top: Option<i16>, right: Option<i16>, bottom: Option<i16>) -> Self {
         self.style.absolute = Some(Inset { left, top, right, bottom });
         self
@@ -960,9 +968,13 @@ impl<M: Copy> Ui<M> {
         Element::new(self.bump, Content::External(surface), &mut [])
     }
 
-    /// Scrolls one child vertically. Takes the size the parent gives it.
+    /// Scrolls one child vertically. As tall as the child where nothing sets
+    /// its height, up to what the parent or `max_height` allows, and shrinks
+    /// like text.
     pub fn scroll<'a>(&'a self, child: Element<'a, M>) -> Element<'a, M> {
-        Element::new(self.bump, Content::Scroll, self.place_slice(&[child]))
+        let mut element = Element::new(self.bump, Content::Scroll, self.place_slice(&[child]));
+        element.style.shrink = 1;
+        element
     }
 
     /// `count` items placed by `layout`, scrolling vertically. Only the rows in

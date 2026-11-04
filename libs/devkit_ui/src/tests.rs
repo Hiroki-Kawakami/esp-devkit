@@ -80,6 +80,7 @@ static DROPDOWN_ITEM: StateStyle = StateStyle { base: &[Prop::Height(56)], ..Sta
 static DROPDOWN_MENU: StateStyle = StateStyle { base: &[Prop::Radius(14), Prop::Border(ColorRole::Divider, 2)], ..StateStyle::EMPTY };
 static MENU_PANEL: StateStyle = StateStyle { base: &[Prop::Width(200), Prop::PaddingY(8)], ..StateStyle::EMPTY };
 static MENU_ITEM: StateStyle = StateStyle { base: &[Prop::Height(50)], ..StateStyle::EMPTY };
+static MENU_CHECK: StateStyle = StateStyle { base: &[Prop::Width(0), Prop::Opacity(0)], states: &[(State::CHECKED, &[Prop::Width(20), Prop::Opacity(255)])], ..StateStyle::EMPTY };
 static TABLE_ROW: StateStyle = StateStyle { base: &[Prop::MinHeight(88), Prop::PaddingX(24), Prop::Gap(12)], ..StateStyle::EMPTY };
 static DIVIDER_VERTICAL: StateStyle = StateStyle { base: &[Prop::PaddingY(12)], ..StateStyle::EMPTY };
 static KEY: StateStyle = StateStyle { states: &[(State::PRESSED, &[Prop::Background(ColorRole::Custom(1))])], ..StateStyle::EMPTY };
@@ -149,8 +150,7 @@ static WIDGETS: Widgets = Widgets {
     table_header: TableHeaderTheme { root: &EMPTY },
     table_section: TableSectionTheme { root: &EMPTY },
     table_row: TableRowTheme { root: &TABLE_ROW, label: &EMPTY, value: &EMPTY, chevron: &EMPTY },
-    menu: MenuTheme { width: 200, padding_y: 8, panel: &MENU_PANEL },
-    menu_item: MenuItemTheme { height: 50, root: &MENU_ITEM, label: &EMPTY },
+    menu: MenuTheme { panel: &MENU_PANEL, item: &MENU_ITEM, icon: &EMPTY, label: &EMPTY, check: &MENU_CHECK, header: &EMPTY, divider: &EMPTY },
     modal: ModalTheme { width: 360, margin: 24, panel: &EMPTY, title: &EMPTY, message: &EMPTY, actions: &EMPTY },
     overlay: OverlayTheme { scrim: ColorRole::Fixed(Color::rgba(0, 0, 0, 128)) },
     toast: ToastTheme { root: &EMPTY, label: &EMPTY },
@@ -572,6 +572,13 @@ fn dropdown_tree() -> (Tree, &'static AtomicU32) {
 
 struct Menus {
     chosen: &'static AtomicU32,
+    items: usize,
+    placement: Placement,
+}
+
+fn menu_view<'a>(items: &'a usize, ui: &'a Ui<MenuMsg>) -> Element<'a, MenuMsg> {
+    let rows: Vec<_> = (0..*items).map(|i| widgets::menu_item(ui, None, ["One", "Two"][i % 2], MenuMsg::Chosen(i as u32 + 1)).checked(i == 1).id(crate::Id::of(ui.format(format_args!("item{i}"))))).collect();
+    widgets::menu(ui, rows)
 }
 
 impl Screen for Menus {}
@@ -581,7 +588,7 @@ impl Component for Menus {
 
     fn update(&mut self, msg: MenuMsg, cx: &mut Cx<Self>) {
         match msg {
-            MenuMsg::Open => cx.popup(widgets::Menu::new(cx.tap_rect().unwrap(), &[("One", MenuMsg::Chosen(1)), ("Two", MenuMsg::Chosen(2))], cx.handle())),
+            MenuMsg::Open => cx.popup(Popover::new(cx.tap_rect().unwrap(), self.items, menu_view, cx.handle()).placement(self.placement)),
             MenuMsg::Forward => cx.send(MenuMsg::Open),
             MenuMsg::Chosen(value) => {
                 assert!(cx.tap_rect().is_none());
@@ -608,9 +615,48 @@ enum MenuMsg {
 
 fn menu_tree() -> (Tree, &'static AtomicU32) {
     let chosen = Box::leak(Box::new(AtomicU32::new(0)));
-    let mut tree = Tree::new(Menus { chosen }, SCREEN, Caps::INTERNAL, theme());
+    let mut tree = Tree::new(Menus { chosen, items: 2, placement: Placement::Auto }, SCREEN, Caps::INTERNAL, theme());
     run(&mut tree);
     (tree, chosen)
+}
+
+fn long_menu_tree(placement: Placement) -> Tree {
+    let chosen = Box::leak(Box::new(AtomicU32::new(0)));
+    let mut tree = Tree::new(Menus { chosen, items: 20, placement }, SCREEN, Caps::INTERNAL, theme());
+    run(&mut tree);
+    tree
+}
+
+#[test]
+fn a_menu_item_takes_room_for_its_check_only_when_checked() {
+    let (mut tree, _) = menu_tree();
+    tap(&mut tree, "left");
+    let check = |tree: &Tree, item: &str| {
+        let row = tree.find(crate::Id::of(item)).unwrap();
+        let mut child = tree.nodes[row as usize].first_child;
+        let mut last = NONE;
+        while child != NONE {
+            last = child;
+            child = tree.nodes[child as usize].next;
+        }
+        tree.nodes[last as usize].rect.w
+    };
+    assert_eq!(check(&tree, "item0"), 0);
+    assert_eq!(check(&tree, "item1"), 20);
+}
+
+#[test]
+fn a_menu_held_below_shrinks_to_the_room_and_scrolls() {
+    let mut tree = long_menu_tree(Placement::Below);
+    tap(&mut tree, "bottom");
+    let (bottom, menu) = (rect_of(&tree, "bottom"), rect_of(&tree, "menu"));
+    assert_eq!(menu.y, bottom.bottom());
+    assert_eq!(menu.bottom(), SCREEN.h);
+    assert!(rect_of(&tree, "item0").y >= menu.y);
+    let mut tree = long_menu_tree(Placement::Auto);
+    tap(&mut tree, "left");
+    let (left, menu) = (rect_of(&tree, "left"), rect_of(&tree, "menu"));
+    assert_eq!((menu.y, menu.bottom()), (left.bottom(), SCREEN.h), "too tall for either side, it takes the roomier one");
 }
 
 #[test]

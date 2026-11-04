@@ -11,6 +11,7 @@ use devkit_gfx::{Color, FontChain, Image, Rect, TextOptions, TextRun};
 use idf::heap::Caps;
 
 use crate::component::ScrollEdge;
+use crate::popover::Anchored;
 use crate::animate::Fades;
 use crate::external::ExternalSurface;
 use crate::element::{CollectionLayout, DragMap, DrawMap, Edit, InputMap, ItemMap, ScrollMap, SizeMap};
@@ -221,6 +222,7 @@ pub(crate) struct Node {
     pub(crate) on_scroll: Option<ScrollMap>,
     pub(crate) bounce: bool,
     pub(crate) anchor: ScrollEdge,
+    pub(crate) anchored: Option<Box<Anchored>>,
     /// At its end as of the last move, before content changed it.
     pub(crate) pinned: bool,
     pub(crate) pull: Option<Pull>,
@@ -288,6 +290,7 @@ impl Node {
             on_scroll: None,
             bounce: true,
             anchor: ScrollEdge::Start,
+            anchored: None,
             pinned: false,
             pull: None,
             gestures: None,

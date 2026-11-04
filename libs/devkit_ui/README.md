@@ -15,7 +15,7 @@ impl Component for FileBrowser {
             Msg::Open(i) => self.selected = Some(i),
             Msg::OpenMenu => {
                 if let Some(anchor) = cx.tap_rect() {
-                    cx.popup(Menu::new(anchor, &[("Sort", Msg::Sort)], cx.handle()));
+                    cx.popup(Popover::new(anchor, (), Self::menu, cx.handle()));
                 }
             }
             Msg::Sort => self.names.sort(),
@@ -35,6 +35,10 @@ impl Component for FileBrowser {
 }
 
 impl FileBrowser {
+    fn menu<'a>(_: &'a (), ui: &'a Ui<Msg>) -> Element<'a, Msg> {
+        menu(ui, [menu_item(ui, None, "Sort", Msg::Sort)])
+    }
+
     fn row<'a>(&'a self, i: usize, ui: &'a Ui<Msg>) -> Element<'a, Msg> {
         ui.row([ui.text(&BODY, &self.names[i])]).on_tap(Msg::Open(i as u16))
     }
@@ -63,6 +67,9 @@ app.run();
   never bounces. `.pull(height, refreshing, msg)` sends `msg` when let go
   `height` past the start and stays that far open until a view gives
   `refreshing` false; the indicator is the app's, drawn from `on_scroll`.
+- A `scroll` is as tall as its child where nothing sets its height, up to
+  `max_height` or what its parent gives, and shrinks like text; past that its
+  child scrolls.
 - `cx.scroll_to(id, target, animated)` moves a scroller after the view and
   layout, so `ScrollTarget::End` is the end of what the view just added.
   `Index` shows an item of a `collection` whole, moving as little as it takes. A finger
@@ -244,7 +251,18 @@ app.run();
   `cx.close_popup()` closes it, and so do a tap outside, which goes no
   further, and a turn of the screen. It fills the
   screen and places itself, by `cx.tap_rect()`: where the node tapped for the
-  message is, on any node. `Menu` and `DropdownMenu` are two.
+  message is, on any node. `DropdownMenu` is one.
+- `Popover::new(anchor, props, view, target)` is a popup by `anchor` showing
+  what `view`, a function pointer, makes of `props`, a value copied when it
+  opens. Messages from inside go to `target` and close it. It measures what
+  `view` gives before placing it: `.placement(Below | Above | Auto)` picks the
+  side, `Auto` the roomier one when neither fits, and that side's room caps the
+  height, so a `scroll` inside shrinks to it. `.align(Start | End)` lines it up
+  with an edge of the anchor.
+- `menu(ui, children)` is the panel of a popover menu, its children scrolling
+  inside. `menu_item(ui, leading, label, msg)` takes `.checked()`, which shows
+  the theme's check and takes room only then, `.disabled()` and
+  `.foreground()`; `menu_header` and `menu_divider` go between items.
 - A `Theme` is what resgen generates from a definition: colors, fonts, icons,
   each widget's values, keyboards and motion, so a theme replaces any of them
   without the rest of it reaching the firmware.
@@ -285,6 +303,7 @@ app.run();
   | `top_bar` | `Back`, `Title` |
   | `segmented` | `Item`, `Label` |
   | `menu` | `Panel` |
+  | `menu_item` | `Leading`, `Label`, `Trailing` |
   | `modal` | `Panel`, `Title`, `Message`, `Actions` |
   | `divider`, `vertical_divider` | `Line` |
 

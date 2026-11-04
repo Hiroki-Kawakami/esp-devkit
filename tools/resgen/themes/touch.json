@@ -481,11 +481,9 @@
       }
     },
     "menu": {
-      "width": 380,
-      "padding_y": "widgets.unit.gap",
       "panel": {
-        "width": "widgets.menu.width",
-        "padding_y": "widgets.menu.padding_y",
+        "width": 380,
+        "padding_y": "widgets.unit.gap",
         "radius": 20,
         "background": "color.surface",
         "shadow": [
@@ -493,17 +491,52 @@
           12,
           "color.shadow"
         ]
-      }
-    },
-    "menu_item": {
-      "height": 72,
-      "root": {
+      },
+      "item": {
         "extends": "vars.plain",
-        "height": "widgets.menu_item.height",
+        "height": 72,
         "padding_x": "widgets.unit.padding"
+      },
+      "icon": {
+        "padding_each": [
+          0,
+          0,
+          20,
+          0
+        ]
       },
       "label": {
         "font": "font.body"
+      },
+      "check": {
+        "width": 0,
+        "opacity": 0,
+        "foreground": "color.primary",
+        "states": {
+          "checked": {
+            "width": 56,
+            "padding_each": [
+              16,
+              0,
+              0,
+              0
+            ],
+            "opacity": 255
+          }
+        }
+      },
+      "header": {
+        "font": "vars.label_font",
+        "foreground": "vars.text_secondary",
+        "padding_each": [
+          "widgets.unit.padding",
+          8,
+          "widgets.unit.padding",
+          4
+        ]
+      },
+      "divider": {
+        "padding_y": 8
       }
     },
     "modal": {

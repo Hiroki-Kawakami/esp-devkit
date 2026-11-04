@@ -927,6 +927,9 @@ impl Tree {
         node.on_scroll = element.on_scroll;
         node.bounce = element.bounce;
         node.anchor = element.anchor;
+        if node.anchored.as_deref() != element.anchored.as_ref() {
+            node.anchored = element.anchored.map(Box::new);
+        }
         node.gestures = element.gestures;
         node.size = element.size;
         node.input = element.input;

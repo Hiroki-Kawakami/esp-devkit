@@ -71,7 +71,14 @@ impl Tree {
         let (w, h) = match &self.nodes[id as usize].content {
             NodeContent::Text(_) => self.measure_text(id, content_w),
             NodeContent::Image { image, .. } => (image.width() as i16, image.height() as i16),
-            NodeContent::Scroll(_) | NodeContent::Collection(_) | NodeContent::Canvas(_) | NodeContent::External(_) | NodeContent::Progress(_) | NodeContent::Navigator(_) => (content_w.min(0), content_h.min(0)),
+            NodeContent::Scroll(_) => match self.nodes[id as usize].first_child {
+                NONE => (0, 0),
+                child => {
+                    let (w, h) = self.measure(child, content_w, UNBOUNDED);
+                    (w.min(content_w), h.min(content_h))
+                }
+            },
+            NodeContent::Collection(_) | NodeContent::Canvas(_) | NodeContent::External(_) | NodeContent::Progress(_) | NodeContent::Navigator(_) => (content_w.min(0), content_h.min(0)),
             NodeContent::Child(_) => {
                 let child = self.nodes[id as usize].first_child;
                 if child == NONE { (0, 0) } else { self.measure(child, content_w, content_h) }
@@ -207,7 +214,10 @@ impl Tree {
         while child != NONE {
             let node = &self.nodes[child as usize];
             let next = node.next;
-            if let Some(inset) = node.style.absolute.filter(|_| !node.leaving) {
+            if let Some(anchored) = node.anchored.as_deref().copied().filter(|_| !node.leaving) {
+                let place = anchored.place(|height| self.measure(child, anchored.bounds.w, height));
+                self.arrange(child, place.offset(-parent.x, -parent.y));
+            } else if let Some(inset) = node.style.absolute.filter(|_| !node.leaving) {
                 let avail_w = match (inset.left, inset.right) {
                     (Some(l), Some(r)) => parent.w - l - r,
                     _ => parent.w,

@@ -6,8 +6,8 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use devkit_ui::widgets::{Menu, button, checkbox, icon_button, list_item, modal, modal_actions, modal_message, modal_title, progress_bar, progress_indicator, slider, slider_value, switch, top_bar};
-use devkit_ui::{Align, Child, CollectionLayout, Component, Cx, Elide, Element, Handle, Id, Justify, Sides, Overlay, RenderMode, Root, Screen, SplitRole, Strips, Ui, id};
+use devkit_ui::widgets::{button, menu, menu_divider, menu_header, menu_item, checkbox, icon_button, list_item, modal, modal_actions, modal_message, modal_title, progress_bar, progress_indicator, slider, slider_value, switch, top_bar};
+use devkit_ui::{Align, Child, CollectionLayout, Component, Cx, Elide, Element, Handle, Id, Justify, Sides, Overlay, Popover, PopoverAlign, RenderMode, Root, Screen, SplitRole, Strips, Ui, id};
 use idf::heap::Caps;
 use idf::sync::{LazyLock, Mutex};
 
@@ -149,6 +149,16 @@ impl Browser {
         Self { names, selected: None, revision: 0, grid: false }
     }
 
+    fn menu<'a>(grid: &'a bool, ui: &'a Ui<Msg>) -> Element<'a, Msg> {
+        menu(ui, [
+            menu_header(ui, "LAYOUT"),
+            menu_item(ui, Some(icon(FILE_ICONS[0])), "Compact", Msg::Compact).checked(!*grid).id(id!("menu-compact")),
+            menu_item(ui, Some(icon(FILE_ICONS[1])), "Grid", Msg::Grid).checked(*grid).id(id!("menu-grid")),
+            menu_divider(ui),
+            menu_item(ui, None, "Delete everything in this folder", Msg::Compact).foreground(colors::DESTRUCTIVE).id(id!("menu-delete")),
+        ])
+    }
+
     fn cell<'a>(&'a self, index: usize, ui: &'a Ui<Msg>) -> Element<'a, Msg> {
         let theme = ui.theme();
         let c = ui.colors();
@@ -185,7 +195,7 @@ impl Component for Browser {
             Msg::Back => cx.nav().pop(),
             Msg::OpenMenu => {
                 if let Some(anchor) = cx.tap_rect() {
-                    cx.popup(Menu::new(anchor, &[("Compact", Msg::Compact), ("Grid", Msg::Grid)], cx.handle()));
+                    cx.popup(Popover::new(anchor, self.grid, Self::menu, cx.handle()).align(PopoverAlign::End));
                 }
             }
             Msg::Compact => self.grid = false,

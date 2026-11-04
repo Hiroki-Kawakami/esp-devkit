@@ -271,16 +271,13 @@ pub struct TableRowTheme {
 
 #[derive(Clone, Copy)]
 pub struct MenuTheme {
-    pub width: i16,
-    pub padding_y: i16,
     pub panel: &'static StateStyle,
-}
-
-#[derive(Clone, Copy)]
-pub struct MenuItemTheme {
-    pub height: i16,
-    pub root: &'static StateStyle,
+    pub item: &'static StateStyle,
+    pub icon: &'static StateStyle,
     pub label: &'static StateStyle,
+    pub check: &'static StateStyle,
+    pub header: &'static StateStyle,
+    pub divider: &'static StateStyle,
 }
 
 #[derive(Clone, Copy)]
@@ -346,7 +343,6 @@ pub struct Widgets {
     pub table_section: TableSectionTheme,
     pub table_row: TableRowTheme,
     pub menu: MenuTheme,
-    pub menu_item: MenuItemTheme,
     pub modal: ModalTheme,
     pub overlay: OverlayTheme,
     pub toast: ToastTheme,

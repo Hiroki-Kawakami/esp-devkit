@@ -15,6 +15,7 @@ use crate::app::Handle;
 use crate::id;
 use crate::component::{Component, Cx};
 use crate::element::{Children, Drag, Element, Ui};
+use crate::popover::{Placement, PopoverAlign, popover};
 use crate::presence::Presence;
 use crate::progress::Gauge;
 use crate::keyboard::{Keyboard, KeyboardPanel, KeyboardProps};
@@ -174,13 +175,6 @@ pub fn dropdown<'a, M: Copy>(ui: &'a Ui<M>, label: &'a str, on_open: M) -> Eleme
 
 /// `panel`, of `size`, touching `anchor`: under it or else above it, from its
 /// left edge or else to its right one.
-fn anchored<'a, M: Copy>(ui: &'a Ui<M>, anchor: Rect, (width, height): (i16, i16), panel: Element<'a, M>) -> Element<'a, M> {
-    let (screen_w, screen_h) = ui.screen_size();
-    let left = if anchor.x + width > screen_w { anchor.right() - width } else { anchor.x };
-    let top = if anchor.bottom() + height > screen_h { anchor.y - height } else { anchor.bottom() };
-    ui.column([panel.absolute(Some(left.min(screen_w - width).max(0)), Some(top.min(screen_h - height).max(0)), None, None)])
-}
-
 /// A popup by `anchor`, as wide as it.
 /// Sends `on_select` of the chosen option to `target`, and closes then or on a
 /// tap outside.
@@ -207,11 +201,10 @@ impl<M: Copy + 'static> Component for DropdownMenu<M> {
     }
 
     fn view<'a>(&'a self, ui: &'a Ui<usize>) -> Element<'a, usize> {
-        let widgets = &ui.theme().widgets;
-        let t = &widgets.dropdown_menu;
-        let height = self.options.len() as i16 * widgets.dropdown.height;
+        let t = &ui.theme().widgets.dropdown_menu;
         let rows: Vec<_> = self.options.iter().enumerate().map(|(i, label)| dropdown_row(ui, label, t.item, ui.empty()).selected(i == self.selected).on_tap(i)).collect();
-        anchored(ui, self.anchor, (self.anchor.w, height), ui.column(rows).style(t.root).width(self.anchor.w).clip().id(id!("dropdown-menu")))
+        let panel = ui.column([ui.scroll(ui.column(rows))]).style(t.root).width(self.anchor.w).clip().id(id!("dropdown-menu"));
+        popover(ui, self.anchor, Placement::Auto, PopoverAlign::Start, panel)
     }
 }
 
@@ -227,7 +220,7 @@ pub fn vertical_divider<'a, M: Copy>(ui: &'a Ui<M>) -> Element<'a, M> {
     ui.row([ui.column([]).style(t.line).width(t.thickness).part_of(Part::Line)]).style(t.vertical).align_self(Align::Stretch).shrink(0)
 }
 
-/// A scroller with a table's margins. Takes the height it is given.
+/// A scroller with a table's margins.
 pub fn table<'a, M: Copy>(ui: &'a Ui<M>, children: impl Children<'a, M>) -> Element<'a, M> {
     let padding = ui.theme().widgets.table.padding;
     ui.scroll(ui.column(children).padding_each(padding, 0, padding, padding + ui.insets().bottom))
@@ -274,45 +267,35 @@ pub fn table_chevron<'a, M: Copy>(ui: &'a Ui<M>) -> Element<'a, M> {
     ui.icon(theme.icons.chevron).style(theme.widgets.table_row.chevron).shrink(0)
 }
 
-fn menu_item<'a, M: Copy>(ui: &'a Ui<M>, label: &'a str, on_tap: M) -> Element<'a, M> {
+/// The panel of a `Popover` menu; `children` scroll inside it when it is
+/// given less height than they take.
+pub fn menu<'a, M: Copy>(ui: &'a Ui<M>, children: impl Children<'a, M>) -> Element<'a, M> {
+    ui.column([ui.scroll(ui.column(children))]).style(ui.theme().widgets.menu.panel).part_of(Part::Panel).id(id!("menu"))
+}
+
+/// A choice in a `menu`. `.checked()` shows the theme's check at the end,
+/// which takes no room otherwise.
+pub fn menu_item<'a, M: Copy>(ui: &'a Ui<M>, leading: Option<Icon>, label: &'a str, on_tap: M) -> Element<'a, M> {
     let theme = ui.theme();
-    let t = &theme.widgets.menu_item;
-    ui.row([ui.text(theme.fonts.body, label).style(t.label).grow(1)])
-        .style(t.root)
+    let t = &theme.widgets.menu;
+    let lead = leading.map_or(ui.empty(), |icon| ui.icon(icon).style(t.icon).shrink(0).part_of(Part::Leading));
+    let check = ui.icon(theme.icons.check).style(t.check).inherit_state(PART_STATES).shrink(0).part_of(Part::Trailing);
+    ui.row([lead, ui.text(theme.fonts.body, label).style(t.label).ellipsis(Elide::End).grow(1).part_of(Part::Label), check])
+        .style(t.item)
         .align(Align::Center)
+        .state_source()
         .role(Role::Button)
         .on_tap(on_tap)
 }
 
-/// A popup by `anchor` of `items`, which pair a label with what tapping it sends
-/// to `target`. Closes then or on a tap outside.
-pub struct Menu<M: Copy + 'static> {
-    anchor: Rect,
-    items: Vec<(String, M)>,
-    target: Handle<M>,
+/// A title over the `menu_item`s after it.
+pub fn menu_header<'a, M: Copy>(ui: &'a Ui<M>, text: &'a str) -> Element<'a, M> {
+    let theme = ui.theme();
+    ui.text(theme.fonts.caption, text).style(theme.widgets.menu.header).ellipsis(Elide::End).part_of(Part::Title)
 }
 
-impl<M: Copy + 'static> Menu<M> {
-    pub fn new(anchor: Rect, items: &[(&str, M)], target: Handle<M>) -> Self {
-        Self { anchor, items: items.iter().map(|&(label, msg)| (String::from(label), msg)).collect(), target }
-    }
-}
-
-impl<M: Copy + 'static> Component for Menu<M> {
-    type Msg = M;
-
-    fn update(&mut self, msg: M, cx: &mut Cx<Self>) {
-        cx.send_to(&self.target, msg);
-        cx.close_popup();
-    }
-
-    fn view<'a>(&'a self, ui: &'a Ui<M>) -> Element<'a, M> {
-        let widgets = &ui.theme().widgets;
-        let t = &widgets.menu;
-        let height = self.items.len() as i16 * widgets.menu_item.height + 2 * t.padding_y;
-        let rows: Vec<_> = self.items.iter().map(|(label, msg)| menu_item(ui, label, *msg)).collect();
-        anchored(ui, self.anchor, (t.width, height), ui.column(rows).style(t.panel).part_of(Part::Panel).id(id!("menu")))
-    }
+pub fn menu_divider<'a, M: Copy>(ui: &'a Ui<M>) -> Element<'a, M> {
+    divider(ui).style(ui.theme().widgets.menu.divider)
 }
 
 /// A dialog for a screen on the `Overlay`, centered in what the insets leave,
