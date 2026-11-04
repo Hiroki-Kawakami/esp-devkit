@@ -54,6 +54,8 @@ pub(crate) struct Reassembly {
 impl Reassembly {
     /// The whole payload once the last missing fragment arrives. A datagram
     /// over 16 KiB is given up.
+    #[cold]
+    #[inline(never)]
     pub fn add(&mut self, ip: &Ipv4, payload: &[u8], now: Instant) -> Option<Vec<u8>> {
         let start = ip.fragment_offset();
         let end = start + payload.len();
@@ -97,6 +99,11 @@ impl Reassembly {
         let mut p = self.pending.swap_remove(index);
         p.data.truncate(p.total.unwrap());
         Some(p.data)
+    }
+
+    #[cfg_attr(CONFIG_DEVKIT_NET_IRAM_OPT, unsafe(link_section = ".iram1.devkit_net"))]
+    pub fn next_deadline(&self) -> Option<Instant> {
+        self.pending.iter().map(|p| p.deadline).min()
     }
 
     /// Drops what timed out and returns the next deadline.

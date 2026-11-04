@@ -356,7 +356,7 @@ pub(super) unsafe extern "C" fn esp_wifi_remote_disconnect() -> EspErr {
 }
 
 #[unsafe(no_mangle)]
-unsafe extern "C" fn esp_wifi_remote_set_ps(ty: ffi::wifi_ps_type_t) -> EspErr {
+pub(super) unsafe extern "C" fn esp_wifi_remote_set_ps(ty: ffi::wifi_ps_type_t) -> EspErr {
     let req = p::RpcReqSetPs { r#type: ty as i32 };
     code(linked().and_then(|h| {
         status_call!(h, Req_WifiSetPs, Some(RpcPayload::ReqWifiSetPs(Lazy::new(&req))), RespWifiSetPs, rpc::TIMEOUT)

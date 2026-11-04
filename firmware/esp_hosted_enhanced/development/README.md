@@ -9,15 +9,16 @@ the esp-hosted component; each board/host pair builds in `esp32p4/build_<board>_
 nix develop -c ./run.sh -p /dev/cu.usbmodemXXXX flash               # on-board C6
 nix develop -c ./run.sh xiao -p /dev/cu.usbmodemXXXX flash          # XIAO ESP32C6 on the M-Bus
 nix develop -c ./run.sh tab5 stock -p /dev/cu.usbmodemXXXX flash    # stock esp-hosted host
-nix develop -c python3 netbench.py --port /dev/cu.usbmodemXXXX --json result.json
+nix develop -c python3 netbench.py --ip 192.168.x.x --host HOST --json result.json
 nix develop -c python3 c6flash.py --port /dev/cu.usbmodemXXXX image.bin
 nix develop -c python3 sdiobench.py --port /dev/cu.usbmodemXXXX --json result.json
 nix develop -c python3 blebench.py --periph /dev/cu.usbmodemXXXX --central /dev/cu.usbmodemYYYY
 ```
 
-`netbench.py` reads the board's IP and heap figures over the harness console
-and measures from the PC, which must be able to reach the board's network. The
-board listens on TCP 5001 (sink), TCP 5002 (source) and UDP 5003 (echo).
+`netbench.py` turns power save off and reads the heap figures through the
+board's devkit host (`HOST` as `devkit cmd -t` takes it) and measures from the
+PC, which must be able to reach the board at `--ip`. The board listens on TCP
+5001 (sink), TCP 5002 (source), UDP 5003 (echo) and UDP 5004 (UDP throughput).
 
 `sdiobench.py` measures the SDIO link alone over the test channel: throughput
 both ways, echo round trips, and host->coprocessor with a slow consumer (each

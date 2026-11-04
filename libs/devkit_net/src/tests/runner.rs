@@ -68,6 +68,10 @@ impl WifiDriver for FakeWifi {
         })
     }
 
+    fn set_power_save(&self, _: crate::PowerSave) -> BoxFuture<'_, Result<(), i32>> {
+        Box::pin(async { Ok(()) })
+    }
+
     fn disconnect(&self) -> BoxFuture<'_, Result<(), i32>> {
         Box::pin(async move {
             self.link.rx.get().unwrap().set_up(false);

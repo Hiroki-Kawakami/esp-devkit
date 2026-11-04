@@ -77,6 +77,18 @@ pub enum WifiState {
     Connected { bssid: [u8; 6], channel: u8 },
 }
 
+/// Radio power saving while connected.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum PowerSave {
+    /// Always listening: the lowest latency.
+    None,
+    /// Wakes for every DTIM beacon.
+    #[default]
+    Min,
+    /// Wakes at the listen interval only.
+    Max,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ConnectError {
     NotFound,
@@ -98,6 +110,8 @@ pub trait WifiDriver: Send + Sync {
     /// through `events`.
     fn connect<'a>(&'a self, config: &'a StaConfig<'a>) -> BoxFuture<'a, Result<(), i32>>;
     fn disconnect(&self) -> BoxFuture<'_, Result<(), i32>>;
+    /// Kept for a radio that is not up yet.
+    fn set_power_save(&self, mode: PowerSave) -> BoxFuture<'_, Result<(), i32>>;
 }
 
 struct State {
@@ -243,6 +257,10 @@ impl Wifi {
                 }
             }
         }
+    }
+
+    pub async fn set_power_save(&self, mode: PowerSave) -> Result<(), ConnectError> {
+        self.driver.set_power_save(mode).await.map_err(ConnectError::Driver)
     }
 
     pub async fn disconnect(&self) -> Result<(), ConnectError> {

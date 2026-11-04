@@ -22,6 +22,8 @@ pub enum Error {
     BrokenPipe,
     TimedOut,
     NoMemory,
+    /// The link had no room for the frame; it was not sent.
+    WouldBlock,
 }
 
 impl fmt::Display for Error {
@@ -42,6 +44,7 @@ impl fmt::Display for Error {
             Error::BrokenPipe => "broken pipe",
             Error::TimedOut => "timed out",
             Error::NoMemory => "out of memory",
+            Error::WouldBlock => "operation would block",
         })
     }
 }

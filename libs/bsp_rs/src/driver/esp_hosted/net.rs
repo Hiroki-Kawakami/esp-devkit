@@ -15,8 +15,8 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 
 use devkit_net::{
-    Auth, BoxFuture, DisconnectReason, Link, LinkInfo, LinkRx, Medium, RxFrame, StaConfig, TxError, WifiDriver,
-    WifiEvents, WifiState,
+    Auth, BoxFuture, DisconnectReason, Link, LinkInfo, LinkRx, Medium, PowerSave, RxFrame, StaConfig, TxError,
+    WifiDriver, WifiEvents, WifiState,
 };
 use idf::executor::{CRITICAL, Signal};
 use idf::log::{error, info};
@@ -40,6 +40,7 @@ struct Sta;
 struct Radio {
     started: bool,
     mac: [u8; 6],
+    power_save: PowerSave,
 }
 
 struct Hosted;
@@ -48,7 +49,7 @@ static STA: Sta = Sta;
 static HOSTED: Hosted = Hosted;
 static LINK_RX: OnceLock<LinkRx> = OnceLock::new();
 static EVENTS: OnceLock<WifiEvents> = OnceLock::new();
-static RADIO: Mutex<Radio> = Mutex::new(Radio { started: false, mac: [0; 6] });
+static RADIO: Mutex<Radio> = Mutex::new(Radio { started: false, mac: [0; 6], power_save: PowerSave::Min });
 static UP: AtomicBool = AtomicBool::new(false);
 
 /// Makes the coprocessor the firmware's Wi-Fi radio. Nothing reaches the
@@ -59,6 +60,15 @@ pub(crate) fn register() {
 
 fn check(code: sys::esp_err_t) -> Result<()> {
     Error::check(code)
+}
+
+fn apply_power_save(mode: PowerSave) -> Result<()> {
+    let ps = match mode {
+        PowerSave::None => ffi::wifi_ps_type_t_WIFI_PS_NONE,
+        PowerSave::Min => ffi::wifi_ps_type_t_WIFI_PS_MIN_MODEM,
+        PowerSave::Max => ffi::wifi_ps_type_t_WIFI_PS_MAX_MODEM,
+    };
+    check(unsafe { wifi::esp_wifi_remote_set_ps(ps) })
 }
 
 fn link_info() -> LinkInfo {
@@ -154,6 +164,7 @@ fn start_radio() -> Result<()> {
         thread::sleep(Duration::from_millis(10));
     }
     check(unsafe { wifi::esp_wifi_remote_get_mac(ffi::wifi_interface_t_WIFI_IF_STA, radio.mac.as_mut_ptr()) })?;
+    apply_power_save(radio.power_save)?;
     radio.started = true;
     info!(TAG, "station up, mac {:02x?}", radio.mac);
     Ok(())
@@ -208,6 +219,17 @@ impl WifiDriver for Hosted {
             channel: config.channel,
         };
         offload("hosted_join", move || join(&owned))
+    }
+
+    fn set_power_save(&self, mode: PowerSave) -> BoxFuture<'_, core::result::Result<(), i32>> {
+        offload("hosted_ps", move || {
+            let mut radio = RADIO.lock();
+            radio.power_save = mode;
+            if !radio.started {
+                return Ok(());
+            }
+            apply_power_save(mode)
+        })
     }
 
     fn disconnect(&self) -> BoxFuture<'_, core::result::Result<(), i32>> {

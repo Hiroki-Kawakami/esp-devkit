@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Wi-Fi throughput / latency bench against the development firmware.
 
-Talks to the board over the harness console for its IP and heap figures, then
-measures from the PC over the LAN (the PC must reach the board's network):
+Asks the board's devkit host (`devkit cmd`) for its heap figures and turns
+Wi-Fi power save off, then measures from the PC over the LAN (the PC must reach
+the board's network):
 
-    netbench.py --port /dev/cu.usbmodemXXXX [--seconds 10] [--json out.json]
+    netbench.py --ip 192.168.x.x --host HOST [--seconds 10] [--json out.json]
                 [--udp] [--udp-rate MBPS]
+
+HOST is what `devkit cmd -t` takes (a host id or a target).
 
 Tests, in order:
     latency idle    UDP echo RTT, one packet every --interval ms
@@ -19,16 +22,13 @@ Tests, in order:
 
 import argparse
 import json
-import os
 import socket
 import struct
 import sys
 import threading
 import time
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                "..", "..", "..", "tools", "harness"))
-from harness import Harness, HarnessError, SerialLink  # noqa: E402
+import subprocess
 
 SINK_PORT = 5001
 SOURCE_PORT = 5002
@@ -40,33 +40,23 @@ UDP_HDR = struct.Struct("<B3xIII")
 CHUNK = 64 * 1024
 
 
-def open_harness(port, log_stream):
-    link = SerialLink(port, 115200)
-    # Opening the USB-Serial-JTAG port resets the board; drop the boot chatter
-    # so late ping replies do not shift every later reply by one.
-    time.sleep(4)
-    link.ser.reset_input_buffer()
-    link.buf = b""
-    h = Harness(link, log_stream)
-    h.wait_ready()
-    return h, link
+class HarnessError(Exception):
+    pass
 
 
-def wait_connected(h, timeout):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        p = h.cmd("wifi")
-        if p[1] == "connected":
-            return p[2], int(p[3])
-        time.sleep(0.5)
-    raise HarnessError("wifi did not connect")
+def devkit_cmd(host, line):
+    """The reply's words after OK and the command name."""
+    out = subprocess.run(["devkit", "cmd", "-t", host, line], capture_output=True, text=True, timeout=30)
+    words = out.stdout.split()
+    if out.returncode != 0 or len(words) < 2 or words[0] != "OK":
+        raise HarnessError(f"{line}: {out.stdout.strip() or out.stderr.strip()}")
+    return words[2:]
 
 
-def heap(h):
-    p = h.cmd("heap")
+def heap(host):
     keys = ("int_free", "int_min", "int_largest", "dma_free", "psram_free",
             "int_free_at_main")
-    return dict(zip(keys, map(int, p[1:7])))
+    return dict(zip(keys, map(int, devkit_cmd(host, "heap")[:6])))
 
 
 def tcp_down(ip, seconds):
@@ -258,38 +248,33 @@ def fmt_lat(name, r):
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--port", required=True, help="board console (USB-Serial-JTAG)")
+    ap.add_argument("--ip", required=True, help="the board's address")
+    ap.add_argument("--host", required=True, help="the board's devkit host, as `devkit cmd -t` takes it")
     ap.add_argument("--seconds", type=float, default=10.0, help="per throughput test")
     ap.add_argument("--count", type=int, default=1000, help="idle latency probes")
     ap.add_argument("--interval", type=float, default=10.0, help="probe interval (ms)")
     ap.add_argument("--size", type=int, default=64, help="probe payload bytes")
     ap.add_argument("--json", help="write the results here")
-    ap.add_argument("--log", action="store_true", help="echo the board's log lines to stderr")
     ap.add_argument("--udp", action="store_true", help="also measure UDP throughput")
     ap.add_argument("--udp-rate", type=float, default=0.0, help="UDP offered rate (Mbps, 0: unpaced)")
     args = ap.parse_args()
 
-    h, link = open_harness(args.port, sys.stderr if args.log else None)
-    try:
-        ip, rssi = wait_connected(h, 60)
-        h.cmd("wifi ps none")
-        mem = heap(h)
-        time.sleep(1.0)
+    ip = args.ip
+    devkit_cmd(args.host, "wifi ps none")
+    mem = heap(args.host)
+    time.sleep(1.0)
+    results = {"ip": ip, "heap": mem}
+    results["latency_idle"] = latency(ip, args.count, args.interval, args.size)
+    results["tcp_down_mbps"] = tcp_down(ip, args.seconds)
+    results["tcp_up_mbps"] = tcp_up(ip, args.seconds)
+    results["latency_down"] = latency_under(tcp_down, ip, args.seconds, args)
+    results["latency_up"] = latency_under(tcp_up, ip, args.seconds, args)
+    if args.udp:
+        results["udp_down"] = udp_down(ip, args.seconds, args.udp_rate)
+        results["udp_up"] = udp_up(ip, args.seconds, args.udp_rate)
+    results["heap_after"] = heap(args.host)
 
-        results = {"ip": ip, "rssi": rssi, "heap": mem}
-        results["latency_idle"] = latency(ip, args.count, args.interval, args.size)
-        results["tcp_down_mbps"] = tcp_down(ip, args.seconds)
-        results["tcp_up_mbps"] = tcp_up(ip, args.seconds)
-        results["latency_down"] = latency_under(tcp_down, ip, args.seconds, args)
-        results["latency_up"] = latency_under(tcp_up, ip, args.seconds, args)
-        if args.udp:
-            results["udp_down"] = udp_down(ip, args.seconds, args.udp_rate)
-            results["udp_up"] = udp_up(ip, args.seconds, args.udp_rate)
-        results["heap_after"] = heap(h)
-    finally:
-        link.close()
-
-    print(f"board {ip}  rssi {rssi} dBm")
+    print(f"board {ip}")
     m = results["heap"]
     print(f"internal heap free: at app_main {m['int_free_at_main']}  connected {m['int_free']}  "
           f"min {results['heap_after']['int_min']}  largest {m['int_largest']}  "

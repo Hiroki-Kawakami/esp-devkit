@@ -47,7 +47,7 @@ impl Interface {
     }
 
     pub fn stats(&self) -> IfaceStats {
-        net::registry().lock().stack.stats(self.id)
+        net::registry().lock().stats(self.id)
     }
 
     /// `Static` and `Off` apply at once; `Dhcp` leases while the link is up

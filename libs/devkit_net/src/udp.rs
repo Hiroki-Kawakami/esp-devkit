@@ -87,7 +87,7 @@ impl Stack {
             local: SocketAddrV4::new(*addr.ip(), port),
             iface,
             remote: None,
-            rx: Ring::new(rx_size, caps)?,
+            rx: Ring::new(rx_size, caps),
             queue: VecDeque::new(),
             error: None,
         };
@@ -122,6 +122,7 @@ impl Stack {
         self.udp.get(id).remote
     }
 
+    #[cfg_attr(CONFIG_DEVKIT_NET_IRAM_OPT, unsafe(link_section = ".iram1.devkit_net"))]
     pub(crate) fn udp_send(&mut self, id: usize, dst: SocketAddrV4, data: &[u8], now: Instant, tx: &mut Tx) -> Result<()> {
         let socket = self.udp.get(id);
         let (local, iface) = (socket.local, socket.iface);
@@ -180,6 +181,7 @@ impl Stack {
     }
 
     /// `false` when no socket is bound to the destination port.
+    #[cfg_attr(CONFIG_DEVKIT_NET_IRAM_OPT, unsafe(link_section = ".iram1.devkit_net"))]
     pub(crate) fn udp_input(&mut self, arrived: IfaceId, ip: &Ipv4, p: &[u8]) -> bool {
         if p.len() < UDP_HEADER {
             return true;
@@ -209,7 +211,10 @@ impl Stack {
         if socket.rx.free() < data.len() || socket.queue.len() >= MAX_QUEUED {
             return true;
         }
-        socket.rx.push(data);
+        if !socket.rx.write_free(0, data) {
+            return true;
+        }
+        socket.rx.commit(data.len());
         socket.queue.push_back((from, data.len()));
         if !self.woken.contains(&SocketId::Udp(id)) {
             self.woken.push(SocketId::Udp(id));

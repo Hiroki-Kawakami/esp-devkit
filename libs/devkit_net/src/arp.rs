@@ -46,6 +46,7 @@ pub(crate) struct Cache {
 
 impl Cache {
     /// On a miss, keeps `packet` (the latest one only) until the reply.
+    #[cfg_attr(CONFIG_DEVKIT_NET_IRAM_OPT, unsafe(link_section = ".iram1.devkit_net"))]
     pub fn resolve(&mut self, iface: IfaceId, ip: Ipv4Addr, now: Instant, packet: &[u8]) -> Resolve {
         if let Some(e) = self.find(iface, ip) {
             return match &mut e.state {
@@ -123,10 +124,23 @@ impl Cache {
         next
     }
 
+    /// What `poll` would return, without changing anything.
+    #[cfg_attr(CONFIG_DEVKIT_NET_IRAM_OPT, unsafe(link_section = ".iram1.devkit_net"))]
+    pub fn next_deadline(&self) -> Option<Instant> {
+        self.entries
+            .iter()
+            .map(|e| match e.state {
+                State::Resolving { next, .. } => next,
+                State::Resolved { expires, .. } => expires,
+            })
+            .min()
+    }
+
     pub fn forget_iface(&mut self, iface: IfaceId) {
         self.entries.retain(|e| e.iface != iface);
     }
 
+    #[cfg_attr(CONFIG_DEVKIT_NET_IRAM_OPT, unsafe(link_section = ".iram1.devkit_net"))]
     fn find(&mut self, iface: IfaceId, ip: Ipv4Addr) -> Option<&mut Entry> {
         self.entries.iter_mut().find(|e| e.iface == iface && e.ip == ip)
     }

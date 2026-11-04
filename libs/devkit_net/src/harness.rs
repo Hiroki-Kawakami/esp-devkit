@@ -35,6 +35,7 @@ pub(crate) struct Net {
     wires: Vec<Wire>,
     in_flight: Vec<InFlight>,
     loss: Option<Box<dyn FnMut(&[u8]) -> bool>>,
+    busy: Option<Box<dyn FnMut(&[u8]) -> bool>>,
 }
 
 impl Net {
@@ -46,12 +47,18 @@ impl Net {
             wires: Vec::new(),
             in_flight: Vec::new(),
             loss: None,
+            busy: None,
         }
     }
 
     /// Frames for which `drop` returns true are lost on the wire.
     pub fn set_loss(&mut self, drop: impl FnMut(&[u8]) -> bool + 'static) {
         self.loss = Some(Box::new(drop));
+    }
+
+    /// Frames for which `refuse` returns true are refused by the sending link.
+    pub fn set_busy(&mut self, refuse: impl FnMut(&[u8]) -> bool + 'static) {
+        self.busy = Some(Box::new(refuse));
     }
 
     pub fn add_stack(&mut self, stack: Stack) -> usize {
@@ -70,8 +77,9 @@ impl Net {
     pub fn with<R>(&mut self, i: usize, f: impl FnOnce(&mut Stack, Instant, &mut dyn FnMut(IfaceId, &[u8]) -> bool) -> R) -> R {
         let mut out = Vec::new();
         let wires = &self.wires;
+        let busy = &mut self.busy;
         let result = f(&mut self.stacks[i], self.now, &mut |iface, frame| {
-            let wired = peer(wires, (i, iface)).is_some();
+            let wired = peer(wires, (i, iface)).is_some() && !busy.as_mut().is_some_and(|refuse| refuse(frame));
             if wired {
                 out.push((iface, frame.to_vec()));
             }
@@ -85,7 +93,9 @@ impl Net {
 
     /// Sends `frame` out of `from` as the stack itself would.
     pub fn send(&mut self, from: End, frame: &[u8]) {
-        self.with(from.0, |stack, _, tx| stack.emit(from.1, frame, tx));
+        self.with(from.0, |stack, _, tx| {
+            let _ = stack.emit(from.1, frame, tx);
+        });
     }
 
     /// Runs every stack and wire until `deadline`, jumping between events.

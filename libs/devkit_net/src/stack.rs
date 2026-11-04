@@ -51,6 +51,8 @@ pub(crate) enum SocketId {
 pub struct IfaceStats {
     pub rx_frames: u32,
     pub rx_dropped: u32,
+    /// Frames the link handed over while the stack's queue was full.
+    pub rx_overflow: u32,
     pub tx_frames: u32,
     pub tx_dropped: u32,
 }
@@ -225,6 +227,7 @@ impl Stack {
         self.iface(id).stats
     }
 
+    #[cfg_attr(CONFIG_DEVKIT_NET_IRAM_OPT, unsafe(link_section = ".iram1.devkit_net"))]
     pub fn receive(&mut self, id: IfaceId, frame: &[u8], now: Instant, tx: &mut Tx) {
         let iface = self.iface_mut(id);
         let header = iface.header_len();
@@ -269,6 +272,20 @@ impl Stack {
         if self.loopback.is_empty() { next } else { Some(now) }
     }
 
+    /// The earliest time `poll` has work, without doing it.
+    #[cfg_attr(CONFIG_DEVKIT_NET_IRAM_OPT, unsafe(link_section = ".iram1.devkit_net"))]
+    pub(crate) fn next_deadline(&self) -> Option<Instant> {
+        if !self.loopback.is_empty() {
+            return Some(Instant::ZERO);
+        }
+        let announce = self.ifaces.iter().filter(|i| i.announce > 0).map(|i| i.announce_at).min();
+        [self.arp.next_deadline(), announce, self.frag.next_deadline(), self.tcp_next_deadline()]
+            .into_iter()
+            .flatten()
+            .min()
+    }
+
+    #[inline(always)]
     pub(crate) fn send_ipv4(
         &mut self,
         src: Option<Ipv4Addr>,
@@ -293,6 +310,7 @@ impl Stack {
     }
 
     /// `src` defaults to the interface's address.
+    #[inline(always)]
     pub(crate) fn send_ipv4_on(
         &mut self,
         id: IfaceId,
@@ -324,21 +342,25 @@ impl Stack {
         let ip = Ipv4 { src, dst, protocol, ttl: DEFAULT_TTL, ident: self.ident, frag: 0 };
         ip.write_header(&mut buf[header..], len);
         fill(&mut buf[header + IPV4_HEADER..], src);
-        match medium {
+        let sent = match medium {
             Medium::Ip => self.emit(id, &buf, tx),
             Medium::Ethernet if broadcast => self.emit_ethernet(id, BROADCAST_MAC, ETHERTYPE_IPV4, &mut buf, tx),
             Medium::Ethernet => match self.arp.resolve(id, next_hop, now, &buf[header..]) {
                 Resolve::Known(mac) => self.emit_ethernet(id, mac, ETHERTYPE_IPV4, &mut buf, tx),
                 Resolve::Refresh(mac) => {
-                    self.emit_ethernet(id, mac, ETHERTYPE_IPV4, &mut buf, tx);
+                    let sent = self.emit_ethernet(id, mac, ETHERTYPE_IPV4, &mut buf, tx);
                     self.send_arp_to(id, mac, next_hop, tx);
+                    sent
                 }
-                Resolve::Request => self.send_arp_request(id, next_hop, tx),
-                Resolve::Waiting => {}
+                Resolve::Request => {
+                    self.send_arp_request(id, next_hop, tx);
+                    true
+                }
+                Resolve::Waiting => true,
             },
-        }
+        };
         self.buf = buf;
-        Ok(())
+        if sent { Ok(()) } else { Err(Error::WouldBlock) }
     }
 
     /// RFC 5227: asks who has `address` without claiming it. Answers and
@@ -360,6 +382,8 @@ impl Stack {
         mem::take(&mut iface.conflict)
     }
 
+    #[cold]
+    #[inline(never)]
     fn arp_input(&mut self, id: IfaceId, p: &[u8], now: Instant, tx: &mut Tx) {
         let Some(arp) = Arp::parse(p) else { return };
         let iface = self.iface_mut(id);
@@ -380,7 +404,7 @@ impl Stack {
             buf.clear();
             buf.resize(ETHERNET_HEADER, 0);
             buf.extend_from_slice(&packet);
-            self.emit_ethernet(id, arp.sha, ETHERTYPE_IPV4, &mut buf, tx);
+            let _ = self.emit_ethernet(id, arp.sha, ETHERTYPE_IPV4, &mut buf, tx);
             self.buf = buf;
         }
         if for_us && arp.op == ARP_REQUEST {
@@ -429,19 +453,21 @@ impl Stack {
         buf.clear();
         buf.resize(ETHERNET_HEADER + ARP_LEN, 0);
         arp.write(&mut buf[ETHERNET_HEADER..]);
-        self.emit_ethernet(id, dst, ETHERTYPE_ARP, &mut buf, tx);
+        let _ = self.emit_ethernet(id, dst, ETHERTYPE_ARP, &mut buf, tx);
         self.buf = buf;
     }
 
     /// `buf` holds the payload after room for the header.
-    fn emit_ethernet(&mut self, id: IfaceId, dst: Mac, ethertype: u16, buf: &mut Vec<u8>, tx: &mut Tx) {
+    #[cfg_attr(CONFIG_DEVKIT_NET_IRAM_OPT, unsafe(link_section = ".iram1.devkit_net"))]
+    fn emit_ethernet(&mut self, id: IfaceId, dst: Mac, ethertype: u16, buf: &mut Vec<u8>, tx: &mut Tx) -> bool {
         Ethernet::write_header(buf, dst, self.iface(id).info.mac, ethertype);
         if buf.len() < ETHERNET_MIN_FRAME {
             buf.resize(ETHERNET_MIN_FRAME, 0);
         }
-        self.emit(id, buf, tx);
+        self.emit(id, buf, tx)
     }
 
+    #[cfg_attr(CONFIG_DEVKIT_NET_IRAM_OPT, unsafe(link_section = ".iram1.devkit_net"))]
     fn ipv4_input(&mut self, id: IfaceId, p: &[u8], now: Instant, tx: &mut Tx) {
         let Some((ip, payload)) = Ipv4::parse(p) else { return };
         if !self.valid_source(id, ip.src) {
@@ -484,6 +510,7 @@ impl Stack {
 
     /// RFC 1122 3.2.1.3: no host sends from a broadcast or multicast address,
     /// and 127/8 never arrives from outside.
+    #[cfg_attr(CONFIG_DEVKIT_NET_IRAM_OPT, unsafe(link_section = ".iram1.devkit_net"))]
     fn valid_source(&self, id: IfaceId, src: Ipv4Addr) -> bool {
         if src.is_broadcast() || src.is_multicast() || src.octets()[0] >= 240 {
             return false;
@@ -500,11 +527,13 @@ impl Stack {
         self.route_v4(dst).map(|(id, _)| self.iface(id).info.mtu - IPV4_HEADER)
     }
 
+    #[cfg_attr(CONFIG_DEVKIT_NET_IRAM_OPT, unsafe(link_section = ".iram1.devkit_net"))]
     pub(crate) fn is_own_address(&self, ip: Ipv4Addr) -> bool {
         self.ifaces.iter().any(|i| i.ipv4.is_some_and(|c| c.address == ip))
     }
 
     /// The interface and next hop for `dst`.
+    #[cfg_attr(CONFIG_DEVKIT_NET_IRAM_OPT, unsafe(link_section = ".iram1.devkit_net"))]
     pub(crate) fn route_v4(&self, dst: Ipv4Addr) -> Option<(IfaceId, Ipv4Addr)> {
         if dst.is_loopback() || self.is_own_address(dst) {
             return Some((IfaceId::LOOPBACK, dst));
@@ -523,7 +552,9 @@ impl Stack {
         configured().find_map(|(id, c)| c.gateway.map(|gateway| (id, gateway)))
     }
 
-    pub(crate) fn emit(&mut self, id: IfaceId, frame: &[u8], tx: &mut Tx) {
+    #[cfg_attr(CONFIG_DEVKIT_NET_IRAM_OPT, unsafe(link_section = ".iram1.devkit_net"))]
+    /// `false` when the frame was dropped.
+    pub(crate) fn emit(&mut self, id: IfaceId, frame: &[u8], tx: &mut Tx) -> bool {
         let loopback_full = self.loopback.len() >= LOOPBACK_QUEUE;
         let iface = self.iface_mut(id);
         let sent = if !iface.up {
@@ -535,12 +566,13 @@ impl Stack {
         };
         if !sent {
             iface.stats.tx_dropped += 1;
-            return;
+            return false;
         }
         iface.stats.tx_frames += 1;
         if id == IfaceId::LOOPBACK {
             self.loopback.push_back(frame.to_vec());
         }
+        true
     }
 
     fn iface(&self, id: IfaceId) -> &Iface {

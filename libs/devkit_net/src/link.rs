@@ -37,13 +37,16 @@ pub trait Link: Send + Sync {
     /// link state go to `rx` from then on.
     fn attach(&self, rx: LinkRx);
     /// `frame` is only borrowed for the call. May block until the link has
-    /// room, which stalls the whole stack meanwhile.
+    /// room, which stalls the whole stack meanwhile. After a `Busy`, a link
+    /// that can tell calls `LinkRx::tx_ready` once it has room again; senders
+    /// waiting on the others retry on a short timer.
     fn transmit(&self, frame: &[u8]) -> Result<(), TxError>;
 }
 
 pub(crate) trait RxSink: Send + Sync {
     fn deliver(&self, frame: RxFrame) -> bool;
     fn set_up(&self, up: bool);
+    fn tx_ready(&self);
 }
 
 /// The stack's side of a link, for the link's own tasks.
@@ -64,6 +67,13 @@ impl LinkRx {
     /// The link starts down.
     pub fn set_up(&self, up: bool) {
         self.0.set_up(up);
+    }
+
+    /// Not from an interrupt. Cheap when nobody waits, so it may be called
+    /// for every frame sent.
+    #[cfg_attr(CONFIG_DEVKIT_NET_IRAM_OPT, unsafe(link_section = ".iram1.devkit_net"))]
+    pub fn tx_ready(&self) {
+        self.0.tx_ready();
     }
 }
 

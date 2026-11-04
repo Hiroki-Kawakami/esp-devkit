@@ -15,7 +15,7 @@ use crate::{IfaceId, IfaceStats, Instant, LinkInfo, LinkRx, Medium, RxFrame, Sta
 const ETH: LinkInfo = LinkInfo { medium: Medium::Ethernet, mac: [0x02, 0, 0, 0, 0, 1], mtu: 1500 };
 
 fn stats(rx_frames: u32, rx_dropped: u32, tx_frames: u32, tx_dropped: u32) -> IfaceStats {
-    IfaceStats { rx_frames, rx_dropped, tx_frames, tx_dropped }
+    IfaceStats { rx_frames, rx_dropped, rx_overflow: 0, tx_frames, tx_dropped }
 }
 
 #[test]
@@ -145,6 +145,8 @@ impl RxSink for Sink {
     fn set_up(&self, up: bool) {
         *self.up.lock().unwrap() = Some(up);
     }
+
+    fn tx_ready(&self) {}
 }
 
 #[test]

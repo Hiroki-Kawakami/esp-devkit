@@ -44,5 +44,6 @@ pub use tcp_socket::{Shutdown, TcpBuilder, TcpListener, TcpReader, TcpStream, Tc
 pub use time::Instant;
 pub use udp_socket::{UdpBuilder, UdpSocket};
 pub use wifi::{
-    Auth, BoxFuture, ConnectError, DisconnectReason, StaConfig, Wifi, WifiDriver, WifiEvents, WifiState, register_wifi, wifi,
+    Auth, BoxFuture, ConnectError, DisconnectReason, PowerSave, StaConfig, Wifi, WifiDriver, WifiEvents, WifiState,
+    register_wifi, wifi,
 };

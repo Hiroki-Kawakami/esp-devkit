@@ -9,7 +9,7 @@ use core::time::Duration;
 use idf::executor;
 use idf::heap::Caps;
 
-use crate::net::{self, Net, wait_for};
+use crate::net::{self, Net, retry_while_busy, wait_for};
 use crate::stack::{IfaceId, SocketId};
 use crate::{Error, Result};
 
@@ -91,7 +91,8 @@ impl UdpSocket {
 
     /// Hands the datagram to the link before returning. `Ok` does not mean it
     /// left: one waiting for address resolution is dropped if the resolution
-    /// fails or another datagram to the same host replaces it.
+    /// fails or another datagram to the same host replaces it. `WouldBlock`
+    /// when the link had no room for it.
     pub fn send_to(&self, buf: &[u8], addr: SocketAddr) -> Result<usize> {
         let addr = v4(addr)?;
         let now = net::now();
@@ -102,6 +103,17 @@ impl UdpSocket {
     pub fn send(&self, buf: &[u8]) -> Result<usize> {
         let peer = self.peer_addr()?;
         self.send_to(buf, peer)
+    }
+
+    /// As `send_to`, waiting while the link has no room instead of failing
+    /// with `WouldBlock`.
+    pub async fn send_to_async(&self, buf: &[u8], addr: SocketAddr) -> Result<usize> {
+        retry_while_busy(self.net, || self.send_to(buf, addr)).await
+    }
+
+    pub async fn send_async(&self, buf: &[u8]) -> Result<usize> {
+        let peer = self.peer_addr()?;
+        self.send_to_async(buf, peer).await
     }
 
     /// The rest of a datagram longer than `buf` is dropped.

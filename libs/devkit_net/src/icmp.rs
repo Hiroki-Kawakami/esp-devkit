@@ -65,6 +65,8 @@ impl Limiter {
 }
 
 impl Stack {
+    #[cold]
+    #[inline(never)]
     pub(crate) fn icmp_input(&mut self, ip: &Ipv4, unicast: bool, p: &[u8], now: Instant, tx: &mut Tx) {
         if p.len() < 8 || checksum(sum(p, 0)) != 0 {
             return;
@@ -107,6 +109,8 @@ impl Stack {
 
     /// Tells the sender of `ip` that nothing took it. Never about a broadcast,
     /// an unspecified sender or another ICMP error, and at most ten a second.
+    #[cold]
+    #[inline(never)]
     pub(crate) fn send_unreachable(&mut self, ip: &Ipv4, payload: &[u8], code: u8, now: Instant, tx: &mut Tx) {
         if ip.src.is_unspecified() || !self.icmp_limit.take(now) {
             return;

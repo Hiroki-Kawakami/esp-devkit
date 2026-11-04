@@ -25,7 +25,8 @@ constexpr size_t kBufSize = 16 * 1024;
 std::atomic<bool> s_started{false};
 
 uint8_t* alloc_buf() {
-    auto* buf = static_cast<uint8_t*>(heap_caps_malloc(kBufSize, MALLOC_CAP_SPIRAM));
+    auto* buf = static_cast<uint8_t*>(
+        heap_caps_malloc_prefer(kBufSize, 2, MALLOC_CAP_SPIRAM, MALLOC_CAP_DEFAULT));
     assert(buf);
     return buf;
 }

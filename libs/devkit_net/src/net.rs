@@ -9,7 +9,7 @@ use alloc::vec::Vec;
 use core::future::{Future, pending, poll_fn};
 use core::net::Ipv4Addr;
 use core::pin::pin;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use core::task::{Poll, Waker};
 use core::time::Duration;
 
@@ -20,11 +20,12 @@ use idf::thread::Builder;
 
 use crate::dhcp;
 use crate::link::{Link, LinkRx, RxFrame, RxSink};
-use crate::stack::{IfaceId, Ipv4Config, SocketId, Stack, Tx};
+use crate::stack::{IfaceId, IfaceStats, Ipv4Config, SocketId, Stack, Tx};
 use crate::time::Instant;
 use crate::{Error, Result};
 
 const RX_QUEUE: usize = 64;
+const TX_RETRY: Duration = Duration::from_millis(1);
 
 #[derive(Clone, Copy, Debug)]
 pub struct Config {
@@ -72,28 +73,53 @@ pub(crate) struct Inner {
     pub modes: Vec<Ipv4Mode>,
     /// The address DHCP last held on each interface, to ask for again.
     pub dhcp_last: Vec<Option<Ipv4Addr>>,
+    overflow: Vec<Option<Arc<AtomicU32>>>,
     waiters: Vec<(SocketId, Waker)>,
     kick: &'static Signal<()>,
+    /// When the stack's task wakes next by itself; `None` only on events.
+    runner_deadline: Option<Instant>,
+    link_waiting: &'static AtomicBool,
 }
 
 impl Inner {
-    /// For calls from applications: the stack's task looks at its timers
-    /// again afterwards.
+    /// For calls from applications: wakes the stack's task only when they
+    /// brought a timer forward.
+    #[cfg_attr(CONFIG_DEVKIT_NET_IRAM_OPT, unsafe(link_section = ".iram1.devkit_net"))]
     pub fn with_tx<R>(&mut self, f: impl FnOnce(&mut Stack, &mut Tx) -> R) -> R {
         let result = self.drive(f);
-        self.kick.signal(());
+        if let Some(due) = self.stack.next_deadline()
+            && self.runner_deadline.is_none_or(|planned| due < planned)
+        {
+            self.runner_deadline = Some(due);
+            self.kick.signal(());
+        }
         result
     }
 
+    #[cfg_attr(CONFIG_DEVKIT_NET_IRAM_OPT, unsafe(link_section = ".iram1.devkit_net"))]
     fn drive<R>(&mut self, f: impl FnOnce(&mut Stack, &mut Tx) -> R) -> R {
         let links = &self.links;
         let result = f(&mut self.stack, &mut |id, frame| {
             links.get(id.index()).copied().flatten().is_some_and(|l| l.transmit(frame).is_ok())
         });
         self.wake();
+        self.note_link_waiting();
         result
     }
 
+    fn note_link_waiting(&self) {
+        self.link_waiting.store(self.stack.tcp_link_waiting(), Ordering::Release);
+    }
+
+    pub fn stats(&self, id: IfaceId) -> IfaceStats {
+        let mut stats = self.stack.stats(id);
+        if let Some(Some(overflow)) = self.overflow.get(id.index()) {
+            stats.rx_overflow = overflow.load(Ordering::Relaxed);
+        }
+        stats
+    }
+
+    #[cfg_attr(CONFIG_DEVKIT_NET_IRAM_OPT, unsafe(link_section = ".iram1.devkit_net"))]
     pub fn wake(&mut self) {
         for socket in self.stack.woken.drain(..) {
             self.waiters.retain(|(s, w)| {
@@ -125,6 +151,10 @@ pub(crate) struct Net {
     kick: &'static Signal<()>,
     rx: Sender<(IfaceId, RxFrame)>,
     rx_queue: Mutex<Option<Receiver<(IfaceId, RxFrame)>>>,
+    tx_wanted: AtomicBool,
+    tx_waiters: Mutex<Vec<Waker>>,
+    link_waiting: &'static AtomicBool,
+    link_ready: AtomicBool,
 }
 
 static GLOBAL: LazyLock<Net> = LazyLock::new(Net::new);
@@ -168,6 +198,39 @@ pub(crate) async fn wait_for<T>(net: &Net, socket: SocketId, mut f: impl FnMut(&
     }
 }
 
+/// Calls `f` until it returns anything but `WouldBlock`, waiting in between
+/// for a link to have room.
+pub(crate) async fn retry_while_busy<T>(net: &Net, mut f: impl FnMut() -> Result<T>) -> Result<T> {
+    loop {
+        match f() {
+            Err(Error::WouldBlock) => {}
+            other => return other,
+        }
+        let waker = current_waker().await;
+        {
+            let mut waiters = net.tx_waiters.lock();
+            if !waiters.iter().any(|w| w.will_wake(&waker)) {
+                waiters.push(waker);
+            }
+            net.tx_wanted.store(true, Ordering::Release);
+        }
+        match f() {
+            Err(Error::WouldBlock) => {}
+            other => return other,
+        }
+        let mut notified = pin!(woken());
+        let mut timer = pin!(executor::sleep(TX_RETRY));
+        poll_fn(|cx| {
+            if notified.as_mut().poll(cx).is_ready() || timer.as_mut().poll(cx).is_ready() {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        })
+        .await;
+    }
+}
+
 /// Resolves on the first poll after it was woken, or spuriously.
 async fn woken() {
     let mut first = true;
@@ -189,11 +252,34 @@ async fn current_waker() -> Waker {
 struct Sink {
     net: &'static Net,
     id: IfaceId,
+    overflow: Arc<AtomicU32>,
 }
 
 impl RxSink for Sink {
+    #[cfg_attr(CONFIG_DEVKIT_NET_IRAM_OPT, unsafe(link_section = ".iram1.devkit_net"))]
     fn deliver(&self, frame: RxFrame) -> bool {
-        self.net.started.load(Ordering::Acquire) && self.net.rx.try_send((self.id, frame)).is_ok()
+        if !self.net.started.load(Ordering::Acquire) {
+            return false;
+        }
+        let queued = self.net.rx.try_send((self.id, frame)).is_ok();
+        if !queued {
+            self.overflow.fetch_add(1, Ordering::Relaxed);
+        }
+        queued
+    }
+
+    #[cfg_attr(CONFIG_DEVKIT_NET_IRAM_OPT, unsafe(link_section = ".iram1.devkit_net"))]
+    fn tx_ready(&self) {
+        if self.net.link_waiting.load(Ordering::Acquire) && !self.net.link_ready.swap(true, Ordering::AcqRel) {
+            self.net.kick.signal(());
+        }
+        if !self.net.tx_wanted.swap(false, Ordering::AcqRel) {
+            return;
+        }
+        let waiters = core::mem::take(&mut *self.net.tx_waiters.lock());
+        for waker in waiters {
+            waker.wake();
+        }
     }
 
     fn set_up(&self, up: bool) {
@@ -205,13 +291,17 @@ impl Net {
     pub fn new() -> Self {
         let kick: &'static Signal<()> = Box::leak(Box::new(Signal::new(&CRITICAL)));
         let (rx, rx_queue) = executor::channel(RX_QUEUE);
+        let link_waiting: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
         let inner = Inner {
             stack: Stack::new(),
             links: Vec::new(),
             modes: Vec::new(),
             dhcp_last: Vec::new(),
+            overflow: Vec::new(),
             waiters: Vec::new(),
             kick,
+            runner_deadline: None,
+            link_waiting,
         };
         Self {
             config: OnceLock::new(),
@@ -220,6 +310,10 @@ impl Net {
             kick,
             rx,
             rx_queue: Mutex::new(Some(rx_queue)),
+            tx_wanted: AtomicBool::new(false),
+            tx_waiters: Mutex::new(Vec::new()),
+            link_waiting,
+            link_ready: AtomicBool::new(false),
         }
     }
 
@@ -255,10 +349,13 @@ impl Net {
             inner.links.resize(index + 1, None);
             inner.modes.resize(index + 1, Ipv4Mode::Off);
             inner.dhcp_last.resize(index + 1, None);
+            inner.overflow.resize(index + 1, None);
         }
         inner.links[index] = Some(link);
+        let overflow = Arc::new(AtomicU32::new(0));
+        inner.overflow[index] = Some(overflow.clone());
         drop(inner);
-        link.attach(LinkRx::new(Arc::new(Sink { net: self, id })));
+        link.attach(LinkRx::new(Arc::new(Sink { net: self, id, overflow })));
         id
     }
 
@@ -272,12 +369,17 @@ impl Net {
         self.kick();
     }
 
+    #[cfg_attr(CONFIG_DEVKIT_NET_IRAM_OPT, unsafe(link_section = ".iram1.devkit_net"))]
     pub fn receive(&self, id: IfaceId, frame: &[u8], now: Instant) {
         self.lock().drive(|stack, tx| stack.receive(id, frame, now, tx));
     }
 
+    /// Also records when the stack's task will look again.
     pub fn poll(&self, now: Instant) -> Option<Instant> {
-        self.lock().drive(|stack, tx| stack.poll(now, tx))
+        let mut inner = self.lock();
+        let next = inner.drive(|stack, tx| stack.poll(now, tx));
+        inner.runner_deadline = next;
+        next
     }
 
     pub fn start(&'static self, config: Config) -> Result<()> {
@@ -338,6 +440,9 @@ async fn run(net: &'static Net) {
         net.supervise_dhcp(&spawner, &mut clients);
         while let Some((id, frame)) = rx.try_recv() {
             net.receive(id, &frame, now());
+        }
+        if net.link_ready.swap(false, Ordering::AcqRel) {
+            net.lock().drive(|stack, tx| stack.tcp_link_ready(now(), tx));
         }
         let next = net.poll(now());
         let wait = next.map(|at| at.saturating_duration_since(now()));

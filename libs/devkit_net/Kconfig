@@ -7,4 +7,12 @@ config DEVKIT_NET_WIFI
     help
         Registers the chip's own Wi-Fi as the station interface "sta".
 
+config DEVKIT_NET_IRAM_OPT
+    bool "Place the per-packet path in IRAM"
+    default n
+    help
+        Runs the code every frame goes through from internal RAM instead of
+        flash, at the cost of that much heap. Worth it where flash cache
+        misses dominate, as on chips with a small instruction cache.
+
 endmenu

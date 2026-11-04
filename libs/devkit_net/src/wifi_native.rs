@@ -17,7 +17,7 @@ use idf::time::Instant;
 use idf::{Error, Result, thread};
 
 use crate::link::{Link, LinkInfo, LinkRx, Medium, RxFrame, TxError};
-use crate::wifi::{Auth, BoxFuture, DisconnectReason, StaConfig, WifiDriver, WifiEvents, WifiState, offload};
+use crate::wifi::{Auth, BoxFuture, DisconnectReason, PowerSave, StaConfig, WifiDriver, WifiEvents, WifiState, offload};
 
 #[allow(
     dead_code,
@@ -44,6 +44,7 @@ static NATIVE: Native = Native;
 static LINK_RX: OnceLock<LinkRx> = OnceLock::new();
 static EVENTS: OnceLock<WifiEvents> = OnceLock::new();
 static RADIO: Mutex<bool> = Mutex::new(false);
+static POWER_SAVE: Mutex<PowerSave> = Mutex::new(PowerSave::Min);
 static STARTED: AtomicBool = AtomicBool::new(false);
 static UP: AtomicBool = AtomicBool::new(false);
 
@@ -68,24 +69,25 @@ impl Link for Sta {
         let _ = LINK_RX.set(rx);
     }
 
+    #[cfg_attr(CONFIG_DEVKIT_NET_IRAM_OPT, unsafe(link_section = ".iram1.devkit_net"))]
     fn transmit(&self, frame: &[u8]) -> core::result::Result<(), TxError> {
         if !UP.load(Ordering::Acquire) {
             return Err(TxError::Down);
         }
         let len = u16::try_from(frame.len()).map_err(|_| TxError::Busy)?;
-        match unsafe { ffi::esp_wifi_internal_tx(ffi::wifi_interface_t_WIFI_IF_STA, frame.as_ptr().cast_mut().cast(), len) } {
-            0 => Ok(()),
-            _ => Err(TxError::Busy),
-        }
+        let sent = unsafe { ffi::esp_wifi_internal_tx(ffi::wifi_interface_t_WIFI_IF_STA, frame.as_ptr().cast_mut().cast(), len) };
+        if sent == 0 { Ok(()) } else { Err(TxError::Busy) }
     }
 }
 
+#[cfg_attr(CONFIG_DEVKIT_NET_IRAM_OPT, unsafe(link_section = ".iram1.devkit_net"))]
 unsafe fn release(_: NonNull<u8>, _: usize, eb: usize) {
     unsafe { ffi::esp_wifi_internal_free_rx_buffer(eb as *mut c_void) };
 }
 
 /// On the Wi-Fi task. The frame stays in the driver's buffer until the stack
 /// has processed it.
+#[cfg_attr(CONFIG_DEVKIT_NET_IRAM_OPT, unsafe(link_section = ".iram1.devkit_net"))]
 unsafe extern "C" fn on_rx(buffer: *mut c_void, len: u16, eb: *mut c_void) -> ffi::esp_err_t {
     let (Some(rx), Some(data)) = (LINK_RX.get(), NonNull::new(buffer.cast::<u8>())) else {
         unsafe { ffi::esp_wifi_internal_free_rx_buffer(eb) };
@@ -93,6 +95,14 @@ unsafe extern "C" fn on_rx(buffer: *mut c_void, len: u16, eb: *mut c_void) -> ff
     };
     rx.deliver(unsafe { RxFrame::from_raw(data, usize::from(len), eb as usize, release) });
     0
+}
+
+/// On the Wi-Fi task, for every frame sent.
+#[cfg_attr(CONFIG_DEVKIT_NET_IRAM_OPT, unsafe(link_section = ".iram1.devkit_net"))]
+unsafe extern "C" fn on_tx_done(_: u8, _: *mut u8, _: *mut u16, _: bool) {
+    if let Some(rx) = LINK_RX.get() {
+        rx.tx_ready();
+    }
 }
 
 /// On the default event loop's task.
@@ -131,6 +141,15 @@ fn check(code: ffi::esp_err_t) -> Result<()> {
     Error::check(code)
 }
 
+fn apply_power_save(mode: PowerSave) -> Result<()> {
+    let ps = match mode {
+        PowerSave::None => ffi::wifi_ps_type_t_WIFI_PS_NONE,
+        PowerSave::Min => ffi::wifi_ps_type_t_WIFI_PS_MIN_MODEM,
+        PowerSave::Max => ffi::wifi_ps_type_t_WIFI_PS_MAX_MODEM,
+    };
+    check(unsafe { ffi::esp_wifi_set_ps(ps) })
+}
+
 fn start_radio() -> Result<()> {
     let mut started = RADIO.lock();
     if *started {
@@ -154,6 +173,8 @@ fn start_radio() -> Result<()> {
     check(unsafe { ffi::esp_wifi_set_mode(ffi::wifi_mode_t_WIFI_MODE_STA) })?;
     check(unsafe { ffi::esp_wifi_internal_reg_rxcb(ffi::wifi_interface_t_WIFI_IF_STA, Some(on_rx)) })?;
     check(unsafe { ffi::esp_wifi_start() })?;
+    check(unsafe { ffi::esp_wifi_set_tx_done_cb(Some(on_tx_done)) })?;
+    apply_power_save(*POWER_SAVE.lock())?;
     let deadline = Instant::now() + START_WAIT;
     while !STARTED.load(Ordering::Acquire) {
         if Instant::now() >= deadline {
@@ -212,6 +233,16 @@ impl WifiDriver for Native {
             channel: config.channel,
         };
         offload("wifi_join", move || join(&owned))
+    }
+
+    fn set_power_save(&self, mode: PowerSave) -> BoxFuture<'_, core::result::Result<(), i32>> {
+        offload("wifi_ps", move || {
+            *POWER_SAVE.lock() = mode;
+            if !*RADIO.lock() {
+                return Ok(());
+            }
+            apply_power_save(mode)
+        })
     }
 
     fn disconnect(&self) -> BoxFuture<'_, core::result::Result<(), i32>> {

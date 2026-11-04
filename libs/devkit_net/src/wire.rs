@@ -43,19 +43,52 @@ fn mac_at(b: &[u8], at: usize) -> Mac {
     b[at..at + 6].try_into().unwrap()
 }
 
-pub(crate) fn sum(data: &[u8], mut acc: u32) -> u32 {
-    let mut pairs = data.chunks_exact(2);
-    for p in &mut pairs {
-        acc += u32::from(u16::from_be_bytes([p[0], p[1]]));
+fn fold(mut acc: u64) -> u32 {
+    while acc > 0xffff_ffff {
+        acc = (acc & 0xffff_ffff) + (acc >> 32);
     }
-    if let [last] = pairs.remainder() {
-        acc += u32::from(*last) << 8;
+    acc as u32
+}
+
+fn fold16(acc: u32) -> u16 {
+    let mut acc = acc;
+    while acc > 0xffff {
+        acc = (acc & 0xffff) + (acc >> 16);
     }
-    acc
+    acc as u16
+}
+
+/// Adds `data` as big-endian 16-bit words to `acc`, for `checksum`. The bulk
+/// goes as aligned native words: the ones' complement sum of byte-swapped
+/// words is the byte-swapped sum (RFC 1071), so one swap at the end fixes it.
+#[cfg_attr(CONFIG_DEVKIT_NET_IRAM_OPT, unsafe(link_section = ".iram1.devkit_net"))]
+pub(crate) fn sum(data: &[u8], acc: u32) -> u32 {
+    let (head, words, tail) = unsafe { data.align_to::<u32>() };
+    let mut native = 0u32;
+    for chunk in words.chunks(16384) {
+        let mut part = 0u32;
+        for &w in chunk {
+            part += (w & 0xffff) + (w >> 16);
+        }
+        native = u32::from(fold16(native)) + u32::from(fold16(part));
+    }
+    let native = fold16(native);
+    let swapped = if cfg!(target_endian = "little") { native.swap_bytes() } else { native };
+    let bulk = if head.len() % 2 == 0 { swapped } else { swapped.swap_bytes() };
+    let mut total = u64::from(acc) + u64::from(bulk);
+    let mut add_bytes = |bytes: &[u8], from: usize| {
+        for (i, &b) in bytes.iter().enumerate() {
+            total += if (from + i) % 2 == 0 { u64::from(b) << 8 } else { u64::from(b) };
+        }
+    };
+    add_bytes(head, 0);
+    add_bytes(tail, head.len() + words.len() * 4);
+    fold(total)
 }
 
 /// The one's complement of the folded sum; 0 over data that carries a valid
 /// checksum.
+#[cfg_attr(CONFIG_DEVKIT_NET_IRAM_OPT, unsafe(link_section = ".iram1.devkit_net"))]
 pub(crate) fn checksum(acc: u32) -> u16 {
     let mut acc = acc;
     while acc > 0xffff {
@@ -72,6 +105,7 @@ pub(crate) struct Ethernet<'a> {
 }
 
 impl<'a> Ethernet<'a> {
+    #[cfg_attr(CONFIG_DEVKIT_NET_IRAM_OPT, unsafe(link_section = ".iram1.devkit_net"))]
     pub fn parse(frame: &'a [u8]) -> Option<Self> {
         if frame.len() < ETHERNET_HEADER {
             return None;
@@ -84,6 +118,7 @@ impl<'a> Ethernet<'a> {
         })
     }
 
+    #[cfg_attr(CONFIG_DEVKIT_NET_IRAM_OPT, unsafe(link_section = ".iram1.devkit_net"))]
     pub fn write_header(buf: &mut [u8], dst: Mac, src: Mac, ethertype: u16) {
         buf[0..6].copy_from_slice(&dst);
         buf[6..12].copy_from_slice(&src);
@@ -101,6 +136,7 @@ pub(crate) struct Arp {
 }
 
 impl Arp {
+    #[cfg_attr(CONFIG_DEVKIT_NET_IRAM_OPT, unsafe(link_section = ".iram1.devkit_net"))]
     pub fn parse(p: &[u8]) -> Option<Self> {
         if p.len() < ARP_LEN || be16(p, 0) != 1 || be16(p, 2) != ETHERTYPE_IPV4 || p[4] != 6 || p[5] != 4 {
             return None;
@@ -135,6 +171,7 @@ pub(crate) struct Ipv4 {
 impl Ipv4 {
     /// Checks the header and its checksum and cuts the payload to the total
     /// length, dropping link padding.
+    #[cfg_attr(CONFIG_DEVKIT_NET_IRAM_OPT, unsafe(link_section = ".iram1.devkit_net"))]
     pub fn parse(p: &[u8]) -> Option<(Self, &[u8])> {
         if p.len() < IPV4_HEADER || p[0] >> 4 != 4 {
             return None;
@@ -179,6 +216,7 @@ impl Ipv4 {
         usize::from(self.frag & 0x1fff) * 8
     }
 
+    #[cfg_attr(CONFIG_DEVKIT_NET_IRAM_OPT, unsafe(link_section = ".iram1.devkit_net"))]
     pub fn write_header(&self, p: &mut [u8], payload_len: usize) {
         p[0] = 0x45;
         p[1] = 0;

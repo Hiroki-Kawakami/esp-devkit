@@ -196,6 +196,22 @@ fn bulk_transfer_survives_loss() {
 }
 
 #[test]
+fn frames_the_link_refuses_go_again_without_retransmission() {
+    let (mut net, a, b) = pair();
+    let (c, s) = established(&mut net, a, b, buffers(16384, 16384), buffers(16384, 16384));
+    let mut n = 0;
+    net.set_busy(move |_| {
+        n += 1;
+        n % 4 == 0
+    });
+    let data = pattern(64 * 1024);
+    let took = transfer(&mut net, (a, c), (b, s), &data, Duration::from_secs(10));
+    let carried: usize = segments_from(&net, a).iter().map(|s| s.1).sum();
+    assert_eq!(carried, data.len());
+    assert!(took < Duration::from_millis(200), "{took:?}");
+}
+
+#[test]
 fn transfer_survives_random_loss_of_any_frame() {
     for seed in 1..=8u32 {
         let (mut net, a, b) = pair();

@@ -500,3 +500,31 @@ fn entry_in_use_is_refreshed_before_it_expires() {
     assert!(requests[1..].iter().all(|&dst| dst == MAC_B), "{requests:02x?}");
     assert!(requests.len() >= 2);
 }
+
+fn slow_sum(data: &[u8], acc: u32) -> u32 {
+    let mut acc = u64::from(acc);
+    let mut pairs = data.chunks_exact(2);
+    for p in &mut pairs {
+        acc += u64::from(u16::from_be_bytes([p[0], p[1]]));
+    }
+    if let [last] = pairs.remainder() {
+        acc += u64::from(*last) << 8;
+    }
+    while acc > 0xffff_ffff {
+        acc = (acc & 0xffff_ffff) + (acc >> 32);
+    }
+    acc as u32
+}
+
+#[test]
+fn fast_checksum_matches_the_plain_one() {
+    let data: Vec<u8> = (0..1600u32).map(|i| (i.wrapping_mul(2654435761) >> 13) as u8).collect();
+    for start in 0..8 {
+        for len in [0, 1, 2, 3, 7, 20, 41, 64, 1459, 1460, 1500] {
+            let slice = &data[start..start + len];
+            for acc in [0u32, 0x1234, 0xffff_0000] {
+                assert_eq!(checksum(sum(slice, acc)), checksum(slow_sum(slice, acc)), "start {start} len {len} acc {acc:x}");
+            }
+        }
+    }
+}

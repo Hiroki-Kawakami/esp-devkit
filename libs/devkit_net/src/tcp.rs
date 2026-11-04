@@ -39,6 +39,8 @@ const EPHEMERAL_FIRST: u16 = 49152;
 const MAX_WINDOW_SCALE: u8 = 14;
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(75);
 const KEEPALIVE_PROBES: u8 = 9;
+/// After the link had no room, when to try again if it never says so.
+const LINK_RETRY: Duration = Duration::from_millis(1);
 
 /// SipHash-2-4.
 fn siphash(k0: u64, k1: u64, data: &[u8]) -> u64 {
@@ -142,6 +144,7 @@ struct Assembler {
 
 impl Assembler {
     /// `false` when the range neither merges nor fits.
+    #[cfg_attr(CONFIG_DEVKIT_NET_IRAM_OPT, unsafe(link_section = ".iram1.devkit_net"))]
     fn add(&mut self, start: u32, end: u32) -> bool {
         let mut merged = (start, end);
         let mut kept = [(0u32, 0u32); 4];
@@ -193,6 +196,7 @@ struct Segment<'a> {
 }
 
 impl<'a> Segment<'a> {
+    #[cfg_attr(CONFIG_DEVKIT_NET_IRAM_OPT, unsafe(link_section = ".iram1.devkit_net"))]
     fn parse(ip: &Ipv4, p: &'a [u8]) -> Option<Self> {
         if p.len() < HEADER {
             return None;
@@ -239,6 +243,7 @@ impl<'a> Segment<'a> {
     }
 }
 
+#[cfg_attr(CONFIG_DEVKIT_NET_IRAM_OPT, unsafe(link_section = ".iram1.devkit_net"))]
 fn pseudo_sum(src: Ipv4Addr, dst: Ipv4Addr, len: usize) -> u32 {
     sum(&dst.octets(), sum(&src.octets(), 0)) + u32::from(PROTO_TCP) + len as u32
 }
@@ -287,6 +292,8 @@ pub(crate) struct Tcb {
     unacked_segments: u8,
     probe: bool,
     persist_at: Option<Instant>,
+    /// Set while output waits for the link to have room.
+    link_retry_at: Option<Instant>,
     max_window: u32,
     last_sent: Instant,
     keepalive: Option<Duration>,
@@ -309,9 +316,9 @@ impl Tcb {
         buffers: Buffers,
         rcv_mss: usize,
         iss: u32,
-    ) -> Result<Self> {
+    ) -> Self {
         let rcv_scale = (0..=MAX_WINDOW_SCALE).find(|s| (buffers.rx >> s) <= 0xffff).unwrap_or(MAX_WINDOW_SCALE);
-        Ok(Self {
+        Self {
             state,
             local,
             remote,
@@ -319,8 +326,8 @@ impl Tcb {
             released: false,
             error: None,
             soft_error: None,
-            rx: Ring::new(buffers.rx, buffers.caps)?,
-            tx: Ring::new(buffers.tx, buffers.caps)?,
+            rx: Ring::new(buffers.rx, buffers.caps),
+            tx: Ring::new(buffers.tx, buffers.caps),
             assembler: Assembler::default(),
             iss,
             snd_una: iss,
@@ -352,6 +359,7 @@ impl Tcb {
             unacked_segments: 0,
             probe: false,
             persist_at: None,
+            link_retry_at: None,
             max_window: 0,
             last_sent: Instant::ZERO,
             keepalive: None,
@@ -363,7 +371,7 @@ impl Tcb {
             dupacks: 0,
             recover: None,
             nodelay: false,
-        })
+        }
     }
 
     fn in_flight(&self) -> usize {
@@ -389,6 +397,7 @@ impl Tcb {
     }
 
     /// What the application may be waiting on.
+    #[cfg_attr(CONFIG_DEVKIT_NET_IRAM_OPT, unsafe(link_section = ".iram1.devkit_net"))]
     fn readiness(&self) -> (State, usize, usize, bool, bool) {
         (self.state, self.rx.len(), self.tx.free(), self.fin_received, self.error.is_some())
     }
@@ -411,6 +420,7 @@ impl Tcb {
 
     /// The window to advertise, in bytes, moving the right edge only by a
     /// worthwhile step.
+    #[cfg_attr(CONFIG_DEVKIT_NET_IRAM_OPT, unsafe(link_section = ".iram1.devkit_net"))]
     fn window(&mut self) -> u32 {
         if lt(self.rcv_adv, self.rcv_nxt) {
             self.rcv_adv = self.rcv_nxt;
@@ -467,8 +477,12 @@ impl Tcb {
         quiet.then(|| self.heard + idle + KEEPALIVE_INTERVAL * u32::from(self.keepalive_probes))
     }
 
+    #[cfg_attr(CONFIG_DEVKIT_NET_IRAM_OPT, unsafe(link_section = ".iram1.devkit_net"))]
     fn deadline(&self) -> Option<Instant> {
-        [self.retransmit_at, self.ack_at, self.persist_at, self.close_at, self.keepalive_at()].into_iter().flatten().min()
+        [self.retransmit_at, self.ack_at, self.persist_at, self.close_at, self.link_retry_at, self.keepalive_at()]
+            .into_iter()
+            .flatten()
+            .min()
     }
 }
 
@@ -535,6 +549,7 @@ impl Sockets {
 }
 
 impl Stack {
+    #[cfg_attr(CONFIG_DEVKIT_NET_IRAM_OPT, unsafe(link_section = ".iram1.devkit_net"))]
     fn wake(&mut self, socket: SocketId) {
         if !self.woken.contains(&socket) {
             self.woken.push(socket);
@@ -542,14 +557,15 @@ impl Stack {
     }
 
     /// Runs `f` on the connection taken out of its slot, so `f` may send.
+    #[cfg_attr(CONFIG_DEVKIT_NET_IRAM_OPT, unsafe(link_section = ".iram1.devkit_net"))]
     fn with_tcb<R>(&mut self, id: usize, f: impl FnOnce(&mut Stack, &mut Tcb) -> R) -> R {
         let mut tcb = self.tcp.tcbs[id].take().unwrap();
         let before = tcb.readiness();
         let result = f(self, &mut tcb);
         let changed = tcb.readiness() != before;
         if tcb.state == State::TimeWait && tcb.released && tcb.rx.capacity() + tcb.tx.capacity() > 0 {
-            tcb.rx = Ring::new(0, Caps::DEFAULT).unwrap();
-            tcb.tx = Ring::new(0, Caps::DEFAULT).unwrap();
+            tcb.rx = Ring::new(0, Caps::DEFAULT);
+            tcb.tx = Ring::new(0, Caps::DEFAULT);
         }
         let free = tcb.state == State::Closed && tcb.released;
         let listener = tcb.listener;
@@ -640,7 +656,7 @@ impl Stack {
             None => self.tcp.ephemeral()?,
         });
         let iss = self.tcp.isn(local, remote, now);
-        let mut tcb = Tcb::new(local, remote, State::SynSent, buffers, mss, iss)?;
+        let mut tcb = Tcb::new(local, remote, State::SynSent, buffers, mss, iss);
         tcb.cwnd = mss;
         let id = self.tcp.insert(tcb);
         self.with_tcb(id, |stack, tcb| stack.tcp_output(tcb, now, tx));
@@ -697,6 +713,7 @@ impl Stack {
     }
 
     /// `None` when nothing can be read yet; `Ok(0)` at the end of the stream.
+    #[cfg_attr(CONFIG_DEVKIT_NET_IRAM_OPT, unsafe(link_section = ".iram1.devkit_net"))]
     pub(crate) fn tcp_read(&mut self, id: usize, buf: &mut [u8], now: Instant, tx: &mut Tx) -> Option<Result<usize>> {
         self.with_tcb(id, |stack, tcb| {
             if tcb.rx.len() > 0 {
@@ -728,7 +745,7 @@ impl Stack {
             }
             let n = tcb.tx.push(data);
             if n == 0 {
-                return None;
+                return (tcb.tx.len() == 0).then_some(Err(Error::NoMemory));
             }
             stack.tcp_output(tcb, now, tx);
             Some(Ok(n))
@@ -781,6 +798,7 @@ impl Stack {
         tcb.close_with(None);
     }
 
+    #[cfg_attr(CONFIG_DEVKIT_NET_IRAM_OPT, unsafe(link_section = ".iram1.devkit_net"))]
     pub(crate) fn tcp_input(&mut self, ip: &Ipv4, unicast: bool, p: &[u8], now: Instant, tx: &mut Tx) {
         if !unicast {
             return;
@@ -810,6 +828,8 @@ impl Stack {
         }
     }
 
+    #[cold]
+    #[inline(never)]
     fn tcp_passive_open(
         &mut self,
         l: usize,
@@ -827,7 +847,7 @@ impl Stack {
         let buffers = listener.buffers;
         let Some(mss) = self.mtu_to(*remote.ip()) else { return };
         let iss = self.tcp.isn(local, remote, now);
-        let Ok(mut tcb) = Tcb::new(local, remote, State::SynReceived, buffers, mss - HEADER, iss) else { return };
+        let mut tcb = Tcb::new(local, remote, State::SynReceived, buffers, mss - HEADER, iss);
         tcb.listener = Some(l);
         tcb.on_syn(seg);
         let id = self.tcp.insert(tcb);
@@ -836,6 +856,8 @@ impl Stack {
 
     /// RFC 5927: only for a sequence number in flight. Nobody listening ends a
     /// handshake; anything else waits for the connection's own timeout.
+    #[cold]
+    #[inline(never)]
     pub(crate) fn tcp_icmp_error(
         &mut self,
         local: SocketAddrV4,
@@ -862,6 +884,8 @@ impl Stack {
         });
     }
 
+    #[cold]
+    #[inline(never)]
     fn send_reset(&mut self, local: SocketAddrV4, remote: SocketAddrV4, seg: &Segment, now: Instant, tx: &mut Tx) {
         let (seq, ack, flags) =
             if seg.flags & ACK != 0 { (seg.ack, 0, RST) } else { (0, seg.seq.wrapping_add(seg.len()), RST | ACK) };
@@ -871,6 +895,7 @@ impl Stack {
         });
     }
 
+    #[cfg_attr(CONFIG_DEVKIT_NET_IRAM_OPT, unsafe(link_section = ".iram1.devkit_net"))]
     fn tcp_process(&mut self, id: usize, tcb: &mut Tcb, seg: &Segment, now: Instant, tx: &mut Tx) {
         tcb.heard = now;
         tcb.keepalive_probes = 0;
@@ -1014,6 +1039,8 @@ impl Stack {
         self.tcp_output(tcb, now, tx);
     }
 
+    #[cold]
+    #[inline(never)]
     fn tcp_syn_sent(&mut self, tcb: &mut Tcb, seg: &Segment, now: Instant, tx: &mut Tx) {
         let ack_ok = lt(tcb.snd_una, seg.ack) && le(seg.ack, tcb.snd_max);
         if seg.flags & ACK != 0 && !ack_ok {
@@ -1050,6 +1077,7 @@ impl Stack {
         self.tcp_output(tcb, now, tx);
     }
 
+    #[cfg_attr(CONFIG_DEVKIT_NET_IRAM_OPT, unsafe(link_section = ".iram1.devkit_net"))]
     fn tcp_acked(&mut self, tcb: &mut Tcb, ack: u32, now: Instant, tx: &mut Tx) {
         let acked = ack.wrapping_sub(tcb.snd_una) as usize;
         if lt(tcb.tx_base, ack) {
@@ -1102,6 +1130,7 @@ impl Stack {
         }
     }
 
+    #[cfg_attr(CONFIG_DEVKIT_NET_IRAM_OPT, unsafe(link_section = ".iram1.devkit_net"))]
     fn tcp_data(&mut self, tcb: &mut Tcb, seg: &Segment, now: Instant) {
         let offset = seg.seq.wrapping_sub(tcb.rcv_nxt) as i32;
         let skip = (-offset).max(0) as usize;
@@ -1112,8 +1141,7 @@ impl Stack {
         let data = &seg.data[skip..];
         let start = offset.max(0) as usize;
         let end = (start + data.len()).min(tcb.rx.free());
-        if start < end {
-            tcb.rx.write_free(start, &data[..end - start]);
+        if start < end && tcb.rx.write_free(start, &data[..end - start]) {
             tcb.assembler.add(start as u32, end as u32);
         }
         let n = tcb.assembler.take_front();
@@ -1142,13 +1170,18 @@ impl Stack {
         }
     }
 
+    #[cfg_attr(CONFIG_DEVKIT_NET_IRAM_OPT, unsafe(link_section = ".iram1.devkit_net"))]
     fn tcp_output(&mut self, tcb: &mut Tcb, now: Instant, tx: &mut Tx) {
+        tcb.link_retry_at = None;
         match tcb.state {
             State::Closed => return,
             State::SynSent | State::SynReceived => {
                 if tcb.snd_nxt == tcb.iss {
                     let flags = if tcb.state == State::SynSent { SYN } else { SYN | ACK };
-                    self.send_tcp(tcb, tcb.iss, flags, 0, 0, now, tx);
+                    if !self.send_tcp(tcb, tcb.iss, flags, 0, 0, now, tx) {
+                        tcb.link_retry_at = Some(now + LINK_RETRY);
+                        return;
+                    }
                     tcb.advance(tcb.iss.wrapping_add(1));
                     if tcb.retries == 0 {
                         tcb.rtt_sample = Some((tcb.iss, now));
@@ -1182,7 +1215,10 @@ impl Stack {
             if fin {
                 flags |= FIN;
             }
-            self.send_tcp(tcb, tcb.snd_nxt, flags, offset, n, now, tx);
+            if !self.send_tcp(tcb, tcb.snd_nxt, flags, offset, n, now, tx) {
+                tcb.link_retry_at = Some(now + LINK_RETRY);
+                return;
+            }
             if tcb.rtt_sample.is_none() && n > 0 {
                 tcb.rtt_sample = Some((tcb.snd_nxt, now));
             }
@@ -1195,15 +1231,18 @@ impl Stack {
             tcb.retransmit_at.get_or_insert(now + tcb.rto);
         }
 
-        if tcb.ack_now {
-            self.send_tcp(tcb, tcb.snd_nxt, ACK, 0, 0, now, tx);
+        if tcb.ack_now && !self.send_tcp(tcb, tcb.snd_nxt, ACK, 0, 0, now, tx) {
+            tcb.link_retry_at = Some(now + LINK_RETRY);
         }
         if tcb.unsent() > 0 && tcb.in_flight() == 0 && tcb.persist_at.is_none() {
             tcb.persist_at = Some(now + tcb.rto);
         }
     }
 
-    fn send_tcp(&mut self, tcb: &mut Tcb, seq: u32, flags: u8, offset: usize, len: usize, now: Instant, tx: &mut Tx) {
+    /// `false` when the link had no room; anything else counts as sent and
+    /// is up to retransmission.
+    #[cfg_attr(CONFIG_DEVKIT_NET_IRAM_OPT, unsafe(link_section = ".iram1.devkit_net"))]
+    fn send_tcp(&mut self, tcb: &mut Tcb, seq: u32, flags: u8, offset: usize, len: usize, now: Instant, tx: &mut Tx) -> bool {
         let syn = flags & SYN != 0;
         let header = if syn { HEADER + SYN_OPTIONS } else { HEADER };
         let window = if syn {
@@ -1216,7 +1255,7 @@ impl Stack {
         let (mss, scale) = (tcb.rcv_mss, tcb.rcv_scale);
         let offer_scale = tcb.state == State::SynSent || tcb.scaling;
         let data = &tcb.tx;
-        let _ = self.send_ipv4(Some(*local.ip()), *remote.ip(), PROTO_TCP, header + len, now, tx, |out, src| {
+        let result = self.send_ipv4(Some(*local.ip()), *remote.ip(), PROTO_TCP, header + len, now, tx, |out, src| {
             write_header(out, local.port(), remote.port(), seq, ack, flags, window as u16, header);
             if syn {
                 out[20..24].copy_from_slice(&[2, 4, (mss >> 8) as u8, mss as u8]);
@@ -1225,6 +1264,9 @@ impl Stack {
             data.read_at(offset, &mut out[header..]);
             finish(out, src, *remote.ip());
         });
+        if result == Err(Error::WouldBlock) {
+            return false;
+        }
         if flags & ACK != 0 {
             tcb.ack_now = false;
             tcb.ack_at = None;
@@ -1233,6 +1275,25 @@ impl Stack {
         if len > 0 {
             tcb.last_sent = now;
         }
+        true
+    }
+
+    #[cfg_attr(CONFIG_DEVKIT_NET_IRAM_OPT, unsafe(link_section = ".iram1.devkit_net"))]
+    /// Runs output again on the connections that waited for link room.
+    pub(crate) fn tcp_link_ready(&mut self, now: Instant, tx: &mut Tx) {
+        for id in 0..self.tcp.tcbs.len() {
+            if self.tcp.tcbs[id].as_ref().is_some_and(|t| t.link_retry_at.is_some()) {
+                self.with_tcb(id, |stack, tcb| stack.tcp_output(tcb, now, tx));
+            }
+        }
+    }
+
+    pub(crate) fn tcp_link_waiting(&self) -> bool {
+        self.tcp.tcbs.iter().flatten().any(|t| t.link_retry_at.is_some())
+    }
+
+    pub(crate) fn tcp_next_deadline(&self) -> Option<Instant> {
+        self.tcp.tcbs.iter().flatten().filter_map(Tcb::deadline).min()
     }
 
     pub(crate) fn tcp_poll(&mut self, now: Instant, tx: &mut Tx) -> Option<Instant> {
@@ -1298,6 +1359,7 @@ impl Stack {
     }
 }
 
+#[cfg_attr(CONFIG_DEVKIT_NET_IRAM_OPT, unsafe(link_section = ".iram1.devkit_net"))]
 fn write_header(out: &mut [u8], src: u16, dst: u16, seq: u32, ack: u32, flags: u8, window: u16, header: usize) {
     put16(out, 0, src);
     put16(out, 2, dst);
@@ -1310,6 +1372,7 @@ fn write_header(out: &mut [u8], src: u16, dst: u16, seq: u32, ack: u32, flags: u
     put16(out, 18, 0);
 }
 
+#[cfg_attr(CONFIG_DEVKIT_NET_IRAM_OPT, unsafe(link_section = ".iram1.devkit_net"))]
 fn finish(out: &mut [u8], src: Ipv4Addr, dst: Ipv4Addr) {
     let c = checksum(sum(out, pseudo_sum(src, dst, out.len())));
     put16(out, 16, c);

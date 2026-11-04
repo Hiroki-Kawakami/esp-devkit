@@ -4,6 +4,7 @@
  */
 
 #![cfg_attr(not(test), no_std)]
+#![allow(unexpected_cfgs)]
 
 extern crate alloc;
 
@@ -22,6 +23,7 @@ use idf::thread::{self, Builder};
 use idf::time::Instant;
 
 mod net;
+mod netbench;
 
 mod ffi {
     #![allow(dead_code, non_camel_case_types, non_snake_case, non_upper_case_globals)]
@@ -38,6 +40,7 @@ pub extern "C" fn rust_hello_weight(byte: u8) -> u32 {
 }
 
 pub fn run() {
+    net::INT_FREE_AT_MAIN.store(heap::free_size(Caps::INTERNAL), core::sync::atomic::Ordering::Relaxed);
     let board = match bsp_rs::init(&bsp_rs::Config::default()) {
         Ok(board) => Some(board),
         Err(err) => {
@@ -45,7 +48,7 @@ pub fn run() {
             None
         }
     };
-    if let Err(err) = devkit_net::start(devkit_net::Config::default()) {
+    if let Err(err) = devkit_net::start(devkit_net::Config { task_core: Some(1), ..devkit_net::Config::default() }) {
         error!(TAG, "devkit_net::start: {err}");
     }
     if let Some(board) = &board {
@@ -141,6 +144,7 @@ pub fn run() {
         info!(TAG, "uptime={}ms", Instant::now().since_boot().as_millis());
 
         shared.spawn(net::join_saved());
+        netbench::start(&shared);
         net::serve_echo(&shared).await
     })
 }

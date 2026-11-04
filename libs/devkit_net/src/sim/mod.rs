@@ -15,7 +15,7 @@ use idf::sync::OnceLock;
 use idf::thread;
 
 use crate::link::{Link, LinkInfo, LinkRx, Medium, RxFrame, TxError};
-use crate::wifi::{BoxFuture, DisconnectReason, StaConfig, WifiDriver, WifiEvents, WifiState};
+use crate::wifi::{BoxFuture, DisconnectReason, PowerSave, StaConfig, WifiDriver, WifiEvents, WifiState};
 
 mod host;
 
@@ -106,6 +106,10 @@ impl WifiDriver for Radio {
             }
             Ok(())
         })
+    }
+
+    fn set_power_save(&self, _: PowerSave) -> BoxFuture<'_, Result<(), i32>> {
+        Box::pin(async { Ok(()) })
     }
 
     fn disconnect(&self) -> BoxFuture<'_, Result<(), i32>> {
