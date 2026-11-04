@@ -6,6 +6,7 @@
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::format;
+use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -16,16 +17,16 @@ use core::ptr::NonNull;
 use core::slice;
 
 use devkit_gfx::{Color, ImageFormat, Rect};
+use idf::executor::JoinHandle;
 use idf::heap::Caps;
 use idf::sync::OnceLock;
 
 use crate::app::Link;
 use crate::bump::Bump;
 use crate::component::{Animation, AnyHost, EventMap, Hook, Host, Property, RenderRequest, Requests, Screen, ScrollEdge, ScrollTarget, screen_host};
-use crate::element::{BuildContext, Content, Drag, Element, TaskSpec};
+use crate::element::{BuildContext, Content, Drag, Element};
 use crate::gesture::{Gestures, Tracker};
 use crate::id::Id;
-use crate::inbox::Token;
 use crate::external::ExternalSurface;
 use crate::keyboard::{InputKind, KeyboardMode, KeyboardPanel};
 use crate::erased::Erased;
@@ -35,6 +36,7 @@ use crate::node::{CanvasNode, CollectionNode, NONE, Node, NodeContent, NodeIndex
 use crate::presenter::{ROW_GRID, Strips};
 use crate::progress::ProgressNode;
 use crate::style::{Dimension, Insets, Role, ScreenStyle, State, Style};
+use crate::task::{Local, TaskSpec, TaskStart};
 use crate::text_buffer::TextInput;
 use crate::theme::{ColorMode, Theme};
 
@@ -69,6 +71,21 @@ pub(crate) struct Slot {
     /// Only for screens.
     pub(crate) phase: Option<Phase>,
     pub(crate) shown: Vec<Box<dyn Any>>,
+}
+
+/// A node's `.task`, and its future while the node is shown.
+struct NodeTask {
+    node: NodeIndex,
+    start: Box<dyn TaskStart>,
+    running: Option<JoinHandle<()>>,
+}
+
+impl Drop for NodeTask {
+    fn drop(&mut self) {
+        if let Some(running) = self.running.take() {
+            running.abort();
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -214,7 +231,8 @@ pub(crate) struct Tree {
     pub(crate) slots: Vec<Slot>,
     collections: Vec<NodeIndex>,
     canvases: Vec<NodeIndex>,
-    tasks: Vec<(NodeIndex, Arc<Token>)>,
+    tasks: Vec<NodeTask>,
+    pub(crate) local: Rc<Local>,
     deferred: Vec<Deferred>,
     external: NodeIndex,
     pub(crate) external_split: Cell<usize>,
@@ -281,6 +299,7 @@ pub(crate) fn shadow_extent(style: &Style) -> i16 {
 
 impl Tree {
     pub(crate) fn new<S: Screen>(root: S, area: Rect, caps: Caps, theme: &'static Theme) -> Self {
+        let link: Link = Arc::new(OnceLock::new());
         let mut tree = Self {
             nodes: Vec::new_in(caps),
             free: Vec::new(),
@@ -304,7 +323,8 @@ impl Tree {
             theme,
             screen_style: ScreenStyle::default(),
             color_mode: ColorMode::Light,
-            link: Arc::new(OnceLock::new()),
+            local: Local::new(link.clone()),
+            link,
             root_id: 0,
             chrome_height: 0,
             render_request: None,
@@ -518,7 +538,7 @@ impl Tree {
         let index = usize::from(slot);
         let Some(mut host) = self.slots[index].host.take() else { return };
         let id = host.id();
-        let mut requests = host.hook(hook, &self.link);
+        let mut requests = host.hook(hook, &self.link, &self.local);
         self.slots[index].host = Some(host);
         self.deferred.extend(requests.sends.drain(..).map(|msg| Deferred::Post(id, msg)));
         self.deferred.extend(requests.posts.drain(..).map(|(to, msg)| Deferred::Post(to, msg)));
@@ -706,7 +726,7 @@ impl Tree {
             _ => {}
         }
         if core::mem::take(&mut self.nodes[id as usize].task) {
-            self.tasks.retain(|(node, _)| *node != id);
+            self.tasks.retain(|task| task.node != id);
         }
         let node = &mut self.nodes[id as usize];
         node.content = NodeContent::Box;
@@ -957,19 +977,58 @@ impl Tree {
         self.sync_task(id, element.task);
     }
 
-    fn sync_task(&mut self, id: NodeIndex, task: Option<&dyn TaskSpec>) {
-        match (self.nodes[id as usize].task, task) {
-            (false, Some(task)) => {
-                self.nodes[id as usize].task = true;
-                let token = task.start();
-                self.tasks.push((id, token));
+    /// A running future stays when the view gives the task again; what it
+    /// gives is kept to start the next one.
+    fn sync_task(&mut self, id: NodeIndex, spec: Option<&dyn TaskSpec>) {
+        let had = core::mem::replace(&mut self.nodes[id as usize].task, spec.is_some());
+        match spec.and_then(|spec| spec.take()) {
+            Some(start) if had => {
+                if let Some(task) = self.tasks.iter_mut().find(|task| task.node == id) {
+                    task.start = start;
+                }
             }
-            (true, None) => {
-                self.nodes[id as usize].task = false;
-                self.tasks.retain(|(node, _)| *node != id);
-            }
-            _ => {}
+            Some(start) => self.tasks.push(NodeTask { node: id, start, running: None }),
+            None if had && spec.is_none() => self.tasks.retain(|task| task.node != id),
+            None => {}
         }
+    }
+
+    /// Inside no screen, or in one that is shown, and not leaving.
+    fn task_shown(&self, mut at: NodeIndex) -> bool {
+        while at != NONE {
+            let node = &self.nodes[at as usize];
+            if node.leaving {
+                return false;
+            }
+            if let NodeContent::Child(slot) = node.content
+                && let Some(phase) = self.phase(slot)
+            {
+                return phase == Phase::Shown;
+            }
+            at = node.parent;
+        }
+        true
+    }
+
+    fn follow_node_tasks(&mut self) {
+        for i in 0..self.tasks.len() {
+            let node = self.tasks[i].node;
+            let shown = self.task_shown(node);
+            let id = self.host_id(self.nodes[node as usize].owner);
+            let task = &mut self.tasks[i];
+            match (task.running.take(), shown) {
+                (Some(running), true) if !running.is_finished() => task.running = Some(running),
+                (Some(running), false) => running.abort(),
+                (None, true) if id != 0 => task.running = Some(task.start.start(id, &self.local)),
+                (finished, _) => task.running = finished,
+            }
+        }
+    }
+
+    /// Runs the futures that are ready; the ticks to the next timer.
+    pub(crate) fn run_tasks(&mut self) -> Option<u32> {
+        let local = self.local.clone();
+        local.run(self)
     }
 
     fn update_node<M: Copy>(&mut self, owner: u16, id: NodeIndex, element: &Element<'_, M>) {
@@ -1231,7 +1290,7 @@ impl Tree {
         }
     }
 
-    fn apply_requests(&mut self, slot: u16, requests: Requests) {
+    pub(crate) fn apply_requests(&mut self, slot: u16, requests: Requests) {
         if requests.rebuild {
             self.mark_slot_dirty(slot);
         }
@@ -1296,7 +1355,7 @@ impl Tree {
     pub(crate) fn dispatch(&mut self, slot: u16, msg: Erased, tap_rect: Option<Rect>) {
         let index = usize::from(slot);
         let Some(mut host) = self.slots[index].host.take() else { return };
-        let requests = host.dispatch(msg, self.parked_strips.take(), tap_rect, &self.link);
+        let requests = host.dispatch(msg, self.parked_strips.take(), tap_rect, &self.link, &self.local);
         self.slots[index].host = Some(host);
         self.apply_requests(slot, requests);
     }
@@ -1408,6 +1467,7 @@ impl Tree {
         if self.settle_appearing() {
             self.update();
         }
+        self.follow_node_tasks();
     }
 
     fn sync_scrim(&mut self) {

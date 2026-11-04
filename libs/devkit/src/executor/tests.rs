@@ -13,8 +13,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use super::{
-    CriticalSection, Elapsed, Executor, LocalExecutor, Park, Signal, block_on, channel, local_spawner, sleep, spawner,
-    timeout,
+    CriticalSection, Elapsed, Executor, LocalExecutor, Park, Signal, block_on, channel, local_spawner, oneshot, sleep,
+    spawner, timeout,
 };
 
 struct StdCritical(Mutex<()>);
@@ -498,4 +498,90 @@ fn dropping_a_waiting_send_passes_the_turn_on() {
         [a, b]
     });
     assert_eq!(got, [0, 2]);
+}
+
+#[test]
+fn closing_a_channel_refuses_and_releases_senders() {
+    let got = block_on(&CRITICAL, park(), async {
+        let spawner = spawner().await;
+        let (tx, rx) = channel::<u32>(&CRITICAL, 1);
+        tx.try_send(0).unwrap();
+        let waiting = spawner.spawn({
+            let tx = tx.clone();
+            async move { tx.send(1).await }
+        });
+        sleep(2).await;
+        assert!(!tx.is_closed());
+        drop(rx);
+        waiting.await;
+        (tx.is_closed(), tx.try_send(2))
+    });
+    assert_eq!(got, (true, Err(2)));
+}
+
+#[test]
+fn oneshot_delivers_or_reports_the_other_side_gone() {
+    let (tx, rx) = oneshot::channel::<u32>(&CRITICAL);
+    let sender = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(5));
+        tx.send(7)
+    });
+    assert_eq!(block_on(&CRITICAL, park(), rx), Ok(7));
+    assert_eq!(sender.join().unwrap(), Ok(()));
+
+    let (tx, rx) = oneshot::channel::<u32>(&CRITICAL);
+    drop(tx);
+    assert_eq!(block_on(&CRITICAL, park(), rx), Err(oneshot::Closed));
+
+    let (tx, rx) = oneshot::channel::<u32>(&CRITICAL);
+    assert!(!tx.is_closed());
+    drop(rx);
+    assert!(tx.is_closed());
+    assert_eq!(tx.send(1), Err(1));
+}
+
+struct Unparks(AtomicUsize);
+
+impl Park for Unparks {
+    fn park(&self, _: Option<u32>) {
+        unreachable!();
+    }
+
+    fn unpark(&self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn now(&self) -> u32 {
+        EPOCH.elapsed().as_millis() as u32
+    }
+}
+
+#[test]
+fn run_ready_runs_what_is_ready_and_unparks_for_the_rest() {
+    let park = Arc::new(Unparks(AtomicUsize::new(0)));
+    let local = LocalExecutor::new(&CRITICAL, park.clone());
+    let flag = Flag::default();
+    let steps = Rc::new(Cell::new(0));
+    local.spawn_local({
+        let (flag, steps) = (flag.clone(), steps.clone());
+        async move {
+            steps.set(1);
+            flag.wait().await;
+            steps.set(2);
+            sleep(20).await;
+            steps.set(3);
+        }
+    });
+    assert_eq!(local.run_ready(), None);
+    assert_eq!(steps.get(), 1);
+    let unparked = park.0.load(Ordering::SeqCst);
+    let setter = thread::spawn(move || flag.set());
+    setter.join().unwrap();
+    assert_eq!(park.0.load(Ordering::SeqCst), unparked + 1, "a wake while it is not running unparks");
+    let wait = local.run_ready().expect("the sleep's deadline");
+    assert_eq!(steps.get(), 2);
+    assert!(wait <= 20);
+    thread::sleep(Duration::from_millis(u64::from(wait) + 2));
+    assert_eq!(local.run_ready(), None);
+    assert_eq!(steps.get(), 3);
 }

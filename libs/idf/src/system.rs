@@ -18,6 +18,13 @@ pub fn random() -> u32 {
     unsafe { sys::esp_random() }
 }
 
+pub fn in_isr() -> bool {
+    #[cfg(target_os = "none")]
+    return unsafe { sys::xPortInIsrContext() != 0 };
+    #[cfg(not(target_os = "none"))]
+    false
+}
+
 pub fn restart() -> ! {
     unsafe { sys::esp_restart() }
 }

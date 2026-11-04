@@ -16,7 +16,7 @@ use core::task::{Context, Poll, Waker};
 
 use super::CriticalSection;
 
-fn critical<R>(cs: &dyn CriticalSection, f: impl FnOnce() -> R) -> R {
+pub(super) fn critical<R>(cs: &dyn CriticalSection, f: impl FnOnce() -> R) -> R {
     let mut f = Some(f);
     let mut out = None;
     cs.with(&mut || out = Some((f.take().unwrap())()));
@@ -25,7 +25,7 @@ fn critical<R>(cs: &dyn CriticalSection, f: impl FnOnce() -> R) -> R {
 
 // The stored waker stays where it is: an interrupt only wakes a copy, so it
 // never drops the last reference to a task and frees it there.
-fn wake_copy(waker: Option<Waker>) {
+pub(super) fn wake_copy(waker: Option<Waker>) {
     if let Some(waker) = waker {
         waker.wake_by_ref();
     }
@@ -93,6 +93,7 @@ struct Queue<T> {
     capacity: usize,
     receiver: Option<Waker>,
     senders: *mut SendNode,
+    closed: bool,
 }
 
 struct Chan<T> {
@@ -126,10 +127,10 @@ impl<T> Chan<T> {
         Some(waker)
     }
 
-    /// Inside the critical section; the value back when full.
+    /// Inside the critical section; the value back when full or closed.
     unsafe fn push(&self, value: T) -> Result<Option<Waker>, T> {
         let queue = unsafe { self.queue() };
-        if queue.items.len() == queue.capacity {
+        if queue.closed || queue.items.len() == queue.capacity {
             return Err(value);
         }
         queue.items.push_back(value);
@@ -138,7 +139,7 @@ impl<T> Chan<T> {
 }
 
 /// A bounded queue into async code; values move in and out in order.
-/// There is no disconnection: `recv` waits with every sender gone.
+/// Senders see the receiver go, but `recv` waits with every sender gone.
 pub fn channel<T>(critical: &'static dyn CriticalSection, capacity: usize) -> (Sender<T>, Receiver<T>) {
     assert!(capacity > 0, "a channel needs room for one value");
     let chan = Arc::new(Chan {
@@ -148,6 +149,7 @@ pub fn channel<T>(critical: &'static dyn CriticalSection, capacity: usize) -> (S
             capacity,
             receiver: None,
             senders: ptr::null_mut(),
+            closed: false,
         }),
     });
     (Sender(chan.clone()), Receiver(chan))
@@ -163,7 +165,8 @@ impl<T> Clone for Sender<T> {
 
 impl<T> Sender<T> {
     /// From any task or interrupt, with the same waker rule as
-    /// `Signal::signal`; the value back when the channel is full.
+    /// `Signal::signal`; the value back when the channel is full or the
+    /// receiver has gone.
     pub fn try_send(&self, value: T) -> Result<(), T> {
         let chan = &*self.0;
         let waker = critical(chan.critical, || unsafe { chan.push(value) })?;
@@ -171,7 +174,13 @@ impl<T> Sender<T> {
         Ok(())
     }
 
+    /// The receiver has gone.
+    pub fn is_closed(&self) -> bool {
+        critical(self.0.critical, || unsafe { self.0.queue().closed })
+    }
+
     /// Waits for room; senders get it in the order they started waiting.
+    /// Once the receiver has gone it returns at once, dropping the value.
     pub fn send(&self, value: T) -> SendFuture<'_, T> {
         SendFuture {
             chan: &self.0,
@@ -203,13 +212,17 @@ impl<T> Future for SendFuture<'_, T> {
         let mut receiver = None;
         let mut next = None;
         let mut old = None;
+        let mut refused = None;
         let sent = critical(chan.critical, || unsafe {
             let queue = chan.queue();
             let waiting = (*node).waker.is_some();
             let first = !waiting || queue.senders == node;
-            if first && queue.items.len() < queue.capacity {
+            if queue.closed || (first && queue.items.len() < queue.capacity) {
                 old = chan.unlink(node);
-                receiver = chan.push(value.take().unwrap()).ok().flatten();
+                match chan.push(value.take().unwrap()) {
+                    Ok(waker) => receiver = waker,
+                    Err(value) => refused = Some(value),
+                }
                 if queue.items.len() < queue.capacity && !queue.senders.is_null() {
                     next = (*queue.senders).waker.clone();
                 }
@@ -233,6 +246,7 @@ impl<T> Future for SendFuture<'_, T> {
             false
         });
         drop(old);
+        drop(refused);
         if sent {
             wake_copy(receiver);
             wake_copy(next);
@@ -308,5 +322,23 @@ impl<T> Receiver<T> {
             value.map_or(Poll::Pending, Poll::Ready)
         })
         .await
+    }
+}
+
+impl<T> Drop for Receiver<T> {
+    fn drop(&mut self) {
+        let chan = &*self.0;
+        let mut sender = None;
+        let (items, receiver) = critical(chan.critical, || unsafe {
+            let queue = chan.queue();
+            queue.closed = true;
+            if !queue.senders.is_null() {
+                sender = (*queue.senders).waker.clone();
+            }
+            (core::mem::take(&mut queue.items), queue.receiver.take())
+        });
+        drop(items);
+        drop(receiver);
+        wake_copy(sender);
     }
 }

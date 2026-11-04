@@ -99,24 +99,28 @@ app.run();
 - `app.handle()` and `cx.handle()` give a `Handle`, whose `post` reaches that
   component from any task. Its `update` runs even while a screen covers it, and
   the next `view` shows the result; a message for a closed screen is dropped.
-- Results from other tasks come back as values the component owns, not as
-  messages, which stay small. `cx.inbox(capacity, msg)` makes an `Inbox`:
-  `inbox.sender()` sends from any task, `msg` comes once for everything that
-  arrived until `inbox.drain()`, and nothing more comes until then. A full or
-  dropped inbox gives the value back. `cx.pending(msg)` pairs a `Pending` with
-  the `Reply` for one value. Dropping the `Pending` cancels the reply:
-  `reply.is_cancelled()` lets the worker stop early, and `send` gives the value
-  back. Keeping it in a field ties it to the component, replacing it drops an
-  older request.
-- `.task(&inbox, |reply| ...)` starts work for a node: the closure runs once
-  when the node is made, and the `Reply` sends into the inbox. Its node going
-  cancels it: an item leaving a collection's rows, the screen leaving, or the view
-  dropping the task. The closure is never dropped, so it holds only what needs
-  no drop.
+- The UI task runs futures between frames. `cx.spawn(|this| async move { ... })`
+  starts one from `update` or a hook and returns a `Task`: it runs until it
+  ends, `task.abort()`, or its component goes, and dropping the `Task` leaves
+  it running. `this.with(|state, cx| ...)` runs on the component as `update`
+  would, shown or covered, and rebuilds it; `None` once the component has
+  gone. Messages stay small, so results come back through `with`, not as
+  messages.
 
   ```rust
-  ui.column([]).id(entry.id).task(&self.thumbs, |reply| THUMBS.push(entry.path(), reply))
+  Msg::Refresh => self.load = Some(cx.spawn(|this| async move {
+      let data = fetch().await;
+      this.with(|s, _| s.data = data);
+  })),
   ```
+- `.task(|this: This<Self>| async move { ... })` runs a future while its node
+  is shown: in a screen, from `did_appear` to `will_disappear`. Hidden, out of
+  a collection's rows, or with the task gone from the view, the future is
+  dropped; shown again, the closure makes a new one. A rebuild leaves a
+  running future alone and keeps the new closure for the next.
+- A worker on another task replies through `idf::executor::oneshot` or
+  `idf::executor::channel`, and its `is_closed()` tells it that the future
+  waiting for it has been dropped.
 
 ## Layout and state
 

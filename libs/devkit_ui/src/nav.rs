@@ -7,12 +7,10 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::any::TypeId;
 
-use crate::app::Link;
-use crate::component::{AnyHost, Requests, Screen, screen_host};
+use crate::component::{AnyHost, Component, Cx, Requests, Screen, screen_host};
 use crate::erased::Erased;
 use crate::id::Id;
 use crate::node::{NONE, Node, NodeContent, NodeIndex};
-use crate::presenter::Strips;
 use devkit_gfx::Rect;
 use crate::style::{Dimension, Style};
 use crate::motion::{Clock, Motion, MotionKind};
@@ -150,15 +148,16 @@ pub(crate) struct NavOp {
 
 /// Finds `id` in `stack` and in what its screens keep of the navigators inside
 /// them. Those have no nodes, so the only move left to them is back to the root.
-fn deliver(stack: &mut [Entry], id: u32, msg: Erased, replaced: &mut Option<Strips>, link: &Link) -> Option<Requests> {
+/// Runs `run` on the covered component `id`.
+fn deliver(stack: &mut [Entry], id: u32, run: &mut dyn FnMut(&mut dyn AnyHost) -> Requests) -> Option<Requests> {
     for entry in stack {
         if let Some(host) = &mut entry.host
             && host.id() == id
         {
-            return Some(host.dispatch(msg, replaced.take(), None, link));
+            return Some(run(&mut **host));
         }
         for (key, nested) in &mut entry.saved.navigators {
-            if let Some(mut requests) = deliver(nested, id, msg, replaced, link) {
+            if let Some(mut requests) = deliver(nested, id, run) {
                 for op in core::mem::take(&mut requests.nav) {
                     if matches!(op.action, Action::Root) && op.target.is_none_or(|target| target == *key) {
                         nested.truncate(1);
@@ -369,15 +368,48 @@ impl Tree {
             return;
         }
         let mut replaced = self.parked_strips.take();
-        let link = self.link.clone();
+        let (link, local) = (self.link.clone(), self.local.clone());
+        let found = self.deliver_covered(id, &mut |host| host.dispatch(msg, replaced.take(), None, &link, &local));
+        self.parked_strips = replaced;
+        if let Some((nav, requests)) = found {
+            self.apply_covered(id, nav, requests);
+        }
+    }
+
+    fn deliver_covered(&mut self, id: u32, run: &mut dyn FnMut(&mut dyn AnyHost) -> Requests) -> Option<(NodeIndex, Requests)> {
         for nav in self.navigators.clone() {
             let Some(navigator) = self.navigator(nav) else { continue };
-            let Some(requests) = deliver(&mut navigator.stack, id, msg, &mut replaced, &link) else { continue };
-            self.parked_strips = replaced;
-            self.apply_covered(id, nav, requests);
+            if let Some(requests) = deliver(&mut navigator.stack, id, run) {
+                return Some((nav, requests));
+            }
+        }
+        None
+    }
+
+    /// Runs `f` on the component `id` as `post` runs a message, and rebuilds it.
+    pub(crate) fn with_component<C: Component>(&mut self, id: u32, f: &mut dyn FnMut(&mut C, &mut Cx<C>)) {
+        let (link, local) = (self.link.clone(), self.local.clone());
+        let mut run = |host: &mut dyn AnyHost| {
+            let mut cx = Cx::<C>::new(None, None, id, &link, &local);
+            match host.component_mut().downcast_mut::<C>() {
+                Some(component) => f(component, &mut cx),
+                None => idf::log::error!(c"ui", "with: the component is of another type"),
+            }
+            host.adopt(&mut cx.requests.tasks);
+            cx.requests.rebuild = true;
+            cx.requests
+        };
+        if let Some(slot) = self.slot_of(id) {
+            let index = usize::from(slot);
+            let Some(mut host) = self.slots[index].host.take() else { return };
+            let requests = run(&mut *host);
+            self.slots[index].host = Some(host);
+            self.apply_requests(slot, requests);
             return;
         }
-        self.parked_strips = replaced;
+        if let Some((nav, requests)) = self.deliver_covered(id, &mut run) {
+            self.apply_covered(id, nav, requests);
+        }
     }
 
     fn apply_covered(&mut self, id: u32, nav: NodeIndex, requests: Requests) {

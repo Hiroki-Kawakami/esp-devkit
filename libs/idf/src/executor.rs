@@ -75,6 +75,20 @@ pub fn channel<T>(capacity: usize) -> (Sender<T>, Receiver<T>) {
     devkit::executor::channel(&CRITICAL, capacity)
 }
 
+/// How long `ticks` of `park()`'s clock are.
+pub fn tick_duration(ticks: u32) -> Duration {
+    Duration::from_micros(u64::from(ticks) * 1_000_000 / sdkconfig::CONFIG_FREERTOS_HZ as u64)
+}
+
+pub mod oneshot {
+    pub use devkit::executor::oneshot::{Closed, Receiver, Sender};
+
+    /// `devkit::executor::oneshot::channel` on `CRITICAL`.
+    pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
+        devkit::executor::oneshot::channel(&super::CRITICAL)
+    }
+}
+
 /// At least `d`, rounded like `thread::sleep`; on a devkit executor.
 pub fn sleep(d: Duration) -> Timer {
     devkit::executor::sleep(ticks(d))

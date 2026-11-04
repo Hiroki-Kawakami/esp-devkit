@@ -4,7 +4,6 @@
  */
 
 use alloc::boxed::Box;
-use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::AtomicU32;
 use core::sync::atomic::Ordering::Relaxed;
@@ -4531,30 +4530,179 @@ fn screens_inside_a_covered_screen_disappear_and_come_back_with_it() {
     assert_eq!(pane()[5..], ["will_appear", "did_appear"]);
 }
 
-#[test]
-fn an_inbox_keeps_order_and_capacity_and_a_pending_cancels_when_dropped() {
-    let link: crate::app::Link = Arc::new(idf::sync::OnceLock::new());
-    let mut inbox = Inbox::<u32>::new(2, link.clone(), 1, Erased::new(()));
-    let sender = inbox.sender();
-    assert_eq!((sender.send(1), sender.send(2), sender.send(3)), (Ok(()), Ok(()), Err(3)));
-    assert_eq!(inbox.drain().collect::<Vec<_>>(), [1, 2]);
-    assert_eq!(sender.send(4), Ok(()));
-    drop(inbox);
-    assert_eq!(sender.send(5), Err(5));
+struct Running(&'static str);
 
-    let (pending, reply) = Pending::<u32>::new(link, 1, Erased::new(()));
-    assert!(!reply.is_cancelled());
-    drop(pending);
-    assert!(reply.is_cancelled());
-    assert_eq!(reply.send(1), Err(1));
+impl Drop for Running {
+    fn drop(&mut self) {
+        life_note(self.0, "dropped");
+    }
+}
+
+/// Runs a node task for as long as it is shown, and spawns from `update`.
+struct Busy {
+    name: &'static str,
+    value: u32,
+    task: Option<Task>,
+    reply: Option<idf::executor::oneshot::Receiver<u32>>,
+}
+
+impl Busy {
+    fn new(name: &'static str) -> Self {
+        Self { name, value: 0, task: None, reply: None }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum BusyMsg {
+    Push,
+    Pop,
+    Spawn,
+    Abort,
+}
+
+impl Component for Busy {
+    type Msg = BusyMsg;
+
+    fn update(&mut self, msg: BusyMsg, cx: &mut Cx<Self>) {
+        match msg {
+            BusyMsg::Push => cx.nav().push(Busy::new("b")),
+            BusyMsg::Pop => cx.nav().pop(),
+            BusyMsg::Spawn => {
+                let (name, reply) = (self.name, self.reply.take().unwrap());
+                self.task = Some(cx.spawn(move |this| async move {
+                    let _running = Running(name);
+                    let value = reply.await.unwrap();
+                    let shown = this.with(|busy, _| {
+                        busy.value = value;
+                        life_note(busy.name, "with");
+                    });
+                    assert!(shown.is_some());
+                }));
+            }
+            BusyMsg::Abort => self.task.as_ref().unwrap().abort(),
+        }
+    }
+
+    fn view<'a>(&'a self, ui: &'a Ui<BusyMsg>) -> Element<'a, BusyMsg> {
+        let name = self.name;
+        ui.column([]).grow(1).task(move |_: This<Self>| async move {
+            life_note(name, "task");
+            let _running = Running(name);
+            core::future::pending::<()>().await;
+        })
+    }
+}
+
+impl Screen for Busy {
+    fn on_load(&mut self, cx: &mut Cx<Self>) {
+        LIFE_IDS.with(|ids| ids.borrow_mut().push((self.name, cx.handle().id())));
+    }
+    fn did_appear(&mut self, _: &mut Cx<Self>) {
+        life_note(self.name, "did_appear");
+    }
+    fn will_disappear(&mut self, _: &mut Cx<Self>) {
+        life_note(self.name, "will_disappear");
+    }
+}
+
+fn busy_send(tree: &mut Tree, name: &str, msg: BusyMsg) {
+    let id = LIFE_IDS.with(|ids| ids.borrow().iter().rev().find(|e| e.0 == name).unwrap().1);
+    tree.post(id, Erased::new(msg));
+    tree.update();
+    tree.run_tasks();
+}
+
+fn settle_tasks(tree: &mut Tree) {
+    settle(tree);
+    tree.run_tasks();
+}
+
+#[test]
+fn a_node_task_runs_from_did_appear_to_will_disappear() {
+    let mut tree = Tree::new(Busy::new("a"), SCREEN, Caps::INTERNAL, theme());
+    settle_tasks(&mut tree);
+    assert_eq!(life_events("a"), ["did_appear", "task"]);
+
+    busy_send(&mut tree, "a", BusyMsg::Push);
+    assert!(tree.transiting());
+    assert_eq!(life_events("a")[2..], ["will_disappear", "dropped"]);
+    assert!(life_events("b").is_empty(), "nothing runs while the screen comes in");
+    settle_tasks(&mut tree);
+    assert_eq!(life_events("b"), ["did_appear", "task"]);
+
+    busy_send(&mut tree, "b", BusyMsg::Pop);
+    assert_eq!(life_events("b")[2..], ["will_disappear", "dropped"]);
+    assert_eq!(life_events("a").len(), 4);
+    settle_tasks(&mut tree);
+    assert_eq!(life_events("a")[4..], ["did_appear", "task"]);
+}
+
+#[test]
+fn a_spawned_future_reaches_its_component_until_it_goes() {
+    let mut tree = Tree::new(Busy::new("a"), SCREEN, Caps::INTERNAL, theme());
+    settle_tasks(&mut tree);
+    busy_send(&mut tree, "a", BusyMsg::Push);
+    settle_tasks(&mut tree);
+    let (tx, rx) = idf::executor::oneshot::channel();
+    let slot = tree.slot_of(LIFE_IDS.with(|ids| ids.borrow().iter().find(|e| e.0 == "b").unwrap().1)).unwrap();
+    let busy = |tree: &mut Tree| -> *mut Busy {
+        tree.slots[usize::from(slot)].host.as_mut().unwrap().component_mut().downcast_mut::<Busy>().unwrap()
+    };
+    unsafe { (*busy(&mut tree)).reply = Some(rx) };
+    busy_send(&mut tree, "b", BusyMsg::Spawn);
+    assert!(!tx.is_closed());
+    tx.send(7).unwrap();
+    tree.run_tasks();
+    assert_eq!(life_events("b")[2..], ["with", "dropped"]);
+    assert_eq!(unsafe { (*busy(&mut tree)).value }, 7);
+
+    let (tx, rx) = idf::executor::oneshot::channel::<u32>();
+    unsafe { (*busy(&mut tree)).reply = Some(rx) };
+    busy_send(&mut tree, "b", BusyMsg::Spawn);
+    busy_send(&mut tree, "b", BusyMsg::Abort);
+    assert!(tx.is_closed(), "abort drops the future");
+    assert_eq!(life_events("b")[4..], ["dropped"]);
+
+    let (tx, rx) = idf::executor::oneshot::channel::<u32>();
+    unsafe { (*busy(&mut tree)).reply = Some(rx) };
+    busy_send(&mut tree, "b", BusyMsg::Spawn);
+    busy_send(&mut tree, "b", BusyMsg::Pop);
+    settle_tasks(&mut tree);
+    assert!(tx.is_closed(), "the component going drops the future");
+}
+
+#[test]
+fn a_covered_component_is_reached_too() {
+    let mut tree = Tree::new(Busy::new("a"), SCREEN, Caps::INTERNAL, theme());
+    settle_tasks(&mut tree);
+    let id = LIFE_IDS.with(|ids| ids.borrow()[0].1);
+    let (tx, rx) = idf::executor::oneshot::channel();
+    let mut rx = Some(rx);
+    tree.with_component::<Busy>(id, &mut |busy, _| busy.reply = rx.take());
+    busy_send(&mut tree, "a", BusyMsg::Spawn);
+    busy_send(&mut tree, "a", BusyMsg::Push);
+    settle_tasks(&mut tree);
+    tx.send(3).unwrap();
+    tree.run_tasks();
+    assert!(life_events("a").contains(&"with"));
+    let mut value = 0;
+    tree.with_component::<Busy>(id, &mut |busy, _| value = busy.value);
+    assert_eq!(value, 3);
 }
 
 std::thread_local! {
-    static REPLIES: core::cell::RefCell<Vec<(usize, Reply<u32>)>> = const { core::cell::RefCell::new(Vec::new()) };
+    static ROWS: core::cell::RefCell<Vec<(usize, bool)>> = const { core::cell::RefCell::new(Vec::new()) };
+}
+
+struct RowRunning(usize);
+
+impl Drop for RowRunning {
+    fn drop(&mut self) {
+        ROWS.with(|r| r.borrow_mut().iter_mut().filter(|e| e.0 == self.0).for_each(|e| e.1 = false));
+    }
 }
 
 struct Tasks {
-    inbox: Option<Inbox<u32>>,
     overscan: u8,
 }
 
@@ -4570,37 +4718,37 @@ impl Component for Tasks {
 
 impl Tasks {
     fn row<'a>(&'a self, index: usize, ui: &'a Ui<()>) -> Element<'a, ()> {
-        let inbox = self.inbox.as_ref().unwrap();
-        ui.column([]).height(50).task(inbox, move |reply| REPLIES.with(|r| r.borrow_mut().push((index, reply))))
+        ui.column([]).height(50).task(move |_: This<Self>| async move {
+            ROWS.with(|r| r.borrow_mut().push((index, true)));
+            let _running = RowRunning(index);
+            core::future::pending::<()>().await;
+        })
     }
 }
 
-impl Screen for Tasks {
-    fn on_load(&mut self, cx: &mut Cx<Self>) {
-        self.inbox = Some(cx.inbox(16, ()));
-    }
-}
+impl Screen for Tasks {}
 
 fn task_rows(overscan: u8) -> (Tree, usize) {
-    REPLIES.with(|r| r.borrow_mut().clear());
-    let mut tree = Tree::new(Tasks { inbox: None, overscan }, SCREEN, Caps::INTERNAL, theme());
-    settle(&mut tree);
-    let started = REPLIES.with(|r| r.borrow().len());
+    ROWS.with(|r| r.borrow_mut().clear());
+    let mut tree = Tree::new(Tasks { overscan }, SCREEN, Caps::INTERNAL, theme());
+    settle_tasks(&mut tree);
+    let started = ROWS.with(|r| r.borrow().len());
     (tree, started)
 }
 
 #[test]
 fn a_task_lives_while_its_row_does() {
     let (mut tree, started) = task_rows(1);
-    assert!(REPLIES.with(|r| r.borrow().iter().all(|(_, reply)| !reply.is_cancelled())));
+    assert!(ROWS.with(|r| r.borrow().iter().all(|(_, running)| *running)));
     let list = tree.find(id!("tasks")).unwrap();
     let NodeContent::Collection(rows) = &mut tree.nodes[list as usize].content else { panic!() };
     rows.offset = 2000;
     tree.update();
-    REPLIES.with(|r| {
+    tree.run_tasks();
+    ROWS.with(|r| {
         let r = r.borrow();
-        assert!(r[..started].iter().all(|(_, reply)| reply.is_cancelled()), "rows scrolled away cancel");
-        assert!(r[started..].iter().all(|(index, reply)| *index >= 39 && !reply.is_cancelled()));
+        assert!(r[..started].iter().all(|(_, running)| !running), "rows scrolled away drop theirs");
+        assert!(r[started..].iter().all(|(index, running)| *index >= 39 && *running));
     });
     let (_, wider) = task_rows(3);
     assert_eq!(wider, started + 2, "overscan reaches further past the end");

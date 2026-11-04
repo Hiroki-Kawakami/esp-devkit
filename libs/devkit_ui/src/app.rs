@@ -143,6 +143,19 @@ pub(crate) fn post(link: &Link, id: u32, msg: Erased) -> bool {
     link.get().is_some_and(|shared| shared.send(Event::Post(id, msg)))
 }
 
+/// Ends the UI task's wait. From any task or interrupt.
+pub(crate) fn wake(link: &Link) {
+    let Some(shared) = link.get() else { return };
+    if !idf::system::in_isr() {
+        shared.send(Event::Wake);
+        return;
+    }
+    shared.pending.fetch_add(1, Ordering::AcqRel);
+    if shared.events.try_send_from_isr(Event::Wake).is_err() {
+        shared.pending.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 /// Posts messages to a component from any task.
 pub struct Handle<M> {
     link: Link,
@@ -724,6 +737,7 @@ impl<C: Screen> AppState<C> {
     fn run(&mut self) -> ! {
         let mut last = Instant::now();
         loop {
+            let timer = self.tree.run_tasks();
             self.frame();
             self.shared.busy.store(!self.tree.idle(), Ordering::Release);
             // While animating the presenter paces frames; a timed wait here
@@ -735,6 +749,7 @@ impl<C: Screen> AppState<C> {
             } else {
                 IDLE_WAIT
             };
+            let wait = timer.map_or(wait, |ticks| wait.min(idf::executor::tick_duration(ticks)));
             if !self.tree.animating()
                 && let Some(event) = self.receiver.recv_timeout(wait)
             {

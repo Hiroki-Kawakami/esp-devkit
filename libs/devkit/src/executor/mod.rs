@@ -3,6 +3,7 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
+pub mod oneshot;
 mod sync;
 mod task;
 #[cfg(test)]
@@ -10,7 +11,7 @@ mod tests;
 mod timer;
 
 use alloc::sync::Arc;
-use core::cell::UnsafeCell;
+use core::cell::{Cell, UnsafeCell};
 use core::future::Future;
 use core::marker::PhantomData;
 use core::pin::{Pin, pin};
@@ -373,13 +374,14 @@ static MAIN_VTABLE: RawWakerVTable = RawWakerVTable::new(
 pub struct LocalExecutor {
     inner: Arc<Inner>,
     park: Arc<dyn Park>,
+    runner: Cell<Option<usize>>,
     _local: PhantomData<*const ()>,
 }
 
 impl LocalExecutor {
     /// `park` waits on the task that will call `run`.
     pub fn new(critical: &'static dyn CriticalSection, park: Arc<dyn Park>) -> Self {
-        Self { inner: Inner::new(critical, true), park, _local: PhantomData }
+        Self { inner: Inner::new(critical, true), park, runner: Cell::new(None), _local: PhantomData }
     }
 
     pub fn spawn<F>(&self, future: F) -> JoinHandle<F::Output>
@@ -422,6 +424,29 @@ impl LocalExecutor {
         };
         self.inner.critical(|| unsafe { self.inner.shared().runners[runner] = None });
         output
+    }
+
+    /// Runs the tasks that are ready, timers included, and returns without
+    /// waiting: for a task that waits on something else, which `park.unpark()`
+    /// has to end. The ticks to the next timer. Not mixed with `run` or
+    /// `run_until`.
+    pub fn run_ready(&self) -> Option<u32> {
+        let runner = match self.runner.get() {
+            Some(runner) => runner,
+            None => {
+                let runner = self.inner.register_runner(self.park.clone());
+                self.runner.set(Some(runner));
+                runner
+            }
+        };
+        self.inner.set_busy(runner);
+        loop {
+            let wait = self.inner.fire_timers(self.park.now());
+            match self.inner.next(runner) {
+                Some(task) => self.inner.run_task(task),
+                None => return wait,
+            }
+        }
     }
 }
 

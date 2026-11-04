@@ -9,18 +9,20 @@ use devkit_gfx::Rect;
 
 use crate::app::{Handle, Link};
 use alloc::boxed::Box;
+use alloc::rc::Rc;
 use alloc::vec::Vec;
 use core::any::{Any, TypeId};
+use core::future::Future;
 use core::marker::PhantomData;
 
 use crate::element::{Element, Ui};
 use crate::erased::Erased;
 use crate::id::Id;
-use crate::inbox::{Inbox, Pending, Reply};
 use crate::nav::{Action, NavOp};
 use crate::node::NodeIndex;
 use crate::presenter::Strips;
 use crate::style::ScreenStyle;
+use crate::task::{Local, Task, This};
 use crate::text_buffer::TextInput;
 use crate::theme::{Theme, Transition};
 use crate::tree::Tree;
@@ -125,6 +127,7 @@ pub(crate) struct Requests {
     pub(crate) redraw: Vec<(Id, Option<Rect>)>,
     pub(crate) scrolls: Vec<(Id, ScrollTarget, bool)>,
     pub(crate) guards: Vec<Box<dyn Any>>,
+    pub(crate) tasks: Vec<Task>,
 }
 
 /// Where `Cx::scroll_to` moves a `scroll` or `list`. `Index` is a row of a
@@ -168,12 +171,14 @@ pub struct Cx<C: Component> {
     pub(crate) requests: Requests,
     id: u32,
     link: Link,
+    local: Rc<Local>,
     _component: PhantomData<fn(C)>,
 }
 
 impl<C: Component> Cx<C> {
-    pub(crate) fn new(replaced: Option<Strips>, tap_rect: Option<Rect>, id: u32, link: &Link) -> Self {
-        Self { requests: Requests { replaced, tap_rect, ..Requests::default() }, id, link: link.clone(), _component: PhantomData }
+    pub(crate) fn new(replaced: Option<Strips>, tap_rect: Option<Rect>, id: u32, link: &Link, local: &Rc<Local>) -> Self {
+        let requests = Requests { replaced, tap_rect, ..Requests::default() };
+        Self { requests, id, link: link.clone(), local: local.clone(), _component: PhantomData }
     }
 
     /// Reaches this component from any task, for as long as it lives, whether
@@ -276,14 +281,16 @@ impl<C: Component> Cx<C> {
         self.requests.replaced.take()
     }
 
-    /// `msg` comes when values have arrived; at most `capacity` wait.
-    pub fn inbox<T: Send + 'static>(&self, capacity: usize, msg: C::Msg) -> Inbox<T> {
-        Inbox::new(capacity, self.link.clone(), self.id, Erased::new(msg))
-    }
-
-    /// `msg` comes once the reply has been sent.
-    pub fn pending<T>(&self, msg: C::Msg) -> (Pending<T>, Reply<T>) {
-        Pending::new(self.link.clone(), self.id, Erased::new(msg))
+    /// Runs `f`'s future on the UI task, between frames, until it ends, the
+    /// `Task` aborts it or this component goes.
+    pub fn spawn<F, Fut>(&mut self, f: F) -> Task
+    where
+        F: FnOnce(This<C>) -> Fut,
+        Fut: Future<Output = ()> + 'static,
+    {
+        let task = Task::new(self.local.executor.spawn_local(f(This::new(self.id, &self.local))));
+        self.requests.tasks.push(task.clone());
+        task
     }
 }
 
@@ -357,12 +364,15 @@ pub(crate) unsafe fn call_event_map<E: Copy, M: Copy>(function: *const (), event
 /// A component without its type.
 pub(crate) trait AnyHost {
     fn id(&self) -> u32;
-    fn dispatch(&mut self, msg: Erased, replaced: Option<Strips>, tap_rect: Option<Rect>, link: &Link) -> Requests;
+    fn dispatch(&mut self, msg: Erased, replaced: Option<Strips>, tap_rect: Option<Rect>, link: &Link, local: &Rc<Local>) -> Requests;
     fn build(&self, tree: &mut Tree, id: u16, node: NodeIndex);
     fn component(&self) -> &dyn Any;
+    fn component_mut(&mut self) -> &mut dyn Any;
     fn as_any(&mut self) -> &mut dyn Any;
+    /// Keeps what `Cx::spawn` started for as long as the component lives.
+    fn adopt(&mut self, tasks: &mut Vec<Task>);
 
-    fn hook(&mut self, _hook: Hook, _link: &Link) -> Requests {
+    fn hook(&mut self, _hook: Hook, _link: &Link, _local: &Rc<Local>) -> Requests {
         Requests::default()
     }
 
@@ -385,11 +395,18 @@ pub(crate) struct Host<C: Component> {
     id: u32,
     pub(crate) component: C,
     pub(crate) props: Option<C::Props>,
+    tasks: Vec<Task>,
 }
 
 impl<C: Component> Host<C> {
     pub(crate) fn new(component: C, props: Option<C::Props>) -> Self {
-        Self { id: NEXT_ID.fetch_add(1, Ordering::Relaxed), component, props }
+        Self { id: NEXT_ID.fetch_add(1, Ordering::Relaxed), component, props, tasks: Vec::new() }
+    }
+}
+
+impl<C: Component> Drop for Host<C> {
+    fn drop(&mut self) {
+        self.tasks.iter().for_each(Task::abort);
     }
 }
 
@@ -398,9 +415,10 @@ impl<C: Component> AnyHost for Host<C> {
         self.id
     }
 
-    fn dispatch(&mut self, msg: Erased, replaced: Option<Strips>, tap_rect: Option<Rect>, link: &Link) -> Requests {
-        let mut cx = Cx::<C>::new(replaced, tap_rect, self.id, link);
+    fn dispatch(&mut self, msg: Erased, replaced: Option<Strips>, tap_rect: Option<Rect>, link: &Link, local: &Rc<Local>) -> Requests {
+        let mut cx = Cx::<C>::new(replaced, tap_rect, self.id, link, local);
         self.component.update(unsafe { msg.get::<C::Msg>() }, &mut cx);
+        self.adopt(&mut cx.requests.tasks);
         cx.requests
     }
 
@@ -414,8 +432,19 @@ impl<C: Component> AnyHost for Host<C> {
         &self.component
     }
 
+    fn component_mut(&mut self) -> &mut dyn Any {
+        &mut self.component
+    }
+
     fn as_any(&mut self) -> &mut dyn Any {
         self
+    }
+
+    fn adopt(&mut self, tasks: &mut Vec<Task>) {
+        if !tasks.is_empty() {
+            self.tasks.retain(|task| !task.is_finished());
+            self.tasks.append(tasks);
+        }
     }
 }
 
@@ -429,8 +458,8 @@ impl<S: Screen> AnyHost for ScreenHost<S> {
         self.inner.id()
     }
 
-    fn dispatch(&mut self, msg: Erased, replaced: Option<Strips>, tap_rect: Option<Rect>, link: &Link) -> Requests {
-        self.inner.dispatch(msg, replaced, tap_rect, link)
+    fn dispatch(&mut self, msg: Erased, replaced: Option<Strips>, tap_rect: Option<Rect>, link: &Link, local: &Rc<Local>) -> Requests {
+        self.inner.dispatch(msg, replaced, tap_rect, link, local)
     }
 
     fn build(&self, tree: &mut Tree, id: u16, node: NodeIndex) {
@@ -441,12 +470,20 @@ impl<S: Screen> AnyHost for ScreenHost<S> {
         self.inner.component()
     }
 
+    fn component_mut(&mut self) -> &mut dyn Any {
+        self.inner.component_mut()
+    }
+
     fn as_any(&mut self) -> &mut dyn Any {
         self
     }
 
-    fn hook(&mut self, hook: Hook, link: &Link) -> Requests {
-        let mut cx = Cx::<S>::new(None, None, self.inner.id(), link);
+    fn adopt(&mut self, tasks: &mut Vec<Task>) {
+        self.inner.adopt(tasks);
+    }
+
+    fn hook(&mut self, hook: Hook, link: &Link, local: &Rc<Local>) -> Requests {
+        let mut cx = Cx::<S>::new(None, None, self.inner.id(), link, local);
         let screen = &mut self.inner.component;
         match hook {
             Hook::WillAppear => {
@@ -459,6 +496,7 @@ impl<S: Screen> AnyHost for ScreenHost<S> {
             Hook::WillDisappear => screen.will_disappear(&mut cx),
             Hook::DidDisappear => screen.did_disappear(&mut cx),
         }
+        self.inner.adopt(&mut cx.requests.tasks);
         cx.requests
     }
 

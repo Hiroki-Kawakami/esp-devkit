@@ -411,6 +411,9 @@ local.run();
   output. `Executor` is shared by every task that calls `run` on it, one per
   core typically, and takes `Send` futures only. `block_on` runs one future on
   the calling task with a throwaway `LocalExecutor`.
+- `LocalExecutor::run_ready()` runs what is ready and returns the ticks to the
+  next timer, for a task that waits on something else; its `Park` is never
+  parked, and `unpark` has to end that wait.
 - `spawn` returns a `JoinHandle`, itself a future for the output. Dropping it
   lets the task run on; `abort` drops the future at its next suspension point.
 - `spawner().await` and `local_spawner().await` reach the executor running the
@@ -430,8 +433,14 @@ local.run();
   (`recv().await`, `try_recv`) and any number of `Sender`s: `try_send` never
   waits, `send(v).await` waits for room in turn. `signal` and `try_send` work
   from interrupts as long as the waiting waker clones without allocating, as
-  devkit's do: they wake a copy and leave the stored waker in place. There is
-  no disconnection, as with `idf::sync::channel`.
+  devkit's do: they wake a copy and leave the stored waker in place. Once the
+  `Receiver` is dropped, `is_closed()` is true, `try_send` gives the value
+  back and `send(v).await` returns at once, dropping it; `recv()` still waits
+  with every sender gone.
+- `oneshot::channel(critical)` carries one value from any task: `send` gives
+  it back once the `Receiver` is dropped, which `is_closed()` tells a worker
+  that can stop early, and the `Receiver` is a future that gives
+  `Err(Closed)` once the `Sender` is dropped without sending.
 
 `devkit::sync` has `Mutex` and `RwLock` over a `Platform` (the calling task,
 its priority, park/unpark, a clock, a critical section); `idf::sync` fixes it
@@ -504,7 +513,7 @@ microsecond resolution, plus `since_boot()`. `idf::system::restart()` calls
 `esp_restart()`; in the simulator it exits with status 0.
 `idf::system::CORE_COUNT` is `CONFIG_FREERTOS_NUMBER_OF_CORES` and `core_id()`
 the core running the caller, which an unpinned task may leave right after the
-call. `idf::system::random()` is `esp_random()`, from the OS entropy source in
+call. `in_isr()` is always `false` in the simulator. `idf::system::random()` is `esp_random()`, from the OS entropy source in
 the simulator.
 
 `idf::nvs::init()` initializes the default NVS partition for every user of it
@@ -659,8 +668,9 @@ let answer = executor::block_on(async { local.spawn(compute()).await });
 - `sleep(d)` and `timeout(d, future)` wait at least `d`, rounded up to ticks
   plus one as `thread::sleep` does.
 - `channel(capacity)` and `Signal::new(&CRITICAL)` hand values from tasks and
-  interrupts to async code; the other way, async code sends on
-  `idf::sync::channel` as any task does.
+  interrupts to async code, `oneshot::channel()` one value from a task; the
+  other way, async code sends on `idf::sync::channel` as any task does.
+- `tick_duration(ticks)` is how long `run_ready`'s ticks are.
 - `TaskPark` waits for bit 0 of the task's notification value at index 0 and
   wakes from interrupts too; `CRITICAL` is one spinlock shared by every
   executor.

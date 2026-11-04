@@ -4,10 +4,10 @@
  */
 
 use alloc::boxed::Box;
-use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::any::{Any, TypeId};
 use core::fmt::{self, Write};
+use core::future::Future;
 use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
 use core::ptr::{self, NonNull};
@@ -19,7 +19,7 @@ use crate::popover::Anchored;
 use crate::component::{AnyHost, Child, Component, EventMap, Host, Screen, ScrollEdge, call_event_map, screen_host};
 use crate::erased::Erased;
 use crate::id::Id;
-use crate::inbox::{Inbox, Reply, Token};
+use crate::task::{TaskElement, TaskSpec, This};
 use crate::style::{Align, Animated, Direction, Inset, Insets, Justify, Part, Prop, Role, ScreenStyle, Shadow, State, StateStyle, Style};
 use crate::canvas::Canvas;
 use crate::external::ExternalSurface;
@@ -179,23 +179,6 @@ unsafe fn call_item_map<C: Component>(function: *const (), component: &dyn Any, 
     let ui = Ui::new(tree.bump(), tree.context(owner));
     let element = function(component, index, &ui);
     tree.reconcile(owner, row, &element);
-}
-
-pub(crate) trait TaskSpec {
-    fn start(&self) -> Arc<Token>;
-}
-
-struct TaskElement<'a, T, F> {
-    inbox: &'a Inbox<T>,
-    start: F,
-}
-
-impl<T: Send + 'static, F: Fn(Reply<T>)> TaskSpec for TaskElement<'_, T, F> {
-    fn start(&self) -> Arc<Token> {
-        let token = Arc::new(Token);
-        (self.start)(Reply::task(Arc::downgrade(&token), self.inbox.sender()));
-        token
-    }
 }
 
 type DrawFn<C> = for<'a, 'f> fn(&'a C, &mut Canvas<'a, 'f>);
@@ -774,13 +757,17 @@ impl<'a, M: Copy> Element<'a, M> {
         self
     }
 
-    /// Calls `start` once this node is made, and cancels its `Reply` once the
-    /// node goes: out of a collection's rows, with its screen, or without the task in
-    /// the view. Values come through `inbox`. `start` is never dropped, so it
-    /// may hold only what needs no drop.
-    pub fn task<T: Send + 'static, F: Fn(Reply<T>) + 'a>(mut self, inbox: &'a Inbox<T>, start: F) -> Self {
-        const { assert!(!core::mem::needs_drop::<F>(), "a task's start must need no drop") };
-        let spec = unsafe { self.bump.as_ref() }.alloc(TaskElement { inbox, start });
+    /// Runs the future `start` makes while this node is shown: in a screen,
+    /// from its `did_appear` to its `will_disappear`. Hidden, or out of a
+    /// collection's rows, the future is dropped; shown again, `start` makes a
+    /// new one. A rebuild leaves a running future alone.
+    pub fn task<C, F, Fut>(mut self, start: F) -> Self
+    where
+        C: Component<Msg = M>,
+        F: Fn(This<C>) -> Fut + 'static,
+        Fut: Future<Output = ()> + 'static,
+    {
+        let spec = unsafe { self.bump.as_ref() }.alloc(TaskElement::<C, F>::new(start));
         self.task = Some(unsafe { &*spec });
         self
     }
