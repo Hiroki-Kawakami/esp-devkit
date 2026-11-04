@@ -285,6 +285,14 @@ impl Tree {
 
     /// Applies what views asked of split navigators. `true` when screens came or
     /// went, which their views must see.
+    /// Where the detail side of a split navigator starts, past the divider;
+    /// 0 unsplit.
+    pub(crate) fn detail_left(&self, nav: NodeIndex) -> i16 {
+        let node = &self.nodes[nav as usize];
+        let NodeContent::Navigator(navigator) = &node.content else { return 0 };
+        navigator.split.map_or(0, |side| side + self.slots[usize::from(node.owner)].theme.widgets.navigator.divider_width)
+    }
+
     pub(crate) fn sync_splits(&mut self) -> bool {
         let mut changed = false;
         for nav in self.navigators.clone() {
@@ -303,6 +311,7 @@ impl Tree {
                 _ => {}
             }
             self.layout_dirty = true;
+            self.nodes[nav as usize].paint_dirty = true;
             self.refresh_shown(nav);
             changed = true;
         }
@@ -679,7 +688,7 @@ impl Tree {
     pub(crate) fn step_transit(&mut self, i: usize) {
         let nav = self.motions[i].node;
         let top = self.navigator(nav).map_or(NONE, |n| n.shown());
-        let side = self.navigator(nav).and_then(|n| n.split).unwrap_or(0);
+        let side = self.detail_left(nav);
         let (width, height) = (self.nodes[nav as usize].rect.w - side, self.nodes[nav as usize].rect.h);
         let motion = &mut self.motions[i];
         let (MotionKind::Transit(transit), Some(clock)) = (&mut motion.kind, motion.clock) else { return };

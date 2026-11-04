@@ -166,6 +166,13 @@ pub struct ListItemTheme {
     pub trailing: &'static StateStyle,
 }
 
+/// What divides the two sides of a split navigator.
+#[derive(Clone, Copy)]
+pub struct NavigatorTheme {
+    pub divider_width: i16,
+    pub divider_color: ColorRole,
+}
+
 #[derive(Clone, Copy)]
 pub struct TopBarTheme {
     pub back_height: i16,
@@ -356,6 +363,7 @@ pub struct Widgets {
     pub table_section: TableSectionTheme,
     pub table_row: TableRowTheme,
     pub menu: MenuTheme,
+    pub navigator: NavigatorTheme,
     pub modal: ModalTheme,
     pub overlay: OverlayTheme,
     pub toast: ToastTheme,

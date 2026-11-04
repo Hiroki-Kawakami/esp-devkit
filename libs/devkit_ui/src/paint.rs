@@ -18,7 +18,7 @@ use crate::canvas::Canvas;
 use crate::node::{NONE, NodeContent, NodeIndex};
 use crate::presence::{Snapshot, half};
 use crate::style::Shadow;
-use crate::theme::Transition;
+use crate::theme::{Palette, Transition};
 use crate::tree::{Tree, shadow_extent};
 use crate::zoom::{PICTURE_SCALE, Picture, Zoom, scaled};
 
@@ -227,10 +227,11 @@ impl Tree {
                 if let Some(zoom) = self.transit(id).and_then(|t| t.zoom.as_deref()) {
                     list.raster(zoom.area, (zoom.area.x, zoom.area.y), zoom);
                 }
+                self.paint_split_divider(id, rect, viewport, opacity, &palette, list);
                 list.pop_clip();
             }
             NodeContent::Navigator(nav) if nav.split.is_some() => {
-                let side = nav.split.unwrap_or(0);
+                let side = self.detail_left(id);
                 let main = nav.main();
                 let viewport = rect.intersect(&clip);
                 let right = Rect::new(rect.x + side, rect.y, rect.w - side, rect.h).intersect(&viewport);
@@ -248,6 +249,7 @@ impl Tree {
                     child = self.nodes[child as usize].next;
                 }
                 list.pop_clip();
+                self.paint_split_divider(id, rect, viewport, opacity, &palette, list);
                 list.pop_clip();
             }
             _ if round_clip => {
@@ -270,6 +272,14 @@ impl Tree {
         if self.zoom_split.get().0 == id {
             self.zoom_split.set((id, list.ops().len()));
         }
+    }
+
+    fn paint_split_divider(&self, id: NodeIndex, rect: Rect, viewport: Rect, opacity: u8, palette: &Palette, list: &mut DisplayList<'_, Caps>) {
+        let node = &self.nodes[id as usize];
+        let NodeContent::Navigator(nav) = &node.content else { return };
+        let Some(side) = nav.split else { return };
+        let t = &self.slots[usize::from(node.owner)].theme.widgets.navigator;
+        list.fill(Rect::new(rect.x + side, rect.y, t.divider_width, rect.h).intersect(&viewport), dim(palette.color(t.divider_color), opacity));
     }
 
     fn paint_children<'a>(&'a self, id: NodeIndex, dx: i32, dy: i32, clip: Rect, inherited: Inherited, effects: &mut Effects, regions: &[Rect], list: &mut DisplayList<'a, Caps>) {
@@ -313,7 +323,7 @@ impl Tree {
         let node = &self.nodes[nav as usize];
         let NodeContent::Navigator(navigator) = &node.content else { return None };
         let transit = self.transit(nav)?;
-        let side = navigator.split.unwrap_or(0);
+        let side = self.detail_left(nav);
         let area = Rect::new(node.screen.x + side, node.screen.y, node.screen.w - side, node.screen.h).intersect(&self.area);
         if area.is_empty() {
             return None;

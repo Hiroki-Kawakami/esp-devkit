@@ -204,7 +204,8 @@ app.run();
 - `.split(on, width)` shows a navigator in two panes: the bottom of the stack on
   the left and the rest on the right. One stack serves both layouts, so a turn
   loses nothing. The main screen opens things with `cx.nav().show(screen)`,
-  which replaces all above it.
+  which replaces all above it. Between the panes goes the theme's
+  `navigator.divider_width` of `divider_color`, the right pane starting past it.
 
   ```rust
   ui.navigator::<Pane, Storages>(()).split(width > height, SIDEBAR_WIDTH).grow(1)

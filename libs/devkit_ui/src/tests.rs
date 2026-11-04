@@ -154,6 +154,7 @@ fn widgets(icon: Icon) -> Widgets {
     table_header: TableHeaderTheme { root: &EMPTY },
     table_section: TableSectionTheme { root: &EMPTY },
     table_row: TableRowTheme { chevron_icon: icon, root: &TABLE_ROW, label: &EMPTY, value: &EMPTY, chevron: &EMPTY },
+    navigator: NavigatorTheme { divider_width: 1, divider_color: ColorRole::Divider },
     menu: MenuTheme { check_icon: icon, panel: &MENU_PANEL, item: &MENU_ITEM, icon: &EMPTY, label: &EMPTY, check: &MENU_CHECK, header: &EMPTY, divider: &EMPTY },
     modal: ModalTheme { width: 360, margin: 24, panel: &EMPTY, title: &EMPTY, message: &EMPTY, actions: &EMPTY },
     overlay: OverlayTheme { scrim: ColorRole::Fixed(Color::rgba(0, 0, 0, 128)) },
@@ -3466,7 +3467,7 @@ fn a_split_shows_both_ends_of_one_stack() {
     assert!(!tree.transiting(), "showing beside the main screen does not slide");
     settle(&mut tree);
     assert_eq!(text_of(&tree, "listing"), "main-open");
-    assert_eq!(rect_of(&tree, "depth0").x, 100);
+    assert_eq!(rect_of(&tree, "depth0").x, 101, "past the divider");
     assert_eq!(text_of(&tree, "depth0"), "stay", "the first on the right has no back");
 
     turn(&mut tree, false);
@@ -3520,7 +3521,17 @@ fn a_covered_split_comes_back_whole() {
     tree.post(LEAF_ID.load(Relaxed), Erased::new(LeafMsg::Back));
     settle(&mut tree);
     assert_eq!(text_of(&tree, "listing"), "main-open");
-    assert_eq!(rect_of(&tree, "depth0").x, 100);
+    assert_eq!(rect_of(&tree, "depth0").x, 101);
+}
+
+#[test]
+fn a_split_navigator_draws_its_divider_between_the_sides() {
+    let tree = split_tree(false);
+    let mut effects = crate::paint::Effects::new(Caps::INTERNAL);
+    let mut list = devkit_gfx::DisplayList::new_in(Caps::INTERNAL);
+    tree.paint(&mut effects, &[SCREEN], &mut list);
+    let color = theme().light.divider;
+    assert!(list.ops().iter().any(|op| matches!(op, devkit_gfx::Op::Fill { rect, color: c } if rect.x == 100 && rect.w == 1 && rect.h > 0 && *c == color)));
 }
 
 #[test]

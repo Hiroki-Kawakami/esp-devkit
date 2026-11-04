@@ -166,7 +166,8 @@ impl Tree {
             NodeContent::Navigator(nav) => {
                 let side = nav.split.unwrap_or(0);
                 let main = if nav.split.is_some() { nav.main() } else { NONE };
-                let right = Rect::new(content.x + side, content.y, content.w - side, content.h);
+                let left = self.detail_left(id);
+                let right = Rect::new(content.x + left, content.y, content.w - left, content.h);
                 let mut child = self.nodes[id as usize].first_child;
                 while child != NONE {
                     let area = if child == main { Rect::new(content.x, content.y, side, content.h) } else { right };

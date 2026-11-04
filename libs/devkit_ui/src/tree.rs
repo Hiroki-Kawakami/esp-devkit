@@ -1443,6 +1443,7 @@ impl Tree {
             || style.scroll_border.is_some()
             || style.shadow.is_some()
             || node.pose.is_some()
+            || matches!(&node.content, NodeContent::Navigator(nav) if nav.split.is_some())
             || matches!(node.content, NodeContent::Text(_) | NodeContent::Image { .. } | NodeContent::Canvas(_) | NodeContent::External(_) | NodeContent::Progress(_))
     }
 

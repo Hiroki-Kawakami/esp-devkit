@@ -547,6 +547,10 @@
         "padding_y": 8
       }
     },
+    "navigator": {
+      "divider_width": 1,
+      "divider_color": "color.divider"
+    },
     "modal": {
       "width": 640,
       "margin": 48,
