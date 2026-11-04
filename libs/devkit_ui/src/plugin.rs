@@ -10,7 +10,7 @@ use core::time::Duration;
 
 use bsp_rs::display::Rotation;
 use idf::log::error;
-use idf::nvs::{self, Nvs};
+use idf::nvs::{Key, Nvs};
 use idf::sync::{Mutex, OnceLock};
 use idf::freertos::Timer;
 
@@ -19,7 +19,7 @@ use crate::theme::ColorMode;
 
 const TAG: &CStr = c"store";
 const SAVE_DELAY: Duration = Duration::from_secs(5);
-const KEY_COLOR_MODE: &CStr = c"color_mode";
+const KEY_COLOR_MODE: Key<u8> = Key::new(c"color_mode");
 
 /// What plugins hear about, on the UI task.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -80,7 +80,7 @@ impl PluginContext {
 #[derive(Default)]
 struct Keys {
     nvs: Option<Nvs>,
-    pending: Vec<(&'static CStr, u8)>,
+    pending: Vec<(Key<u8>, u8)>,
 }
 
 struct Inner {
@@ -100,15 +100,15 @@ impl Store {
     }
 
     /// `None` when the key was never written.
-    pub fn get_u8(&self, key: &CStr) -> Option<u8> {
+    pub fn get_u8(&self, key: Key<u8>) -> Option<u8> {
         let mut keys = self.0.keys.lock();
         if let Some(&(_, value)) = keys.pending.iter().find(|(k, _)| *k == key) {
             return Some(value);
         }
-        self.0.open(&mut keys).and_then(|nvs| nvs.get_u8(key).inspect_err(|err| error!(TAG, "get: {err}")).ok().flatten())
+        self.0.open(&mut keys).and_then(|nvs| nvs.get(key).inspect_err(|err| error!(TAG, "get: {err}")).ok().flatten())
     }
 
-    pub fn set_u8(&self, key: &'static CStr, value: u8) {
+    pub fn set_u8(&self, key: Key<u8>, value: u8) {
         let mut keys = self.0.keys.lock();
         match keys.pending.iter_mut().find(|(k, _)| *k == key) {
             Some(pending) => pending.1 = value,
@@ -133,7 +133,7 @@ impl Store {
 impl Inner {
     fn open<'a>(&self, keys: &'a mut Keys) -> Option<&'a mut Nvs> {
         if keys.nvs.is_none() {
-            let opened = nvs::init().and_then(|()| Nvs::open(self.namespace));
+            let opened = Nvs::open(self.namespace);
             keys.nvs = opened.inspect_err(|err| error!(TAG, "open: {err}")).ok();
         }
         keys.nvs.as_mut()
@@ -143,7 +143,7 @@ impl Inner {
         let mut keys = self.keys.lock();
         let pending = core::mem::take(&mut keys.pending);
         let Some(nvs) = self.open(&mut keys) else { return };
-        let saved = pending.iter().try_for_each(|(key, value)| nvs.set_u8(key, *value)).and_then(|()| nvs.commit());
+        let saved = pending.iter().try_for_each(|&(key, value)| nvs.set(key, value)).and_then(|()| nvs.commit());
         if let Err(err) = saved {
             error!(TAG, "save: {err}");
         }

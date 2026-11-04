@@ -3,7 +3,6 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
-use alloc::ffi::CString;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec;
@@ -15,8 +14,8 @@ use core::time::Duration;
 use devkit_net::{TcpListener, TcpStream, UdpSocket};
 use idf::executor::{self, Spawner};
 use idf::log::{error, info, warn};
+use idf::nvs::{Key, Nvs};
 use idf::heap::{self, Caps};
-use idf::sys;
 
 const TAG: &CStr = c"rust_hello_net";
 
@@ -24,70 +23,32 @@ pub static INT_FREE_AT_MAIN: AtomicUsize = AtomicUsize::new(0);
 const ECHO_PORT: u16 = 7;
 const REPLY_WAIT: Duration = Duration::from_secs(5);
 const NVS_NAMESPACE: &CStr = c"rust_hello";
-const KEY_SSID: &CStr = c"ssid";
-const KEY_PASSWORD: &CStr = c"password";
-
-/// The rust_hello namespace, open for writing.
-struct Nvs(sys::nvs_handle_t);
-
-impl Nvs {
-    fn open() -> idf::Result<Self> {
-        idf::nvs::init()?;
-        let mut handle = 0;
-        idf::Error::check(unsafe {
-            sys::nvs_open(NVS_NAMESPACE.as_ptr(), sys::nvs_open_mode_t_NVS_READWRITE, &mut handle)
-        })?;
-        Ok(Self(handle))
-    }
-
-    fn get(&self, key: &CStr) -> Option<String> {
-        let mut len = 0;
-        if unsafe { sys::nvs_get_str(self.0, key.as_ptr(), core::ptr::null_mut(), &mut len) } != 0 {
-            return None;
-        }
-        let mut buf = vec![0u8; len];
-        if unsafe { sys::nvs_get_str(self.0, key.as_ptr(), buf.as_mut_ptr().cast(), &mut len) } != 0 {
-            return None;
-        }
-        CStr::from_bytes_until_nul(&buf).ok()?.to_str().ok().map(String::from)
-    }
-
-    fn set(&self, key: &CStr, value: &str) -> idf::Result<()> {
-        let value = CString::new(value).map_err(|_| idf::Error::INVALID_ARG)?;
-        idf::Error::check(unsafe { sys::nvs_set_str(self.0, key.as_ptr(), value.as_ptr()) })
-    }
-
-    fn commit(&self) -> idf::Result<()> {
-        idf::Error::check(unsafe { sys::nvs_commit(self.0) })
-    }
-
-    fn erase(&self) -> idf::Result<()> {
-        idf::Error::check(unsafe { sys::nvs_erase_all(self.0) })?;
-        self.commit()
-    }
-}
-
-impl Drop for Nvs {
-    fn drop(&mut self) {
-        unsafe { sys::nvs_close(self.0) };
-    }
-}
+const KEY_SSID: Key<String> = Key::new(c"ssid");
+const KEY_PASSWORD: Key<String> = Key::new(c"password");
 
 fn save_network(ssid: &str, password: &str) -> idf::Result<()> {
-    let nvs = Nvs::open()?;
+    let mut nvs = Nvs::open(NVS_NAMESPACE)?;
     nvs.set(KEY_SSID, ssid)?;
     nvs.set(KEY_PASSWORD, password)?;
     nvs.commit()
 }
 
-fn saved_network() -> Option<(String, String)> {
-    let nvs = Nvs::open().ok()?;
-    Some((nvs.get(KEY_SSID)?, nvs.get(KEY_PASSWORD).unwrap_or_default()))
+fn saved_network() -> idf::Result<Option<(String, String)>> {
+    let nvs = Nvs::open(NVS_NAMESPACE)?;
+    let Some(ssid) = nvs.get(KEY_SSID)? else { return Ok(None) };
+    Ok(Some((ssid, nvs.get(KEY_PASSWORD)?.unwrap_or_default())))
+}
+
+fn forget_network() -> idf::Result<()> {
+    let mut nvs = Nvs::open(NVS_NAMESPACE)?;
+    nvs.erase_all()?;
+    nvs.commit()
 }
 
 /// Joins the network `wifi join` saved last, if any.
 pub async fn join_saved() {
-    let (Some(wifi), Some((ssid, password))) = (devkit_net::wifi(), saved_network()) else { return };
+    let saved = saved_network().inspect_err(|err| warn!(TAG, "nvs: {err}"));
+    let (Some(wifi), Ok(Some((ssid, password)))) = (devkit_net::wifi(), saved) else { return };
     info!(TAG, "joining the saved network");
     match wifi.connect(&devkit_net::StaConfig::new(&ssid, &password)).await {
         Ok(()) => info!(TAG, "joined, address {:?}", wifi.sta().wait_ipv4_async().await.address),
@@ -182,7 +143,7 @@ fn wifi_command(args: &[&str]) -> Result<Option<String>, String> {
             Ok(None)
         }
         ["forget"] => {
-            Nvs::open().and_then(|nvs| nvs.erase()).map_err(|err| format!("{err}"))?;
+            forget_network().map_err(|err| format!("{err}"))?;
             Ok(None)
         }
         [] => Ok(Some(format!("{:?}", wifi.state()))),

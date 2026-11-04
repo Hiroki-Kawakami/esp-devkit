@@ -519,9 +519,26 @@ the simulator.
 `idf::nvs::init()` initializes the default NVS partition for every user of it
 and may be called by each of them; it does the work once. A partition without
 free pages or written by a newer IDF is erased first, losing what it held.
-`Nvs::open` opens a namespace of 15 bytes at most, created when missing;
-`get_u8` gives `None` for a missing key, and what `set_u8` writes lasts once
-`commit` has returned.
+`Nvs::open` initializes it as well and opens a namespace of 15 bytes at most,
+created when missing. A `Key<T>` names a value and its type:
+
+```rust
+const VOLUME: Key<u8> = Key::new(c"volume");
+const PATH: Key<String> = Key::new(c"path");
+
+let mut nvs = Nvs::open(c"app")?;
+let volume = nvs.get(VOLUME)?.unwrap_or(80);
+nvs.set(PATH, "/sdcard/a.mp3")?;
+nvs.commit()?;
+```
+
+`Key::new` panics past 15 bytes, so a `const` key that long fails the build.
+Integers up to 64 bits, `bool` (a `u8`), `String` (set from `&str`) and
+`Vec<u8>` (a blob, set from `&[u8]`) are values; an app type becomes one by
+implementing `Value` over one of them, `from_raw` returning `None` for what it
+cannot take. `get` is `Ok(None)` for a missing key, one written as another
+type, or a value `from_raw` refuses, and `Err` for anything else. What `set`
+writes lasts once `commit` has returned; `remove` takes a missing key as done.
 
 `idf::fs` follows `std::fs` over the POSIX calls, with `&CStr` paths:
 

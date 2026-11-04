@@ -5,17 +5,17 @@
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
-use core::ffi::CStr;
 
 use bsp_rs::display::Rotation;
 use bsp_rs::imu::{Imu, Orientation};
+use idf::nvs::Key;
 use idf::sync::Mutex;
 
 use crate::app::Input;
 use crate::plugin::{Plugin, PluginContext, PluginInit, Store};
 
-const KEY_ROTATION: &CStr = c"rotation";
-const KEY_LOCKED: &CStr = c"locked";
+const KEY_ROTATION: Key<u8> = Key::new(c"rotation");
+const KEY_LOCKED: Key<u8> = Key::new(c"locked");
 
 devkit::bitflags! {
     /// The turns a screen can be shown at. `R0` to `R270` are the panel's own,
