@@ -593,8 +593,7 @@ let frames = h.join();
 - `current()` returns the calling task as a `Thread`: `name`, `priority`,
   `set_priority`, `core_affinity` (`None` if not pinned) and
   `stack_high_water_mark` (bytes). It is not `Send`, so it cannot outlive the
-  task. In the simulator the high water mark is the requested stack size, and
-  the thread running `app_main` is not a task (empty name, no stack).
+  task. In the simulator the high water mark is the requested stack size.
 - `sleep(d)` waits at least `d`: it rounds up to ticks of `CONFIG_FREERTOS_HZ`
   and adds one, since `vTaskDelay(n)` can end up to a tick early. The same
   rounding applies to every timeout in `idf::sync`. `yield_now()` is
