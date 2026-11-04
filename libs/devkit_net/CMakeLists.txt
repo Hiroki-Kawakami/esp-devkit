@@ -12,6 +12,8 @@ if(ESP_PLATFORM)
         set(options "--blocklist-type=wifi_(sta_)?config_t|wifi_event_dpp_config_received_t"
                     "--blocklist-function=esp_wifi_(set|get)_config")
     endif()
+else()
+    set(headers "stdlib.h" "sys/socket.h")
 endif()
 idf_component_register(SRCS ${srcs} PRIV_INCLUDE_DIRS "src" PRIV_REQUIRES ${requires})
 devkit_rust_crate(ROOT "src/lib.rs" TESTS BINDGEN_HEADERS ${headers} BINDGEN_OPTIONS ${options})

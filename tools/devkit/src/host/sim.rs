@@ -68,6 +68,7 @@ struct Run {
     pid: libc::pid_t,
     stdin: ChildStdin,
     sock: RawFd,
+    net_stop: Arc<AtomicBool>,
 }
 
 struct Psram {
@@ -172,11 +173,20 @@ impl Device {
         unsafe { libc::fcntl(out[0], libc::F_SETFD, libc::FD_CLOEXEC) };
         let (out_read, out_write) = unsafe { (File::from_raw_fd(out[0]), OwnedFd::from_raw_fd(out[1])) };
         let err_write = out_write.try_clone()?;
+        let (net_fd, fw_net_fd) = match super::net::socket_pair() {
+            Ok(fds) => fds,
+            Err(err) => {
+                unsafe { libc::close(host_fd) };
+                unsafe { libc::close(fw_fd) };
+                return Err(err);
+            }
+        };
 
         let spawned = Command::new(&self.fw)
             .args(&self.args)
             .envs(self.env.iter().map(|(k, v)| (k, v)))
             .env(ENV_SOCKET_FD.to_str().unwrap(), fw_fd.to_string())
+            .env(super::net::ENV_NET_FD, fw_net_fd.to_string())
             .env(ENV_PSRAM_PATH.to_str().unwrap(), &self.psram.path)
             .env(ENV_PSRAM_SIZE.to_str().unwrap(), self.psram.len.to_string())
             .env(ENV_RTC.to_str().unwrap(), {
@@ -192,13 +202,20 @@ impl Device {
             .stderr(Stdio::from(err_write))
             .spawn();
         unsafe { libc::close(fw_fd) };
+        unsafe { libc::close(fw_net_fd) };
         let mut child = match spawned {
             Ok(child) => child,
             Err(err) => {
                 unsafe { libc::close(host_fd) };
+                unsafe { libc::close(net_fd) };
                 return Err(err);
             }
         };
+        let net_stop = Arc::new(AtomicBool::new(false));
+        {
+            let stop = net_stop.clone();
+            thread::spawn(move || super::net::run(net_fd, stop));
+        }
 
         {
             let mut state = self.state.lock().unwrap();
@@ -208,7 +225,7 @@ impl Device {
             state.brightness = 0;
         }
         let stdin = child.stdin.take().unwrap();
-        *self.run.lock().unwrap() = Some(Run { pid: child.id() as libc::pid_t, stdin, sock: host_fd });
+        *self.run.lock().unwrap() = Some(Run { pid: child.id() as libc::pid_t, stdin, sock: host_fd, net_stop });
 
         let me = self.clone();
         thread::spawn(move || {
@@ -253,6 +270,7 @@ impl Device {
         *self.player.lock().unwrap() = None;
         self.muted.store(true, Ordering::Relaxed);
         let run = self.run.lock().unwrap().take()?;
+        run.net_stop.store(true, Ordering::Relaxed);
         unsafe { libc::shutdown(run.sock, libc::SHUT_RDWR) };
         Some(run)
     }

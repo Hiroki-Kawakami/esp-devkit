@@ -9,6 +9,7 @@
 
 pub mod audio;
 pub mod decode;
+pub mod net;
 pub mod serial;
 pub mod sim;
 

@@ -41,6 +41,7 @@ The host starts the firmware with:
 | `SIM_PSRAM_SIZE` | its size in bytes |
 | `SIM_RTC` | the clock to start with: local wall-clock seconds since 1970, then 1 or 0 for valid |
 | `SIM_POWER` | the power state to start with: `<level> <external> <battery>`, flags as 0 or 1 |
+| `SIM_NET_FD` | inherited Unix datagram socket, one Ethernet frame per datagram |
 
 - idf_compat maps the region and serves `MALLOC_CAP_SPIRAM` from it, so
   framebuffers land where the host can read them. Without the variables
@@ -50,6 +51,18 @@ The host starts the firmware with:
   host closes it.
 - `esp_restart()` exits with status 75; the host starts the firmware again.
   Any other exit leaves it stopped until Reset or Power on.
+
+## Network
+
+devkit_net registers a Wi-Fi radio in the simulator that joins any network at
+once; its station sends and receives frames on `SIM_NET_FD`. The host runs
+libslirp behind the socket, as QEMU's user networking does:
+
+- DHCP gives 10.0.2.15/24, gateway 10.0.2.2, DNS 10.0.2.3.
+- 10.0.2.2 stands for the host's 127.0.0.1, so the firmware reaches servers
+  on the host there; 10.0.2.3 forwards to the host's resolver. Other
+  addresses go out through the host's own sockets, ICMP echo included.
+- Nothing connects in from the host. Without the variable, connecting fails.
 
 ## Events
 

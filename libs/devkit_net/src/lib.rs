@@ -18,6 +18,8 @@ mod iface;
 mod link;
 mod net;
 mod ring;
+#[cfg(all(not(target_os = "none"), not(test)))]
+mod sim;
 mod stack;
 mod tcp;
 mod tcp_socket;

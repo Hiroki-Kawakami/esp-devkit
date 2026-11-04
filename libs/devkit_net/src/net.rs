@@ -123,15 +123,17 @@ pub(crate) struct Net {
 
 static GLOBAL: LazyLock<Net> = LazyLock::new(Net::new);
 
-#[cfg(CONFIG_DEVKIT_NET_WIFI)]
-static NATIVE_WIFI: AtomicBool = AtomicBool::new(false);
+static BUILT_IN: AtomicBool = AtomicBool::new(false);
 
-/// Where links are registered, started or not.
+/// Where links are registered, started or not. The first call registers the
+/// radio the firmware has without a board's help.
 pub(crate) fn registry() -> &'static Net {
     let net = &*GLOBAL;
-    #[cfg(CONFIG_DEVKIT_NET_WIFI)]
-    if !NATIVE_WIFI.swap(true, Ordering::AcqRel) {
+    if !BUILT_IN.swap(true, Ordering::AcqRel) {
+        #[cfg(CONFIG_DEVKIT_NET_WIFI)]
         crate::wifi_native::register();
+        #[cfg(all(not(target_os = "none"), not(test)))]
+        crate::sim::register();
     }
     net
 }
