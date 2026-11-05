@@ -55,6 +55,25 @@ impl WifiDriver for FakeWifi {
         self.events.set(events).ok().unwrap();
     }
 
+    fn start(&self) -> BoxFuture<'_, Result<(), i32>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn stop(&self) -> BoxFuture<'_, Result<(), i32>> {
+        Box::pin(async move {
+            self.link.rx.get().unwrap().set_up(false);
+            Ok(())
+        })
+    }
+
+    fn scan(&self) -> BoxFuture<'_, Result<Vec<crate::ScanRecord>, i32>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+
+    fn rssi(&self) -> BoxFuture<'_, Result<i8, i32>> {
+        Box::pin(async { Ok(-40) })
+    }
+
     fn connect<'a>(&'a self, config: &'a StaConfig<'a>) -> BoxFuture<'a, Result<(), i32>> {
         Box::pin(async move {
             let events = self.events.get().unwrap();
@@ -130,6 +149,8 @@ fn wifi_dhcp_and_tcp_through_the_stack_task() {
 
         let wifi = crate::wifi().unwrap();
         let wrong = StaConfig::new("example-ap", "wrong");
+        assert_eq!(executor::block_on(wifi.connect(&wrong)), Err(ConnectError::Stopped));
+        executor::block_on(wifi.start()).unwrap();
         assert_eq!(executor::block_on(wifi.connect(&wrong)), Err(ConnectError::AuthFailed));
         assert!(!sta.is_link_up());
 

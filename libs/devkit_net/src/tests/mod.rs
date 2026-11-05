@@ -9,6 +9,7 @@ mod link;
 mod runner;
 mod tcp;
 mod udp;
+mod wifi_manager;
 
 use std::collections::VecDeque;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};

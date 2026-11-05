@@ -10,6 +10,7 @@ use core::time::Duration;
 
 use idf::heap::Caps;
 
+use crate::crypto::siphash;
 use crate::icmp::Reported;
 use crate::ring::Ring;
 use crate::stack::{SocketId, Stack, Tx};
@@ -41,44 +42,6 @@ const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(75);
 const KEEPALIVE_PROBES: u8 = 9;
 /// After the link had no room, when to try again if it never says so.
 const LINK_RETRY: Duration = Duration::from_millis(1);
-
-/// SipHash-2-4.
-fn siphash(k0: u64, k1: u64, data: &[u8]) -> u64 {
-    let mut v = [k0 ^ 0x736f6d6570736575, k1 ^ 0x646f72616e646f6d, k0 ^ 0x6c7967656e657261, k1 ^ 0x7465646279746573];
-    let round = |v: &mut [u64; 4]| {
-        v[0] = v[0].wrapping_add(v[1]);
-        v[1] = v[1].rotate_left(13) ^ v[0];
-        v[0] = v[0].rotate_left(32);
-        v[2] = v[2].wrapping_add(v[3]);
-        v[3] = v[3].rotate_left(16) ^ v[2];
-        v[0] = v[0].wrapping_add(v[3]);
-        v[3] = v[3].rotate_left(21) ^ v[0];
-        v[2] = v[2].wrapping_add(v[1]);
-        v[1] = v[1].rotate_left(17) ^ v[2];
-        v[2] = v[2].rotate_left(32);
-    };
-    let mut chunks = data.chunks_exact(8);
-    for chunk in &mut chunks {
-        let m = u64::from_le_bytes(chunk.try_into().unwrap());
-        v[3] ^= m;
-        round(&mut v);
-        round(&mut v);
-        v[0] ^= m;
-    }
-    let mut last = [0u8; 8];
-    last[..chunks.remainder().len()].copy_from_slice(chunks.remainder());
-    last[7] = data.len() as u8;
-    let m = u64::from_le_bytes(last);
-    v[3] ^= m;
-    round(&mut v);
-    round(&mut v);
-    v[0] ^= m;
-    v[2] ^= 0xff;
-    for _ in 0..4 {
-        round(&mut v);
-    }
-    v[0] ^ v[1] ^ v[2] ^ v[3]
-}
 
 /// RFC 3390.
 fn initial_window(mss: usize) -> usize {

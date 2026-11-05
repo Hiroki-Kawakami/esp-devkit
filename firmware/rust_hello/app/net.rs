@@ -11,9 +11,10 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use core::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use core::time::Duration;
 
+use devkit_net::wifi_manager::{self, Manager};
 use devkit_net::{TcpListener, TcpStream, UdpSocket};
 use idf::executor::{self, Spawner};
-use idf::log::{error, info, warn};
+use idf::log::{error, info};
 use idf::nvs::{Key, Nvs};
 use idf::heap::{self, Caps};
 
@@ -22,40 +23,6 @@ const TAG: &CStr = c"rust_hello_net";
 pub static INT_FREE_AT_MAIN: AtomicUsize = AtomicUsize::new(0);
 const ECHO_PORT: u16 = 7;
 const REPLY_WAIT: Duration = Duration::from_secs(5);
-const NVS_NAMESPACE: &CStr = c"rust_hello";
-const KEY_SSID: Key<String> = Key::new(c"ssid");
-const KEY_PASSWORD: Key<String> = Key::new(c"password");
-
-fn save_network(ssid: &str, password: &str) -> idf::Result<()> {
-    let mut nvs = Nvs::open(NVS_NAMESPACE)?;
-    nvs.set(KEY_SSID, ssid)?;
-    nvs.set(KEY_PASSWORD, password)?;
-    nvs.commit()
-}
-
-fn saved_network() -> idf::Result<Option<(String, String)>> {
-    let nvs = Nvs::open(NVS_NAMESPACE)?;
-    let Some(ssid) = nvs.get(KEY_SSID)? else { return Ok(None) };
-    Ok(Some((ssid, nvs.get(KEY_PASSWORD)?.unwrap_or_default())))
-}
-
-fn forget_network() -> idf::Result<()> {
-    let mut nvs = Nvs::open(NVS_NAMESPACE)?;
-    nvs.erase_all()?;
-    nvs.commit()
-}
-
-/// Joins the network `wifi join` saved last, if any.
-pub async fn join_saved() {
-    let saved = saved_network().inspect_err(|err| warn!(TAG, "nvs: {err}"));
-    let (Some(wifi), Ok(Some((ssid, password)))) = (devkit_net::wifi(), saved) else { return };
-    info!(TAG, "joining the saved network");
-    match wifi.connect(&devkit_net::StaConfig::new(&ssid, &password)).await {
-        Ok(()) => info!(TAG, "joined, address {:?}", wifi.sta().wait_ipv4_async().await.address),
-        Err(err) => warn!(TAG, "saved network: {err:?}"),
-    }
-}
-
 fn any(port: u16) -> SocketAddr {
     SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port))
 }
@@ -112,24 +79,125 @@ pub async fn serve_echo(spawner: &Spawner) {
     }
 }
 
+const OLD_NAMESPACE: &CStr = c"rust_hello";
+const OLD_SSID: Key<String> = Key::new(c"ssid");
+const OLD_PASSWORD: Key<String> = Key::new(c"password");
+
+/// Moves the network an older rust_hello saved into the manager.
+pub fn import_old_network() {
+    let Some(m) = wifi_manager::get() else { return };
+    let result = Nvs::open(OLD_NAMESPACE).and_then(|mut nvs| {
+        let Some(ssid) = nvs.get(OLD_SSID)? else { return Ok(false) };
+        let password = nvs.get(OLD_PASSWORD)?.unwrap_or_default();
+        m.add(ssid.as_bytes(), &password, false)?;
+        nvs.erase_all()?;
+        nvs.commit()?;
+        Ok(true)
+    });
+    match result {
+        Ok(true) => info!(TAG, "imported the old saved network"),
+        Ok(false) => {}
+        Err(err) => error!(TAG, "old saved network: {err}"),
+    }
+}
+
+fn ssid(bytes: &[u8]) -> alloc::borrow::Cow<'_, str> {
+    String::from_utf8_lossy(bytes)
+}
+
+fn manager() -> Result<&'static Manager, String> {
+    wifi_manager::get().ok_or_else(|| String::from("wifi manager not started"))
+}
+
+/// Logs what a scan watch reports, `rounds` times.
+async fn watch_scans(manager: &'static Manager, interval: Duration, rounds: u32) {
+    let mut watch = manager.watch_scan(interval);
+    for round in 0..rounds {
+        match watch.changed().await {
+            Ok(list) => info!(TAG, "watch {round}: {} networks", list.len()),
+            Err(err) => info!(TAG, "watch {round}: {err:?}"),
+        }
+    }
+    info!(TAG, "watch done");
+}
+
+/// Logs every state the manager goes through.
+pub async fn log_wifi_states() {
+    let Some(manager) = wifi_manager::get() else { return };
+    loop {
+        info!(TAG, "wifi state {:?}", manager.changed().await);
+    }
+}
+
 fn wifi_command(args: &[&str]) -> Result<Option<String>, String> {
-    let wifi = devkit_net::wifi().ok_or("no wifi")?;
+    let m = manager()?;
+    let err = |e: &dyn core::fmt::Debug| format!("{e:?}");
     match args {
-        ["join", ssid, rest @ ..] => {
-            let password = rest.first().copied().unwrap_or("");
-            executor::block_on(wifi.connect(&devkit_net::StaConfig::new(ssid, password)))
-                .map_err(|err| format!("{err:?}"))?;
-            if let Err(err) = save_network(ssid, password) {
-                warn!(TAG, "network not saved: {err}");
+        [] => Ok(Some(format!("{} {:?}", if m.enabled() { "on" } else { "off" }, m.state()))),
+        ["on"] => executor::block_on(m.set_enabled(true)).map(|()| None).map_err(|e| err(&e)),
+        ["off"] => executor::block_on(m.set_enabled(false)).map(|()| None).map_err(|e| err(&e)),
+        ["scan"] => {
+            let list = executor::block_on(m.scan()).map_err(|e| err(&e))?;
+            let mut out = String::new();
+            for e in list {
+                out += &format!(
+                    "{} {} ch{} {:?}{}{}; ",
+                    ssid(&e.ssid),
+                    e.rssi,
+                    e.channel,
+                    e.security,
+                    if e.saved { " saved" } else { "" },
+                    if e.connected { " connected" } else { "" }
+                );
             }
-            let ip = wifi
+            Ok(Some(out))
+        }
+        ["watch", interval, rounds] => {
+            let interval = Duration::from_secs(interval.parse().map_err(|_| "bad interval")?);
+            let rounds = rounds.parse().map_err(|_| "bad rounds")?;
+            idf::thread::Builder::new()
+                .name("watch_scans")
+                .stack_size(6144)
+                .spawn(move || executor::block_on(watch_scans(m, interval, rounds)))
+                .map_err(|e| err(&e))?;
+            Ok(None)
+        }
+        ["join", name, rest @ ..] => {
+            let hidden = rest.last() == Some(&"hidden");
+            let password = rest.first().filter(|p| **p != "hidden").copied().unwrap_or("");
+            executor::block_on(m.join(name.as_bytes(), password, hidden)).map_err(|e| err(&e))?;
+            let ip = devkit_net::wifi()
+                .ok_or("no wifi")?
                 .sta()
                 .wait_ipv4_timeout(Duration::from_secs(15))
                 .map_err(|_| String::from("joined, no address"))?;
             Ok(Some(format!("{}/{} gw {:?}", ip.address, ip.prefix_len, ip.gateway)))
         }
+        ["rejoin", name] => executor::block_on(m.join_saved(name.as_bytes())).map(|()| None).map_err(|e| err(&e)),
+        ["add", name, rest @ ..] => {
+            let hidden = rest.last() == Some(&"hidden");
+            let password = rest.first().filter(|p| **p != "hidden").copied().unwrap_or("");
+            m.add(name.as_bytes(), password, hidden).map(|()| None).map_err(|e| err(&e))
+        }
+        ["saved"] => {
+            let mut out = String::new();
+            for n in m.networks() {
+                out += &format!(
+                    "{}{}{}; ",
+                    ssid(&n.ssid),
+                    if n.secured { " secured" } else { " open" },
+                    if n.hidden { " hidden" } else { "" }
+                );
+            }
+            Ok(Some(out))
+        }
+        ["forget", name] => executor::block_on(m.forget(name.as_bytes())).map(|f| Some(format!("{f}"))).map_err(|e| err(&e)),
         ["leave"] => {
-            executor::block_on(wifi.disconnect()).map_err(|err| format!("{err:?}"))?;
+            executor::block_on(m.disconnect());
+            Ok(None)
+        }
+        ["reconnect"] => {
+            m.reconnect();
             Ok(None)
         }
         ["ps", mode] => {
@@ -139,15 +207,14 @@ fn wifi_command(args: &[&str]) -> Result<Option<String>, String> {
                 "max" => devkit_net::PowerSave::Max,
                 _ => return Err(String::from("usage: wifi ps none|min|max")),
             };
-            executor::block_on(wifi.set_power_save(mode)).map_err(|err| format!("{err:?}"))?;
+            let wifi = devkit_net::wifi().ok_or("no wifi")?;
+            executor::block_on(wifi.set_power_save(mode)).map_err(|e| err(&e))?;
             Ok(None)
         }
-        ["forget"] => {
-            forget_network().map_err(|err| format!("{err}"))?;
-            Ok(None)
-        }
-        [] => Ok(Some(format!("{:?}", wifi.state()))),
-        _ => Err(String::from("usage: wifi [join <ssid> [password] | leave | forget | ps none|min|max]")),
+        _ => Err(String::from(
+            "usage: wifi [on | off | scan | watch <s> <n> | join <ssid> [password] [hidden] | rejoin <ssid> | \
+             add <ssid> [password] [hidden] | saved | forget <ssid> | leave | reconnect | ps none|min|max]",
+        )),
     }
 }
 

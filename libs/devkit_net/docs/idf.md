@@ -34,6 +34,12 @@ Other details that follow IDF's types:
   workaround can go.
 - The station asks for WPA2-PSK or better when a password is given, PMF
   capable, SAE with both hunting-and-pecking and H2E.
+- A scan runs blocking on its own task (`devkit_net_wifi_scan` in C copies
+  what it needs out of `wifi_ap_record_t`, which also has bitfields), at most
+  32 records. `wifi_auth_mode_t` values map to `Security` in `wifi.rs`; check
+  them on an upgrade.
+- The wifi manager's key comes from `ESP_MAC_EFUSE_FACTORY`
+  (`idf::system::factory_mac`), the chip's own MAC whatever radio it uses.
 - The default event loop is created if nobody did (`ESP_ERR_INVALID_STATE`
   means it exists); the driver's events arrive on its task.
 - IDF does not allow a component's `REQUIRES` to depend on Kconfig, so

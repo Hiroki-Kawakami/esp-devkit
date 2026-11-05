@@ -3,7 +3,7 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
-use crate::sys;
+use crate::{Error, Result, sys};
 
 pub const CORE_COUNT: u32 = sdkconfig::CONFIG_FREERTOS_NUMBER_OF_CORES as u32;
 
@@ -16,6 +16,13 @@ pub fn core_id() -> u32 {
 /// entropy source runs.
 pub fn random() -> u32 {
     unsafe { sys::esp_random() }
+}
+
+/// The MAC address burnt into this chip's eFuse at the factory.
+pub fn factory_mac() -> Result<[u8; 6]> {
+    let mut mac = [0; 6];
+    Error::check(unsafe { sys::esp_read_mac(mac.as_mut_ptr(), sys::esp_mac_type_t_ESP_MAC_EFUSE_FACTORY) })?;
+    Ok(mac)
 }
 
 pub fn in_isr() -> bool {

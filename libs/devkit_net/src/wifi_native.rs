@@ -17,7 +17,10 @@ use idf::time::Instant;
 use idf::{Error, Result, thread};
 
 use crate::link::{Link, LinkInfo, LinkRx, Medium, RxFrame, TxError};
-use crate::wifi::{Auth, BoxFuture, DisconnectReason, PowerSave, StaConfig, WifiDriver, WifiEvents, WifiState, offload};
+use crate::wifi::{
+    Auth, BoxFuture, DisconnectReason, PowerSave, ScanRecord, Security, StaConfig, WifiDriver, WifiEvents, WifiState,
+    offload,
+};
 
 #[allow(
     dead_code,
@@ -35,15 +38,21 @@ const TAG: &CStr = c"devkit_net_wifi";
 
 const MTU: usize = 1500;
 const START_WAIT: Duration = Duration::from_secs(5);
+const SCAN_MAX: usize = 32;
 
 struct Sta;
 struct Native;
+
+struct Radio {
+    initialized: bool,
+    started: bool,
+}
 
 static STA: Sta = Sta;
 static NATIVE: Native = Native;
 static LINK_RX: OnceLock<LinkRx> = OnceLock::new();
 static EVENTS: OnceLock<WifiEvents> = OnceLock::new();
-static RADIO: Mutex<bool> = Mutex::new(false);
+static RADIO: Mutex<Radio> = Mutex::new(Radio { initialized: false, started: false });
 static POWER_SAVE: Mutex<PowerSave> = Mutex::new(PowerSave::Min);
 static STARTED: AtomicBool = AtomicBool::new(false);
 static UP: AtomicBool = AtomicBool::new(false);
@@ -150,11 +159,7 @@ fn apply_power_save(mode: PowerSave) -> Result<()> {
     check(unsafe { ffi::esp_wifi_set_ps(ps) })
 }
 
-fn start_radio() -> Result<()> {
-    let mut started = RADIO.lock();
-    if *started {
-        return Ok(());
-    }
+fn init_radio() -> Result<()> {
     let loop_err = unsafe { ffi::esp_event_loop_create_default() };
     if loop_err != 0 && loop_err != Error::INVALID_STATE.code() {
         check(loop_err)?;
@@ -171,20 +176,69 @@ fn start_radio() -> Result<()> {
     check(unsafe { ffi::esp_wifi_init(&init) })?;
     check(unsafe { ffi::esp_wifi_set_storage(ffi::wifi_storage_t_WIFI_STORAGE_RAM) })?;
     check(unsafe { ffi::esp_wifi_set_mode(ffi::wifi_mode_t_WIFI_MODE_STA) })?;
-    check(unsafe { ffi::esp_wifi_internal_reg_rxcb(ffi::wifi_interface_t_WIFI_IF_STA, Some(on_rx)) })?;
-    check(unsafe { ffi::esp_wifi_start() })?;
-    check(unsafe { ffi::esp_wifi_set_tx_done_cb(Some(on_tx_done)) })?;
-    apply_power_save(*POWER_SAVE.lock())?;
+    check(unsafe { ffi::esp_wifi_internal_reg_rxcb(ffi::wifi_interface_t_WIFI_IF_STA, Some(on_rx)) })
+}
+
+fn wait_started(started: bool) -> Result<()> {
     let deadline = Instant::now() + START_WAIT;
-    while !STARTED.load(Ordering::Acquire) {
+    while STARTED.load(Ordering::Acquire) != started {
         if Instant::now() >= deadline {
             return Err(Error::TIMEOUT);
         }
         thread::sleep(Duration::from_millis(10));
     }
-    *started = true;
+    Ok(())
+}
+
+fn start_radio() -> Result<()> {
+    let mut radio = RADIO.lock();
+    if radio.started {
+        return Ok(());
+    }
+    if !radio.initialized {
+        init_radio()?;
+        radio.initialized = true;
+    }
+    check(unsafe { ffi::esp_wifi_start() })?;
+    check(unsafe { ffi::esp_wifi_set_tx_done_cb(Some(on_tx_done)) })?;
+    apply_power_save(*POWER_SAVE.lock())?;
+    wait_started(true)?;
+    radio.started = true;
     info!(TAG, "station up");
     Ok(())
+}
+
+fn stop_radio() -> Result<()> {
+    let mut radio = RADIO.lock();
+    if !radio.started {
+        return Ok(());
+    }
+    check(unsafe { ffi::esp_wifi_stop() })?;
+    radio.started = false;
+    UP.store(false, Ordering::Release);
+    if let Some(rx) = LINK_RX.get() {
+        rx.set_up(false);
+    }
+    wait_started(false)?;
+    info!(TAG, "station stopped");
+    Ok(())
+}
+
+fn scan() -> Result<Vec<ScanRecord>> {
+    let mut records: Vec<ffi::devkit_net_scan_record_t> = Vec::with_capacity(SCAN_MAX);
+    let mut count = SCAN_MAX as u16;
+    check(unsafe { ffi::devkit_net_wifi_scan(records.as_mut_ptr(), &mut count) })?;
+    unsafe { records.set_len(usize::from(count).min(SCAN_MAX)) };
+    Ok(records
+        .iter()
+        .map(|r| ScanRecord {
+            ssid: r.ssid[..usize::from(r.ssid_len)].to_vec(),
+            bssid: r.bssid,
+            channel: r.channel,
+            rssi: r.rssi,
+            security: Security::from_auth_mode(r.authmode.into()),
+        })
+        .collect())
 }
 
 struct Owned {
@@ -195,7 +249,6 @@ struct Owned {
 }
 
 fn join(config: &Owned) -> Result<()> {
-    start_radio()?;
     let password = config.password.as_ref().map(|p| {
         let mut p = p.clone();
         p.push(0);
@@ -222,6 +275,26 @@ impl WifiDriver for Native {
         let _ = EVENTS.set(events);
     }
 
+    fn start(&self) -> BoxFuture<'_, core::result::Result<(), i32>> {
+        offload("wifi_start", start_radio)
+    }
+
+    fn stop(&self) -> BoxFuture<'_, core::result::Result<(), i32>> {
+        offload("wifi_stop", stop_radio)
+    }
+
+    fn scan(&self) -> BoxFuture<'_, core::result::Result<Vec<ScanRecord>, i32>> {
+        offload("wifi_scan", scan)
+    }
+
+    fn rssi(&self) -> BoxFuture<'_, core::result::Result<i8, i32>> {
+        offload("wifi_rssi", || {
+            let mut rssi = 0;
+            check(unsafe { ffi::esp_wifi_sta_get_rssi(&mut rssi) })?;
+            Ok(rssi as i8)
+        })
+    }
+
     fn connect<'a>(&'a self, config: &'a StaConfig<'a>) -> BoxFuture<'a, core::result::Result<(), i32>> {
         let owned = Owned {
             ssid: config.ssid.to_vec(),
@@ -238,7 +311,7 @@ impl WifiDriver for Native {
     fn set_power_save(&self, mode: PowerSave) -> BoxFuture<'_, core::result::Result<(), i32>> {
         offload("wifi_ps", move || {
             *POWER_SAVE.lock() = mode;
-            if !*RADIO.lock() {
+            if !RADIO.lock().started {
                 return Ok(());
             }
             apply_power_save(mode)
@@ -247,7 +320,7 @@ impl WifiDriver for Native {
 
     fn disconnect(&self) -> BoxFuture<'_, core::result::Result<(), i32>> {
         offload("wifi_leave", || {
-            if !*RADIO.lock() {
+            if !RADIO.lock().started {
                 return Ok(());
             }
             check(unsafe { ffi::esp_wifi_disconnect() })

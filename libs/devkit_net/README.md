@@ -11,6 +11,7 @@ on in ESP-IDF, private APIs included, is in [`docs/idf.md`](docs/idf.md).
 ```rust
 devkit_net::start(devkit_net::Config::default())?;
 let wifi = devkit_net::wifi().ok_or(Error::Unsupported)?;
+wifi.start().await?;
 wifi.connect(&StaConfig::new("YOUR_SSID", "YOUR_PASSWORD")).await?;
 let address = wifi.sta().wait_ipv4_async().await.address;
 
@@ -21,7 +22,8 @@ stream.write_all(b"hello")?;
 | module | what |
 |---|---|
 | `iface` | `start`, `add_link`, `interfaces` and `Interface`: link state, statistics, IPv4 mode and address, DNS servers |
-| `wifi` | `Wifi` (connect, disconnect, power save, state), the `WifiDriver` trait and `register_wifi` |
+| `wifi` | `Wifi` (start, stop, connect, disconnect, scan, RSSI, power save, state), the `WifiDriver` trait and `register_wifi` |
+| `wifi_manager` | saved networks, joining them by itself, the Wi-Fi on/off switch |
 | `udp_socket`, `tcp_socket` | `UdpSocket`, `TcpListener`, `TcpStream` and its split halves, with their builders |
 | `link` | the `Link` trait a network interface implements, `LinkRx` and `RxFrame` |
 | `stack` | the sans-IO `Stack` that does all protocol work |
@@ -55,11 +57,47 @@ addresses also goes through it.
 
 ## Wi-Fi
 
-`Wifi::connect` leaves the current network first and returns once the station
-has joined or failed to; the address comes later, from DHCP. `state()` and `changed()` follow the connection.
+The radio stays stopped until `Wifi::start`; `stop` leaves the network and
+stops it. `connect` and `scan` on a stopped radio fail with
+`ConnectError::Stopped`. `Wifi::connect` leaves the current network first and
+returns once the station has joined or failed to; the address comes later, from
+DHCP. `state()` and `changed()` follow the radio and the connection.
 `set_power_save` takes `None`, `Min` (the default) or `Max`, and is kept for a
-radio that is not up yet. A `WifiDriver` runs its blocking calls wherever it
+radio that is not started yet. A `WifiDriver` runs its blocking calls wherever it
 likes and returns boxed futures, so the caller's executor goes on meanwhile.
+
+## Wi-Fi manager
+
+`wifi_manager::start()` runs nothing before it is called, and is called once
+after `start`. It reads the saved networks and the on/off switch from NVS
+(namespace `wifi_manager`), starts the radio when Wi-Fi is on (the default), and
+from then on joins saved networks by itself on the stack's task. A firmware that
+drives `Wifi` itself does not call it; using both is not supported.
+
+| call | what |
+|---|---|
+| `set_enabled` / `enabled` | Wi-Fi on or off, kept in NVS; off stops the radio |
+| `join(ssid, password, hidden)` | joins and saves once joined; `JoinError::Disabled` while off |
+| `join_saved(ssid)` | joins with what was saved |
+| `add` / `forget` / `networks` | edits the saved list; passwords never come back out |
+| `disconnect` / `reconnect` | stops and resumes joining by itself |
+| `scan` / `watch_scan(interval)` | networks in range by SSID, for a settings screen; a `ScanWatch` scans until dropped |
+| `state` / `changed` | `Disabled`, `Idle`, `Scanning`, `Joining`, `Connected` (with RSSI, polled every 5 s), `Waiting` |
+
+Up to 5 networks are kept, one NVS key each; a sixth replaces the one joined
+longest ago. Each is sealed with ChaCha20 and a SipHash tag under a key derived
+from the chip's factory MAC, so a flash dump does not show passwords in plain
+text. Anyone with the chip and this source can still read them. A network that
+does not open on the chip it is read on is treated as not saved.
+
+Joining by itself scans first, then tries the saved networks it saw, strongest
+first with 10 dB extra for the one joined last and those under -80 dBm at the
+end; hidden networks the scan did not see come after. When none joins, it scans
+again after 10 s, doubling up to 5 min. A network that refused its password
+twice is skipped until `join`, `join_saved`, `add` or `reconnect`. A dropped
+connection is retried on the same network once before scanning. `join` takes
+over from it at once; when `join` fails, joining by itself resumes and finds
+the network it left.
 
 ## Sockets
 

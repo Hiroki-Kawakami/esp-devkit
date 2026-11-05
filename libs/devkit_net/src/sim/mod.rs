@@ -2,12 +2,14 @@
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 Hiroki Kawakami
  *
- * Simulator networking: a radio that joins any network at once. Its station
- * exchanges Ethernet frames with the simulator host, which runs libslirp.
+ * Simulator networking: a radio that sees a fixed set of networks and joins
+ * any network at once. Its station exchanges Ethernet frames with the
+ * simulator host, which runs libslirp.
  */
 
 use alloc::boxed::Box;
 use alloc::vec;
+use alloc::vec::Vec;
 use core::ffi::CStr;
 
 use idf::log::{error, warn};
@@ -15,7 +17,9 @@ use idf::sync::OnceLock;
 use idf::thread;
 
 use crate::link::{Link, LinkInfo, LinkRx, Medium, RxFrame, TxError};
-use crate::wifi::{BoxFuture, DisconnectReason, PowerSave, StaConfig, WifiDriver, WifiEvents, WifiState};
+use crate::wifi::{
+    BoxFuture, DisconnectReason, PowerSave, ScanRecord, Security, StaConfig, WifiDriver, WifiEvents, WifiState,
+};
 
 mod host;
 
@@ -28,6 +32,9 @@ const BSSID: [u8; 6] = [0x02, 0, 0, 0, 0, 0x02];
 const MTU: usize = 1500;
 const FRAME_MAX: usize = MTU + 14;
 const RX_STACK: usize = 8192;
+const RSSI: i8 = -50;
+const NETWORKS: [(&[u8], Security, i8); 2] =
+    [(b"devkit-sim", Security::Wpa2Psk, RSSI), (b"devkit-sim-open", Security::Open, -70)];
 
 struct Sta;
 struct Radio;
@@ -91,6 +98,39 @@ impl WifiDriver for Radio {
 
     fn attach(&self, events: WifiEvents) {
         let _ = EVENTS.set(events);
+    }
+
+    fn start(&self) -> BoxFuture<'_, Result<(), i32>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn stop(&self) -> BoxFuture<'_, Result<(), i32>> {
+        Box::pin(async {
+            if let Some(rx) = LINK_RX.get() {
+                rx.set_up(false);
+            }
+            Ok(())
+        })
+    }
+
+    fn scan(&self) -> BoxFuture<'_, Result<Vec<ScanRecord>, i32>> {
+        Box::pin(async {
+            Ok(NETWORKS
+                .iter()
+                .enumerate()
+                .map(|(i, &(ssid, security, rssi))| ScanRecord {
+                    ssid: ssid.to_vec(),
+                    bssid: [0x02, 0, 0, 0, 1, i as u8],
+                    channel: 1,
+                    rssi,
+                    security,
+                })
+                .collect())
+        })
+    }
+
+    fn rssi(&self) -> BoxFuture<'_, Result<i8, i32>> {
+        Box::pin(async { Ok(RSSI) })
     }
 
     fn connect<'a>(&'a self, _: &'a StaConfig<'a>) -> BoxFuture<'a, Result<(), i32>> {

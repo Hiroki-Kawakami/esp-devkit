@@ -341,7 +341,7 @@ pub(super) unsafe extern "C" fn esp_wifi_remote_start() -> EspErr {
 }
 
 #[unsafe(no_mangle)]
-unsafe extern "C" fn esp_wifi_remote_stop() -> EspErr {
+pub(super) unsafe extern "C" fn esp_wifi_remote_stop() -> EspErr {
     code(linked().and_then(|h| status_call!(h, Req_WifiStop, None, RespWifiStop, rpc::TIMEOUT)))
 }
 
@@ -480,7 +480,7 @@ unsafe extern "C" fn esp_wifi_remote_get_config(ifx: ffi::wifi_interface_t, conf
 }
 
 #[unsafe(no_mangle)]
-unsafe extern "C" fn esp_wifi_remote_scan_start(config: *const ffi::wifi_scan_config_t, block: bool) -> EspErr {
+pub(super) unsafe extern "C" fn esp_wifi_remote_scan_start(config: *const ffi::wifi_scan_config_t, block: bool) -> EspErr {
     let config = unsafe { config.as_ref() };
     let sc = config.map(|c| p::WifiScanConfig {
         ssid: if c.ssid.is_null() { &[] } else { cstr_bytes(unsafe { core::slice::from_raw_parts(c.ssid, 32) }) },
@@ -575,11 +575,10 @@ fn as_u8_mut(s: &mut [core::ffi::c_char]) -> &mut [u8] {
     unsafe { core::slice::from_raw_parts_mut(s.as_mut_ptr().cast(), s.len()) }
 }
 
-#[unsafe(no_mangle)]
-unsafe extern "C" fn esp_wifi_remote_scan_get_ap_records(number: *mut u16, records: *mut ffi::wifi_ap_record_t) -> EspErr {
-    let req = p::RpcReqWifiScanGetApRecords { number: i32::from(unsafe { *number }) };
-    let max = usize::from(unsafe { *number });
-    let result = linked().and_then(|h| {
+/// At most `max` records of the last scan, each made by `f`.
+pub(super) fn scan_records<T>(max: u16, f: impl Fn(&p::WifiApRecord<'_>) -> T) -> Result<Vec<T>> {
+    let req = p::RpcReqWifiScanGetApRecords { number: i32::from(max) };
+    linked().and_then(|h| {
         h.call(
             RpcId::Req_WifiScanGetApRecords,
             Some(RpcPayload::ReqWifiScanGetApRecords(Lazy::new(&req))),
@@ -588,11 +587,16 @@ unsafe extern "C" fn esp_wifi_remote_scan_get_ap_records(number: *mut u16, recor
                 let RpcPayload::RespWifiScanGetApRecords(l) = p else { return None };
                 Some(l.get().map_err(|_| Error::FAIL).and_then(|r| {
                     rpc::status(r.resp)?;
-                    Ok(r.ap_records.iter().take(max).map(ap_record_from).collect::<Vec<_>>())
+                    Ok(r.ap_records.iter().take(usize::from(max)).map(&f).collect::<Vec<_>>())
                 }))
             },
         )
-    });
+    })
+}
+
+#[unsafe(no_mangle)]
+unsafe extern "C" fn esp_wifi_remote_scan_get_ap_records(number: *mut u16, records: *mut ffi::wifi_ap_record_t) -> EspErr {
+    let result = scan_records(unsafe { *number }, ap_record_from);
     match result {
         Ok(list) => {
             unsafe {
@@ -625,17 +629,20 @@ unsafe extern "C" fn esp_wifi_remote_sta_get_ap_info(ap_info: *mut ffi::wifi_ap_
     }
 }
 
-#[unsafe(no_mangle)]
-unsafe extern "C" fn esp_wifi_remote_sta_get_rssi(rssi: *mut c_int) -> EspErr {
-    let result = linked().and_then(|h| {
+pub(super) fn sta_rssi() -> Result<i32> {
+    linked().and_then(|h| {
         h.call(RpcId::Req_WifiStaGetRssi, None, rpc::TIMEOUT, |p| match p {
             RpcPayload::RespWifiStaGetRssi(l) => {
                 Some(l.get().map_err(|_| Error::FAIL).and_then(|r| rpc::status(r.resp).map(|()| r.rssi)))
             }
             _ => None,
         })
-    });
-    match result {
+    })
+}
+
+#[unsafe(no_mangle)]
+unsafe extern "C" fn esp_wifi_remote_sta_get_rssi(rssi: *mut c_int) -> EspErr {
+    match sta_rssi() {
         Ok(v) => {
             unsafe { *rssi = v };
             0

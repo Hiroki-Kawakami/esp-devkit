@@ -15,8 +15,8 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 
 use devkit_net::{
-    Auth, BoxFuture, DisconnectReason, Link, LinkInfo, LinkRx, Medium, PowerSave, RxFrame, StaConfig, TxError,
-    WifiDriver, WifiEvents, WifiState,
+    Auth, BoxFuture, DisconnectReason, Link, LinkInfo, LinkRx, Medium, PowerSave, RxFrame, ScanRecord, Security,
+    StaConfig, TxError, WifiDriver, WifiEvents, WifiState,
 };
 use idf::executor::{CRITICAL, Signal};
 use idf::log::{error, info};
@@ -34,10 +34,12 @@ const MTU: usize = 1500;
 const TX_WAIT: Duration = Duration::from_millis(20);
 const START_WAIT: Duration = Duration::from_secs(5);
 const CONTROL_STACK: usize = 6144;
+const SCAN_MAX: u16 = 32;
 
 struct Sta;
 
 struct Radio {
+    initialized: bool,
     started: bool,
     mac: [u8; 6],
     power_save: PowerSave,
@@ -49,11 +51,11 @@ static STA: Sta = Sta;
 static HOSTED: Hosted = Hosted;
 static LINK_RX: OnceLock<LinkRx> = OnceLock::new();
 static EVENTS: OnceLock<WifiEvents> = OnceLock::new();
-static RADIO: Mutex<Radio> = Mutex::new(Radio { started: false, mac: [0; 6], power_save: PowerSave::Min });
+static RADIO: Mutex<Radio> = Mutex::new(Radio { initialized: false, started: false, mac: [0; 6], power_save: PowerSave::Min });
 static UP: AtomicBool = AtomicBool::new(false);
 
 /// Makes the coprocessor the firmware's Wi-Fi radio. Nothing reaches the
-/// coprocessor until the first connect.
+/// coprocessor until the radio starts.
 pub(crate) fn register() {
     devkit_net::register_wifi(&HOSTED);
 }
@@ -128,12 +130,15 @@ pub(super) fn on_disconnected(reason: u16) {
 
 /// Runs the blocking RPCs of `f` on a task of their own, so the caller's
 /// executor goes on meanwhile.
-fn offload(name: &'static str, f: impl FnOnce() -> Result<()> + Send + 'static) -> BoxFuture<'static, core::result::Result<(), i32>> {
+fn offload<T: Send + 'static>(
+    name: &'static str,
+    f: impl FnOnce() -> Result<T> + Send + 'static,
+) -> BoxFuture<'static, core::result::Result<T, i32>> {
     let done = Arc::new(Signal::new(&CRITICAL));
     let tx = done.clone();
     let spawned = thread::Builder::new().name(name).stack_size(CONTROL_STACK).spawn(move || {
         let result = f();
-        if let Err(err) = result {
+        if let Err(err) = &result {
             error!(TAG, "{name}: {err}");
         }
         tx.signal(result.map_err(Error::code));
@@ -146,28 +151,63 @@ fn offload(name: &'static str, f: impl FnOnce() -> Result<()> + Send + 'static) 
     })
 }
 
-fn start_radio() -> Result<()> {
-    let mut radio = RADIO.lock();
-    if radio.started {
-        return Ok(());
-    }
-    let mut init: ffi::wifi_init_config_t = unsafe { mem::zeroed() };
-    unsafe { ffi::bsp_rs_wifi_init_default(&mut init) };
-    wifi::init(&init)?;
-    check(unsafe { wifi::esp_wifi_remote_set_mode(ffi::wifi_mode_t_WIFI_MODE_STA) })?;
-    check(unsafe { wifi::esp_wifi_remote_start() })?;
+fn wait_started(started: bool) -> Result<()> {
     let deadline = Instant::now() + START_WAIT;
-    while !wifi::sta_started() {
+    while wifi::sta_started() != started {
         if Instant::now() >= deadline {
             return Err(Error::TIMEOUT);
         }
         thread::sleep(Duration::from_millis(10));
     }
+    Ok(())
+}
+
+fn start_radio() -> Result<()> {
+    let mut radio = RADIO.lock();
+    if radio.started {
+        return Ok(());
+    }
+    if !radio.initialized {
+        let mut init: ffi::wifi_init_config_t = unsafe { mem::zeroed() };
+        unsafe { ffi::bsp_rs_wifi_init_default(&mut init) };
+        wifi::init(&init)?;
+        check(unsafe { wifi::esp_wifi_remote_set_mode(ffi::wifi_mode_t_WIFI_MODE_STA) })?;
+        radio.initialized = true;
+    }
+    check(unsafe { wifi::esp_wifi_remote_start() })?;
+    wait_started(true)?;
     check(unsafe { wifi::esp_wifi_remote_get_mac(ffi::wifi_interface_t_WIFI_IF_STA, radio.mac.as_mut_ptr()) })?;
     apply_power_save(radio.power_save)?;
     radio.started = true;
     info!(TAG, "station up, mac {:02x?}", radio.mac);
     Ok(())
+}
+
+fn stop_radio() -> Result<()> {
+    let mut radio = RADIO.lock();
+    if !radio.started {
+        return Ok(());
+    }
+    check(unsafe { wifi::esp_wifi_remote_stop() })?;
+    radio.started = false;
+    UP.store(false, Ordering::Release);
+    if let Some(rx) = LINK_RX.get() {
+        rx.set_up(false);
+    }
+    wait_started(false)?;
+    info!(TAG, "station stopped");
+    Ok(())
+}
+
+fn scan() -> Result<Vec<ScanRecord>> {
+    check(unsafe { wifi::esp_wifi_remote_scan_start(ptr::null(), true) })?;
+    wifi::scan_records(SCAN_MAX, |r| ScanRecord {
+        ssid: r.ssid.split(|&b| b == 0).next().unwrap_or_default().to_vec(),
+        bssid: r.bssid.try_into().unwrap_or_default(),
+        channel: r.primary as u8,
+        rssi: r.rssi as i8,
+        security: Security::from_auth_mode(r.authmode as u32),
+    })
 }
 
 struct Owned {
@@ -178,12 +218,11 @@ struct Owned {
 }
 
 fn join(config: &Owned) -> Result<()> {
-    start_radio()?;
     let mut sta: ffi::wifi_sta_config_t = unsafe { mem::zeroed() };
     let ssid = &config.ssid[..config.ssid.len().min(sta.ssid.len())];
     sta.ssid[..ssid.len()].copy_from_slice(ssid);
     if let Some(password) = &config.password {
-        let password = &password[..password.len().min(sta.password.len() - 1)];
+        let password = &password[..password.len().min(sta.password.len())];
         sta.password[..password.len()].copy_from_slice(password);
         sta.threshold.authmode = ffi::wifi_auth_mode_t_WIFI_AUTH_WPA2_PSK;
     }
@@ -206,6 +245,22 @@ impl WifiDriver for Hosted {
 
     fn attach(&self, events: WifiEvents) {
         let _ = EVENTS.set(events);
+    }
+
+    fn start(&self) -> BoxFuture<'_, core::result::Result<(), i32>> {
+        offload("hosted_start", start_radio)
+    }
+
+    fn stop(&self) -> BoxFuture<'_, core::result::Result<(), i32>> {
+        offload("hosted_stop", stop_radio)
+    }
+
+    fn scan(&self) -> BoxFuture<'_, core::result::Result<Vec<ScanRecord>, i32>> {
+        offload("hosted_scan", scan)
+    }
+
+    fn rssi(&self) -> BoxFuture<'_, core::result::Result<i8, i32>> {
+        offload("hosted_rssi", || wifi::sta_rssi().map(|rssi| rssi as i8))
     }
 
     fn connect<'a>(&'a self, config: &'a StaConfig<'a>) -> BoxFuture<'a, core::result::Result<(), i32>> {

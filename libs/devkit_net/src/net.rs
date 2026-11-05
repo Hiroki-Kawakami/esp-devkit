@@ -13,7 +13,7 @@ use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use core::task::{Poll, Waker};
 use core::time::Duration;
 
-use idf::executor::{self, CRITICAL, JoinHandle, LocalSpawner, Receiver, Sender, Signal};
+use idf::executor::{self, CRITICAL, JoinHandle, LocalSpawner, Receiver, Sender, Signal, Spawner};
 use idf::heap::Caps;
 use idf::sync::{LazyLock, Mutex, MutexGuard, OnceLock};
 use idf::thread::Builder;
@@ -147,6 +147,7 @@ impl Inner {
 pub(crate) struct Net {
     config: OnceLock<Config>,
     started: AtomicBool,
+    spawner: OnceLock<Spawner>,
     inner: Mutex<Inner>,
     kick: &'static Signal<()>,
     rx: Sender<(IfaceId, RxFrame)>,
@@ -306,6 +307,7 @@ impl Net {
         Self {
             config: OnceLock::new(),
             started: AtomicBool::new(false),
+            spawner: OnceLock::new(),
             inner: Mutex::new(inner),
             kick,
             rx,
@@ -384,8 +386,7 @@ impl Net {
 
     pub fn start(&'static self, config: Config) -> Result<()> {
         self.config.set(config).map_err(|_| Error::AlreadyStarted)?;
-        self.started.store(true, Ordering::Release);
-        Builder::new()
+        let spawner = Builder::new()
             .name("devkit_net")
             .priority(config.task_priority)
             .stack_size(config.task_stack)
@@ -394,7 +395,14 @@ impl Net {
                 local.spawn_local(run(self));
             })
             .map_err(|_| Error::NoMemory)?;
+        let _ = self.spawner.set(spawner);
+        self.started.store(true, Ordering::Release);
         Ok(())
+    }
+
+    /// The stack's own executor; `None` until started.
+    pub fn spawner(&self) -> Option<&Spawner> {
+        self.spawner.get()
     }
 
     /// Runs a DHCP client on each interface that wants one and has its link

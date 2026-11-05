@@ -29,7 +29,7 @@ else()
     set(driver_headers "driver/i2c_master.h" "driver/ppa.h")
 endif()
 devkit_rust_crate(ROOT "src/lib.rs" TESTS
-    BINDGEN_HEADERS "esp_err.h" "esp_heap_caps.h" "multi_heap.h" "esp_system.h" "esp_random.h" "esp_timer.h"
+    BINDGEN_HEADERS "esp_err.h" "esp_heap_caps.h" "multi_heap.h" "esp_system.h" "esp_random.h" "esp_mac.h" "esp_timer.h"
                     "freertos/FreeRTOS.h" "freertos/portmacro.h" "freertos/task.h" "freertos/queue.h"
                     "freertos/semphr.h" "freertos/idf_additions.h" "unistd.h" "sys/stat.h" "dirent.h"
                     "nvs.h" "nvs_flash.h" "freertos/timers.h" "executor_shim.h"

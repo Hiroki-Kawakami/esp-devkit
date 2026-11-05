@@ -10,6 +10,7 @@
 extern crate alloc;
 
 mod arp;
+mod crypto;
 mod dhcp;
 mod error;
 mod frag;
@@ -30,7 +31,9 @@ mod tests;
 mod time;
 mod udp;
 mod udp_socket;
+mod watch;
 mod wifi;
+pub mod wifi_manager;
 #[cfg(CONFIG_DEVKIT_NET_WIFI)]
 mod wifi_native;
 mod wire;
@@ -44,6 +47,6 @@ pub use tcp_socket::{Shutdown, TcpBuilder, TcpListener, TcpReader, TcpStream, Tc
 pub use time::Instant;
 pub use udp_socket::{UdpBuilder, UdpSocket};
 pub use wifi::{
-    Auth, BoxFuture, ConnectError, DisconnectReason, PowerSave, StaConfig, Wifi, WifiDriver, WifiEvents, WifiState,
-    register_wifi, wifi,
+    Auth, BoxFuture, ConnectError, DisconnectReason, PowerSave, ScanRecord, Security, StaConfig, Wifi, WifiDriver,
+    WifiEvents, WifiState, register_wifi, wifi,
 };

@@ -50,6 +50,10 @@ pub fn run() {
     };
     if let Err(err) = devkit_net::start(devkit_net::Config { task_core: Some(1), ..devkit_net::Config::default() }) {
         error!(TAG, "devkit_net::start: {err}");
+    } else if let Err(err) = devkit_net::wifi_manager::start() {
+        error!(TAG, "wifi_manager::start: {err}");
+    } else {
+        net::import_old_network();
     }
     if let Some(board) = &board {
         net::register_commands();
@@ -143,7 +147,7 @@ pub fn run() {
         info!(TAG, "async: channel sum={sum} jobs (value, core)={done:?} local hits={}", hits.get());
         info!(TAG, "uptime={}ms", Instant::now().since_boot().as_millis());
 
-        shared.spawn(net::join_saved());
+        shared.spawn(net::log_wifi_states());
         netbench::start(&shared);
         net::serve_echo(&shared).await
     })
