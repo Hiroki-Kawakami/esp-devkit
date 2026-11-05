@@ -8,7 +8,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::future::{Future, pending, poll_fn};
 use core::net::Ipv4Addr;
-use core::pin::pin;
+use core::pin::{Pin, pin};
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use core::task::{Poll, Waker};
 use core::time::Duration;
@@ -231,6 +231,13 @@ pub(crate) async fn retry_while_busy<T>(net: &Net, mut f: impl FnMut() -> Result
         })
         .await;
     }
+}
+
+/// `make`'s future on the heap. Out of line, so the future is built in this
+/// frame, gone before the caller polls, instead of in the caller's.
+#[inline(never)]
+pub(crate) fn boxed<F: Future>(make: impl FnOnce() -> F) -> Pin<Box<F>> {
+    Box::pin(make())
 }
 
 /// Resolves on the first poll after it was woken, or spuriously.

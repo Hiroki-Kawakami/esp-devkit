@@ -6,6 +6,7 @@
  * switch, over `Wifi`.
  */
 
+use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -16,7 +17,7 @@ use core::pin::pin;
 use core::task::Poll;
 use core::time::Duration;
 
-use idf::executor::{self, JoinHandle};
+use idf::executor::{self, JoinHandle, Spawner};
 use idf::log::{info, warn};
 use idf::sync::{Mutex, OnceLock};
 use idf::time::Instant;
@@ -165,7 +166,7 @@ pub struct Manager {
     cancel: Watch<()>,
 }
 
-static MANAGER: OnceLock<Manager> = OnceLock::new();
+static MANAGER: OnceLock<&'static Manager> = OnceLock::new();
 
 /// Reads the saved networks and the on/off switch, and joins by itself from
 /// then on. Nothing runs before; call once `devkit_net::start` returned.
@@ -180,13 +181,28 @@ pub fn start() -> Result<&'static Manager> {
         warn!(TAG, "no factory mac: {err}");
         Error::Unsupported
     })?;
+    let manager = load(wifi, mac);
+    MANAGER.set(manager).map_err(|_| Error::AlreadyStarted)?;
+    spawn(spawner, manager);
+    Ok(manager)
+}
+
+// This and `load` are out of line, so what they build sits in their own
+// frames, one at a time, instead of all in `start`'s.
+#[inline(never)]
+fn spawn(spawner: &Spawner, manager: &'static Manager) {
+    spawner.spawn(manager.run());
+}
+
+#[inline(never)]
+fn load(wifi: &'static Wifi, mac: [u8; 6]) -> &'static Manager {
     let cipher = Cipher::new(mac);
     let loaded = store::load(&cipher).unwrap_or_else(|err| {
         warn!(TAG, "nvs: {err}; nothing saved");
         store::Loaded { slots: Default::default(), enabled: None }
     });
     let enabled = loaded.enabled.unwrap_or(true);
-    let manager = Manager {
+    Box::leak(Box::new(Manager {
         wifi,
         cipher,
         inner: Mutex::new(Inner {
@@ -203,15 +219,11 @@ pub fn start() -> Result<&'static Manager> {
         state: Watch::new(if enabled { State::Idle } else { State::Disabled }),
         kick: Watch::new(()),
         cancel: Watch::new(()),
-    };
-    MANAGER.set(manager).map_err(|_| Error::AlreadyStarted)?;
-    let manager = MANAGER.get().unwrap();
-    spawner.spawn(manager.run());
-    Ok(manager)
+    }))
 }
 
 pub fn get() -> Option<&'static Manager> {
-    MANAGER.get()
+    MANAGER.get().copied()
 }
 
 fn valid_password(password: &str) -> bool {

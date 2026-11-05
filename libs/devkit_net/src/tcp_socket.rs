@@ -96,12 +96,12 @@ impl TcpBuilder {
 
     /// Tries each address in turn and fails with the last one's error.
     pub fn connect(self, addr: impl ToSocketAddrs) -> Result<TcpStream> {
-        blocking(self.connect_async(addr))
+        blocking(net::boxed(|| self.connect_async(addr)))
     }
 
     /// `timeout` covers the lookup too.
     pub fn connect_timeout(self, addr: impl ToSocketAddrs, timeout: Duration) -> Result<TcpStream> {
-        blocking_timeout(timeout, self.connect_async(addr))
+        blocking_timeout(timeout, net::boxed(|| self.connect_async(addr)))
     }
 
     pub async fn connect_async(self, addr: impl ToSocketAddrs) -> Result<TcpStream> {
