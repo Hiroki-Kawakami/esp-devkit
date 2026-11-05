@@ -249,8 +249,8 @@ pub(crate) fn rank<'a>(
             None => {}
         }
     }
-    seen.sort_by_key(|&(_, _, weak, score)| (weak, Reverse(score)));
-    unseen.sort_by_key(|s| Reverse(s.seq));
+    seen.sort_unstable_by_key(|&(_, _, weak, score)| (weak, Reverse(score)));
+    unseen.sort_unstable_by_key(|s| Reverse(s.seq));
     seen.into_iter().map(|(s, channel, ..)| (s, Some(channel))).chain(unseen.into_iter().map(|s| (s, None))).collect()
 }
 
@@ -272,7 +272,7 @@ pub(crate) fn entries(records: &[ScanRecord], saved: &[Saved], connected: Option
             connected: connected == Some(r.ssid.as_slice()),
         });
     }
-    out.sort_by_key(|e| (Reverse(e.connected), Reverse(e.saved), Reverse(e.rssi)));
+    out.sort_by_cached_key(|e| (Reverse(e.connected), Reverse(e.saved), Reverse(e.rssi)));
     out
 }
 
@@ -363,7 +363,7 @@ impl Manager {
     /// Saved networks, joined most recently first. Passwords stay inside.
     pub fn networks(&self) -> Vec<NetworkInfo> {
         let mut saved = self.inner.lock().saved();
-        saved.sort_by_key(|s| Reverse(s.seq));
+        saved.sort_by_cached_key(|s| Reverse(s.seq));
         saved
             .into_iter()
             .map(|s| NetworkInfo { ssid: s.ssid, hidden: s.hidden, secured: !s.password.is_empty() })

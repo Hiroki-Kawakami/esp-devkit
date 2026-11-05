@@ -3,6 +3,7 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
+use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 use core::net::{Ipv4Addr, SocketAddrV4};
@@ -458,7 +459,7 @@ pub(crate) struct Listener {
 
 #[derive(Default)]
 pub(crate) struct Sockets {
-    tcbs: Vec<Option<Tcb>>,
+    tcbs: Vec<Option<Box<Tcb>>>,
     listeners: Vec<Option<Listener>>,
     isn_key: Option<(u64, u64)>,
 }
@@ -493,7 +494,7 @@ impl Sockets {
         ((now.as_micros() >> 2) as u32).wrapping_add(siphash(k0, k1, &tuple) as u32)
     }
 
-    fn insert(&mut self, tcb: Tcb) -> usize {
+    fn insert(&mut self, tcb: Box<Tcb>) -> usize {
         match self.tcbs.iter().position(Option::is_none) {
             Some(id) => {
                 self.tcbs[id] = Some(tcb);
@@ -619,7 +620,7 @@ impl Stack {
             None => self.tcp.ephemeral()?,
         });
         let iss = self.tcp.isn(local, remote, now);
-        let mut tcb = Tcb::new(local, remote, State::SynSent, buffers, mss, iss);
+        let mut tcb = Box::new(Tcb::new(local, remote, State::SynSent, buffers, mss, iss));
         tcb.cwnd = mss;
         let id = self.tcp.insert(tcb);
         self.with_tcb(id, |stack, tcb| stack.tcp_output(tcb, now, tx));
@@ -810,7 +811,7 @@ impl Stack {
         let buffers = listener.buffers;
         let Some(mss) = self.mtu_to(*remote.ip()) else { return };
         let iss = self.tcp.isn(local, remote, now);
-        let mut tcb = Tcb::new(local, remote, State::SynReceived, buffers, mss - HEADER, iss);
+        let mut tcb = Box::new(Tcb::new(local, remote, State::SynReceived, buffers, mss - HEADER, iss));
         tcb.listener = Some(l);
         tcb.on_syn(seg);
         let id = self.tcp.insert(tcb);
@@ -1256,7 +1257,7 @@ impl Stack {
     }
 
     pub(crate) fn tcp_next_deadline(&self) -> Option<Instant> {
-        self.tcp.tcbs.iter().flatten().filter_map(Tcb::deadline).min()
+        self.tcp.tcbs.iter().flatten().filter_map(|t| t.deadline()).min()
     }
 
     pub(crate) fn tcp_poll(&mut self, now: Instant, tx: &mut Tx) -> Option<Instant> {

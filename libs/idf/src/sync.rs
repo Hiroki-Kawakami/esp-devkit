@@ -388,9 +388,19 @@ impl<T> OnceLock<T> {
         }
     }
 
-    // Another task initializing is waited for a tick at a time rather than spun
-    // on, so a lower-priority initializer still gets to run.
     pub fn get_or_try_init<E>(&self, f: impl FnOnce() -> core::result::Result<T, E>) -> core::result::Result<&T, E> {
+        if self.state.load(Ordering::Acquire) == COMPLETE {
+            return Ok(unsafe { self.get_unchecked() });
+        }
+        self.initialize(f)
+    }
+
+    // Out of line so that callers, once it is set, do not reserve stack for a
+    // `T`. Another task initializing is waited for a tick at a time rather than
+    // spun on, so a lower-priority initializer still gets to run.
+    #[cold]
+    #[inline(never)]
+    fn initialize<E>(&self, f: impl FnOnce() -> core::result::Result<T, E>) -> core::result::Result<&T, E> {
         loop {
             match self.state.compare_exchange(INCOMPLETE, RUNNING, Ordering::Acquire, Ordering::Acquire) {
                 Ok(_) => break,
