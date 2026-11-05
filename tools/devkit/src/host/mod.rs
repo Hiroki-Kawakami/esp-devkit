@@ -12,6 +12,7 @@ pub mod decode;
 pub mod net;
 pub mod serial;
 pub mod sim;
+pub mod usb;
 
 use std::borrow::Cow;
 use std::collections::VecDeque;
@@ -278,6 +279,23 @@ impl Host {
         Ok("OK power".into())
     }
 
+    fn usb(&self, args: &[&str]) -> Result<String, String> {
+        const USAGE: &str = "usage: usb attach tcp <host:port> [busid] | usb detach";
+        let Link::Sim(device) = &self.link else { return Err("usb: simulator only".into()) };
+        match args {
+            ["attach", "tcp", addr, rest @ ..] if rest.len() <= 1 => {
+                let busid = rest.first().copied().unwrap_or(usb::DEFAULT_BUSID);
+                let session = usb::connect_tcp(addr).map_err(|e| format!("{addr}: {e}"))?;
+                device.usb_plug(session, busid).map_err(|e| e.to_string())?;
+                Ok("OK usb".into())
+            }
+            ["detach"] => {
+                if device.usb_unplug() { Ok("OK usb".into()) } else { Err("nothing attached".into()) }
+            }
+            _ => Err(USAGE.into()),
+        }
+    }
+
     fn reset(&self) -> Result<(), String> {
         match &self.link {
             Link::Sim(d) => d.start().map_err(|e| e.to_string())?,
@@ -328,6 +346,7 @@ impl Host {
                 self.forward(&format!("imu {args}"))
             }
             "power" => self.power(rest),
+            "usb" => self.usb(rest),
             "reset" => self.reset().map(|_| "OK reset".into()),
             "log" => match rest.first() {
                 Some(&"on") | Some(&"off") => {

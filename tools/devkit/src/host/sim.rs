@@ -69,6 +69,7 @@ struct Run {
     stdin: ChildStdin,
     sock: RawFd,
     net_stop: Arc<AtomicBool>,
+    usb: RawFd,
 }
 
 struct Psram {
@@ -104,6 +105,7 @@ pub struct Device {
     rotation: AtomicU8,
     supply: Mutex<Supply>,
     clock: Mutex<Clock>,
+    usb_session: Mutex<Option<OwnedFd>>,
 }
 
 // The simulated RTC as an offset from the host's local wall clock.
@@ -144,6 +146,7 @@ impl Device {
             rotation: AtomicU8::new(0),
             supply: Mutex::new(DEFAULT_SUPPLY),
             clock: Mutex::new(Clock { offset: 0, valid: std::env::var_os("SIMULATOR_RTC_INVALID").is_none_or(|v| v == "0") }),
+            usb_session: Mutex::new(None),
         }))
     }
 
@@ -181,12 +184,22 @@ impl Device {
                 return Err(err);
             }
         };
+        let (usb_fd, fw_usb_fd) = match super::usb::socket_pair() {
+            Ok(fds) => fds,
+            Err(err) => {
+                for fd in [host_fd, fw_fd, net_fd, fw_net_fd] {
+                    unsafe { libc::close(fd) };
+                }
+                return Err(err);
+            }
+        };
 
         let spawned = Command::new(&self.fw)
             .args(&self.args)
             .envs(self.env.iter().map(|(k, v)| (k, v)))
             .env(ENV_SOCKET_FD.to_str().unwrap(), fw_fd.to_string())
             .env(super::net::ENV_NET_FD, fw_net_fd.to_string())
+            .env(super::usb::ENV_USB_FD, fw_usb_fd.to_string())
             .env(ENV_PSRAM_PATH.to_str().unwrap(), &self.psram.path)
             .env(ENV_PSRAM_SIZE.to_str().unwrap(), self.psram.len.to_string())
             .env(ENV_RTC.to_str().unwrap(), {
@@ -203,11 +216,13 @@ impl Device {
             .spawn();
         unsafe { libc::close(fw_fd) };
         unsafe { libc::close(fw_net_fd) };
+        unsafe { libc::close(fw_usb_fd) };
         let mut child = match spawned {
             Ok(child) => child,
             Err(err) => {
-                unsafe { libc::close(host_fd) };
-                unsafe { libc::close(net_fd) };
+                for fd in [host_fd, net_fd, usb_fd] {
+                    unsafe { libc::close(fd) };
+                }
                 return Err(err);
             }
         };
@@ -225,7 +240,7 @@ impl Device {
             state.brightness = 0;
         }
         let stdin = child.stdin.take().unwrap();
-        *self.run.lock().unwrap() = Some(Run { pid: child.id() as libc::pid_t, stdin, sock: host_fd, net_stop });
+        *self.run.lock().unwrap() = Some(Run { pid: child.id() as libc::pid_t, stdin, sock: host_fd, net_stop, usb: usb_fd });
 
         let me = self.clone();
         thread::spawn(move || {
@@ -269,9 +284,14 @@ impl Device {
     fn close_run(&self) -> Option<Run> {
         *self.player.lock().unwrap() = None;
         self.muted.store(true, Ordering::Relaxed);
-        let run = self.run.lock().unwrap().take()?;
+        let mut run = self.run.lock().unwrap();
+        if let Some(session) = self.usb_session.lock().unwrap().take() {
+            super::usb::unplug(session);
+        }
+        let run = run.take()?;
         run.net_stop.store(true, Ordering::Relaxed);
         unsafe { libc::shutdown(run.sock, libc::SHUT_RDWR) };
+        unsafe { libc::close(run.usb) };
         Some(run)
     }
 
@@ -399,6 +419,25 @@ impl Device {
     fn send_supply(&self) {
         let Supply { level, external, battery } = self.supply();
         self.send(&Event::Power { level, external, battery });
+    }
+
+    /// Replaces the device plugged in before, if any.
+    pub fn usb_plug(&self, session: OwnedFd, busid: &str) -> io::Result<()> {
+        let run = self.run.lock().unwrap();
+        let control = run.as_ref().ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "firmware not running"))?.usb;
+        let mut current = self.usb_session.lock().unwrap();
+        if let Some(old) = current.take() {
+            super::usb::unplug(old);
+        }
+        super::usb::plug(control, &session, busid)?;
+        *current = Some(session);
+        Ok(())
+    }
+
+    /// `false` when nothing was plugged in.
+    pub fn usb_unplug(&self) -> bool {
+        let session = self.usb_session.lock().unwrap().take();
+        session.map(super::usb::unplug).is_some()
     }
 
     pub fn status(&self) -> Status {

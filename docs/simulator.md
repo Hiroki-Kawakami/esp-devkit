@@ -42,6 +42,7 @@ The host starts the firmware with:
 | `SIM_RTC` | the clock to start with: local wall-clock seconds since 1970, then 1 or 0 for valid |
 | `SIM_POWER` | the power state to start with: `<level> <external> <battery>`, flags as 0 or 1 |
 | `SIM_NET_FD` | inherited Unix datagram socket, one Ethernet frame per datagram |
+| `SIM_USB_FD` | inherited Unix datagram socket, one plugged-in USB device per datagram |
 
 - idf_compat maps the region and serves `MALLOC_CAP_SPIRAM` from it, so
   framebuffers land where the host can read them. Without the variables
@@ -64,7 +65,21 @@ libslirp behind the socket, as QEMU's user networking does:
   addresses go out through the host's own sockets, ICMP echo included.
 - Nothing connects in from the host. Without the variable, connecting fails.
 
-## Events
+## USB host
+
+usb_host_rs's controller in the simulator is a USB/IP client. Each datagram on
+`SIM_USB_FD` is a bus id with a connection attached (`SCM_RIGHTS`); the
+firmware imports that bus id over it, and the device is plugged in until the
+connection closes. The host connects and hands over:
+
+- `usb attach tcp <host:port> [busid]`: a USB/IP server such as a simulated
+  usb_device (`firmware/usbd_loopback`) or Linux `usbipd`; bus id `1-1` by
+  default. Attaching again unplugs the device before.
+- `usb detach` unplugs it; so does a firmware restart.
+
+The firmware completes SET_ADDRESS itself, since the server has the device
+addressed already. Without the variable no device ever appears.
+
 
 Fixed 64-byte records, defined once in `libs/bsp_rs/src/sim/protocol.rs` and
 compiled into the firmware and `tools/devkit`. Byte 0 is the tag, fields follow little-endian.

@@ -1,0 +1,13 @@
+default = "simulator"
+
+[targets.esp32p4]
+kind = "idf"
+
+[targets.simulator]
+kind = "sim"
+headless = true
+
+[targets.test]
+kind = "sim"
+dir = "simulator"
+build = "rust_test"

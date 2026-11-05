@@ -50,6 +50,7 @@ set(DEVKIT_DEVICE_COMPONENTS
     libs/ui_framework
     libs/usb_device
     libs/usb_host
+    libs/usb_host_rs
     libs/wifi)
 
 # Simulator components: idf_compat first (simulator-only shims), then bsp and
@@ -81,6 +82,7 @@ set(DEVKIT_SIMULATOR_COMPONENTS
     libs/ui_framework
     libs/usb_device
     libs/usb_host
+    libs/usb_host_rs
     libs/wifi)
 
 # devkit_idf_init([COMPONENT_DIRS dir...])

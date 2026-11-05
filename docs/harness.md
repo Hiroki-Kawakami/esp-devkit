@@ -65,6 +65,8 @@ One command per line, `#` starts a comment, blank lines are ignored.
 | `power <percent> battery\|external` | simulator only: battery level and external supply the power provider reports |
 | `power none` | simulator only, `bsp_rs`: take the battery out, on external power |
 | `power release` | simulator only: back to 76% on external power |
+| `usb attach tcp <host:port> [busid]` | simulator only: plug in the USB/IP device `busid` (default `1-1`) of that server (docs/simulator.md) |
+| `usb detach` | simulator only: unplug it |
 | `reset` | reboot the board and wait until the harness answers again; on the simulator only under `--host` (docs/simulator.md), otherwise a no-op |
 | `quit` | stop the script (implicit at end of file) |
 | anything else | sent verbatim — app commands registered with `harness_register()` |
