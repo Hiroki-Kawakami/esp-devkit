@@ -2,7 +2,7 @@
 idf_component_register(
     SRCS "src/executor_shim.c"
     PRIV_INCLUDE_DIRS "src"
-    REQUIRES esp_common esp_system esp_timer freertos heap log nvs_flash esp_driver_i2c esp_driver_gpio
+    REQUIRES esp_app_format esp_common esp_system esp_timer freertos heap log nvs_flash esp_driver_i2c esp_driver_gpio
              esp_driver_ledc esp_driver_i2s esp_driver_ppa esp_driver_sdmmc esp_hw_support esp_lcd esp_mm sdmmc fatfs vfs
     PRIV_REQUIRES devkit rust_rt)
 if(ESP_PLATFORM)
@@ -29,7 +29,7 @@ else()
     set(driver_headers "driver/i2c_master.h" "driver/ppa.h")
 endif()
 devkit_rust_crate(ROOT "src/lib.rs" TESTS
-    BINDGEN_HEADERS "esp_err.h" "esp_heap_caps.h" "multi_heap.h" "esp_system.h" "esp_random.h" "esp_mac.h" "esp_timer.h"
+    BINDGEN_HEADERS "esp_app_desc.h" "esp_err.h" "esp_heap_caps.h" "multi_heap.h" "esp_system.h" "esp_random.h" "esp_mac.h" "esp_timer.h"
                     "freertos/FreeRTOS.h" "freertos/portmacro.h" "freertos/task.h" "freertos/queue.h"
                     "freertos/semphr.h" "freertos/idf_additions.h" "unistd.h" "sys/stat.h" "dirent.h"
                     "nvs.h" "nvs_flash.h" "freertos/timers.h" "executor_shim.h"

@@ -515,6 +515,10 @@ microsecond resolution, plus `since_boot()`. `idf::system::restart()` calls
 the core running the caller, which an unpinned task may leave right after the
 call. `in_isr()` is always `false` in the simulator. `idf::system::random()` is `esp_random()`, from the OS entropy source in
 the simulator.
+`idf::system::app_description()` is `esp_app_get_description()`: `version()`
+(`PROJECT_VER`, the project's `git describe` unless it sets one),
+`project_name()`, `time()`, `date()` and `idf_version()` as `&'static str`. In
+the simulator `idf_version()` is `simulator`.
 
 `idf::nvs::init()` initializes the default NVS partition for every user of it
 and may be called by each of them; it does the work once. A partition without
