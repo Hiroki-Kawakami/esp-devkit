@@ -24,6 +24,10 @@ pub enum Error {
     NoMemory,
     /// The link had no room for the frame; it was not sent.
     WouldBlock,
+    InvalidInput,
+    /// The name does not exist or has no address.
+    NotFound,
+    NoNameServer,
 }
 
 impl fmt::Display for Error {
@@ -45,6 +49,9 @@ impl fmt::Display for Error {
             Error::TimedOut => "timed out",
             Error::NoMemory => "out of memory",
             Error::WouldBlock => "operation would block",
+            Error::InvalidInput => "invalid input",
+            Error::NotFound => "name not found",
+            Error::NoNameServer => "no name server",
         })
     }
 }

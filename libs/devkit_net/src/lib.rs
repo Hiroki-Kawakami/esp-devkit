@@ -9,9 +9,11 @@
 
 extern crate alloc;
 
+mod addr;
 mod arp;
 mod crypto;
 mod dhcp;
+pub mod dns;
 mod error;
 mod frag;
 #[cfg(test)]
@@ -38,6 +40,7 @@ pub mod wifi_manager;
 mod wifi_native;
 mod wire;
 
+pub use addr::ToSocketAddrs;
 pub use error::{Error, Result};
 pub use link::{Link, LinkInfo, LinkRx, Medium, RxFrame, TxError};
 pub use iface::{Interface, add_link, interfaces, start};

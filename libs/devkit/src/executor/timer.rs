@@ -100,16 +100,27 @@ impl Drop for Timer {
 pub struct Elapsed;
 
 /// `future`'s output, unless `ticks` pass first; the future is dropped then.
-pub async fn timeout<F: Future>(ticks: u32, future: F) -> Result<F::Output, Elapsed> {
-    let mut future = core::pin::pin!(future);
-    let mut timer = core::pin::pin!(sleep(ticks));
-    core::future::poll_fn(|cx| {
-        if let Poll::Ready(output) = future.as_mut().poll(cx) {
+pub fn timeout<F: Future>(ticks: u32, future: F) -> Timeout<F> {
+    Timeout { future, timer: sleep(ticks) }
+}
+
+// Not an async fn: its state would hold `future` twice, as the argument and
+// as the pinned local, and every wrapper around it once more.
+pub struct Timeout<F> {
+    future: F,
+    timer: Timer,
+}
+
+impl<F: Future> Future for Timeout<F> {
+    type Output = Result<F::Output, Elapsed>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = unsafe { self.get_unchecked_mut() };
+        if let Poll::Ready(output) = unsafe { Pin::new_unchecked(&mut this.future) }.poll(cx) {
             return Poll::Ready(Ok(output));
         }
-        timer.as_mut().poll(cx).map(|()| Err(Elapsed))
-    })
-    .await
+        unsafe { Pin::new_unchecked(&mut this.timer) }.poll(cx).map(|()| Err(Elapsed))
+    }
 }
 
 impl Inner {

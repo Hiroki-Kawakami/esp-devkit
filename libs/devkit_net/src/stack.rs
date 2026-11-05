@@ -122,6 +122,7 @@ pub struct Stack {
     pub(crate) udp: udp::Sockets,
     pub(crate) tcp: tcp::Sockets,
     pub(crate) woken: Vec<SocketId>,
+    dns_generation: u32,
 }
 
 impl Default for Stack {
@@ -143,6 +144,7 @@ impl Stack {
             udp: udp::Sockets::default(),
             tcp: tcp::Sockets::default(),
             woken: Vec::new(),
+            dns_generation: 0,
         };
         let lo = stack.add_interface("lo", LinkInfo { medium: Medium::Ip, mac: [0; 6], mtu: LOOPBACK_MTU });
         stack.set_ipv4(lo, Some(Ipv4Config { address: Ipv4Addr::LOCALHOST, prefix_len: 8, gateway: None }));
@@ -198,12 +200,33 @@ impl Stack {
 
     pub fn set_dns_servers(&mut self, id: IfaceId, servers: &[Ipv4Addr]) {
         let dns = &mut self.iface_mut(id).dns;
-        dns.clear();
-        dns.extend_from_slice(servers);
+        if dns != servers {
+            dns.clear();
+            dns.extend_from_slice(servers);
+            self.dns_generation = self.dns_generation.wrapping_add(1);
+        }
     }
 
     pub fn dns_servers(&self, id: IfaceId) -> &[Ipv4Addr] {
         &self.iface(id).dns
+    }
+
+    /// Changes whenever an interface's DNS servers do.
+    pub(crate) fn dns_generation(&self) -> u32 {
+        self.dns_generation
+    }
+
+    /// The DNS servers of the interfaces that are up, in interface order.
+    pub(crate) fn name_servers(&self) -> Vec<Ipv4Addr> {
+        let mut servers: Vec<Ipv4Addr> = Vec::new();
+        for iface in self.ifaces.iter().filter(|i| i.up) {
+            for server in &iface.dns {
+                if !servers.contains(server) {
+                    servers.push(*server);
+                }
+            }
+        }
+        servers
     }
 
     pub fn name(&self, id: IfaceId) -> &'static str {

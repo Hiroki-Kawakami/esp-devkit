@@ -1,7 +1,7 @@
 # devkit_net
 
 An IPv4 network stack in Rust that replaces lwIP: ARP, IPv4 with reassembly,
-ICMP, UDP, TCP and a DHCP client, behind a std-like socket API. It runs the same
+ICMP, UDP, TCP, a DHCP client and a DNS resolver, behind a std-like socket API. It runs the same
 over the chip's own Wi-Fi, a Wi-Fi coprocessor registered by a board, and the
 simulator's network. How each protocol behaves is in
 [`docs/protocols.md`](docs/protocols.md); how the stack spends its time and how
@@ -15,13 +15,15 @@ wifi.start().await?;
 wifi.connect(&StaConfig::new("YOUR_SSID", "YOUR_PASSWORD")).await?;
 let address = wifi.sta().wait_ipv4_async().await.address;
 
-let stream = TcpStream::connect("192.168.x.x:5001".parse()?)?;
+let stream = TcpStream::connect("example.com:80")?;
 stream.write_all(b"hello")?;
 ```
 
 | module | what |
 |---|---|
 | `iface` | `start`, `add_link`, `interfaces` and `Interface`: link state, statistics, IPv4 mode and address, DNS servers |
+| `dns` | `lookup`: host names to addresses |
+| `addr` | `ToSocketAddrs`, what `connect` takes |
 | `wifi` | `Wifi` (start, stop, connect, disconnect, scan, RSSI, power save, state), the `WifiDriver` trait and `register_wifi` |
 | `wifi_manager` | saved networks, joining them by itself, the Wi-Fi on/off switch |
 | `udp_socket`, `tcp_socket` | `UdpSocket`, `TcpListener`, `TcpStream` and its split halves, with their builders |
@@ -49,7 +51,8 @@ Every link becomes an `Interface`. `add_link` starts it with `Ipv4Mode::Off`;
 the radio's station interface is named `sta` and starts with `Ipv4Mode::Dhcp`.
 `set_ipv4` switches between off, a static address and DHCP. A DHCP client runs
 on the stack's task while its interface is in `Dhcp` mode and the link is up,
-and releases the lease when either stops. `wait_ipv4` (and `_timeout`,
+and releases the lease when either stops. DHCP also gives the DNS servers; in
+`Static` mode `set_dns_servers` sets them, after `set_ipv4`, which clears them. `wait_ipv4` (and `_timeout`,
 `_async`) returns once an address is configured.
 
 An interface named `lo` holds 127.0.0.1/8. A packet to one of the stack's own
@@ -116,9 +119,26 @@ with `WouldBlock` when the link has no room for it. `send_to_async` waits for
 room instead. TCP never reports a full link: output stops at the segment the
 link refused and goes on once it has room.
 
+`TcpStream::connect` and `UdpSocket::connect` take what `ToSocketAddrs`
+covers, as in std: a `SocketAddr`, `(ip, port)`, `("host", port)`,
+`"host:port"` or a slice of addresses. A host is looked up first, inside the
+`_timeout` given. TCP tries each address in turn; UDP takes the first IPv4 one.
+
 A `TcpStream` splits into a `TcpReader` and a `TcpWriter` that may live on
 different tasks. Keepalive is off until `set_keepalive`; Nagle is on until
 `set_nodelay(true)`.
+
+## Names
+
+`dns::lookup` (and `_timeout`, `_async`) returns the addresses of a host name.
+An address literal comes back as it is and `localhost` is 127.0.0.1; other
+names go to the DNS servers of the interfaces that are up, in interface order.
+Lookups of one name share a query, which runs on the stack's task and goes on
+when its caller gives up, so its answer still lands in the cache. A blocking
+lookup on the stack's task never returns. Errors: `NotFound` for a name that
+does not exist or has no address, `NoNameServer`, `TimedOut`, and
+`InvalidInput` for a name a query cannot carry (ASCII only). How the resolver
+behaves on the wire is in [`docs/protocols.md`](docs/protocols.md).
 
 ## Threading
 
@@ -172,5 +192,6 @@ cmake --build firmware/rust_hello/simulator/build --target rust_test_devkit_net
 ```
 
 `firmware/rust_hello` is the board check firmware: it joins the network saved
-with `wifi join` and serves the netbench ports. `firmware/lwip_netbench` serves
+with `wifi join`, serves the netbench ports, and looks names up with
+`dns <host>`. `firmware/lwip_netbench` serves
 the same ports from lwIP for comparison.

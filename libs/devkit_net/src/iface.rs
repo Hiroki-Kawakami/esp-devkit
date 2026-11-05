@@ -80,12 +80,22 @@ impl Interface {
         net::registry().lock().stack.dns_servers(self.id).to_vec()
     }
 
+    /// Only in `Static` mode; `set_ipv4` clears them.
+    pub fn set_dns_servers(&self, servers: &[Ipv4Addr]) -> Result<()> {
+        let mut inner = net::registry().lock();
+        if !matches!(inner.modes[self.id.index()], Ipv4Mode::Static(_)) {
+            return Err(Error::Unsupported);
+        }
+        inner.stack.set_dns_servers(self.id, servers);
+        Ok(())
+    }
+
     pub fn wait_ipv4(&self) -> Ipv4Config {
         executor::block_on(self.wait_ipv4_async())
     }
 
     pub fn wait_ipv4_timeout(&self, timeout: Duration) -> Result<Ipv4Config> {
-        executor::block_on(async { executor::timeout(timeout, self.wait_ipv4_async()).await.map_err(|_| Error::TimedOut) })
+        executor::block_on(executor::timeout(timeout, self.wait_ipv4_async())).map_err(|_| Error::TimedOut)
     }
 
     pub async fn wait_ipv4_async(&self) -> Ipv4Config {

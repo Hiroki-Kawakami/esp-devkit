@@ -4,6 +4,7 @@
  */
 
 mod dhcp;
+mod dns;
 mod ipv4;
 mod link;
 mod runner;

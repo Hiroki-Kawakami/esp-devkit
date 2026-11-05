@@ -9,7 +9,7 @@ use core::time::Duration;
 
 use devkit::executor::{CriticalSection, Park};
 pub use devkit::executor::{
-    Elapsed, Executor, JoinHandle, LocalExecutor, LocalSpawner, Receiver, Sender, Signal, Spawner, Timer,
+    Elapsed, Executor, JoinHandle, LocalExecutor, LocalSpawner, Receiver, Sender, Signal, Spawner, Timeout, Timer,
     local_spawner, spawner,
 };
 
@@ -95,8 +95,8 @@ pub fn sleep(d: Duration) -> Timer {
 }
 
 /// `future`'s output unless at least `d` passes first; the future is dropped then.
-pub async fn timeout<F: Future>(d: Duration, future: F) -> core::result::Result<F::Output, Elapsed> {
-    devkit::executor::timeout(ticks(d), future).await
+pub fn timeout<F: Future>(d: Duration, future: F) -> Timeout<F> {
+    devkit::executor::timeout(ticks(d), future)
 }
 
 impl Builder {

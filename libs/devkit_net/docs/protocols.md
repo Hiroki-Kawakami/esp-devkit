@@ -114,3 +114,28 @@ TCP timestamps or path MTU discovery.
   NAK.
 - Stopping the client (DHCP mode off, link down) sends RELEASE and clears the
   address.
+
+## DNS resolver
+
+A stub resolver for A records (RFC 1034/1035), asking with recursion desired.
+
+- Each query goes out from a random local port with a random ID (RFC 5452). A
+  response counts only from port 53 of a server already asked, with the same
+  ID and the same question; anything else is ignored while waiting.
+- The servers are asked in turn, waiting 1 s for each, then again with the wait
+  doubled, for 4 rounds and at most 10 s. A late answer from a server asked
+  earlier is taken. SERVFAIL, REFUSED and other errors move on to the next
+  server at once; when no answer comes, the lookup fails with `TimedOut`.
+- A truncated response is asked again over TCP to the same server (RFC 7766),
+  with 5 s for the exchange. No EDNS(0): UDP responses are 512 bytes at most.
+- Name compression is followed backwards only, so a pointer loop ends at the
+  253-byte name limit. A TTL with the top bit set counts as zero (RFC 2181 8).
+- CNAMEs are followed within the response. A chain that ends without an address
+  and without an SOA is asked about again from its last name (RFC 1034 5.3.3).
+  More than 8 aliases in all end with `NotFound`.
+- NXDOMAIN, and a response without an address for the name (NODATA), end with
+  `NotFound`.
+- Up to 16 names are cached, the least recently used dropped first: addresses
+  and aliases for their TTL, up to a day, and a missing name for the SOA's
+  negative TTL (RFC 2308), up to 5 minutes. A record with TTL 0 is used once
+  and not kept. The cache is emptied whenever an interface's DNS servers change.

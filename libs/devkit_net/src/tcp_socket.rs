@@ -12,6 +12,7 @@ use core::time::Duration;
 use idf::executor;
 use idf::heap::Caps;
 
+use crate::addr::{self, ToSocketAddrs};
 use crate::net::{self, Net, wait_for};
 use crate::stack::SocketId;
 use crate::tcp::Buffers;
@@ -31,7 +32,7 @@ fn blocking<T>(future: impl Future<Output = Result<T>>) -> Result<T> {
 }
 
 fn blocking_timeout<T>(timeout: Duration, future: impl Future<Output = Result<T>>) -> Result<T> {
-    executor::block_on(async { executor::timeout(timeout, future).await.map_err(|_| Error::TimedOut)? })
+    executor::block_on(executor::timeout(timeout, future)).map_err(|_| Error::TimedOut)?
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -93,19 +94,32 @@ impl TcpBuilder {
         Ok(TcpListener { net, id })
     }
 
-    pub fn connect(self, addr: SocketAddr) -> Result<TcpStream> {
+    /// Tries each address in turn and fails with the last one's error.
+    pub fn connect(self, addr: impl ToSocketAddrs) -> Result<TcpStream> {
         blocking(self.connect_async(addr))
     }
 
-    pub fn connect_timeout(self, addr: SocketAddr, timeout: Duration) -> Result<TcpStream> {
+    /// `timeout` covers the lookup too.
+    pub fn connect_timeout(self, addr: impl ToSocketAddrs, timeout: Duration) -> Result<TcpStream> {
         blocking_timeout(timeout, self.connect_async(addr))
     }
 
-    pub async fn connect_async(self, addr: SocketAddr) -> Result<TcpStream> {
+    pub async fn connect_async(self, addr: impl ToSocketAddrs) -> Result<TcpStream> {
         self.connect_in(net::global()?, addr).await
     }
 
-    pub(crate) async fn connect_in(self, net: &'static Net, addr: SocketAddr) -> Result<TcpStream> {
+    pub(crate) async fn connect_in(self, net: &'static Net, addr: impl ToSocketAddrs) -> Result<TcpStream> {
+        let mut last = Error::InvalidInput;
+        for addr in addr::resolve(net, addr.target()?).await? {
+            match self.connect_to(net, addr).await {
+                Ok(stream) => return Ok(stream),
+                Err(err) => last = err,
+            }
+        }
+        Err(last)
+    }
+
+    pub(crate) async fn connect_to(self, net: &'static Net, addr: SocketAddr) -> Result<TcpStream> {
         let addr = v4(addr)?;
         let buffers = self.buffers(net);
         let now = net::now();
@@ -223,15 +237,15 @@ pub struct TcpStream {
 }
 
 impl TcpStream {
-    pub fn connect(addr: SocketAddr) -> Result<Self> {
+    pub fn connect(addr: impl ToSocketAddrs) -> Result<Self> {
         TcpBuilder::default().connect(addr)
     }
 
-    pub fn connect_timeout(addr: SocketAddr, timeout: Duration) -> Result<Self> {
+    pub fn connect_timeout(addr: impl ToSocketAddrs, timeout: Duration) -> Result<Self> {
         TcpBuilder::default().connect_timeout(addr, timeout)
     }
 
-    pub async fn connect_async(addr: SocketAddr) -> Result<Self> {
+    pub async fn connect_async(addr: impl ToSocketAddrs) -> Result<Self> {
         TcpBuilder::default().connect_async(addr).await
     }
 

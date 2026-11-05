@@ -9,6 +9,7 @@ use core::time::Duration;
 use idf::executor;
 use idf::heap::Caps;
 
+use crate::addr::{self, ToSocketAddrs};
 use crate::net::{self, Net, retry_while_busy, wait_for};
 use crate::stack::{IfaceId, SocketId};
 use crate::{Error, Result};
@@ -82,10 +83,21 @@ impl UdpSocket {
         self.net.lock().stack.udp_peer(self.id).map(Into::into).ok_or(Error::NotConnected)
     }
 
-    /// Sets the destination of `send` and receives only from `addr`.
-    pub fn connect(&self, addr: SocketAddr) -> Result<()> {
-        let addr = v4(addr)?;
-        self.net.lock().stack.udp_connect(self.id, addr);
+    /// Sets the destination of `send` and receives only from `addr`, the
+    /// first IPv4 address it has. Waits only to look a host up.
+    pub fn connect(&self, addr: impl ToSocketAddrs) -> Result<()> {
+        executor::block_on(self.connect_async(addr))
+    }
+
+    pub fn connect_timeout(&self, addr: impl ToSocketAddrs, timeout: Duration) -> Result<()> {
+        executor::block_on(executor::timeout(timeout, self.connect_async(addr))).map_err(|_| Error::TimedOut)?
+    }
+
+    pub async fn connect_async(&self, addr: impl ToSocketAddrs) -> Result<()> {
+        let addrs = addr::resolve(self.net, addr.target()?).await?;
+        let addr = addrs.iter().find_map(|a| v4(*a).ok());
+        let addr = addr.ok_or(if addrs.is_empty() { Error::InvalidInput } else { Error::Unsupported })?;
+        self.net.lock_async().await.stack.udp_connect(self.id, addr);
         Ok(())
     }
 
@@ -122,7 +134,7 @@ impl UdpSocket {
     }
 
     pub fn recv_from_timeout(&self, buf: &mut [u8], timeout: Duration) -> Result<(usize, SocketAddr)> {
-        executor::block_on(async { executor::timeout(timeout, self.recv_from_async(buf)).await.map_err(|_| Error::TimedOut)? })
+        executor::block_on(executor::timeout(timeout, self.recv_from_async(buf))).map_err(|_| Error::TimedOut)?
     }
 
     pub async fn recv_from_async(&self, buf: &mut [u8]) -> Result<(usize, SocketAddr)> {

@@ -21,7 +21,7 @@ use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
 pub use sync::{Receiver, SendFuture, Sender, Signal, channel};
 pub use task::JoinHandle;
-pub use timer::{Elapsed, Timer, sleep, sleep_until, timeout};
+pub use timer::{Elapsed, Timeout, Timer, sleep, sleep_until, timeout};
 use task::{ABORTED, COMPLETE, HANDLE, Header, RUNNING, SCHEDULED, TaskRef};
 
 const MAX_RUNNERS: usize = 8;

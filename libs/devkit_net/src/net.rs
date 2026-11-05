@@ -18,7 +18,7 @@ use idf::heap::Caps;
 use idf::sync::{LazyLock, Mutex, MutexGuard, OnceLock};
 use idf::thread::Builder;
 
-use crate::dhcp;
+use crate::{dhcp, dns};
 use crate::link::{Link, LinkRx, RxFrame, RxSink};
 use crate::stack::{IfaceId, IfaceStats, Ipv4Config, SocketId, Stack, Tx};
 use crate::time::Instant;
@@ -73,6 +73,7 @@ pub(crate) struct Inner {
     pub modes: Vec<Ipv4Mode>,
     /// The address DHCP last held on each interface, to ask for again.
     pub dhcp_last: Vec<Option<Ipv4Addr>>,
+    pub dns: dns::State,
     overflow: Vec<Option<Arc<AtomicU32>>>,
     waiters: Vec<(SocketId, Waker)>,
     kick: &'static Signal<()>,
@@ -298,6 +299,7 @@ impl Net {
             links: Vec::new(),
             modes: Vec::new(),
             dhcp_last: Vec::new(),
+            dns: dns::State::default(),
             overflow: Vec::new(),
             waiters: Vec::new(),
             kick,
@@ -325,6 +327,11 @@ impl Net {
         let net = Self::new();
         let _ = net.config.set(config);
         net
+    }
+
+    #[cfg(test)]
+    pub fn set_spawner(&self, spawner: Spawner) {
+        let _ = self.spawner.set(spawner);
     }
 
     pub fn config(&self) -> Config {
