@@ -53,8 +53,8 @@ links EAP, which links mbedTLS's x509, which calls `lwip_inet_pton`, which bring
 lwIP's socket layer and core. A firmware on devkit_net sets
 `CONFIG_ESP_WIFI_ENTERPRISE_SUPPORT=n` in its own `sdkconfig.defaults`
 (`firmware/rust_hello/esp32s3`): a component's Kconfig cannot force another
-component's option off. Using mbedTLS's x509 for TLS brings the same reference
-back, and needs its own answer.
+component's option off. TLS through `devkit_crypto` uses only mbedTLS's PSA
+Crypto, not its x509, so it does not bring the reference back.
 
 To find what pulls lwIP in, read the "Archive member included to satisfy
 reference" section of the firmware's map file, which names the object and

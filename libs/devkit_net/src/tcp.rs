@@ -9,9 +9,9 @@ use alloc::vec::Vec;
 use core::net::{Ipv4Addr, SocketAddrV4};
 use core::time::Duration;
 
+use devkit_crypto::mac::siphash;
 use idf::heap::Caps;
 
-use crate::crypto::siphash;
 use crate::icmp::Reported;
 use crate::ring::Ring;
 use crate::stack::{SocketId, Stack, Tx};

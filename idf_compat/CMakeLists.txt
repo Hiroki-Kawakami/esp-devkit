@@ -19,6 +19,7 @@ idf_component_register(
         "src/esp_mac.c"
         "src/esp_app_desc.c"
         "src/nvs.c"
+        "src/esp_partition.c" # data partitions backed by host files
         "src/jpeg_decode.c"   # IDF JPEG decode engine API, backed by libjpeg
         "src/ppa.c"           # IDF PPA (scale/rotate/mirror/blend/fill), CPU impl
         "src/i2c_master.c"    # IDF i2c_master API, virtual bus of emulated chips

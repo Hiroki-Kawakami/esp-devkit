@@ -704,6 +704,12 @@ let answer = executor::block_on(async { local.spawn(compute()).await });
 
 Streaming inflate and LZW; see its README.
 
+### `devkit_crypto` (`libs/devkit_crypto`)
+
+Cryptography on mbedTLS's PSA Crypto and its own code: hashes, MACs, KDFs,
+AEADs, key agreement, signatures, Ed25519, X.509, a TLS 1.3 client and the CA
+bundle; see its README.
+
 ### `devkit_gfx` (`libs/devkit_gfx`)
 
 2D rendering, IDF-independent and host-testable; see its README.

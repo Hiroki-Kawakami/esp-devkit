@@ -27,11 +27,11 @@ fn v4(addr: SocketAddr) -> Result<SocketAddrV4> {
     }
 }
 
-fn blocking<T>(future: impl Future<Output = Result<T>>) -> Result<T> {
+pub(crate) fn blocking<T>(future: impl Future<Output = Result<T>>) -> Result<T> {
     executor::block_on(future)
 }
 
-fn blocking_timeout<T>(timeout: Duration, future: impl Future<Output = Result<T>>) -> Result<T> {
+pub(crate) fn blocking_timeout<T>(timeout: Duration, future: impl Future<Output = Result<T>>) -> Result<T> {
     executor::block_on(executor::timeout(timeout, future)).map_err(|_| Error::TimedOut)?
 }
 

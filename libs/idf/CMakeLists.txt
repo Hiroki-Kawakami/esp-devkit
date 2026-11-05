@@ -3,7 +3,7 @@ idf_component_register(
     SRCS "src/executor_shim.c"
     PRIV_INCLUDE_DIRS "src"
     REQUIRES esp_app_format esp_common esp_system esp_timer freertos heap log nvs_flash esp_driver_i2c esp_driver_gpio
-             esp_driver_ledc esp_driver_i2s esp_driver_ppa esp_driver_sdmmc esp_hw_support esp_lcd esp_mm sdmmc fatfs vfs
+             esp_driver_ledc esp_driver_i2s esp_partition esp_driver_ppa esp_driver_sdmmc esp_hw_support esp_lcd esp_mm sdmmc fatfs vfs
     PRIV_REQUIRES devkit rust_rt)
 if(ESP_PLATFORM)
     set(log_headers "esp_log.h" "esp_log_config.h" "esp_log_level.h" "esp_log_timestamp.h"
@@ -32,5 +32,5 @@ devkit_rust_crate(ROOT "src/lib.rs" TESTS
     BINDGEN_HEADERS "esp_app_desc.h" "esp_err.h" "esp_heap_caps.h" "multi_heap.h" "esp_system.h" "esp_random.h" "esp_mac.h" "esp_timer.h"
                     "freertos/FreeRTOS.h" "freertos/portmacro.h" "freertos/task.h" "freertos/queue.h"
                     "freertos/semphr.h" "freertos/idf_additions.h" "unistd.h" "sys/stat.h" "dirent.h"
-                    "nvs.h" "nvs_flash.h" "freertos/timers.h" "executor_shim.h"
+                    "nvs.h" "nvs_flash.h" "esp_partition.h" "freertos/timers.h" "executor_shim.h"
                     ${log_headers} ${driver_headers})

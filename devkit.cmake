@@ -31,6 +31,7 @@ set(DEVKIT_DEVICE_COMPONENTS
     libs/devkit
     libs/devkit_audio
     libs/devkit_compression
+    libs/devkit_crypto
     libs/devkit_gfx
     libs/devkit_image
     libs/devkit_media
@@ -62,6 +63,7 @@ set(DEVKIT_SIMULATOR_COMPONENTS
     libs/devkit
     libs/devkit_audio
     libs/devkit_compression
+    libs/devkit_crypto
     libs/devkit_gfx
     libs/devkit_image
     libs/devkit_media
@@ -190,6 +192,7 @@ macro(devkit_simulator)
     find_package(Threads REQUIRED)   # host FreeRTOS API (idf_compat) is built on pthreads
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(JPEG REQUIRED IMPORTED_TARGET libjpeg)
+    pkg_check_modules(TFPSACRYPTO REQUIRED IMPORTED_TARGET tfpsacrypto)
 
     # ---------------------------------------------------------------------------
     # Executable
@@ -200,7 +203,7 @@ macro(devkit_simulator)
         SDL_MAIN_HANDLED)
     # libm is otherwise only implied when g++ links, i.e. a C++ component is in.
     target_link_libraries(simulator SDL2::SDL2 Threads::Threads
-        PkgConfig::JPEG ${CMAKE_DL_LIBS} m)
+        PkgConfig::JPEG PkgConfig::TFPSACRYPTO ${CMAKE_DL_LIBS} m)
 
     # Initial host-view rotation of the SDL window (r/l keys change it at runtime).
     set(SIM_DEFAULT_ROTATION ${DEVKIT_SIM_DEFAULT_ROTATION} CACHE STRING
@@ -301,7 +304,7 @@ macro(devkit_simulator)
             $<TARGET_PROPERTY:simulator,COMPILE_DEFINITIONS>)
         target_compile_options(devkit_sim_idf_compat PRIVATE
             $<TARGET_PROPERTY:simulator,COMPILE_OPTIONS>)
-        set(_devkit_compat_link ${JPEG_LINK_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT})
+        set(_devkit_compat_link ${JPEG_LINK_LIBRARIES} ${TFPSACRYPTO_LINK_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT})
         foreach(_devkit_lib ${CMAKE_DL_LIBS} m)
             list(APPEND _devkit_compat_link "-l${_devkit_lib}")
         endforeach()

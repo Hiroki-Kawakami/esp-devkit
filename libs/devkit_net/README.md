@@ -1,7 +1,8 @@
 # devkit_net
 
 An IPv4 network stack in Rust that replaces lwIP: ARP, IPv4 with reassembly,
-ICMP, UDP, TCP, a DHCP client and a DNS resolver, behind a std-like socket API. It runs the same
+ICMP, UDP, TCP, a DHCP client and a DNS resolver, behind a std-like socket API,
+with TLS 1.3 from `devkit_crypto` on top. It runs the same
 over the chip's own Wi-Fi, a Wi-Fi coprocessor registered by a board, and the
 simulator's network. How each protocol behaves is in
 [`docs/protocols.md`](docs/protocols.md); how the stack spends its time and how
@@ -27,6 +28,7 @@ stream.write_all(b"hello")?;
 | `wifi` | `Wifi` (start, stop, connect, disconnect, scan, RSSI, power save, state), the `WifiDriver` trait and `register_wifi` |
 | `wifi_manager` | saved networks, joining them by itself, the Wi-Fi on/off switch |
 | `udp_socket`, `tcp_socket` | `UdpSocket`, `TcpListener`, `TcpStream` and its split halves, with their builders |
+| `tls` | `TlsStream`: a `devkit_crypto` TLS 1.3 client connection over a `TcpStream` |
 | `link` | the `Link` trait a network interface implements, `LinkRx` and `RxFrame` |
 | `stack` | the sans-IO `Stack` that does all protocol work |
 | `net` | the stack's task, the lock around the `Stack`, and the wakeups between them |
@@ -127,6 +129,27 @@ covers, as in std: a `SocketAddr`, `(ip, port)`, `("host", port)`,
 A `TcpStream` splits into a `TcpReader` and a `TcpWriter` that may live on
 different tasks. Keepalive is off until `set_keepalive`; Nagle is on until
 `set_nodelay(true)`.
+
+## TLS
+
+`TlsStream` drives a `devkit_crypto::tls::Connection` over a `TcpStream`, with
+the same three forms of every call. `connect(host, port, config)` looks the host
+up, connects and completes the handshake, with `host` as the name the
+certificate has to carry; `start(tcp, server_name, config)` begins on a stream
+already in use, as STARTTLS does. `read` returns `Ok(0)` after the server's
+close_notify; a stream that ends without one fails with `ConnectionAborted`,
+since its data may be cut short. `shutdown` sends close_notify, then FIN. TLS
+failures come back as `Error::Tls`. `connection()` gives the ALPN protocol, the
+server's certificates and exported keying material.
+
+```rust
+let config = Arc::new(ClientConfig::new(Verify::WebPki(TrustStore::default_bundle()?)));
+let mut tls = TlsStream::connect("example.com", 443, config)?;
+tls.write_all(b"GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")?;
+```
+
+A handshake verifies the server's chain on the calling task: with
+`Verify::WebPki` it took about 5 KB of stack on the devices.
 
 ## Names
 

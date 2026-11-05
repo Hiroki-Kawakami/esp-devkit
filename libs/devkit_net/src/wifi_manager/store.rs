@@ -10,9 +10,9 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::ffi::CStr;
 
+use devkit_crypto::cipher::chacha20;
+use devkit_crypto::mac::siphash;
 use idf::nvs::{Key, Nvs};
-
-use crate::crypto::{chacha20, siphash};
 
 pub(crate) const SLOTS: usize = 5;
 const NAMESPACE: &CStr = c"wifi_manager";

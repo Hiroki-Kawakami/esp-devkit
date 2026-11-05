@@ -59,6 +59,11 @@
 
         idfPath = "${idfStore}/tools:${lib.makeBinPath idfToolchains}";
 
+        # Mozilla's roots from the NSS release nixpkgs' cacert pins (tools/ca_bundle).
+        caBundle = pkgs.runCommandLocal "devkit-ca-bundle-${pkgs.cacert.version}" { } ''
+          ${pkgs.python3}/bin/python3 ${./tools/ca_bundle/ca_bundle.py} build ${pkgs.cacert.src} ${pkgs.cacert.version} $out
+        '';
+
         idfEnv = {
           IDF_PATH = "${idfStore}";
           IDF_PYTHON_ENV_PATH = "${pythonEnv}";
@@ -69,6 +74,7 @@
           ESP_IDF_VERSION = "6.1";
           ESP_ROM_ELF_DIR = "${toolchains.romElfs}/";  # trailing slash required
           RESGEN_PYTHON = "${resgenPython}/bin/python3";
+          DEVKIT_CA_BUNDLE = "${caBundle}";
         };
 
         mkFwImage = { name ? "esp-devkit-fw", extraPackages ? [ ], extraEnv ? { } }:
@@ -139,6 +145,7 @@
             pkgs.ccache
             pkgs.SDL2
             pkgs.libjpeg
+            pkgs.mbedtls_4
             pkgs.zlib
             pkgs.pkg-config
             # esp-devkit CLI (docs/devkit-cli.md); cargo for working on it

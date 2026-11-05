@@ -4,6 +4,7 @@ sdkconfig
 sdkconfig.old
 devkit.local.toml
 nvs_data.toml
+*.partition
 .cache
 .deps
 .direnv

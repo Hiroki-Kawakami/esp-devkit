@@ -3,7 +3,6 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
-use crate::crypto::{chacha20, siphash};
 use crate::wifi_manager::store::{Cipher, Saved};
 use crate::wifi_manager::{entries, rank};
 use crate::{ScanRecord, Security};
@@ -16,24 +15,6 @@ fn record(ssid: &str, rssi: i8, channel: u8) -> ScanRecord {
 
 fn saved(ssid: &str, hidden: bool, seq: u32) -> Saved {
     Saved { ssid: ssid.as_bytes().to_vec(), password: String::from("placeholder"), hidden, seq }
-}
-
-#[test]
-fn chacha20_matches_rfc8439() {
-    let key: [u8; 32] = core::array::from_fn(|i| i as u8);
-    let nonce = [0, 0, 0, 0, 0, 0, 0, 0x4a, 0, 0, 0, 0];
-    let mut data = *b"Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the future, sunscreen would be it.";
-    chacha20(&key, &nonce, 1, &mut data);
-    assert_eq!(data[..16], [0x6e, 0x2e, 0x35, 0x9a, 0x25, 0x68, 0xf9, 0x80, 0x41, 0xba, 0x07, 0x28, 0xdd, 0x0d, 0x69, 0x81]);
-    assert_eq!(data[data.len() - 4..], [0x5e, 0x42, 0x87, 0x4d]);
-    chacha20(&key, &nonce, 1, &mut data);
-    assert!(data.starts_with(b"Ladies"));
-}
-
-#[test]
-fn siphash_matches_the_reference() {
-    let message: [u8; 15] = core::array::from_fn(|i| i as u8);
-    assert_eq!(siphash(0x0706050403020100, 0x0f0e0d0c0b0a0908, &message), 0xa129ca6149be45e5);
 }
 
 #[test]

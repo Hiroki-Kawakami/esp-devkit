@@ -12,7 +12,9 @@ use core::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use core::time::Duration;
 
 use devkit_net::wifi_manager::{self, Manager};
-use devkit_net::{TcpListener, TcpStream, UdpSocket};
+use devkit_crypto::tls::{ClientConfig, Verify};
+use devkit_crypto::x509::TrustStore;
+use devkit_net::{TcpListener, TcpStream, TlsStream, UdpSocket};
 use idf::executor::{self, Spawner};
 use idf::log::{error, info};
 use idf::nvs::{Key, Nvs};
@@ -260,6 +262,136 @@ fn exchange_command(args: &[&str], udp: bool) -> Result<Option<String>, String> 
     Ok(Some(String::from_utf8_lossy(&buf[..n]).into_owned()))
 }
 
+/// GETs `path` from `host` over TLS 1.3, checked against the default CA bundle,
+/// in the background; the status line, the body size, the cipher suite and the
+/// time each step took go to the log.
+fn https_command(args: &[&str]) -> Result<Option<String>, String> {
+    let (host, path) = match args {
+        [host] => (String::from(*host), String::from("/")),
+        [host, path] => (String::from(*host), String::from(*path)),
+        _ => return Err(String::from("usage: <host> [path]")),
+    };
+    idf::thread::Builder::new()
+        .stack_size(16384)
+        .priority(5)
+        .spawn(move || {
+            let result = https_get(&host, &path);
+            let unused = idf::thread::current().stack_high_water_mark();
+            match result {
+                Ok(line) => info!(TAG, "https {host}: {line} | stack unused {unused}"),
+                Err(err) => error!(TAG, "https {host}: {err} | stack unused {unused}"),
+            }
+        })
+        .map_err(|_| String::from("spawn"))?;
+    Ok(None)
+}
+
+fn https_get(host: &str, path: &str) -> Result<String, String> {
+    let start = idf::time::Instant::now();
+    let store = TrustStore::default_bundle().map_err(|err| format!("CA bundle: {err}"))?;
+    let bundle = start.elapsed();
+    let config = alloc::sync::Arc::new(ClientConfig::new(Verify::WebPki(store)));
+    let tcp = TcpStream::connect_timeout((host, 443), REPLY_WAIT).map_err(|err| format!("{err}"))?;
+    let connected = start.elapsed();
+    let mut tls = TlsStream::start(tcp, Some(host), config).map_err(|err| format!("{err}"))?;
+    let handshake = start.elapsed();
+    tls.write_all(format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n").as_bytes())
+        .map_err(|err| format!("{err}"))?;
+    let mut buf = vec![0u8; 4096];
+    let mut head = vec::Vec::new();
+    let mut total = 0;
+    loop {
+        match tls.read_timeout(&mut buf, REPLY_WAIT) {
+            Ok(0) | Err(devkit_net::Error::ConnectionAborted) => break,
+            Ok(n) => {
+                if head.len() < 256 {
+                    head.extend_from_slice(&buf[..n.min(256 - head.len())]);
+                }
+                total += n;
+            }
+            Err(err) => return Err(format!("{err}")),
+        }
+    }
+    let status = String::from(String::from_utf8_lossy(&head).lines().next().unwrap_or(""));
+    let suite = tls.connection().cipher_suite();
+    Ok(format!(
+        "{status} | {total} bytes | {suite:?} | bundle {} ms, tcp {} ms, handshake {} ms, total {} ms",
+        bundle.as_millis(),
+        (connected - bundle).as_millis(),
+        (handshake - connected).as_millis(),
+        start.elapsed().as_millis()
+    ))
+}
+
+/// Times the primitives a TLS connection uses, in the background; results go to the log.
+fn crypto_bench_command(_: &[&str]) -> Result<Option<String>, String> {
+    idf::thread::Builder::new()
+        .stack_size(16384)
+        .priority(5)
+        .spawn(crypto_bench)
+        .map_err(|_| String::from("spawn"))?;
+    Ok(None)
+}
+
+fn crypto_bench() {
+    use devkit_crypto::aead::{self, Aead, Algorithm};
+    use devkit_crypto::ecdh::{EphemeralSecret, Group};
+    use devkit_crypto::hash::{Hash, Sha256};
+    let time = |name: &str, rounds: u32, bytes: usize, f: &mut dyn FnMut()| {
+        let start = idf::time::Instant::now();
+        for _ in 0..rounds {
+            f();
+        }
+        let us = start.elapsed().as_micros() as u64;
+        if bytes > 0 {
+            info!(TAG, "bench {name}: {} KB/s", bytes as u64 * rounds as u64 * 1_000_000 / us.max(1) / 1024);
+        } else {
+            info!(TAG, "bench {name}: {} us", us / rounds as u64);
+        }
+    };
+    for (place, caps) in [("internal", Caps::INTERNAL), ("PSRAM", Caps::SPIRAM)] {
+        let Ok(mut buf) = heap::try_vec(16384 + aead::TAG, caps) else {
+            info!(TAG, "bench: no {place} buffer");
+            continue;
+        };
+        buf.resize(16384 + aead::TAG, 0u8);
+        for algorithm in [Algorithm::Aes128Gcm, Algorithm::Aes256Gcm, Algorithm::ChaCha20Poly1305] {
+            let aead = Aead::new(algorithm, &vec![7; algorithm.key_len()]).unwrap();
+            time(&format!("{algorithm:?} seal 16 KB, {place}"), 32, 16384, &mut || {
+                aead.seal_in_place(&[0; 12], &[], &mut buf, 16384).unwrap();
+            });
+        }
+        time(&format!("SHA-256, {place}"), 32, 16384, &mut || {
+            Sha256::digest(&buf);
+        });
+    }
+    for group in [Group::X25519, Group::P256] {
+        let peer = EphemeralSecret::generate(group).unwrap().public_key().unwrap();
+        time(&format!("{group:?} keygen + agree"), 4, 0, &mut || {
+            EphemeralSecret::generate(group).unwrap().agree(&peer).unwrap();
+        });
+    }
+    let store = TrustStore::default_bundle().unwrap();
+    let roots: vec::Vec<_> = store.anchors().filter_map(|a| devkit_crypto::x509::PublicKey::from_spki(a.spki).ok()).collect();
+    info!(TAG, "bench: {} roots parsed", roots.len());
+    use devkit_crypto::hash::HashAlg;
+    use devkit_crypto::x509::PublicKey;
+    if let Some(PublicKey::Rsa(rsa)) = roots.iter().find(|k| matches!(k, PublicKey::Rsa(r) if r.size() == 256)) {
+        let sig = vec![1u8; 256];
+        time("RSA-2048 verify", 8, 0, &mut || {
+            let _ = rsa.verify_pkcs1v15(HashAlg::Sha256, b"m", &sig);
+        });
+    }
+    let ec = devkit_crypto::ecdsa::SigningKey::generate(devkit_crypto::ecdsa::Curve::P256).unwrap();
+    let ec_sig = ec.sign(HashAlg::Sha256, b"m").unwrap();
+    let ec_pub = ec.verifying_key().unwrap();
+    time("ECDSA P-256 verify", 4, 0, &mut || ec_pub.verify(HashAlg::Sha256, b"m", &ec_sig).unwrap());
+    let ed = devkit_crypto::ed25519::SigningKey::from_seed(&[1; 32]);
+    let ed_sig = ed.sign(b"m");
+    let ed_pub = ed.verifying_key();
+    time("Ed25519 verify", 4, 0, &mut || ed_pub.verify(b"m", &ed_sig).unwrap());
+}
+
 fn dns_command(args: &[&str]) -> Result<Option<String>, String> {
     let [host] = args else {
         return Err(String::from("usage: <host>"));
@@ -405,4 +537,6 @@ pub fn register_commands() {
     harness_rs::register("tcp", |args| exchange_command(args, false));
     harness_rs::register("udp", |args| exchange_command(args, true));
     harness_rs::register("dns", dns_command);
+    harness_rs::register("https", https_command);
+    harness_rs::register("cryptobench", crypto_bench_command);
 }

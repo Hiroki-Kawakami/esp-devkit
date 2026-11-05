@@ -11,7 +11,6 @@ extern crate alloc;
 
 mod addr;
 mod arp;
-mod crypto;
 mod dhcp;
 pub mod dns;
 mod error;
@@ -31,6 +30,7 @@ mod tcp_socket;
 #[cfg(test)]
 mod tests;
 mod time;
+mod tls;
 mod udp;
 mod udp_socket;
 mod watch;
@@ -48,6 +48,7 @@ pub use net::{Config, Ipv4Mode};
 pub use stack::{IfaceId, IfaceStats, Ipv4Config, Stack};
 pub use tcp_socket::{Shutdown, TcpBuilder, TcpListener, TcpReader, TcpStream, TcpWriter};
 pub use time::Instant;
+pub use tls::TlsStream;
 pub use udp_socket::{UdpBuilder, UdpSocket};
 pub use wifi::{
     Auth, BoxFuture, ConnectError, DisconnectReason, PowerSave, ScanRecord, Security, StaConfig, Wifi, WifiDriver,

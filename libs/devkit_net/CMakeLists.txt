@@ -1,6 +1,6 @@
 # Network protocol stack.
 set(srcs "/dev/null")
-set(requires idf rust_rt)
+set(requires devkit_crypto idf rust_rt)
 set(headers "")
 set(options "")
 if(ESP_PLATFORM)

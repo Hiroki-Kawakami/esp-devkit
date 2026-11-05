@@ -28,10 +28,14 @@ pub enum Error {
     /// The name does not exist or has no address.
     NotFound,
     NoNameServer,
+    Tls(devkit_crypto::Error),
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Error::Tls(e) = self {
+            return write!(f, "TLS: {e}");
+        }
         f.write_str(match self {
             Error::NotStarted => "network stack not started",
             Error::AlreadyStarted => "network stack already started",
@@ -52,6 +56,7 @@ impl fmt::Display for Error {
             Error::InvalidInput => "invalid input",
             Error::NotFound => "name not found",
             Error::NoNameServer => "no name server",
+            Error::Tls(_) => unreachable!(),
         })
     }
 }

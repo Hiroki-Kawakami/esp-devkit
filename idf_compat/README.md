@@ -17,7 +17,7 @@ idf_compat/
     esp_err.h esp_log.h esp_check.h esp_system.h esp_timer.h esp_heap_caps.h esp_mac.h
     esp_app_desc.h
     esp_attr.h multi_heap.h
-    nvs.h nvs_flash.h
+    nvs.h nvs_flash.h esp_partition.h
     driver/           jpeg_decode.h ppa.h i2c_master.h
     hal/              ppa_types.h color_types.h  (PPA type headers)
     simulator/        sim-only APIs with no device counterpart: i2c_master_sim.h
@@ -25,7 +25,7 @@ idf_compat/
     freertos/         host FreeRTOS API: FreeRTOS.h task.h queue.h semphr.h
                       event_groups.h timers.h portmacro.h idf_additions.h
   src/                shim implementations
-    esp_err.c esp_log.c esp_system.c esp_timer.c esp_heap_caps.c multi_heap.c esp_mac.c esp_app_desc.c nvs.c
+    esp_err.c esp_log.c esp_system.c esp_timer.c esp_heap_caps.c multi_heap.c esp_mac.c esp_app_desc.c nvs.c esp_partition.c
     jpeg_decode.c ppa.c
     i2c_master.c path_redirect.c
     freertos_port.c freertos_task.c freertos_queue.c
