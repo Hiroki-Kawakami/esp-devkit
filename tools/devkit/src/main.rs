@@ -16,6 +16,7 @@ mod project;
 mod protocol;
 mod resgen;
 mod tasks;
+mod usbip;
 mod view;
 
 use std::ffi::OsString;

@@ -10,6 +10,7 @@
 pub mod audio;
 pub mod decode;
 pub mod net;
+pub mod relay;
 pub mod serial;
 pub mod sim;
 pub mod usb;
@@ -280,9 +281,24 @@ impl Host {
     }
 
     fn usb(&self, args: &[&str]) -> Result<String, String> {
-        const USAGE: &str = "usage: usb attach tcp <host:port> [busid] | usb detach";
+        const USAGE: &str =
+            "usage: usb list | usb attach usb <vid:pid> [serial] | usb attach tcp <host:port> [busid] | usb detach";
+        if args == ["list"] {
+            let devices = relay::list().map_err(|e| e.to_string())?;
+            return Ok(format!("OK usb {}", devices.join(" | ")));
+        }
         let Link::Sim(device) = &self.link else { return Err("usb: simulator only".into()) };
         match args {
+            ["attach", "usb", id, rest @ ..] if rest.len() <= 1 => {
+                let (vendor, product) = id
+                    .split_once(':')
+                    .and_then(|(v, p)| Some((u16::from_str_radix(v, 16).ok()?, u16::from_str_radix(p, 16).ok()?)))
+                    .ok_or_else(|| format!("{id}: expected <vid:pid> in hex"))?;
+                let info = relay::find(vendor, product, rest.first().copied()).map_err(|e| e.to_string())?;
+                let session = relay::serve(info, usb::DEFAULT_BUSID).map_err(|e| format!("{id}: {e}"))?;
+                device.usb_plug(session, usb::DEFAULT_BUSID).map_err(|e| e.to_string())?;
+                Ok("OK usb".into())
+            }
             ["attach", "tcp", addr, rest @ ..] if rest.len() <= 1 => {
                 let busid = rest.first().copied().unwrap_or(usb::DEFAULT_BUSID);
                 let session = usb::connect_tcp(addr).map_err(|e| format!("{addr}: {e}"))?;

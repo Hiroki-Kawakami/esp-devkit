@@ -72,10 +72,27 @@ usb_host_rs's controller in the simulator is a USB/IP client. Each datagram on
 firmware imports that bus id over it, and the device is plugged in until the
 connection closes. The host connects and hands over:
 
+- `usb attach usb <vid:pid> [serial]`: a device plugged into this computer,
+  which the host serves itself over nusb; `usb list` shows them. Attaching
+  again unplugs the device before.
 - `usb attach tcp <host:port> [busid]`: a USB/IP server such as a simulated
   usb_device (`firmware/usbd_loopback`) or Linux `usbipd`; bus id `1-1` by
-  default. Attaching again unplugs the device before.
-- `usb detach` unplugs it; so does a firmware restart.
+  default.
+- `usb detach` unplugs it; so does a firmware restart, and so does pulling
+  the device out of this computer.
+
+Serving a device of this computer:
+
+- An interface is claimed on the first transfer to one of its endpoints, so
+  the others stay with whoever has them. On macOS an interface a kernel
+  driver holds (mass storage, audio, video, HID) cannot be claimed, and an
+  `adb` server holds a phone's ADB interface until `adb kill-server`.
+- SET_CONFIGURATION, SET_INTERFACE and CLEAR_FEATURE(ENDPOINT_HALT) go
+  through the OS; SET_CONFIGURATION to the active configuration does
+  nothing. Isochronous transfers fail with a stall.
+- An unlink cancels every transfer on that endpoint, since that is all the OS
+  offers: the others come back with what they moved, or are queued again in
+  order when they moved nothing.
 
 The firmware completes SET_ADDRESS itself, since the server has the device
 addressed already. Without the variable no device ever appears.

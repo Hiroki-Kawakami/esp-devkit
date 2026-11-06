@@ -38,7 +38,9 @@ pub const SPEED_HIGH: u32 = 3;
 
 /// Linux errno values the status fields carry, negated.
 pub const ENODEV: i32 = -19;
+pub const EINVAL: i32 = -22;
 pub const EPIPE: i32 = -32;
+pub const EPROTO: i32 = -71;
 pub const EOVERFLOW: i32 = -75;
 pub const ECONNRESET: i32 = -104;
 pub const ESHUTDOWN: i32 = -108;

@@ -125,6 +125,7 @@
               ./tools/devkit/assets
               ./libs/bsp_rs/src/sim/protocol.rs
               ./libs/devkit_gfx/src/format.rs
+              ./libs/usb_host_rs/src/usbip.rs
             ];
           };
           cargoRoot = "tools/devkit";

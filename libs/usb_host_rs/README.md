@@ -49,8 +49,9 @@ up to 200 ms for its channel to halt.
 
 ## Simulator
 
-The controller is a USB/IP client on connections the devkit host hands over;
-see docs/simulator.md. `firmware/usb_host_rs_check` exercises the stack
+The controller is a USB/IP client on connections the devkit host hands over,
+from a USB/IP server or from a device plugged into the computer; see
+docs/simulator.md. `firmware/usb_host_rs_check` exercises the stack
 against `firmware/usbd_loopback`, a vendor bulk echo device:
 
 ```sh
