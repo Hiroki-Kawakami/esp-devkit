@@ -17,6 +17,7 @@ use idf::thread;
 use crate::desc::{self, Configuration, DeviceDescriptor, TransferType};
 use crate::device::DeviceInner;
 use crate::hcd::{self, Hcd, PipeConfig, PipeId, PortEvent, Request, backend};
+use crate::watch;
 use crate::{Buffer, Device, Error, Result, Setup, Speed};
 
 const TAG: &CStr = c"usb_host";
@@ -28,24 +29,16 @@ const ENUM_BUFFER_BYTES: usize = 4096;
 const ENUM_ATTEMPTS: usize = 3;
 const STRING_BYTES: u16 = 255;
 
-/// A class driver, offered every device that enumerates.
-pub trait Driver: Sync {
-    /// Runs on the host task, where enumeration runs too: must not block.
-    /// Keep `device` (or an `Interface` claimed from it) to use it; a driver
-    /// that finds nothing of its own drops it.
-    fn attached(&self, device: Device);
-}
-
+/// The host task: enumeration runs on it.
 pub struct Config {
-    pub drivers: &'static [&'static dyn Driver],
     pub priority: u32,
     pub core: Option<u32>,
     pub stack_size: usize,
 }
 
-impl Config {
-    pub const fn new(drivers: &'static [&'static dyn Driver]) -> Self {
-        Self { drivers, priority: 5, core: None, stack_size: 8192 }
+impl Default for Config {
+    fn default() -> Self {
+        Self { priority: 5, core: None, stack_size: 8192 }
     }
 }
 
@@ -62,13 +55,12 @@ pub fn start(config: &Config) -> Result<()> {
         STARTED.store(false, Ordering::Release);
         return Err(err);
     }
-    let drivers = config.drivers;
     thread::Builder::new()
         .name("usbh")
         .stack_size(config.stack_size)
         .priority(config.priority)
         .core(config.core)
-        .spawn_local_executor(move |local| drop(local.spawn_local(run(drivers, rx))))
+        .spawn_local_executor(move |local| drop(local.spawn_local(run(rx))))
         .map_err(|err| {
             error!(TAG, "host task: {err}");
             Error::NoMemory
@@ -76,7 +68,7 @@ pub fn start(config: &Config) -> Result<()> {
     Ok(())
 }
 
-async fn run(drivers: &'static [&'static dyn Driver], mut events: Receiver<PortEvent>) {
+async fn run(mut events: Receiver<PortEvent>) {
     let mut current: Option<Device> = None;
     loop {
         let event = events.recv().await;
@@ -84,6 +76,7 @@ async fn run(drivers: &'static [&'static dyn Driver], mut events: Receiver<PortE
             info!(TAG, "device at {} gone", device.address());
             device.0.set_gone();
             backend().recover();
+            watch::left(device);
         }
         if event == PortEvent::Disconnected || !backend().debounce().await {
             continue;
@@ -110,9 +103,7 @@ async fn run(drivers: &'static [&'static dyn Driver], mut events: Receiver<PortE
             }
         );
         current = Some(device.clone());
-        for driver in drivers {
-            driver.attached(device.clone());
-        }
+        watch::arrived(device);
     }
 }
 

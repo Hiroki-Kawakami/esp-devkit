@@ -1,26 +1,29 @@
 # usb_host_rs
 
-An async USB host stack in Rust. Class drivers, built in or the application's
-own, are handed every device that enumerates. One device on the root port; no
-hubs. Control and bulk transfers so far.
+An async USB host stack in Rust. It enumerates what is plugged in and lists
+it; whoever wants a device claims its interfaces when they like. One device on
+the root port; no hubs. Control and bulk transfers so far.
 
 ## Using it
 
 ```rust
-struct MyDriver;
+usb_host_rs::start(&usb_host_rs::Config::default())?;
 
-impl usb_host_rs::Driver for MyDriver {
-    fn attached(&self, device: Device) {
-        // claim an interface, keep it, spawn the work on an executor
+let mut watch = usb_host_rs::watch();
+loop {
+    match watch.next().await {
+        Event::Arrived(device) => { /* claim an interface now, or keep the device for later */ }
+        Event::Left(device) => { /* forget it */ }
     }
 }
-
-static DRIVERS: [&dyn usb_host_rs::Driver; 1] = [&MyDriver];
-usb_host_rs::start(&usb_host_rs::Config::new(&DRIVERS))?;
 ```
 
-- `attached` runs on the host's own task, where enumeration runs too, so it
-  must not block. A driver that finds nothing of its own drops the `Device`.
+- `devices()` lists what is plugged in now. `watch()` first reports each of
+  those as `Arrived`, then every arrival and departure, so nothing falls
+  between the two. Any number of watches can run, each seeing every event;
+  undelivered events wait in it.
+- `Device::id()` names one enumeration: plugging the same device in again
+  gives a new one.
 - `Device` is a shared handle. Transfers fail with `Error::NoDevice` once it
   is unplugged and `disconnected()` completes then; the last handle dropped
   releases it.

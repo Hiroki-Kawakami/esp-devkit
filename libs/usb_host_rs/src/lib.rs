@@ -17,6 +17,7 @@ mod error;
 mod hcd;
 mod host;
 pub mod setup;
+mod watch;
 #[cfg(all(not(target_os = "none"), not(test)))]
 mod sim;
 #[cfg(test)]
@@ -29,5 +30,7 @@ pub use buffer::Buffer;
 pub use device::{Device, Endpoint, Interface};
 pub use error::{Error, Result};
 pub use hcd::Speed;
-pub use host::{Config, Driver, start};
+pub use device::DeviceId;
+pub use host::{Config, start};
+pub use watch::{Event, Watch, devices, watch};
 pub use setup::Setup;

@@ -18,14 +18,14 @@ use core::pin::Pin;
 use core::task::Poll;
 use core::time::Duration;
 
-use idf::executor::{self, Spawner};
+use idf::executor;
 use idf::heap::Caps;
 use idf::log::{error, info};
-use idf::sync::{Mutex, OnceLock};
+use idf::sync::Mutex;
 use idf::thread::Builder;
 use idf::time::Instant;
 use usb_host_rs::setup::request_type;
-use usb_host_rs::{Buffer, Device, Driver, Endpoint, Interface, Setup};
+use usb_host_rs::{Buffer, Device, Endpoint, Event, Interface, Setup};
 
 const TAG: &CStr = c"usb_host_rs_check";
 
@@ -53,52 +53,54 @@ struct Loopback {
 }
 
 static LOOPBACK: Mutex<Option<Loopback>> = Mutex::new(None);
-static SPAWNER: OnceLock<Spawner> = OnceLock::new();
 
-struct LoopbackDriver;
-
-impl Driver for LoopbackDriver {
-    fn attached(&self, device: Device) {
-        let d = device.descriptor();
-        if (d.vendor_id, d.product_id) != (VENDOR_ID, PRODUCT_ID) {
-            return;
+fn attach(device: Device) -> Option<Loopback> {
+    let d = device.descriptor();
+    if (d.vendor_id, d.product_id) != (VENDOR_ID, PRODUCT_ID) {
+        return None;
+    }
+    let Some(number) =
+        device.configuration().interfaces().find(|i| i.class == VENDOR_CLASS && i.alternate == 0).map(|i| i.number)
+    else {
+        error!(TAG, "no vendor interface");
+        return None;
+    };
+    let interface = match device.claim(number, 0) {
+        Ok(interface) => interface,
+        Err(err) => {
+            error!(TAG, "claim {number}: {err}");
+            return None;
         }
-        let Some(number) =
-            device.configuration().interfaces().find(|i| i.class == VENDOR_CLASS && i.alternate == 0).map(|i| i.number)
-        else {
-            error!(TAG, "no vendor interface");
-            return;
-        };
-        let interface = match device.claim(number, 0) {
-            Ok(interface) => interface,
-            Err(err) => {
-                error!(TAG, "claim {number}: {err}");
-                return;
+    };
+    let out = interface.endpoints().find(|e| !e.descriptor().is_in());
+    let input = interface.endpoints().find(|e| e.descriptor().is_in());
+    let (Some(out), Some(input)) = (out, input) else {
+        error!(TAG, "interface {number} lacks a bulk pair");
+        return None;
+    };
+    info!(TAG, "loopback on interface {number}: OUT {:02x} IN {:02x}", out.address(), input.address());
+    Some(Loopback { interface, out, input })
+}
+
+async fn follow() {
+    let mut watch = usb_host_rs::watch();
+    loop {
+        match watch.next().await {
+            Event::Arrived(device) => {
+                if let Some(loopback) = attach(device) {
+                    *LOOPBACK.lock() = Some(loopback);
+                }
             }
-        };
-        let out = interface.endpoints().find(|e| !e.descriptor().is_in());
-        let input = interface.endpoints().find(|e| e.descriptor().is_in());
-        let (Some(out), Some(input)) = (out, input) else {
-            error!(TAG, "interface {number} lacks a bulk pair");
-            return;
-        };
-        info!(TAG, "loopback on interface {number}: OUT {:02x} IN {:02x}", out.address(), input.address());
-        *LOOPBACK.lock() = Some(Loopback { interface, out, input });
-        if let Some(spawner) = SPAWNER.get() {
-            drop(spawner.spawn(async move {
-                device.disconnected().await;
+            Event::Left(device) => {
                 let mut loopback = LOOPBACK.lock();
-                if loopback.as_ref().is_some_and(|l| l.interface.device().is_gone()) {
+                if loopback.as_ref().is_some_and(|l| l.interface.device().id() == device.id()) {
                     *loopback = None;
                     info!(TAG, "loopback gone");
                 }
-            }));
+            }
         }
     }
 }
-
-static DRIVER: LoopbackDriver = LoopbackDriver;
-static DRIVERS: [&dyn Driver; 1] = [&DRIVER];
 
 pub fn run() {
     let board = match bsp_rs::init(&bsp_rs::Config::default()) {
@@ -108,12 +110,12 @@ pub fn run() {
             return;
         }
     };
-    match Builder::new().name("check").stack_size(8192).spawn_local_executor(|_| {}) {
-        Ok(spawner) => drop(SPAWNER.set(spawner)),
-        Err(err) => error!(TAG, "executor: {err}"),
-    }
-    if let Err(err) = usb_host_rs::start(&usb_host_rs::Config::new(&DRIVERS)) {
+    if let Err(err) = usb_host_rs::start(&usb_host_rs::Config::default()) {
         error!(TAG, "usb_host_rs::start: {err}");
+    }
+    match Builder::new().name("check").stack_size(8192).spawn_local_executor(|_| {}) {
+        Ok(spawner) => drop(spawner.spawn(follow())),
+        Err(err) => error!(TAG, "executor: {err}"),
     }
     harness_rs::register("dev", |_| dev_command());
     harness_rs::register("loop", loop_command);

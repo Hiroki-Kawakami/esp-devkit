@@ -7,7 +7,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::future::poll_fn;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use core::task::{Poll, Waker};
 
 use idf::heap::Caps;
@@ -17,7 +17,14 @@ use crate::desc::{Configuration, DeviceDescriptor, EndpointDescriptor, TransferT
 use crate::hcd::{self, Hcd, PipeConfig, PipeId, Request, backend};
 use crate::{Buffer, Error, Result, Setup, Speed};
 
+/// One enumeration of a device; plugging it in again gives another.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct DeviceId(u32);
+
+static NEXT_ID: AtomicU32 = AtomicU32::new(1);
+
 pub(crate) struct DeviceInner {
+    pub id: DeviceId,
     pub address: u8,
     pub speed: Speed,
     pub descriptor: DeviceDescriptor,
@@ -45,6 +52,7 @@ impl DeviceInner {
         ep0: PipeId,
     ) -> Self {
         Self {
+            id: DeviceId(NEXT_ID.fetch_add(1, Ordering::Relaxed)),
             address,
             speed,
             descriptor,
@@ -79,6 +87,10 @@ impl Drop for DeviceInner {
 pub struct Device(pub(crate) Arc<DeviceInner>);
 
 impl Device {
+    pub fn id(&self) -> DeviceId {
+        self.0.id
+    }
+
     pub fn address(&self) -> u8 {
         self.0.address
     }
