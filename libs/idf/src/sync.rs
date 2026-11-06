@@ -4,7 +4,7 @@
  */
 
 use alloc::sync::Arc;
-use core::cell::UnsafeCell;
+use core::cell::{Cell, UnsafeCell};
 use core::convert::Infallible;
 use core::ffi::c_void;
 use core::fmt;
@@ -351,6 +351,77 @@ const INCOMPLETE: u8 = 0;
 const RUNNING: u8 = 1;
 const COMPLETE: u8 = 2;
 
+/// A `portMUX_TYPE` spinlock around `T`, for state shared with interrupt
+/// handlers and the other core. `with` holds off interrupts on its core, so
+/// keep `f` short and free of anything that blocks or allocates. Calling
+/// `with` again from inside `f` panics.
+pub struct Spinlock<T> {
+    #[cfg_attr(not(target_os = "none"), allow(dead_code))]
+    mux: UnsafeCell<sys::portMUX_TYPE>,
+    busy: Cell<bool>,
+    data: UnsafeCell<T>,
+}
+
+unsafe impl<T: Send> Send for Spinlock<T> {}
+unsafe impl<T: Send> Sync for Spinlock<T> {}
+
+#[cfg(target_os = "none")]
+const SPINLOCK_FREE: u32 = sys::SPINLOCK_FREE;
+#[cfg(not(target_os = "none"))]
+const SPINLOCK_FREE: u32 = 0;
+
+impl<T> Spinlock<T> {
+    pub const fn new(value: T) -> Self {
+        Self {
+            mux: UnsafeCell::new(sys::portMUX_TYPE { owner: SPINLOCK_FREE, count: 0 }),
+            busy: Cell::new(false),
+            data: UnsafeCell::new(value),
+        }
+    }
+
+    /// From a task or an interrupt handler.
+    pub fn with<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
+        self.enter();
+        if self.busy.replace(true) {
+            self.exit();
+            panic!("Spinlock::with called inside itself");
+        }
+        let out = f(unsafe { &mut *self.data.get() });
+        self.busy.set(false);
+        self.exit();
+        out
+    }
+
+    pub fn get_mut(&mut self) -> &mut T {
+        self.data.get_mut()
+    }
+
+    pub fn into_inner(self) -> T {
+        self.data.into_inner()
+    }
+
+    #[cfg(target_os = "none")]
+    fn enter(&self) {
+        unsafe { sys::vPortEnterCriticalSafe(self.mux.get()) };
+    }
+
+    #[cfg(target_os = "none")]
+    fn exit(&self) {
+        unsafe { sys::vPortExitCriticalSafe(self.mux.get()) };
+    }
+
+    // The simulator has one critical section for every lock.
+    #[cfg(not(target_os = "none"))]
+    fn enter(&self) {
+        unsafe { sys::vPortEnterCritical() };
+    }
+
+    #[cfg(not(target_os = "none"))]
+    fn exit(&self) {
+        unsafe { sys::vPortExitCritical() };
+    }
+}
+
 pub struct OnceLock<T> {
     state: AtomicU8,
     value: UnsafeCell<MaybeUninit<T>>,
@@ -498,7 +569,7 @@ impl<T: fmt::Debug, F> fmt::Debug for LazyLock<T, F> {
 
 #[cfg(test)]
 mod tests {
-    use super::{LazyLock, Mutex, OnceLock, RwLock, Semaphore, channel};
+    use super::{LazyLock, Mutex, OnceLock, RwLock, Semaphore, Spinlock, channel};
     use crate::thread::{sleep, spawn};
     use crate::time::Instant;
     use alloc::sync::Arc;
@@ -521,6 +592,31 @@ mod tests {
             h.join();
         }
         assert_eq!(*M.lock(), 8000);
+    }
+
+    #[test]
+    fn spinlock_excludes_tasks() {
+        static S: Spinlock<u32> = Spinlock::new(0);
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                spawn(|| {
+                    for _ in 0..2000 {
+                        S.with(|n| *n += 1);
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join();
+        }
+        assert_eq!(S.with(|n| *n), 8000);
+    }
+
+    #[test]
+    #[should_panic(expected = "inside itself")]
+    fn spinlock_rejects_nesting() {
+        let s = Spinlock::new(0u32);
+        s.with(|_| s.with(|_| ()));
     }
 
     #[test]

@@ -85,7 +85,7 @@ async fn run(drivers: &'static [&'static dyn Driver], mut events: Receiver<PortE
             device.0.set_gone();
             backend().recover();
         }
-        if event == PortEvent::Disconnected {
+        if event == PortEvent::Disconnected || !backend().debounce().await {
             continue;
         }
         let device = match enumerate().await {

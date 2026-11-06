@@ -34,6 +34,10 @@ impl Buffer {
         Ok(Self { ptr: ptr.cast(), len, caps })
     }
 
+    pub(crate) fn dma(&self) -> (*mut u8, usize) {
+        (self.ptr.as_ptr(), Self::layout(self.len).size())
+    }
+
     fn layout(len: usize) -> Layout {
         Layout::from_size_align(len.next_multiple_of(ALIGN), ALIGN).unwrap()
     }

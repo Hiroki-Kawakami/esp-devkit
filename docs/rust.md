@@ -597,6 +597,13 @@ let free = heap::free_size(Caps::DEFAULT);
 - In the simulator the caps are ignored and the size queries report a fixed
   256 MiB.
 
+`idf::cache` is for memory a DMA reads or writes: `msync(ptr, len, Flags)`
+is `esp_cache_msync` with `Flags::{C2M, M2C, INVALIDATE, UNALIGNED}`,
+`alignment(caps)` the cache line of that memory (4 where it is not cached), and
+`uncached(ptr)` the non-cacheable alias of internal RAM, through which the CPU
+never shares a cache line with a DMA (`ptr` itself on chips without one). In
+the simulator `msync` does nothing.
+
 `idf::ppa::Srm` is a PPA client for scale-rotate-mirror transfers, on chips with
 a PPA and in the simulator, where `start` finishes the transfer on the CPU.
 `start` queues a transaction and returns; `wait` takes the oldest one.
@@ -651,6 +658,11 @@ let cfg = CONFIG.get_or_try_init(load_config)?;
 - `OnceLock::get` never waits and is the only one usable from an ISR: `None`
   while uninitialized or being initialized.
 
+- `Spinlock<T>` is a `portMUX_TYPE` around `T`, for state shared with
+  interrupt handlers: `Spinlock::new` is `const`, and `with(|t| ...)` is the
+  only way to reach `T`, from a task or an ISR. Interrupts on that core stay
+  off inside `f`, so it must not block or allocate; calling `with` on the same
+  lock inside `f` panics. The simulator has one critical section for all.
 - `Mutex<T>` and `RwLock<T>` park on bit 1 of the notification value. A task
   that waited on one must end through `idf::thread`, which waits for a
   lock's last wakeup to reach it before deleting it.

@@ -27,6 +27,7 @@ pub(crate) enum PortEvent {
 }
 
 #[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
 pub(crate) struct PipeConfig {
     pub kind: TransferType,
     pub endpoint: u8,
@@ -50,6 +51,12 @@ pub(crate) struct Request {
     pub zlp: bool,
     buffer: UnsafeCell<Option<Buffer>>,
     done: Signal<Result<usize>>,
+    /// The controller's, under its lock: the next request in a list.
+    #[allow(dead_code)]
+    pub link: UnsafeCell<Option<Arc<Request>>>,
+    /// The controller's, under its lock: the result `complete` is to give.
+    #[allow(dead_code)]
+    pub outcome: UnsafeCell<Option<Result<usize>>>,
 }
 
 unsafe impl Send for Request {}
@@ -64,6 +71,8 @@ impl Request {
             zlp,
             buffer: UnsafeCell::new(Some(buffer)),
             done: Signal::new(&CRITICAL),
+            link: UnsafeCell::new(None),
+            outcome: UnsafeCell::new(None),
         })
     }
 
@@ -76,10 +85,17 @@ impl Request {
 
     /// # Safety
     /// Only the controller, between `submit` and `complete`.
-    #[allow(clippy::mut_from_ref)]
+    #[allow(clippy::mut_from_ref, dead_code)]
     pub unsafe fn data(&self) -> &mut [u8] {
         let buffer = unsafe { (*self.buffer.get()).as_mut().unwrap() };
         &mut buffer[..self.len]
+    }
+
+    /// The whole allocation, cache lines included: what the controller may
+    /// write. Same safety as `data`.
+    #[allow(dead_code)]
+    pub unsafe fn dma(&self) -> (*mut u8, usize) {
+        unsafe { (*self.buffer.get()).as_ref().unwrap().dma() }
     }
 
     pub fn complete(&self, result: Result<usize>) {
@@ -110,11 +126,19 @@ pub(crate) trait Hcd: Sync {
     fn clear(&self, pipe: PipeId);
     /// After a disconnection.
     fn recover(&self);
+    /// Whether the device is still there once the connection settled.
+    async fn debounce(&self) -> bool {
+        true
+    }
+    /// On the waiter, once `request` completed.
+    fn finished(&self, _request: &Request) {}
 }
 
 #[cfg(all(not(target_os = "none"), not(test)))]
 pub(crate) type Backend = crate::sim::SimHcd;
-#[cfg(any(target_os = "none", test))]
+#[cfg(all(target_os = "none", CONFIG_SOC_USB_OTG_SUPPORTED))]
+pub(crate) type Backend = crate::dwc2::Dwc2;
+#[cfg(any(test, all(target_os = "none", not(CONFIG_SOC_USB_OTG_SUPPORTED))))]
 pub(crate) type Backend = Absent;
 
 static BACKEND: Backend = Backend::new();
@@ -131,20 +155,21 @@ pub(crate) async fn run(pipe: PipeId, request: Arc<Request>) -> (Buffer, Result<
     let pending = devkit::guard((), |()| backend().cancel(pipe, &request));
     let result = request.wait().await;
     core::mem::forget(pending);
+    backend().finished(&request);
     (request.take_buffer(), result)
 }
 
-#[cfg(any(target_os = "none", test))]
+#[cfg(any(test, all(target_os = "none", not(CONFIG_SOC_USB_OTG_SUPPORTED))))]
 pub(crate) struct Absent;
 
-#[cfg(any(target_os = "none", test))]
+#[cfg(any(test, all(target_os = "none", not(CONFIG_SOC_USB_OTG_SUPPORTED))))]
 impl Absent {
     const fn new() -> Self {
         Self
     }
 }
 
-#[cfg(any(target_os = "none", test))]
+#[cfg(any(test, all(target_os = "none", not(CONFIG_SOC_USB_OTG_SUPPORTED))))]
 impl Hcd for Absent {
     fn init(&'static self, _: Sender<PortEvent>) -> Result<()> {
         Err(crate::Error::Unsupported)

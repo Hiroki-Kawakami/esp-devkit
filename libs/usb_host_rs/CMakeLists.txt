@@ -1,9 +1,16 @@
 # Async USB host stack.
 set(srcs "/dev/null")
 set(headers "")
+set(include_dirs "")
+set(requires devkit idf rust_rt)
 if(NOT ESP_PLATFORM)
     set(srcs "src/sim/fd.c")
     set(headers "stdlib.h" "sys/socket.h" "unistd.h" "fd.h")
+    set(include_dirs "src/sim")
+elseif(CONFIG_SOC_USB_OTG_SUPPORTED)
+    set(headers "hal/usb_dwc_hal.h" "hal/usb_dwc_ll.h" "soc/usb_periph.h" "esp_private/usb_phy.h"
+                "esp_intr_alloc.h" "esp_heap_caps.h")
+    list(APPEND requires esp_hal_usb esp_hw_support hal)
 endif()
-idf_component_register(SRCS ${srcs} PRIV_INCLUDE_DIRS "src/sim" PRIV_REQUIRES devkit idf rust_rt)
+idf_component_register(SRCS ${srcs} PRIV_INCLUDE_DIRS ${include_dirs} PRIV_REQUIRES ${requires})
 devkit_rust_crate(ROOT "src/lib.rs" TESTS BINDGEN_HEADERS ${headers})

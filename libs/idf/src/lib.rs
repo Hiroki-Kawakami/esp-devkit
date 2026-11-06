@@ -9,6 +9,7 @@
 
 extern crate alloc;
 
+pub mod cache;
 mod error;
 pub mod executor;
 pub mod freertos;

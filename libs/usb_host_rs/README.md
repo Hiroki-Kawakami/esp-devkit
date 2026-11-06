@@ -32,6 +32,20 @@ usb_host_rs::start(&usb_host_rs::Config::new(&DRIVERS))?;
   transfer; the buffer is freed once the controller lets go of it. There are
   no timeouts: wrap the future in `idf::executor::timeout`.
 - VBUS is the caller's.
+- A cancel takes effect at a packet boundary: a transfer already under way
+  completes as `Canceled`, and a packet the device sent before the halt is
+  lost with it.
+
+## Controller
+
+On the device the DWC2 controller runs in scatter/gather DMA mode through
+IDF's HAL, one channel per pipe. Its interrupt completes transfers directly:
+there is no event task. A bulk transfer is at most 64 KB. The CPU writes
+transfer descriptors and setup packets through the non-cacheable alias of
+internal RAM, so it never shares a cache line with the controller's
+write-back; data buffers are written back before an OUT and invalidated
+around an IN. Dropping an `Interface` whose transfer is being canceled waits
+up to 200 ms for its channel to halt.
 
 ## Simulator
 
@@ -45,4 +59,5 @@ against `firmware/usbd_loopback`, a vendor bulk echo device:
 devkit cmd -t <check host> "usb attach tcp 127.0.0.1:3240" loop queue ctrl cancel
 ```
 
-On the device there is no controller yet: `start` returns `Unsupported`.
+On a Tab5, the same pair runs on two boards joined by their USB-A ports
+with USB5V off on both.

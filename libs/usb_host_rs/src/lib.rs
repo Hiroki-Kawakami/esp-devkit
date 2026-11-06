@@ -11,6 +11,8 @@ extern crate alloc;
 mod buffer;
 pub mod desc;
 mod device;
+#[cfg(all(target_os = "none", CONFIG_SOC_USB_OTG_SUPPORTED))]
+mod dwc2;
 mod error;
 mod hcd;
 mod host;
