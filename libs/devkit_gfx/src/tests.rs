@@ -453,7 +453,7 @@ fn image_converts_to_the_target_format() {
     let argb = [10u8, 20, 30, 255, 40, 50, 60, 0];
     let mut list = DisplayList::new();
     list.fill(Rect::new(0, 0, 2, 2), Color::rgb(1, 2, 3));
-    list.image(0, 0, Image::from_pixels(ImageFormat::Rgb888, 2, 1, 6, &bgr), Color::rgb(0, 0, 0));
+    list.image(0, 0, Image::from_pixels(ImageFormat::Bgr888, 2, 1, 6, &bgr), Color::rgb(0, 0, 0));
     list.image(0, 1, Image::from_pixels(ImageFormat::Argb8888, 2, 1, 8, &argb), Color::rgb(0, 0, 0));
     let out = render::<Bgr888>(&list, &mut GlyphCache::new(64), 2, 2, &[Rect::new(0, 0, 2, 2)]);
     assert_eq!(&out, &[10, 20, 30, 40, 50, 60, 10, 20, 30, 3, 2, 1]);
@@ -896,4 +896,49 @@ fn an_arc_shades_from_its_start_to_its_end() {
     let (right, bottom, left) = (green(22, 12), green(12, 22), green(1, 12));
     assert!(right < bottom && bottom < left, "{right} {bottom} {left}");
     assert_eq!(green(12, 1), 0, "the start is clear");
+}
+
+#[test]
+fn every_format_survives_its_raw_value() {
+    for raw in 0..=255u8 {
+        if let Some(format) = ImageFormat::from_raw(raw) {
+            assert_eq!(format as u8, raw);
+        }
+    }
+    assert_eq!(ImageFormat::L1.row_bytes(9), 2);
+    assert_eq!(ImageFormat::L4.row_bytes(3), 2);
+    assert_eq!(ImageFormat::Yuv420.row_bytes(4), 6);
+    assert_eq!(ImageFormat::Bgr888.row_bytes(5), 15);
+}
+
+#[test]
+fn a_target_refuses_rows_off_a_byte_or_short_memory() {
+    let mut pixels = vec![0u8; 40];
+    assert!(Target::new(&mut pixels, ImageFormat::Rgb565, Size::new(4, 5), 4).is_some());
+    assert!(Target::new(&mut pixels, ImageFormat::Rgb565, Size::new(4, 5), 3).is_none());
+    assert!(Target::new(&mut pixels, ImageFormat::Rgb565, Size::new(4, 6), 4).is_none());
+    assert!(Target::new(&mut pixels, ImageFormat::L1, Size::new(5, 4), 5).is_none());
+    assert!(Target::new(&mut pixels, ImageFormat::L1, Size::new(5, 4), 8).is_some());
+}
+
+#[test]
+fn a_rotated_target_maps_logical_rects_to_stored_ones() {
+    let mut pixels = vec![0u8; 8 * 4 * 2];
+    let stored = |rotation: Rotation, rect: Rect| {
+        let mut pixels = pixels.clone();
+        let target = Target::new(&mut pixels, ImageFormat::Rgb565, Size::new(8, 4), 8).unwrap().rotated(rotation);
+        target.stored_rect(rect)
+    };
+    let corner = Rect::new(0, 0, 1, 2);
+    assert_eq!(stored(Rotation::R0, corner), Some(corner));
+    assert_eq!(stored(Rotation::R90, corner), Some(Rect::new(0, 3, 2, 1)));
+    assert_eq!(stored(Rotation::R180, corner), Some(Rect::new(7, 2, 1, 2)));
+    assert_eq!(stored(Rotation::R270, corner), Some(Rect::new(6, 0, 2, 1)));
+    assert_eq!(stored(Rotation::R90, Rect::new(0, 0, 4, 9)), None);
+
+    let target = Target::new(&mut pixels, ImageFormat::Rgb565, Size::new(8, 4), 8).unwrap().rotated(Rotation::R90);
+    assert_eq!(target.area(), Rect::new(0, 0, 4, 8));
+    let target = target.crop(Rect::new(1, 2, 2, 3)).unwrap();
+    assert_eq!(target.stored_rect(Rect::new(0, 0, 1, 1)), None);
+    assert!(target.crop(Rect::new(0, 0, 4, 8)).is_none());
 }

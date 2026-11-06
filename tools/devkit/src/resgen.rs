@@ -1422,7 +1422,7 @@ fn image_data(context: &Context, name: &str, entry: &ImageEntry) -> Result<Vec<u
     let path = context.base.join(&entry.file);
     let format = match entry.format.as_str() {
         "RGB565" => ImageFormat::Rgb565,
-        "RGB888" => ImageFormat::Rgb888,
+        "BGR888" => ImageFormat::Bgr888,
         "ARGB8888" => ImageFormat::Argb8888,
         "A8" => ImageFormat::A8,
         "L8" => ImageFormat::L8,
@@ -1441,7 +1441,7 @@ fn image_data(context: &Context, name: &str, entry: &ImageEntry) -> Result<Vec<u
     let transform = Transform::from_scale(width as f32 / sw as f32, height as f32 / sh as f32);
     scaled.draw_pixmap(0, 0, source.as_ref(), &paint, transform, None);
 
-    let mut pixels = Vec::with_capacity((width * height) as usize * format.bytes());
+    let mut pixels = Vec::with_capacity(height as usize * format.row_bytes(width as usize));
     for p in scaled.pixels() {
         let c = p.demultiply();
         let (r, g, b, a) = (c.red(), c.green(), c.blue(), c.alpha());
@@ -1450,10 +1450,11 @@ fn image_data(context: &Context, name: &str, entry: &ImageEntry) -> Result<Vec<u
                 let v = u16::from(r >> 3) << 11 | u16::from(g >> 2) << 5 | u16::from(b >> 3);
                 pixels.extend_from_slice(&v.to_le_bytes());
             }
-            ImageFormat::Rgb888 => pixels.extend_from_slice(&[b, g, r]),
+            ImageFormat::Bgr888 => pixels.extend_from_slice(&[b, g, r]),
             ImageFormat::Argb8888 => pixels.extend_from_slice(&[b, g, r, a]),
             ImageFormat::A8 => pixels.push(a),
             ImageFormat::L8 => pixels.push(((u32::from(r) * 77 + u32::from(g) * 150 + u32::from(b) * 29) >> 8) as u8),
+            _ => unreachable!(),
         }
     }
     let mut out = Vec::with_capacity(format::IMAGE_DATA_OFFSET + pixels.len());
@@ -1461,7 +1462,7 @@ fn image_data(context: &Context, name: &str, entry: &ImageEntry) -> Result<Vec<u
         format,
         width: width as u16,
         height: height as u16,
-        stride: width * format.bytes() as u32,
+        stride: format.row_bytes(width as usize) as u32,
         data_len: pixels.len() as u32,
     }
     .write(&mut out);

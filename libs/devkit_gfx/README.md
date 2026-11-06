@@ -42,6 +42,15 @@ draw::<Rgb565, _, _>(&list, &prepared, &surface);
 - `line` and `polyline` stroke with round joins and ends; each pixel takes the
   coverage of its nearest segment. `polyline` borrows its points, relative to an
   origin, until the list is drawn.
+- `ImageFormat` names byte formats in memory order (`Rgb888` is R, G, B;
+  `Bgr888` is B, G, R) and word formats by the bits of a native-endian word
+  (`Rgb565`, `Argb8888`). `L1`/`L2`/`L4` put the leftmost pixel in the high
+  bits. Its value is the one in resource binaries; refer to it by name. `Image`
+  and `draw` take `L8`, `A8`, `Rgb565`, `Bgr888` and `Argb8888`.
+- A `Target` is where a writer other than `draw` puts pixels: an area of the
+  logical picture, turned by a `Rotation` onto the stored one, with the stride
+  in pixels. Whoever holds it is the only writer there, and a writer refuses
+  what it cannot do instead of working around it.
 - A `Raster` writes pixels itself. It runs on every task that draws, each with
   its own part of the picture.
 - `Surface::half` draws at half size: each pixel is the logical pixel at odd

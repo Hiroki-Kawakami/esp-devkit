@@ -125,7 +125,7 @@ fn blend888(d: *mut u8, src: [u8; 3], a: u32) {
 
 impl Pixel for Bgr888 {
     const BYTES: usize = 3;
-    const NATIVE: ImageFormat = ImageFormat::Rgb888;
+    const NATIVE: ImageFormat = ImageFormat::Bgr888;
 
     #[inline]
     fn pack(c: Color) -> Self {

@@ -4,6 +4,34 @@
  */
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Size {
+    pub width: u16,
+    pub height: u16,
+}
+
+impl Size {
+    pub const fn new(width: u16, height: u16) -> Self {
+        Self { width, height }
+    }
+}
+
+/// Counter-clockwise, from the logical picture to the one stored.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Rotation {
+    #[default]
+    R0,
+    R90,
+    R180,
+    R270,
+}
+
+impl Rotation {
+    pub const fn swaps_axes(self) -> bool {
+        matches!(self, Self::R90 | Self::R270)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Rect {
     pub x: i16,
     pub y: i16,

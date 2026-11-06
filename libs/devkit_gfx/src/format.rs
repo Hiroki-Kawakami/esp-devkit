@@ -23,37 +23,68 @@ pub const FONT_DATA_SLACK: usize = 2;
 
 const REPEATS_BEFORE_COUNT: u32 = 11;
 
+/// Byte formats are named in memory order, word formats by the bits of a
+/// native-endian word. Packed gray puts the leftmost pixel in the high bits.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum ImageFormat {
-    Rgb565 = 1,
-    /// B, G, R in memory.
-    Rgb888 = 2,
-    /// B, G, R, A in memory, not premultiplied.
-    Argb8888 = 3,
-    A8 = 4,
-    L8 = 5,
+    L1 = 0x01,
+    L2 = 0x02,
+    L4 = 0x03,
+    L8 = 0x04,
+    A8 = 0x08,
+    Rgb565 = 0x10,
+    Rgb888 = 0x11,
+    Bgr888 = 0x12,
+    /// Not premultiplied.
+    Argb8888 = 0x13,
+    Yuv444 = 0x20,
+    Yuyv = 0x21,
+    Uyvy = 0x22,
+    /// The 2D engines' 4:2:0, two rows packed together; x and y stay even.
+    Yuv420 = 0x23,
 }
 
 impl ImageFormat {
     pub const fn from_raw(raw: u8) -> Option<Self> {
-        match raw {
-            1 => Some(Self::Rgb565),
-            2 => Some(Self::Rgb888),
-            3 => Some(Self::Argb8888),
-            4 => Some(Self::A8),
-            5 => Some(Self::L8),
-            _ => None,
+        Some(match raw {
+            0x01 => Self::L1,
+            0x02 => Self::L2,
+            0x03 => Self::L4,
+            0x04 => Self::L8,
+            0x08 => Self::A8,
+            0x10 => Self::Rgb565,
+            0x11 => Self::Rgb888,
+            0x12 => Self::Bgr888,
+            0x13 => Self::Argb8888,
+            0x20 => Self::Yuv444,
+            0x21 => Self::Yuyv,
+            0x22 => Self::Uyvy,
+            0x23 => Self::Yuv420,
+            _ => return None,
+        })
+    }
+
+    pub const fn bits(self) -> usize {
+        match self {
+            Self::L1 => 1,
+            Self::L2 => 2,
+            Self::L4 => 4,
+            Self::L8 | Self::A8 => 8,
+            Self::Yuv420 => 12,
+            Self::Rgb565 | Self::Yuyv | Self::Uyvy => 16,
+            Self::Rgb888 | Self::Bgr888 | Self::Yuv444 => 24,
+            Self::Argb8888 => 32,
         }
     }
 
-    pub const fn bytes(self) -> usize {
-        match self {
-            Self::Rgb565 => 2,
-            Self::Rgb888 => 3,
-            Self::Argb8888 => 4,
-            Self::A8 | Self::L8 => 1,
-        }
+    pub const fn row_bytes(self, width: usize) -> usize {
+        (width * self.bits()).div_ceil(8)
+    }
+
+    /// What `Image` and `draw` take.
+    pub const fn is_drawable(self) -> bool {
+        matches!(self, Self::L8 | Self::A8 | Self::Rgb565 | Self::Bgr888 | Self::Argb8888)
     }
 }
 

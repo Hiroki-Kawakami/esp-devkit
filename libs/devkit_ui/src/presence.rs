@@ -271,7 +271,7 @@ impl Raster for Snapshot {
     fn raster(&self, target: &mut RasterTarget<'_>) {
         match target.format() {
             ImageFormat::Argb8888 => self.blend::<Argb8888>(target),
-            ImageFormat::Rgb888 => self.blend::<Bgr888>(target),
+            ImageFormat::Bgr888 => self.blend::<Bgr888>(target),
             _ => self.blend::<Rgb565>(target),
         }
     }

@@ -19,6 +19,7 @@ impl Image<'static> {
     /// is not one.
     pub const fn parse(data: &'static [u8]) -> Self {
         let Some(header) = ImageHeader::read(data) else { panic!("not an image resource") };
+        assert!(header.format.is_drawable(), "image format not drawable");
         let (_, pixels) = data.split_at(IMAGE_DATA_OFFSET);
         Self {
             format: header.format,
@@ -34,7 +35,8 @@ impl<'a> Image<'a> {
     /// `pixels` must hold `height` rows of `stride` bytes.
     pub fn from_pixels(format: ImageFormat, width: u16, height: u16, stride: usize, pixels: &'a [u8]) -> Self {
         assert!(pixels.len() >= stride * usize::from(height));
-        assert!(stride >= usize::from(width) * format.bytes());
+        assert!(format.is_drawable());
+        assert!(stride >= format.row_bytes(usize::from(width)));
         Self { format, width, height, stride, pixels }
     }
 

@@ -288,7 +288,7 @@ The definition is the same JSON with these differences:
 | `compress` | `false` stores every glyph raw |
 | `fallback`, `pack` | not accepted: every font is a pack, and chains are built at runtime with `FontChain` |
 
-Images take PNG files only, in `RGB565`, `RGB888`, `ARGB8888`, `A8` or `L8`.
+Images take PNG files only, in `RGB565`, `BGR888`, `ARGB8888`, `A8` or `L8`.
 Icons get code points in name order from U+E000.
 
 ### Themes

@@ -44,7 +44,7 @@ impl<'a> RasterTarget<'a> {
         let pixels = self.area.w as usize;
         let row = match self.format {
             ImageFormat::Argb8888 => self.surface.bytes::<Argb8888>(self.area.x, screen, pixels),
-            ImageFormat::Rgb888 => self.surface.bytes::<Bgr888>(self.area.x, screen, pixels),
+            ImageFormat::Bgr888 => self.surface.bytes::<Bgr888>(self.area.x, screen, pixels),
             _ => self.surface.bytes::<Rgb565>(self.area.x, screen, pixels),
         };
         unsafe { &mut *row }
@@ -55,7 +55,7 @@ impl<'a> RasterTarget<'a> {
         let rect = rect.offset(self.origin.0, self.origin.1);
         match self.format {
             ImageFormat::Argb8888 => self.surface.fill::<Argb8888>(&rect, &self.area, color),
-            ImageFormat::Rgb888 => self.surface.fill::<Bgr888>(&rect, &self.area, color),
+            ImageFormat::Bgr888 => self.surface.fill::<Bgr888>(&rect, &self.area, color),
             _ => self.surface.fill::<Rgb565>(&rect, &self.area, color),
         }
     }

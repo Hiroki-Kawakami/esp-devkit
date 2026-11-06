@@ -24,6 +24,7 @@ mod raster;
 mod render;
 pub mod simd;
 mod surface;
+mod target;
 mod text;
 
 pub use color::Color;
@@ -31,7 +32,7 @@ pub use damage::Damage;
 pub use effect::{ArcMask, CornerMask, ShadowMask};
 pub use font::Font;
 pub use format::ImageFormat;
-pub use geom::{Corners, Rect, Sides};
+pub use geom::{Corners, Rect, Rotation, Sides, Size};
 pub use glyph_cache::GlyphCache;
 pub use image::Image;
 pub use list::{DisplayList, Op, overlap};
@@ -39,6 +40,7 @@ pub use pixel::{Argb8888, Bgr888, Pixel, Rgb565};
 pub use raster::{Raster, RasterTarget};
 pub use render::{ClipStore, Prepared, draw, draw_from};
 pub use surface::Surface;
+pub use target::Target;
 pub use text::{Align, Elide, FontChain, Overflow, PlacedGlyph, TextOptions, TextRun};
 
 #[cfg(test)]

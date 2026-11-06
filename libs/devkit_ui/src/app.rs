@@ -424,7 +424,7 @@ impl<C: Screen> AppState<C> {
                 tree.add_keyboard(config.keyboard);
                 tree.color_mode = color_mode;
                 tree.set_pixel_format(match display.pixel_format() {
-                    PixelFormat::Rgb888 => ImageFormat::Rgb888,
+                    PixelFormat::Rgb888 => ImageFormat::Bgr888,
                     PixelFormat::L8 => ImageFormat::L8,
                     PixelFormat::Rgb565 => ImageFormat::Rgb565,
                 });

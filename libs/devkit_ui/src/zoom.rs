@@ -254,7 +254,7 @@ unsafe fn store<P: Pixel>(out: *mut u8, line: &[u16]) {
 impl Raster for Zoom {
     fn raster(&self, target: &mut RasterTarget<'_>) {
         match target.format() {
-            ImageFormat::Rgb888 => self.paint::<Bgr888>(target),
+            ImageFormat::Bgr888 => self.paint::<Bgr888>(target),
             ImageFormat::Argb8888 => self.paint::<Argb8888>(target),
             _ => self.paint::<Rgb565>(target),
         }

@@ -82,13 +82,13 @@ fn char_run(chain: &FontChain, value: char) -> TextRun<Caps> {
 
 fn thumbnail(index: usize, format: ImageFormat) -> Vec<u8, Caps> {
     let (w, h) = (usize::from(THUMB_W), usize::from(THUMB_H));
-    let mut pixels = Vec::with_capacity_in(w * h * format.bytes(), Caps::SPIRAM);
+    let mut pixels = Vec::with_capacity_in(h * format.row_bytes(w), Caps::SPIRAM);
     for y in 0..h {
         for x in 0..w {
             let r = ((x * 255 / w) ^ (index * 60)) as u8;
             let g = (y * 255 / h) as u8;
             let b = ((x + y) * 4 + index * 90) as u8;
-            if format == ImageFormat::Rgb888 {
+            if format == ImageFormat::Bgr888 {
                 pixels.extend_from_slice(&[b, g, r]);
             } else {
                 let v = u16::from(r >> 3) << 11 | u16::from(g >> 2) << 5 | u16::from(b >> 3);
@@ -270,7 +270,7 @@ impl Scene {
             let frame = Rect::new(24, y + 12, THUMB_W as i16, THUMB_H as i16);
             list.round_rect(frame, a.corner_12, DIVIDER);
             let pixels = &a.thumbs[i % a.thumbs.len()];
-            let bytes = usize::from(THUMB_W) * a.format.bytes();
+            let bytes = a.format.row_bytes(usize::from(THUMB_W));
             list.image(24, y + 12, Image::from_pixels(a.format, THUMB_W, THUMB_H, bytes, pixels), Color::rgb(0, 0, 0));
             list.text(224, y + 34, &a.names[i % NAMES.len() * 2 + 1], INK);
             list.text(224, y + 70, &a.meta[i % a.meta.len()], MUTED);

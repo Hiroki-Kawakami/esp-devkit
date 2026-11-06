@@ -184,8 +184,8 @@ impl Surface {
         if cells.is_empty() {
             return;
         }
-        let start = (self.logical_y(cells.y) - y) as usize * src_stride + (self.logical_x(cells.x) - x) as usize * format.bytes();
-        let step = format.bytes() << self.shift;
+        let start = (self.logical_y(cells.y) - y) as usize * src_stride + (self.logical_x(cells.x) - x) as usize * format.bits() / 8;
+        let step = format.bits() / 8 << self.shift;
         let mut dst = self.at::<P>(cells.x, cells.y);
         let mut src = unsafe { pixels.as_ptr().add(start) };
         for _ in 0..cells.h {
@@ -230,10 +230,11 @@ unsafe fn convert_row<P: Pixel>(dst: *mut u8, src: *const u8, n: usize, step: us
                     let b = v as u8 & 0x1f;
                     Color::rgb(r << 3 | r >> 2, g << 2 | g >> 4, b << 3 | b >> 2)
                 }
-                ImageFormat::Rgb888 => Color::rgb(p.add(2).read(), p.add(1).read(), p.read()),
+                ImageFormat::Bgr888 => Color::rgb(p.add(2).read(), p.add(1).read(), p.read()),
                 ImageFormat::Argb8888 => Color::rgba(p.add(2).read(), p.add(1).read(), p.read(), p.add(3).read()),
                 ImageFormat::L8 => Color::rgb(p.read(), p.read(), p.read()),
                 ImageFormat::A8 => Color::rgba(0, 0, 0, p.read()),
+                _ => unreachable!(),
             }
         };
         let alpha = mul8(c.a, opacity);

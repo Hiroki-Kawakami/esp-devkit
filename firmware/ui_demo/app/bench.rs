@@ -59,7 +59,7 @@ pub struct Bench {
 impl Bench {
     /// `sram` holds the strips unless a run asks for PSRAM.
     pub fn new(display: &'static Display, sram: Strips) -> idf::Result<Self> {
-        let format = if display.pixel_format() == PixelFormat::Rgb888 { ImageFormat::Rgb888 } else { ImageFormat::Rgb565 };
+        let format = if display.pixel_format() == PixelFormat::Rgb888 { ImageFormat::Bgr888 } else { ImageFormat::Rgb565 };
         let size = display.size();
         let assets = [
             &*Box::leak(Box::new(Assets::new(format, size.width as i16))),
