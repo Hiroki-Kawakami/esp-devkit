@@ -13,7 +13,7 @@ use idf::lcd::dsi::{self, ColorFormat, DpiPanel, VideoTiming};
 use idf::log::error;
 use idf::{Error, Result, ldo, ledc, thread};
 
-use crate::display::{Driver, FrameBuffer, PixelFormat, Size};
+use crate::display::{Driver, FrameBuffer, ImageFormat, Size};
 
 const TAG: &CStr = c"mipi_dsi";
 
@@ -46,7 +46,7 @@ pub(crate) fn send_init_cmds(io: &PanelIo, cmds: &[InitCmd]) -> Result<()> {
 
 pub(crate) struct Config {
     pub size: Size,
-    pub pixel_format: PixelFormat,
+    pub pixel_format: ImageFormat,
     /// 0 selects one framebuffer.
     pub fb_num: u8,
     pub backlight_gpio: Option<i32>,
@@ -57,7 +57,7 @@ pub(crate) struct Config {
     pub dpi_clock_freq_mhz: f32,
     /// `h_size`/`v_size` are replaced by `size`.
     pub video_timing: VideoTiming,
-    pub panel_init: fn(&PanelIo, PixelFormat) -> Result<()>,
+    pub panel_init: fn(&PanelIo, ImageFormat) -> Result<()>,
 }
 
 pub(crate) struct MipiDsi {
@@ -68,7 +68,7 @@ pub(crate) struct MipiDsi {
     _bus: dsi::Bus,
     _phy_power: ldo::Channel,
     size: Size,
-    format: PixelFormat,
+    format: ImageFormat,
     frame_buffers: [Option<NonNull<u8>>; dsi::MAX_FRAME_BUFFERS],
     fb_num: u8,
     shown: AtomicUsize,
@@ -80,8 +80,8 @@ unsafe impl Sync for MipiDsi {}
 impl MipiDsi {
     pub(crate) fn new(config: &Config) -> Result<Self> {
         let color = match config.pixel_format {
-            PixelFormat::Rgb565 => ColorFormat::Rgb565,
-            PixelFormat::Rgb888 => ColorFormat::Rgb888,
+            ImageFormat::Rgb565 => ColorFormat::Rgb565,
+            ImageFormat::Bgr888 => ColorFormat::Rgb888,
             _ => return Err(Error::NOT_SUPPORTED),
         };
         if config.size.width == 0 || config.size.height == 0
@@ -159,7 +159,7 @@ impl Driver for MipiDsi {
         self.size
     }
 
-    fn pixel_format(&self) -> PixelFormat {
+    fn pixel_format(&self) -> ImageFormat {
         self.format
     }
 

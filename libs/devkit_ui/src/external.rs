@@ -9,8 +9,8 @@ use core::ffi::CStr;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
 
-use bsp_rs::display::{self, Blender, Display, FrameBuffer, Rotation};
-use devkit_gfx::Rect;
+use bsp_rs::display::{Blender, Display, FrameBuffer, Rotation};
+use devkit_gfx::{Rect, Target};
 use idf::log::error;
 use idf::sync::Mutex;
 use idf::{Error, Result};
@@ -104,10 +104,6 @@ struct Inner {
 #[derive(Clone)]
 pub struct ExternalSurface(Arc<Inner>);
 
-fn area_of(rect: Rect) -> display::Rect {
-    display::Rect { x: rect.x as u16, y: rect.y as u16, width: rect.w as u16, height: rect.h as u16 }
-}
-
 impl ExternalSurface {
     pub fn new() -> Result<Self> {
         Ok(Self(Arc::new(Inner { state: Mutex::new(State::default()), blender: Mutex::new(None) })))
@@ -149,7 +145,8 @@ impl ExternalSurface {
         state.writing_changes = state.rect_changes;
         state.notified = false;
         state.pending = Rect::default();
-        Some(ExternalFrame { surface: self.clone(), fb, index, area: area_of(rect), rotation })
+        let area = rect;
+        Some(ExternalFrame { surface: self.clone(), granted: (fb, area, rotation), fb, index, area, rotation })
     }
 
     pub(crate) fn same(&self, other: &Self) -> bool {
@@ -232,7 +229,7 @@ impl ExternalSurface {
                 *blender = Some(Blender::new()?);
             }
             let blender = blender.as_mut().ok_or(Error::INVALID_STATE)?;
-            let area = area_of(overlay.rect);
+            let area = overlay.rect;
             if !unsafe { blender.blend(&frame.fb, frame.rotation, area, overlay.pixels, BLEND_TIMEOUT) }? {
                 return Err(Error::TIMEOUT);
             }
@@ -252,15 +249,22 @@ impl ExternalSurface {
 /// it is all there.
 pub struct ExternalFrame {
     surface: ExternalSurface,
+    granted: (FrameBuffer, Rect, Rotation),
     pub fb: FrameBuffer,
     /// Changes when the frame goes to another framebuffer, for writers that
     /// only send what changed.
     pub index: usize,
-    pub area: display::Rect,
+    pub area: Rect,
     pub rotation: Rotation,
 }
 
 impl ExternalFrame {
+    /// Over what `begin` handed out, whatever the public fields say now.
+    pub fn target(&self) -> Option<Target<'_>> {
+        let (fb, area, rotation) = self.granted;
+        unsafe { fb.target(rotation, area) }
+    }
+
     /// Lays the UI on and presents, where the policy and the UI call for it.
     pub fn end(self) {
         if let Err(err) = self.surface.compose(&self) {

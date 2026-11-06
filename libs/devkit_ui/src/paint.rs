@@ -9,7 +9,7 @@ use core::alloc::Allocator;
 
 use core::time::Duration;
 
-use bsp_rs::display::{self, Blitter, FrameBuffer, PixelFormat, Rotation, Size};
+use bsp_rs::display::{self, Blitter, FrameBuffer, ImageFormat, Rotation, Size};
 use devkit_gfx::{ArcMask, Argb8888, ClipStore, Color, CornerMask, Corners, DisplayList, GlyphCache, Prepared, Rect, Rgb565, ShadowMask, Surface, draw};
 use idf::heap::Caps;
 
@@ -384,7 +384,7 @@ impl Tree {
         let target = display::Picture {
             ptr: picture.as_mut_ptr().cast(),
             size: Size { width: picture.width as u16, height: picture.height as u16 },
-            format: PixelFormat::Rgb565,
+            format: ImageFormat::Rgb565,
             len: picture.bytes(),
         };
         let (mut y, mut turn) = (0, 0);
@@ -400,7 +400,7 @@ impl Tree {
                     end += 1;
                 }
                 let bottom = (end as i16 * BAND_ROWS).min(area.h);
-                let block = display::Rect { x: area.x as u16, y: (area.y + y) as u16, width: area.w as u16, height: (bottom - y) as u16 };
+                let block = Rect::new(area.x, area.y + y, area.w, bottom - y);
                 while engine.blitter.pending() > 1 {
                     wait(engine.blitter);
                 }
@@ -425,10 +425,10 @@ impl Tree {
                     let source = display::Picture {
                         ptr: memory.as_mut_ptr().cast(),
                         size: Size { width: width as u16, height: lines as u16 },
-                        format: PixelFormat::Rgb565,
+                        format: ImageFormat::Rgb565,
                         len: count * size_of::<u16>(),
                     };
-                    let block = display::Rect { x: 0, y: 0, width: width as u16, height: lines as u16 };
+                    let block = Rect::new(0, 0, width as i16, lines);
                     if let Err(err) = unsafe { engine.blitter.start_scaled(source, block, Rotation::R0, 1.0, target, at) } {
                         idf::log::error!(c"ui", "zoom picture: {err}");
                         return None;

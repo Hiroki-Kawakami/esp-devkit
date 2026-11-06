@@ -5,8 +5,8 @@
 
 use alloc::string::{String, ToString};
 
-use bsp_rs::display::{Display, PixelFormat, Rect};
-use devkit_image::{Encoder, Error, JpegEncoder, JpegOptions, PixelFormat as ImageFormat};
+use bsp_rs::display::{Display, ImageFormat, Rect};
+use devkit_image::{Encoder, Error, JpegEncoder, JpegOptions, PixelFormat};
 use idf::heap::Caps;
 
 type Sink<'a> = &'a mut dyn FnMut(&[u8]) -> bool;
@@ -15,15 +15,16 @@ type Sink<'a> = &'a mut dyn FnMut(&[u8]) -> bool;
 pub(crate) fn encode(display: &Display, quality: u8, sink: Sink) -> Result<(), String> {
     let size = display.size();
     let format = match display.pixel_format() {
-        PixelFormat::L8 => ImageFormat::Gray8,
-        PixelFormat::Rgb565 => ImageFormat::Rgb565,
-        PixelFormat::Rgb888 => ImageFormat::Bgr888,
+        ImageFormat::L8 => PixelFormat::Gray8,
+        ImageFormat::Rgb565 => PixelFormat::Rgb565,
+        ImageFormat::Bgr888 => PixelFormat::Bgr888,
+        other => return Err(alloc::format!("no encoder for {other:?}")),
     };
     let options = JpegOptions { quality, caps: Some(Caps::ACCESS_8BIT), ..Default::default() };
     let write = |data: &[u8]| if sink(data) { Ok(()) } else { Err(Error::Io) };
     let mut encoder = JpegEncoder::new(size.width, size.height, format, &options, write).map_err(encoder_error)?;
 
-    let area = Rect { x: 0, y: 0, width: size.width, height: size.height };
+    let area = Rect::new(0, 0, size.width as i16, size.height as i16);
     let mut rows = unsafe { display.readback(area) }.map_err(|e| e.to_string())?;
     while let Some(chunk) = rows.next().map_err(|e| e.to_string())? {
         for r in 0..usize::from(chunk.height) {

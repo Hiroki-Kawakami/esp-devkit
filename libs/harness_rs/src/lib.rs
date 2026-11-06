@@ -20,7 +20,7 @@ use alloc::vec::Vec;
 use core::ffi::{CStr, c_int};
 
 use bsp_rs::Board;
-use bsp_rs::display::{Display, PixelFormat};
+use bsp_rs::display::{Display, ImageFormat};
 use bsp_rs::imu::{Imu, Vec3};
 use bsp_rs::touch::{Point, Touch};
 use idf::log::error;
@@ -150,9 +150,10 @@ impl Harness {
         let display = self.display.ok_or("no display")?;
         let size = display.size();
         let format = match display.pixel_format() {
-            PixelFormat::L8 => "l8",
-            PixelFormat::Rgb565 => "rgb565",
-            PixelFormat::Rgb888 => "rgb888",
+            ImageFormat::L8 => "l8",
+            ImageFormat::Rgb565 => "rgb565",
+            ImageFormat::Bgr888 => "bgr888",
+            other => return Err(format!("no harness name for {other:?}")),
         };
         let touch = u8::from(self.touch.is_some());
         let imu = u8::from(self.imu.is_some());

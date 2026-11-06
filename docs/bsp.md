@@ -32,7 +32,13 @@ let board = bsp_rs::init(&bsp_rs::Config::default())?;
   logical picture, rotated into a framebuffer, with up to `n` in flight.
   Rotated copies must span at least 8 rows of the area.
 - `set_brightness` takes 0..=100; the backlight starts off.
-- `PixelFormat::Rgb888` is B, G, R in memory.
+- `Rect`, `Size`, `Rotation` and `ImageFormat` are `devkit_gfx`'s. `init`
+  and the 2D engine return `NOT_SUPPORTED` for a format they cannot take; the
+  2D engine returns `INVALID_ARG` for an empty rectangle or one left of or
+  above the origin.
+- `FrameBuffer::target(rotation, area)` is a `devkit_gfx::Target` over an area
+  of the logical picture, for writers that take one. It is `unsafe` for the
+  same reason as `as_mut_slice`.
 - `readback(area)` lends what the panel shows, in its pixel format, as `Rows`
   from `next()`. It is `unsafe`: rows may be torn by concurrent drawing, and
   only one `Readback` may exist at a time.

@@ -7,7 +7,7 @@ use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use core::time::Duration;
 
-use bsp_rs::display::{self, Display, PixelFormat};
+use bsp_rs::display::{Display, ImageFormat, Rect};
 use devkit_gfx::Color;
 use devkit_ui::widgets::{button, top_bar};
 use devkit_ui::{Component, Cx, Element, ExternalSurface, Policy, Screen, Ui, id};
@@ -31,8 +31,8 @@ struct Playback {
     refresh: AtomicBool,
 }
 
-fn write_row(row: &mut [u8], format: PixelFormat, shift: usize) {
-    let bytes = format.bytes();
+fn write_row(row: &mut [u8], format: ImageFormat, shift: usize) {
+    let bytes = format.bits() / 8;
     for (x, pixel) in row.chunks_exact_mut(bytes).enumerate() {
         let [r, g, b] = BARS[(x + shift) / BAR_WIDTH % BARS.len()];
         if bytes == 2 {
@@ -63,16 +63,16 @@ fn produce(display: &'static Display, video: ExternalSurface, playback: Arc<Play
         };
         let area = frame.area;
         let format = frame.fb.format();
-        let stride = usize::from(area.width) * format.bytes();
+        let stride = format.row_bytes(area.w as usize);
         let (first, rest) = pixels.split_at_mut(stride);
         write_row(first, format, shift);
         for row in rest[..stride * (BAND_ROWS - 1)].chunks_exact_mut(stride) {
             row.copy_from_slice(first);
         }
         let mut y = 0;
-        while y < area.height {
-            let height = (area.height - y).min(BAND_ROWS as u16);
-            let band = display::Rect { x: area.x, y: area.y + y, width: area.width, height };
+        while y < area.h {
+            let height = (area.h - y).min(BAND_ROWS as i16);
+            let band = Rect::new(area.x, area.y + y, area.w, height);
             if let Err(err) = unsafe { blitter.start(&frame.fb, frame.rotation, band, pixels.as_ptr()) } {
                 idf::log::error!(c"ui_demo", "video: {err}");
                 break;

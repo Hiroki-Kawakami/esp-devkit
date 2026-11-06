@@ -7,12 +7,12 @@ use idf::lcd::PanelIo;
 use idf::lcd::dsi::VideoTiming;
 use idf::{Result, sys};
 
-use crate::display::{PixelFormat, Size};
+use crate::display::{ImageFormat, Size};
 use crate::driver::mipi_dsi::{self, InitCmd, MipiDsi};
 
 pub(crate) struct Config {
     pub size: Size,
-    pub pixel_format: PixelFormat,
+    pub pixel_format: ImageFormat,
     pub fb_num: u8,
     pub backlight_gpio: Option<i32>,
     pub backlight_min_duty: u16,
@@ -41,7 +41,7 @@ pub(crate) fn create(config: &Config) -> Result<MipiDsi> {
     })
 }
 
-fn send_init_sequence(io: &PanelIo, _pixel_format: PixelFormat) -> Result<()> {
+fn send_init_sequence(io: &PanelIo, _pixel_format: ImageFormat) -> Result<()> {
     mipi_dsi::send_init_cmds(io, &[InitCmd { cmd: sys::LCD_CMD_SWRESET as u8, data: &[], delay_ms: 120 }])?;
     mipi_dsi::send_init_cmds(io, INIT_CMDS)
 }

@@ -162,7 +162,7 @@ fn reset_panel_and_touch(pi4ioe1: &mut Pi4io) -> Result<()> {
 
 fn panel_init(config: &Config, bus: &MasterBus) -> Result<Display> {
     let probe = Duration::from_millis(10);
-    let pixel_format = resolve_pixel_format(config);
+    let pixel_format = resolve_pixel_format(config)?;
     let fb_num = resolve_fb_num(config);
     if bus.probe(st712x_touch::ADDR, probe).is_ok() {
         let version = st712x_version(bus);

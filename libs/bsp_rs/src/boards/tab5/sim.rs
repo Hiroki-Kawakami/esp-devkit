@@ -38,7 +38,7 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
     };
     info!(TAG, "board: Tab5 (simulator)");
     host.send(&Event::device("M5Stack Tab5"));
-    let panel = SimPanel::new(host, PANEL_SIZE, resolve_pixel_format(config), resolve_fb_num(config))?;
+    let panel = SimPanel::new(host, PANEL_SIZE, resolve_pixel_format(config)?, resolve_fb_num(config))?;
     let touch = sim_touch::start(host, touch::Config {
         width: PANEL_SIZE.width,
         height: PANEL_SIZE.height,

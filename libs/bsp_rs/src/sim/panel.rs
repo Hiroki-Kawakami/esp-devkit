@@ -12,7 +12,7 @@ use idf::heap::Caps;
 use idf::{Error, Result, thread};
 use super::Host;
 use super::protocol::{self, Event};
-use crate::display::{Driver, FrameBuffer, PixelFormat, Size};
+use crate::display::{Driver, FrameBuffer, ImageFormat, Size};
 
 const MAX_FRAME_BUFFERS: usize = 3;
 const FRAME_PERIOD: Duration = Duration::from_millis(16);
@@ -20,19 +20,22 @@ const FRAME_PERIOD: Duration = Duration::from_millis(16);
 pub(crate) struct SimPanel {
     host: &'static Host,
     size: Size,
-    format: PixelFormat,
+    format: ImageFormat,
     buffers: Vec<Vec<u8, Caps>>,
     shown: AtomicUsize,
 }
 
 impl SimPanel {
     /// Framebuffers live in the PSRAM region the host shows them from.
-    pub(crate) fn new(host: &'static Host, size: Size, format: PixelFormat, fb_num: u8) -> Result<Self> {
+    pub(crate) fn new(host: &'static Host, size: Size, format: ImageFormat, fb_num: u8) -> Result<Self> {
         let fb_num = usize::from(fb_num.max(1));
         if fb_num > MAX_FRAME_BUFFERS {
             return Err(Error::INVALID_ARG);
         }
-        let len = usize::from(size.width) * usize::from(size.height) * format.bytes();
+        if wire_format(format).is_none() {
+            return Err(Error::NOT_SUPPORTED);
+        }
+        let len = format.row_bytes(usize::from(size.width)) * usize::from(size.height);
         let mut buffers = Vec::with_capacity(fb_num);
         for _ in 0..fb_num {
             let mut fb = Vec::new_in(Caps::SPIRAM);
@@ -49,7 +52,7 @@ impl Driver for SimPanel {
         self.size
     }
 
-    fn pixel_format(&self) -> PixelFormat {
+    fn pixel_format(&self) -> ImageFormat {
         self.format
     }
 
@@ -70,12 +73,8 @@ impl Driver for SimPanel {
             offset,
             width: self.size.width,
             height: self.size.height,
-            stride: (usize::from(self.size.width) * self.format.bytes()) as u32,
-            format: match self.format {
-                PixelFormat::L8 => protocol::PixelFormat::L8,
-                PixelFormat::Rgb565 => protocol::PixelFormat::Rgb565,
-                PixelFormat::Rgb888 => protocol::PixelFormat::Bgr888,
-            },
+            stride: self.format.row_bytes(usize::from(self.size.width)) as u32,
+            format: wire_format(self.format).ok_or(Error::NOT_SUPPORTED)?,
         });
         Ok(())
     }
@@ -96,5 +95,14 @@ impl Driver for SimPanel {
     fn set_brightness(&self, level: u8) -> Result<()> {
         self.host.send(&Event::Brightness { level: level.min(100) });
         Ok(())
+    }
+}
+
+fn wire_format(format: ImageFormat) -> Option<protocol::PixelFormat> {
+    match format {
+        ImageFormat::L8 => Some(protocol::PixelFormat::L8),
+        ImageFormat::Rgb565 => Some(protocol::PixelFormat::Rgb565),
+        ImageFormat::Bgr888 => Some(protocol::PixelFormat::Bgr888),
+        _ => None,
     }
 }

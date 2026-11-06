@@ -15,47 +15,8 @@ use idf::{Error, Result};
 
 use crate::Absent;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Size {
-    pub width: u16,
-    pub height: u16,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Rect {
-    pub x: u16,
-    pub y: u16,
-    pub width: u16,
-    pub height: u16,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum PixelFormat {
-    L8,
-    Rgb565,
-    /// B, G, R in memory.
-    Rgb888,
-}
-
-impl PixelFormat {
-    pub const fn bytes(self) -> usize {
-        match self {
-            Self::L8 => 1,
-            Self::Rgb565 => 2,
-            Self::Rgb888 => 3,
-        }
-    }
-}
-
-/// Counter-clockwise, from the logical picture to the panel.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum Rotation {
-    #[default]
-    R0,
-    R90,
-    R180,
-    R270,
-}
+pub use devkit_gfx::{ImageFormat, Rect, Rotation, Size};
+use devkit_gfx::Target;
 
 #[derive(Default)]
 #[non_exhaustive]
@@ -63,7 +24,7 @@ pub struct Config {
     /// 0 selects the board default.
     pub fb_num: u8,
     /// `None` selects the board default.
-    pub pixel_format: Option<PixelFormat>,
+    pub pixel_format: Option<ImageFormat>,
 }
 
 #[derive(Clone, Copy)]
@@ -71,7 +32,7 @@ pub struct FrameBuffer {
     ptr: NonNull<u8>,
     size: Size,
     stride: usize,
-    format: PixelFormat,
+    format: ImageFormat,
 }
 
 unsafe impl Send for FrameBuffer {}
@@ -79,8 +40,8 @@ unsafe impl Sync for FrameBuffer {}
 
 impl FrameBuffer {
     #[cfg_attr(not(target_os = "none"), allow(dead_code))]
-    pub(crate) unsafe fn new(ptr: NonNull<u8>, size: Size, format: PixelFormat) -> Self {
-        let stride = usize::from(size.width) * format.bytes();
+    pub(crate) unsafe fn new(ptr: NonNull<u8>, size: Size, format: ImageFormat) -> Self {
+        let stride = format.row_bytes(usize::from(size.width));
         Self { ptr, size, stride, format }
     }
 
@@ -96,7 +57,7 @@ impl FrameBuffer {
         self.stride
     }
 
-    pub fn format(&self) -> PixelFormat {
+    pub fn format(&self) -> ImageFormat {
         self.format
     }
 
@@ -116,6 +77,14 @@ impl FrameBuffer {
         assert!(y < usize::from(self.size.height));
         unsafe { slice::from_raw_parts_mut(self.as_ptr().add(y * self.stride), self.stride) }
     }
+
+    /// `area` of the logical picture turned by `rotation`; `None` when it does
+    /// not fit. Nothing else may write `area` while the target lives.
+    pub unsafe fn target(&self, rotation: Rotation, area: Rect) -> Option<Target<'static>> {
+        let stride = usize::from(self.size.width);
+        let target = unsafe { Target::from_raw(self.ptr, self.len(), self.format, self.size, stride) }?;
+        target.rotated(rotation).crop(area)
+    }
 }
 
 /// Copies pixels into framebuffers with the display's 2D engine. One per task;
@@ -132,21 +101,18 @@ impl Blitter {
     /// returned for it. A rotated copy must span at least 8 rows of `area`:
     /// the engine stops completing shorter ones while the panel scans out.
     pub unsafe fn start(&mut self, fb: &FrameBuffer, rotation: Rotation, area: Rect, src: *const u8) -> Result<()> {
-        let format = match fb.format() {
-            PixelFormat::Rgb565 => ppa::ColorMode::Rgb565,
-            PixelFormat::Rgb888 => ppa::ColorMode::Rgb888,
-            PixelFormat::L8 => return Err(Error::NOT_SUPPORTED),
-        };
+        let format = color_mode(fb.format())?;
         let size = fb.size();
         let (dst_x, dst_y) = panel_origin(size, rotation, area).ok_or(Error::INVALID_ARG)?;
+        let (width, height) = (area.w as u32, area.h as u32);
         let op = SrmOp {
             src,
-            src_width: u32::from(area.width),
-            src_height: u32::from(area.height),
+            src_width: width,
+            src_height: height,
             src_x: 0,
             src_y: 0,
-            block_width: u32::from(area.width),
-            block_height: u32::from(area.height),
+            block_width: width,
+            block_height: height,
             src_format: format,
             dst: fb.as_ptr(),
             dst_size: fb.len() as u32,
@@ -155,7 +121,7 @@ impl Blitter {
             dst_x,
             dst_y,
             format,
-            rotation: rotation.into(),
+            rotation: ppa_rotation(rotation),
             scale: 1.0,
         };
         unsafe { self.srm.start(&op) }
@@ -166,10 +132,7 @@ impl Blitter {
     pub unsafe fn start_from(&mut self, fb: &FrameBuffer, rotation: Rotation, area: Rect, scale: f32, dst: Picture, at: (u16, u16)) -> Result<()> {
         let size = fb.size();
         let (x, y) = panel_origin(size, rotation, area).ok_or(Error::INVALID_ARG)?;
-        let (width, height) = match rotation {
-            Rotation::R0 | Rotation::R180 => (u32::from(area.width), u32::from(area.height)),
-            Rotation::R90 | Rotation::R270 => (u32::from(area.height), u32::from(area.width)),
-        };
+        let (width, height) = if rotation.swaps_axes() { (area.h, area.w) } else { (area.w, area.h) };
         let back = match rotation {
             Rotation::R0 => Rotation::R0,
             Rotation::R90 => Rotation::R270,
@@ -177,20 +140,21 @@ impl Blitter {
             Rotation::R270 => Rotation::R90,
         };
         let source = Picture { ptr: fb.as_ptr(), size, format: fb.format(), len: fb.len() };
-        unsafe { self.start_scaled(source, Rect { x: x as u16, y: y as u16, width: width as u16, height: height as u16 }, back, scale, dst, at) }
+        unsafe { self.start_scaled(source, Rect::new(x as i16, y as i16, width, height), back, scale, dst, at) }
     }
 
     /// Queues `block` of `src`, scaled by `scale` and turned as `rotation`
     /// says, into `dst` at `at`. `scale` goes in steps of 1/16.
     pub unsafe fn start_scaled(&mut self, src: Picture, block: Rect, rotation: Rotation, scale: f32, dst: Picture, at: (u16, u16)) -> Result<()> {
+        let (x, y, width, height) = unsigned(block).ok_or(Error::INVALID_ARG)?;
         let op = SrmOp {
             src: src.ptr,
             src_width: u32::from(src.size.width),
             src_height: u32::from(src.size.height),
-            src_x: u32::from(block.x),
-            src_y: u32::from(block.y),
-            block_width: u32::from(block.width),
-            block_height: u32::from(block.height),
+            src_x: x,
+            src_y: y,
+            block_width: width,
+            block_height: height,
             src_format: color_mode(src.format)?,
             dst: dst.ptr,
             dst_size: dst.len as u32,
@@ -199,7 +163,7 @@ impl Blitter {
             dst_x: u32::from(at.0),
             dst_y: u32::from(at.1),
             format: color_mode(dst.format)?,
-            rotation: rotation.into(),
+            rotation: ppa_rotation(rotation),
             scale,
         };
         unsafe { self.srm.start(&op) }
@@ -229,7 +193,7 @@ impl Blitter {
             dst_x: 0,
             dst_y: 0,
             format: ppa::ColorMode::Argb8888,
-            rotation: rotation.into(),
+            rotation: ppa_rotation(rotation),
             scale: 1.0,
         };
         unsafe { self.srm.start(&op) }
@@ -251,35 +215,41 @@ impl Blitter {
 pub struct Picture {
     pub ptr: *mut u8,
     pub size: Size,
-    pub format: PixelFormat,
+    pub format: ImageFormat,
     pub len: usize,
 }
 
 #[cfg(any(not(target_os = "none"), CONFIG_SOC_PPA_SUPPORTED))]
-fn color_mode(format: PixelFormat) -> Result<ppa::ColorMode> {
+fn color_mode(format: ImageFormat) -> Result<ppa::ColorMode> {
     match format {
-        PixelFormat::Rgb565 => Ok(ppa::ColorMode::Rgb565),
-        PixelFormat::Rgb888 => Ok(ppa::ColorMode::Rgb888),
-        PixelFormat::L8 => Err(Error::NOT_SUPPORTED),
+        ImageFormat::Rgb565 => Ok(ppa::ColorMode::Rgb565),
+        ImageFormat::Bgr888 => Ok(ppa::ColorMode::Rgb888),
+        _ => Err(Error::NOT_SUPPORTED),
     }
 }
 
 #[cfg(any(not(target_os = "none"), CONFIG_SOC_PPA_SUPPORTED))]
-impl From<Rotation> for ppa::Rotation {
-    fn from(rotation: Rotation) -> Self {
-        match rotation {
-            Rotation::R0 => Self::R0,
-            Rotation::R90 => Self::R90,
-            Rotation::R180 => Self::R180,
-            Rotation::R270 => Self::R270,
-        }
+fn ppa_rotation(rotation: Rotation) -> ppa::Rotation {
+    match rotation {
+        Rotation::R0 => ppa::Rotation::R0,
+        Rotation::R90 => ppa::Rotation::R90,
+        Rotation::R180 => ppa::Rotation::R180,
+        Rotation::R270 => ppa::Rotation::R270,
     }
+}
+
+/// `None` when it is empty or starts left of or above the origin.
+fn unsigned(rect: Rect) -> Option<(u32, u32, u32, u32)> {
+    if rect.x < 0 || rect.y < 0 || rect.is_empty() {
+        return None;
+    }
+    Some((rect.x as u32, rect.y as u32, rect.w as u32, rect.h as u32))
 }
 
 /// Where `area` of the logical picture lands on a panel of `size`.
 fn panel_origin(size: Size, rotation: Rotation, area: Rect) -> Option<(u32, u32)> {
     let (panel_w, panel_h) = (u32::from(size.width), u32::from(size.height));
-    let (x, y, w, h) = (u32::from(area.x), u32::from(area.y), u32::from(area.width), u32::from(area.height));
+    let (x, y, w, h) = unsigned(area)?;
     let (logical_w, logical_h) = match rotation {
         Rotation::R0 | Rotation::R180 => (panel_w, panel_h),
         Rotation::R90 | Rotation::R270 => (panel_h, panel_w),
@@ -311,17 +281,10 @@ impl Blender {
     /// Blocks until done. `src` holds `area` of the logical picture, already
     /// turned as `rotation` says.
     pub unsafe fn blend(&mut self, fb: &FrameBuffer, rotation: Rotation, area: Rect, src: *const u8, timeout: Duration) -> Result<bool> {
-        let format = match fb.format() {
-            PixelFormat::Rgb565 => ppa::ColorMode::Rgb565,
-            PixelFormat::Rgb888 => ppa::ColorMode::Rgb888,
-            PixelFormat::L8 => return Err(Error::NOT_SUPPORTED),
-        };
+        let format = color_mode(fb.format())?;
         let size = fb.size();
         let (x, y) = panel_origin(size, rotation, area).ok_or(Error::INVALID_ARG)?;
-        let (width, height) = match rotation {
-            Rotation::R0 | Rotation::R180 => (u32::from(area.width), u32::from(area.height)),
-            Rotation::R90 | Rotation::R270 => (u32::from(area.height), u32::from(area.width)),
-        };
+        let (width, height) = if rotation.swaps_axes() { (area.h as u32, area.w as u32) } else { (area.w as u32, area.h as u32) };
         let op = ppa::BlendOp {
             foreground: src,
             width,
@@ -340,7 +303,7 @@ impl Blender {
 
 pub(crate) trait Driver: Send + Sync {
     fn size(&self) -> Size;
-    fn pixel_format(&self) -> PixelFormat;
+    fn pixel_format(&self) -> ImageFormat;
 
     fn frame_buffer_count(&self) -> usize {
         0
@@ -377,7 +340,7 @@ impl Driver for Absent {
         match *self {}
     }
 
-    fn pixel_format(&self) -> PixelFormat {
+    fn pixel_format(&self) -> ImageFormat {
         match *self {}
     }
 }
@@ -394,7 +357,7 @@ macro_rules! driver_enum {
                 match self { $(Self::$variant(d) => d.size()),+ }
             }
 
-            fn pixel_format(&self) -> $crate::display::PixelFormat {
+            fn pixel_format(&self) -> $crate::display::ImageFormat {
                 match self { $(Self::$variant(d) => d.pixel_format()),+ }
             }
 
@@ -439,7 +402,7 @@ impl Display {
         self.0.size()
     }
 
-    pub fn pixel_format(&self) -> PixelFormat {
+    pub fn pixel_format(&self) -> ImageFormat {
         self.0.pixel_format()
     }
 
@@ -482,9 +445,8 @@ impl Display {
     pub unsafe fn readback(&self, area: Rect) -> Result<Readback<'_>> {
         let fb = self.0.shown().ok_or(Error::NOT_SUPPORTED)?;
         let size = fb.size();
-        if u32::from(area.x) + u32::from(area.width) > u32::from(size.width)
-            || u32::from(area.y) + u32::from(area.height) > u32::from(size.height)
-        {
+        let (x, y, w, h) = unsigned(area).ok_or(Error::INVALID_ARG)?;
+        if x + w > u32::from(size.width) || y + h > u32::from(size.height) {
             return Err(Error::INVALID_ARG);
         }
         Ok(Readback { fb, area, next_row: 0, _display: PhantomData })
@@ -509,15 +471,15 @@ pub struct Readback<'a> {
 
 impl Readback<'_> {
     pub fn next(&mut self) -> Result<Option<Rows<'_>>> {
-        let height = self.area.height - self.next_row;
+        let height = self.area.h as u16 - self.next_row;
         if height == 0 {
             return Ok(None);
         }
-        let y = self.area.y + self.next_row;
-        let bytes = self.fb.format().bytes();
-        let start = usize::from(y) * self.fb.stride() + usize::from(self.area.x) * bytes;
-        let len = (usize::from(height) - 1) * self.fb.stride() + usize::from(self.area.width) * bytes;
-        self.next_row = self.area.height;
+        let y = self.area.y as u16 + self.next_row;
+        let format = self.fb.format();
+        let start = usize::from(y) * self.fb.stride() + format.row_bytes(self.area.x as usize);
+        let len = (usize::from(height) - 1) * self.fb.stride() + format.row_bytes(self.area.w as usize);
+        self.next_row = self.area.h as u16;
         let data = unsafe { slice::from_raw_parts(self.fb.as_ptr().add(start), len) };
         Ok(Some(Rows { y, height, stride: self.fb.stride(), data }))
     }
@@ -525,7 +487,7 @@ impl Readback<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Display, FrameBuffer, PixelFormat, Readback, Rect, Size};
+    use super::{Display, FrameBuffer, ImageFormat, Readback, Rect, Size};
     use core::marker::PhantomData;
     use core::ptr::NonNull;
 
@@ -536,8 +498,8 @@ mod tests {
             *b = i as u8;
         }
         let ptr = NonNull::new(memory.as_mut_ptr()).unwrap();
-        let fb = unsafe { FrameBuffer::new(ptr, Size { width: 4, height: 3 }, PixelFormat::Rgb565) };
-        let area = Rect { x: 1, y: 1, width: 2, height: 2 };
+        let fb = unsafe { FrameBuffer::new(ptr, Size { width: 4, height: 3 }, ImageFormat::Rgb565) };
+        let area = Rect::new(1, 1, 2, 2);
         let mut rb: Readback<'_> = Readback { fb, area, next_row: 0, _display: PhantomData::<&Display> };
         let rows = rb.next().unwrap().unwrap();
         assert_eq!((rows.y, rows.height, rows.stride), (1, 2, 8));

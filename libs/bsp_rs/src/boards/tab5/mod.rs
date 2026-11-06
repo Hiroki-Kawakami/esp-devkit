@@ -5,8 +5,11 @@
 
 use core::ffi::CStr;
 
+use idf::log::error;
+use idf::{Error, Result};
+
 use crate::Config;
-use crate::display::{PixelFormat, Size};
+use crate::display::{ImageFormat, Size};
 
 #[cfg(target_os = "none")]
 mod audio;
@@ -32,9 +35,13 @@ fn resolve_fb_num(config: &Config) -> u8 {
     if config.display.fb_num != 0 { config.display.fb_num } else { 2 }
 }
 
-fn resolve_pixel_format(config: &Config) -> PixelFormat {
+fn resolve_pixel_format(config: &Config) -> Result<ImageFormat> {
     match config.display.pixel_format {
-        Some(PixelFormat::Rgb888) => PixelFormat::Rgb888,
-        _ => PixelFormat::Rgb565,
+        None | Some(ImageFormat::Rgb565) => Ok(ImageFormat::Rgb565),
+        Some(ImageFormat::Bgr888) => Ok(ImageFormat::Bgr888),
+        Some(other) => {
+            error!(TAG, "display: {other:?} is not supported");
+            Err(Error::NOT_SUPPORTED)
+        }
     }
 }

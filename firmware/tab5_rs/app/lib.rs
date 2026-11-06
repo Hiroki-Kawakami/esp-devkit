@@ -14,7 +14,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 
 use bsp_rs::audio::{Audio, Format, Pcm, SampleFormat, SpeakerMode};
-use bsp_rs::display::{Display, FrameBuffer, PixelFormat};
+use bsp_rs::display::{Display, FrameBuffer, ImageFormat};
 use bsp_rs::sd::MountConfig;
 use devkit::math::sinf;
 use bsp_rs::touch::{Point, Touch};
@@ -45,7 +45,7 @@ const BARS: [(u8, u8, u8); 8] = [
 
 pub fn run() {
     let mut config = bsp_rs::Config::default();
-    config.display.pixel_format = Some(PixelFormat::Rgb565);
+    config.display.pixel_format = Some(ImageFormat::Rgb565);
     config.audio.speaker_mode = SpeakerMode::Auto;
     let board = match bsp_rs::init(&config) {
         Ok(board) => board,
@@ -220,13 +220,14 @@ fn draw_pattern(fb: &FrameBuffer, index: usize) {
     }
 }
 
-fn put_pixel(row: &mut [u8], x: usize, format: PixelFormat, (r, g, b): (u8, u8, u8)) {
+fn put_pixel(row: &mut [u8], x: usize, format: ImageFormat, (r, g, b): (u8, u8, u8)) {
     match format {
-        PixelFormat::Rgb565 => {
+        ImageFormat::Rgb565 => {
             let v = (u16::from(r) >> 3) << 11 | (u16::from(g) >> 2) << 5 | u16::from(b) >> 3;
             row[x * 2..x * 2 + 2].copy_from_slice(&v.to_le_bytes());
         }
-        PixelFormat::Rgb888 => row[x * 3..x * 3 + 3].copy_from_slice(&[b, g, r]),
-        PixelFormat::L8 => row[x] = ((u16::from(r) + u16::from(g) + u16::from(b)) / 3) as u8,
+        ImageFormat::Bgr888 => row[x * 3..x * 3 + 3].copy_from_slice(&[b, g, r]),
+        ImageFormat::L8 => row[x] = ((u16::from(r) + u16::from(g) + u16::from(b)) / 3) as u8,
+        _ => {}
     }
 }

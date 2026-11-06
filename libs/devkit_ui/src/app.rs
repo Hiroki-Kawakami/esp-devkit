@@ -13,9 +13,9 @@ use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use core::time::Duration;
 
-use bsp_rs::display::{Display, PixelFormat, Rotation};
+use bsp_rs::display::{Display, Rotation};
 use bsp_rs::touch::{MAX_POINTS, Point, Touch};
-use devkit_gfx::{DisplayList, GlyphCache, ImageFormat, Rect};
+use devkit_gfx::{DisplayList, GlyphCache, Rect};
 use idf::heap::Caps;
 use idf::log::error;
 use idf::sync::{Mutex, OnceLock, Receiver, Semaphore, Sender, channel};
@@ -423,11 +423,7 @@ impl<C: Screen> AppState<C> {
                 let mut tree = Tree::new(root, area, config.presenter.data_caps, config.theme);
                 tree.add_keyboard(config.keyboard);
                 tree.color_mode = color_mode;
-                tree.set_pixel_format(match display.pixel_format() {
-                    PixelFormat::Rgb888 => ImageFormat::Bgr888,
-                    PixelFormat::L8 => ImageFormat::L8,
-                    PixelFormat::Rgb565 => ImageFormat::Rgb565,
-                });
+                tree.set_pixel_format(display.pixel_format());
                 tree
             },
             presenter,

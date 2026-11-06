@@ -13,7 +13,7 @@ use core::ffi::CStr;
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use core::time::Duration;
 
-use bsp_rs::display::{self, Blitter, Display, FrameBuffer, PixelFormat, Rotation};
+use bsp_rs::display::{Blitter, Display, FrameBuffer, ImageFormat, Rotation};
 use devkit::Lease;
 use devkit_gfx::{Argb8888, Bgr888, ClipStore, Damage, DisplayList, GlyphCache, Pixel, Prepared, Rect, Rgb565, Surface, draw, draw_from};
 use idf::heap::Caps;
@@ -217,7 +217,7 @@ impl Lane {
             let list = unsafe { &*job.list };
             (self.raster, self.stall) = (0, 0);
             match job.fb.map(|fb| fb.format()) {
-                Some(PixelFormat::Rgb888) => self.strips::<Bgr888>(&shared, job, list, prepared),
+                Some(ImageFormat::Bgr888) => self.strips::<Bgr888>(&shared, job, list, prepared),
                 _ => self.strips::<Rgb565>(&shared, job, list, prepared),
             }
             while self.blitter.pending() > 0 {
@@ -264,13 +264,7 @@ impl Lane {
             let surface = unsafe { Surface::new(buffer, strip.w as usize * P::BYTES, *strip) };
             draw::<P, _, _, _>(list, prepared, &mut self.clips, &surface);
             self.raster += t.elapsed().as_micros() as u32;
-            let area = display::Rect {
-                x: strip.x as u16,
-                y: strip.y as u16,
-                width: strip.w as u16,
-                height: strip.h as u16,
-            };
-            if let Err(err) = unsafe { self.blitter.start(&fb, job.rotation, area, buffer) } {
+            if let Err(err) = unsafe { self.blitter.start(&fb, job.rotation, *strip, buffer) } {
                 error!(TAG, "blit {strip:?}: {err}");
             }
         }
@@ -432,7 +426,7 @@ impl Presenter {
     /// `strips` back, when a buffer cannot hold 16 rows of the logical width.
     pub fn set_strips(&mut self, strips: Strips, lanes: usize) -> core::result::Result<Strips, Strips> {
         let (_, buffer_bytes) = strips.buffers(lanes.clamp(1, MAX_LANES));
-        let stride = self.area().w as usize * self.display.pixel_format().bytes();
+        let stride = self.display.pixel_format().row_bytes(self.area().w as usize);
         if !(1..=MAX_LANES).contains(&lanes) || buffer_bytes < stride * ROW_GRID as usize {
             error!(TAG, "strips of {buffer_bytes} bytes hold no 16 rows of {stride}");
             return Err(strips);
@@ -446,7 +440,7 @@ impl Presenter {
     /// Refused when a buffer cannot hold 16 rows of the new logical width.
     pub fn set_rotation(&mut self, rotation: Rotation) -> Result<()> {
         let previous = core::mem::replace(&mut self.rotation, rotation);
-        let stride = self.area().w as usize * self.display.pixel_format().bytes();
+        let stride = self.display.pixel_format().row_bytes(self.area().w as usize);
         if self.buffer_bytes < stride * ROW_GRID as usize {
             self.rotation = previous;
             return Err(Error::INVALID_SIZE);
@@ -550,7 +544,7 @@ impl Presenter {
         job.strips.clear();
         let hole = self.hole.unwrap_or_default();
         for area in self.damage[target].regions().iter().flat_map(|r| r.subtract(&hole)) {
-            let stride = area.w as usize * fb.format().bytes();
+            let stride = fb.format().row_bytes(area.w as usize);
             let rows = (self.buffer_bytes / stride).min(i16::MAX as usize) as i16 / ROW_GRID * ROW_GRID;
             if rows == 0 {
                 return Err(Error::INVALID_SIZE);

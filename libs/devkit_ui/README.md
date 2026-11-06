@@ -547,6 +547,8 @@ config.plugins.push(Box::new(SavedColorMode::new()));
 
 - A frame always covers the whole `area`, unless the writer tracks by
   `frame.index` what each framebuffer already holds.
+- `frame.target()` is that area as a `devkit_gfx::Target`, for writers that
+  take one. It borrows the frame, so it is gone by `end`.
 - What lies over a surface is drawn into ARGB memory when it changes, and `end`
   blends it with the 2D engine, so video does not wait for the UI.
 - `set_on_refresh` asks for `area` again on the UI task when what the surface

@@ -25,7 +25,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 
 use bsp_rs::Board;
-use bsp_rs::display::{Display, PixelFormat};
+use bsp_rs::display::{Display, ImageFormat};
 use devkit::StaticLease;
 use devkit_ui::{App, AppConfig, AutoRotation, ColorMode, Rotation, SavedColorMode, Strips, TextInput};
 use idf::heap::Caps;
@@ -138,7 +138,7 @@ pub fn run() {
     let value = settings();
     let mut config = bsp_rs::Config::default();
     config.display.fb_num = 3;
-    config.display.pixel_format = Some(if value.rgb888 { PixelFormat::Rgb888 } else { PixelFormat::Rgb565 });
+    config.display.pixel_format = Some(if value.rgb888 { ImageFormat::Bgr888 } else { ImageFormat::Rgb565 });
     let board = match bsp_rs::init(&config) {
         Ok(board) => board,
         Err(err) => {
