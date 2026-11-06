@@ -44,6 +44,7 @@ set(DEVKIT_DEVICE_COMPONENTS
     libs/image_framework
     libs/jpeg_decode_enhanced
     libs/lvgl
+    libs/media_engine
     libs/media_framework
     libs/rust_rt
     libs/sensors
@@ -76,6 +77,7 @@ set(DEVKIT_SIMULATOR_COMPONENTS
     libs/image_framework
     libs/jpeg_decode_enhanced
     libs/lvgl
+    libs/media_engine
     libs/media_framework
     libs/rust_rt
     libs/sensors
