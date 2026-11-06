@@ -1462,7 +1462,7 @@ fn image_data(context: &Context, name: &str, entry: &ImageEntry) -> Result<Vec<u
         format,
         width: width as u16,
         height: height as u16,
-        stride: format.row_bytes(width as usize) as u32,
+        stride: width,
         data_len: pixels.len() as u32,
     }
     .write(&mut out);

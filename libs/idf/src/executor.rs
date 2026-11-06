@@ -46,6 +46,13 @@ pub struct TaskPark {
 unsafe impl Send for TaskPark {}
 unsafe impl Sync for TaskPark {}
 
+impl TaskPark {
+    /// For the calling task, without the allocation of `park()`.
+    pub fn current() -> Self {
+        Self { task: unsafe { sys::xTaskGetCurrentTaskHandle() } }
+    }
+}
+
 impl Park for TaskPark {
     fn park(&self, timeout: Option<u32>) {
         wait_notify(NOTIFY_EXECUTOR, timeout.map_or(MAX_DELAY, |t| t as sys::TickType_t));

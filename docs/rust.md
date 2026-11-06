@@ -705,7 +705,8 @@ let answer = executor::block_on(async { local.spawn(compute()).await });
   other way, async code sends on `idf::sync::channel` as any task does.
 - `tick_duration(ticks)` is how long `run_ready`'s ticks are.
 - `TaskPark` waits for bit 0 of the task's notification value at index 0 and
-  wakes from interrupts too; `CRITICAL` is one spinlock shared by every
+  wakes from interrupts too; `TaskPark::current()` makes one for the calling
+  task without allocating; `CRITICAL` is one spinlock shared by every
   executor.
 - Rust code shares notification index 0 as bits, one per kind of waiter
   (bit 0 executors, bit 1 `idf::sync` locks). A
@@ -729,6 +730,11 @@ bundle; see its README.
 ### `devkit_ui` (`libs/devkit_ui`)
 
 UI framework on `bsp_rs`; see its README.
+
+### `media_engine` (`libs/media_engine`)
+
+The chip's media accelerators (the 2D engine for now) on IDF's HAL and 2D-DMA
+allocator; see its README.
 
 ## Runtime (`libs/rust_rt`)
 

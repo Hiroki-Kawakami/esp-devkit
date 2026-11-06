@@ -270,8 +270,7 @@ impl Scene {
             let frame = Rect::new(24, y + 12, THUMB_W as i16, THUMB_H as i16);
             list.round_rect(frame, a.corner_12, DIVIDER);
             let pixels = &a.thumbs[i % a.thumbs.len()];
-            let bytes = a.format.row_bytes(usize::from(THUMB_W));
-            list.image(24, y + 12, Image::from_pixels(a.format, THUMB_W, THUMB_H, bytes, pixels), Color::rgb(0, 0, 0));
+            list.image(24, y + 12, Image::from_pixels(a.format, THUMB_W, THUMB_H, usize::from(THUMB_W), pixels), Color::rgb(0, 0, 0));
             list.text(224, y + 34, &a.names[i % NAMES.len() * 2 + 1], INK);
             list.text(224, y + 70, &a.meta[i % a.meta.len()], MUTED);
             list.text(w - 52, y + 50, &a.chevron, CHEVRON);

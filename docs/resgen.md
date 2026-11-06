@@ -461,5 +461,5 @@ code point table, a 12 byte record per glyph and the glyph data. A record's
 compressed; the RLE is the one in [Font packs](#font-packs), with the same two
 zero bytes of slack at the end. Glyphs that do not get smaller are stored raw.
 
-An image is a 20 byte header (`DKIM`, version, format, size, stride, data
-length), with the pixels at offset 64.
+An image is a 20 byte header (`DKIM`, version, format, size, stride in pixels,
+data length), with the pixels at offset 64.

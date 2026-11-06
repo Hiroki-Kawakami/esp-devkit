@@ -172,7 +172,7 @@ impl Surface {
             return;
         }
         let format = image.format();
-        let src_stride = image.stride();
+        let src_stride = image.stride_bytes();
         let pixels = image.pixels();
         if format == ImageFormat::A8 {
             let start = (r.y - y) as usize * src_stride + (r.x - x) as usize;
@@ -234,7 +234,7 @@ unsafe fn convert_row<P: Pixel>(dst: *mut u8, src: *const u8, n: usize, step: us
                 ImageFormat::Argb8888 => Color::rgba(p.add(2).read(), p.add(1).read(), p.read(), p.add(3).read()),
                 ImageFormat::L8 => Color::rgb(p.read(), p.read(), p.read()),
                 ImageFormat::A8 => Color::rgba(0, 0, 0, p.read()),
-                _ => unreachable!(),
+                _ => return,
             }
         };
         let alpha = mul8(c.a, opacity);

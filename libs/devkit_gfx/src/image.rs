@@ -19,7 +19,6 @@ impl Image<'static> {
     /// is not one.
     pub const fn parse(data: &'static [u8]) -> Self {
         let Some(header) = ImageHeader::read(data) else { panic!("not an image resource") };
-        assert!(header.format.is_drawable(), "image format not drawable");
         let (_, pixels) = data.split_at(IMAGE_DATA_OFFSET);
         Self {
             format: header.format,
@@ -32,11 +31,11 @@ impl Image<'static> {
 }
 
 impl<'a> Image<'a> {
-    /// `pixels` must hold `height` rows of `stride` bytes.
+    /// `stride` is in pixels and starts every row on a byte; `pixels` holds
+    /// `height` rows of it.
     pub fn from_pixels(format: ImageFormat, width: u16, height: u16, stride: usize, pixels: &'a [u8]) -> Self {
-        assert!(pixels.len() >= stride * usize::from(height));
-        assert!(format.is_drawable());
-        assert!(stride >= format.row_bytes(usize::from(width)));
+        assert!(stride >= usize::from(width) && stride * format.bits() % 8 == 0);
+        assert!(pixels.len() >= format.row_bytes(stride) * usize::from(height));
         Self { format, width, height, stride, pixels }
     }
 
@@ -54,6 +53,10 @@ impl<'a> Image<'a> {
 
     pub const fn stride(&self) -> usize {
         self.stride
+    }
+
+    pub const fn stride_bytes(&self) -> usize {
+        self.format.row_bytes(self.stride)
     }
 
     pub const fn pixels(&self) -> &'a [u8] {

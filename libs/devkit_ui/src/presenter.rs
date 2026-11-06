@@ -17,7 +17,7 @@ use bsp_rs::display::{Blitter, Display, FrameBuffer, ImageFormat, Rotation};
 use devkit::Lease;
 use devkit_gfx::{Argb8888, Bgr888, ClipStore, Damage, DisplayList, GlyphCache, Pixel, Prepared, Rect, Rgb565, Surface, draw, draw_from};
 use idf::heap::Caps;
-use idf::log::error;
+use idf::log::{error, warn};
 use idf::sync::Semaphore;
 use idf::time::Instant;
 use idf::{Error, Result, thread};
@@ -534,6 +534,9 @@ impl Presenter {
         prepared.prepare(list, self.damage[target].regions(), cache);
         stats.glyphs_decoded = cache.decoded() - decoded;
         stats.glyphs_missing = prepared.missing();
+        if list.skipped() > 0 {
+            warn!(TAG, "{} images in a format draw cannot take were left out", list.skipped());
+        }
         let t1 = Instant::now();
 
         let job = unsafe { &mut *shared.job.get() };

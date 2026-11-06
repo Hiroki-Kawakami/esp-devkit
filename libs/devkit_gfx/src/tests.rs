@@ -128,7 +128,7 @@ impl Scene {
         list.text(50, 60, &self.list_runs.1, Color::rgba(200, 0, 0, 160));
         list.shadow(Rect::new(30, 30, 40, 30), self.shadow, Color::rgba(17, 20, 24, 56));
         list.round_rect(Rect::new(30, 30, 40, 30), self.corner, Color::hex(0xffffff));
-        list.image(36, 40, Image::from_pixels(ImageFormat::Rgb565, 20, 12, 40, &self.thumb), Color::rgb(0, 0, 0));
+        list.image(36, 40, Image::from_pixels(ImageFormat::Rgb565, 20, 12, 20, &self.thumb), Color::rgb(0, 0, 0));
         list
     }
 }
@@ -453,8 +453,8 @@ fn image_converts_to_the_target_format() {
     let argb = [10u8, 20, 30, 255, 40, 50, 60, 0];
     let mut list = DisplayList::new();
     list.fill(Rect::new(0, 0, 2, 2), Color::rgb(1, 2, 3));
-    list.image(0, 0, Image::from_pixels(ImageFormat::Bgr888, 2, 1, 6, &bgr), Color::rgb(0, 0, 0));
-    list.image(0, 1, Image::from_pixels(ImageFormat::Argb8888, 2, 1, 8, &argb), Color::rgb(0, 0, 0));
+    list.image(0, 0, Image::from_pixels(ImageFormat::Bgr888, 2, 1, 2, &bgr), Color::rgb(0, 0, 0));
+    list.image(0, 1, Image::from_pixels(ImageFormat::Argb8888, 2, 1, 2, &argb), Color::rgb(0, 0, 0));
     let out = render::<Bgr888>(&list, &mut GlyphCache::new(64), 2, 2, &[Rect::new(0, 0, 2, 2)]);
     assert_eq!(&out, &[10, 20, 30, 40, 50, 60, 10, 20, 30, 3, 2, 1]);
 }
@@ -941,4 +941,16 @@ fn a_rotated_target_maps_logical_rects_to_stored_ones() {
     let target = target.crop(Rect::new(1, 2, 2, 3)).unwrap();
     assert_eq!(target.stored_rect(Rect::new(0, 0, 1, 1)), None);
     assert!(target.crop(Rect::new(0, 0, 4, 8)).is_none());
+}
+
+#[test]
+fn an_image_draw_cannot_take_is_left_out_and_counted() {
+    let yuv = [0u8; 4 * 2 * 3 / 2];
+    let image = Image::from_pixels(ImageFormat::Yuv420, 4, 2, 4, &yuv);
+    assert_eq!(image.stride_bytes(), 6);
+    let mut list = DisplayList::new();
+    list.image(0, 0, image, Color::rgb(0, 0, 0));
+    assert_eq!((list.ops().len(), list.skipped()), (0, 1));
+    list.clear();
+    assert_eq!(list.skipped(), 0);
 }

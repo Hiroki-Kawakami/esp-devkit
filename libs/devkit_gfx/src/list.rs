@@ -88,6 +88,7 @@ pub struct DisplayList<'a, A: Allocator = Global> {
     ops: Vec<Op<'a>, A>,
     text_ops: u32,
     clips: usize,
+    skipped: u32,
 }
 
 impl DisplayList<'_, Global> {
@@ -104,7 +105,7 @@ impl Default for DisplayList<'_, Global> {
 
 impl<'a, A: Allocator> DisplayList<'a, A> {
     pub fn new_in(alloc: A) -> Self {
-        Self { ops: Vec::new_in(alloc), text_ops: 0, clips: 0 }
+        Self { ops: Vec::new_in(alloc), text_ops: 0, clips: 0, skipped: 0 }
     }
 
     pub fn reserve(&mut self, additional: usize) {
@@ -115,6 +116,12 @@ impl<'a, A: Allocator> DisplayList<'a, A> {
         self.ops.clear();
         self.text_ops = 0;
         self.clips = 0;
+        self.skipped = 0;
+    }
+
+    /// Images left out since `clear` because `draw` cannot take their format.
+    pub fn skipped(&self) -> u32 {
+        self.skipped
     }
 
     pub fn ops(&self) -> &[Op<'a>] {
@@ -176,6 +183,10 @@ impl<'a, A: Allocator> DisplayList<'a, A> {
 
     /// `tint`'s alpha is the opacity; an `A8` image takes its color too.
     pub fn image(&mut self, x: i16, y: i16, image: Image<'a>, tint: Color) {
+        if !image.format().is_drawable() {
+            self.skipped += 1;
+            return;
+        }
         self.ops.push(Op::Image { x, y, image, tint });
     }
 
