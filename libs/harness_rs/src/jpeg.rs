@@ -5,8 +5,8 @@
 
 use alloc::string::{String, ToString};
 
-use bsp_rs::display::{Display, ImageFormat, Rect};
-use devkit_image::{Encoder, Error, JpegEncoder, JpegOptions, PixelFormat};
+use bsp_rs::display::{Display, Rect};
+use devkit_image::{Encoder, Error, JpegEncoder, JpegOptions};
 use idf::heap::Caps;
 
 type Sink<'a> = &'a mut dyn FnMut(&[u8]) -> bool;
@@ -14,12 +14,7 @@ type Sink<'a> = &'a mut dyn FnMut(&[u8]) -> bool;
 /// Encodes what the panel shows, streaming the JPEG to `sink`.
 pub(crate) fn encode(display: &Display, quality: u8, sink: Sink) -> Result<(), String> {
     let size = display.size();
-    let format = match display.pixel_format() {
-        ImageFormat::L8 => PixelFormat::Gray8,
-        ImageFormat::Rgb565 => PixelFormat::Rgb565,
-        ImageFormat::Bgr888 => PixelFormat::Bgr888,
-        other => return Err(alloc::format!("no encoder for {other:?}")),
-    };
+    let format = display.pixel_format();
     let options = JpegOptions { quality, caps: Some(Caps::ACCESS_8BIT), ..Default::default() };
     let write = |data: &[u8]| if sink(data) { Ok(()) } else { Err(Error::Io) };
     let mut encoder = JpegEncoder::new(size.width, size.height, format, &options, write).map_err(encoder_error)?;

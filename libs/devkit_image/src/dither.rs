@@ -103,7 +103,7 @@ impl DitherAlgorithm {
     }
 }
 
-/// Quantizes `Gray8` rows to N levels.
+/// Quantizes `L8` rows to N levels.
 pub struct Ditherer {
     width: usize,
     algorithm: DitherAlgorithm,
@@ -275,7 +275,7 @@ fn check_strides(w: u16, h: u16, src_stride: usize, dst_stride: usize) -> Result
     Ok((src_stride, dst_stride))
 }
 
-/// A whole `Gray8` buffer in one call. A stride of 0 is tight packing.
+/// A whole `L8` buffer in one call. A stride of 0 is tight packing.
 pub fn dither_buffer(src: &[u8], w: u16, h: u16, src_stride: usize, dst: &mut [u8], dst_stride: usize, options: &DitherOptions) -> Result<()> {
     let (src_stride, dst_stride) = check_strides(w, h, src_stride, dst_stride)?;
     let last = usize::from(h) - 1;

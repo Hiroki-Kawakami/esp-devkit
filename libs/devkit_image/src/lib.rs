@@ -83,35 +83,23 @@ impl From<idf::Error> for Error {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum PixelFormat {
-    Gray8,
-    Rgb888,
-    /// Native-endian `u16`; the byte order a panel wants is the panel's concern.
-    Rgb565,
-    Bgr888,
-}
+pub use devkit_gfx::ImageFormat;
 
-impl PixelFormat {
-    pub const fn bytes_per_pixel(self) -> usize {
-        match self {
-            Self::Gray8 => 1,
-            Self::Rgb565 => 2,
-            Self::Rgb888 | Self::Bgr888 => 3,
-        }
-    }
+/// The formats rows are decoded to, resized between and encoded from.
+pub(crate) const fn is_row_format(format: ImageFormat) -> bool {
+    matches!(format, ImageFormat::L8 | ImageFormat::Rgb888 | ImageFormat::Bgr888 | ImageFormat::Rgb565)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct ImageInfo {
     pub width: u16,
     pub height: u16,
-    pub format: PixelFormat,
+    pub format: ImageFormat,
 }
 
 impl ImageInfo {
     pub const fn row_bytes(&self) -> usize {
-        self.width as usize * self.format.bytes_per_pixel()
+        self.format.row_bytes(self.width as usize)
     }
 }
 

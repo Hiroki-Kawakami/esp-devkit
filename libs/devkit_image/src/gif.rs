@@ -11,7 +11,7 @@ use idf::heap::{self, Caps};
 
 use crate::mem::{Buffer, buffer, default_caps, state};
 use crate::stream::Reader;
-use crate::{DecodeOptions, Error, ImageInfo, PixelFormat, Result, Stream};
+use crate::{DecodeOptions, Error, ImageFormat, ImageInfo, Result, Stream};
 
 struct Blocks {
     done: bool,
@@ -227,7 +227,7 @@ impl<'a> GifDecoder<'a> {
     }
 
     pub fn info(&self) -> ImageInfo {
-        ImageInfo { width: self.width, height: self.height, format: PixelFormat::Rgb888 }
+        ImageInfo { width: self.width, height: self.height, format: ImageFormat::Rgb888 }
     }
 
     fn expand_interlaced(&mut self) -> Result<()> {

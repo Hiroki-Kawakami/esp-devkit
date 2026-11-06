@@ -9,7 +9,7 @@ use idf::heap::Caps;
 
 use crate::mem::{Buffer, buffer, state};
 use crate::stream::Reader;
-use crate::{DecodeOptions, Error, ImageInfo, PixelFormat, Result, Stream};
+use crate::{DecodeOptions, Error, ImageFormat, ImageInfo, Result, Stream};
 
 const BI_RGB: u32 = 0;
 const BI_RLE8: u32 = 1;
@@ -209,7 +209,7 @@ impl<'a> BmpDecoder<'a> {
     }
 
     pub fn info(&self) -> ImageInfo {
-        ImageInfo { width: self.width, height: self.height, format: PixelFormat::Rgb888 }
+        ImageInfo { width: self.width, height: self.height, format: ImageFormat::Rgb888 }
     }
 
     fn put_index(&self, dst: &mut [u8], idx: usize) {

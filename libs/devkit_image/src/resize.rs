@@ -9,7 +9,7 @@ use idf::heap::Caps;
 
 use crate::mem::{Buffer, buffer, uninit_buffer};
 use crate::kernels;
-use crate::{Decoder, Error, HAVE_PIE, ImageInfo, PixelFormat, Result};
+use crate::{Decoder, Error, HAVE_PIE, ImageFormat, ImageInfo, Result, is_row_format};
 
 const Q16: u32 = 65536;
 
@@ -58,7 +58,7 @@ pub struct ResizeOptions {
     pub target_height: u16,
     pub fit: Fit,
     /// `None` keeps the source format.
-    pub format: Option<PixelFormat>,
+    pub format: Option<ImageFormat>,
     pub caps: Option<Caps>,
 }
 
@@ -174,7 +174,7 @@ fn clamp8(v: i32) -> u8 {
     v.clamp(0, 255) as u8
 }
 
-fn unpack_row(src: &[u8], dst: &mut [u16], w: usize, format: PixelFormat, ch: usize) {
+fn unpack_row(src: &[u8], dst: &mut [u16], w: usize, format: ImageFormat, ch: usize) {
     if ch == 1 {
         for (d, &s) in dst.iter_mut().zip(&src[..w]) {
             *d = u16::from(s);
@@ -182,20 +182,20 @@ fn unpack_row(src: &[u8], dst: &mut [u16], w: usize, format: PixelFormat, ch: us
         return;
     }
     match format {
-        PixelFormat::Gray8 => {
+        ImageFormat::L8 => {
             for (d, &g) in dst.chunks_exact_mut(3).zip(&src[..w]) {
                 d.fill(u16::from(g));
             }
         }
-        PixelFormat::Rgb888 | PixelFormat::Bgr888 => {
-            let r = if format == PixelFormat::Bgr888 { 2 } else { 0 };
+        ImageFormat::Rgb888 | ImageFormat::Bgr888 => {
+            let r = if format == ImageFormat::Bgr888 { 2 } else { 0 };
             for (d, s) in dst.chunks_exact_mut(3).zip(src[..w * 3].chunks_exact(3)) {
                 d[0] = u16::from(s[r]);
                 d[1] = u16::from(s[1]);
                 d[2] = u16::from(s[2 - r]);
             }
         }
-        PixelFormat::Rgb565 => {
+        ImageFormat::Rgb565 => {
             for (d, s) in dst.chunks_exact_mut(3).zip(src[..w * 2].chunks_exact(2)) {
                 let p = u16::from_ne_bytes([s[0], s[1]]);
                 let (r5, g6, b5) = ((p >> 11) & 0x1F, (p >> 5) & 0x3F, p & 0x1F);
@@ -204,13 +204,14 @@ fn unpack_row(src: &[u8], dst: &mut [u16], w: usize, format: PixelFormat, ch: us
                 d[2] = (b5 << 3) | (b5 >> 2);
             }
         }
+        _ => unreachable!(),
     }
 }
 
-fn pack_row(src: &[u16], dst: &mut [u8], w: usize, format: PixelFormat, ch: usize) {
+fn pack_row(src: &[u16], dst: &mut [u8], w: usize, format: ImageFormat, ch: usize) {
     if ch == 1 {
         let mut i = 0;
-        if HAVE_PIE && format == PixelFormat::Gray8 && w >= 16 {
+        if HAVE_PIE && format == ImageFormat::L8 && w >= 16 {
             let n = w >> 4;
             kernels::pack_bytes(dst, src, n);
             i = n << 4;
@@ -221,14 +222,14 @@ fn pack_row(src: &[u16], dst: &mut [u8], w: usize, format: PixelFormat, ch: usiz
         return;
     }
     match format {
-        PixelFormat::Gray8 => {
+        ImageFormat::L8 => {
             for (d, s) in dst[..w].iter_mut().zip(src.chunks_exact(3)) {
                 let (r, g, b) = (i32::from(s[0]), i32::from(s[1]), i32::from(s[2]));
                 *d = clamp8((r * LUMA_R_Q8 + g * LUMA_G_Q8 + b * LUMA_B_Q8 + 128) >> 8);
             }
         }
-        PixelFormat::Rgb888 | PixelFormat::Bgr888 => {
-            let r = if format == PixelFormat::Bgr888 { 2 } else { 0 };
+        ImageFormat::Rgb888 | ImageFormat::Bgr888 => {
+            let r = if format == ImageFormat::Bgr888 { 2 } else { 0 };
             let mut i = 0;
             if HAVE_PIE && r == 0 && w * 3 >= 16 {
                 let n = (w * 3) >> 4;
@@ -241,7 +242,7 @@ fn pack_row(src: &[u16], dst: &mut [u8], w: usize, format: PixelFormat, ch: usiz
                 d[2 - r] = clamp8(i32::from(s[2]));
             }
         }
-        PixelFormat::Rgb565 => {
+        ImageFormat::Rgb565 => {
             let mut i = 0;
             if HAVE_PIE && w >= 8 {
                 let n = w >> 3;
@@ -255,6 +256,7 @@ fn pack_row(src: &[u16], dst: &mut [u8], w: usize, format: PixelFormat, ch: usiz
                 d.copy_from_slice(&((r << 11) | (g << 5) | b).to_ne_bytes());
             }
         }
+        _ => unreachable!(),
     }
 }
 
@@ -372,8 +374,8 @@ struct Core {
     sh: usize,
     dw: usize,
     dh: usize,
-    src_format: PixelFormat,
-    dst_format: PixelFormat,
+    src_format: ImageFormat,
+    dst_format: ImageFormat,
     ch: usize,
     src_direct: bool,
     src_bytes: usize,
@@ -399,9 +401,12 @@ impl Core {
         let (dw, dh) = (usize::from(dw16), usize::from(dh16));
         let src_format = info.format;
         let dst_format = options.format.unwrap_or(src_format);
+        if !is_row_format(src_format) || !is_row_format(dst_format) {
+            return Err(Error::Unsupported);
+        }
         let caps = options.caps;
-        let ch = if src_format == PixelFormat::Gray8 && dst_format == PixelFormat::Gray8 { 1 } else { 3 };
-        let src_direct = src_format == PixelFormat::Rgb888 && ch == 3 || src_format == PixelFormat::Gray8 && ch == 1;
+        let ch = if src_format == ImageFormat::L8 && dst_format == ImageFormat::L8 { 1 } else { 3 };
+        let src_direct = src_format == ImageFormat::Rgb888 && ch == 3 || src_format == ImageFormat::L8 && ch == 1;
         let h_up = dw > sw;
         let v_up = dh > sh;
         let h_shift = if v_up { 16 } else { 16 - HROW_FRAC_BITS };
@@ -425,7 +430,7 @@ impl Core {
                 cum: 0,
                 wsum: 0,
                 acc_dst_y: 0,
-                pending: buffer(dw * dst_format.bytes_per_pixel(), caps)?,
+                pending: buffer(dst_format.row_bytes(dw), caps)?,
                 pending_avail: false,
             })
         };
@@ -438,8 +443,8 @@ impl Core {
             dst_format,
             ch,
             src_direct,
-            src_bytes: sw * src_format.bytes_per_pixel(),
-            dst_bytes: dw * dst_format.bytes_per_pixel(),
+            src_bytes: src_format.row_bytes(sw),
+            dst_bytes: dst_format.row_bytes(dw),
             h_shift,
             h_round: 1 << (h_shift - 1),
             horizontal,
@@ -729,7 +734,7 @@ impl OrientedResizer {
     }
 
     unsafe fn place_row(&self, y: usize, dst: *mut u8, stride: usize) {
-        let (w, h, bpp) = (self.core.dw as isize, self.core.dh as isize, self.core.dst_format.bytes_per_pixel() as isize);
+        let (w, h, bpp) = (self.core.dw as isize, self.core.dh as isize, (self.core.dst_format.bits() / 8) as isize);
         let (y, s) = (y as isize, stride as isize);
         let (at, step) = match self.orientation {
             Orientation::None => (y * s, bpp),
@@ -820,12 +825,12 @@ pub fn resize_decoder(decoder: &mut Decoder, options: &ResizeOptions, orientatio
     Ok(ResizedImage { data, info: out })
 }
 
-fn check_strides(info: ImageInfo, src_stride: usize, dst_format: PixelFormat, dst_w: u16, dst_stride: usize) -> Result<(usize, usize, usize)> {
+fn check_strides(info: ImageInfo, src_stride: usize, dst_format: ImageFormat, dst_w: u16, dst_stride: usize) -> Result<(usize, usize, usize)> {
     let src_stride = if src_stride == 0 { info.row_bytes() } else { src_stride };
     if src_stride < info.row_bytes() {
         return Err(Error::InvalidArgument);
     }
-    let dst_row = usize::from(dst_w) * dst_format.bytes_per_pixel();
+    let dst_row = dst_format.row_bytes(usize::from(dst_w));
     let dst_stride = if dst_stride == 0 { dst_row } else { dst_stride };
     if dst_stride < dst_row {
         return Err(Error::InvalidArgument);

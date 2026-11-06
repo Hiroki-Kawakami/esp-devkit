@@ -12,7 +12,7 @@ use idf::heap::{self, Caps};
 
 use crate::mem::{Buffer, buffer, default_caps, state};
 use crate::stream::Reader;
-use crate::{DecodeOptions, Error, ImageInfo, PixelFormat, Result, Stream};
+use crate::{DecodeOptions, Error, ImageFormat, ImageInfo, Result, Stream};
 
 const COMP_NONE: u16 = 1;
 const COMP_LZW: u16 = 5;
@@ -374,7 +374,7 @@ impl<'a> TiffDecoder<'a> {
     }
 
     pub fn info(&self) -> ImageInfo {
-        let format = if self.out_bpp == 3 { PixelFormat::Rgb888 } else { PixelFormat::Gray8 };
+        let format = if self.out_bpp == 3 { ImageFormat::Rgb888 } else { ImageFormat::L8 };
         ImageInfo { width: self.width, height: self.height, format }
     }
 

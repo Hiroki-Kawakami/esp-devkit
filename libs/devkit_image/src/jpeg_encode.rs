@@ -11,7 +11,7 @@ use idf::heap::Caps;
 
 use crate::mem::{Buffer, buffer, internal_buffer, state};
 use crate::stream::Sink;
-use crate::{Encoder, Error, ImageInfo, PixelFormat, Result};
+use crate::{Encoder, Error, ImageFormat, ImageInfo, Result, is_row_format};
 
 const ZIGZAG: [u8; 64] = [
     0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5,
@@ -111,8 +111,8 @@ pub struct JpegOptions {
 }
 
 /// Worst-case encoded size: header plus 2 bytes per sample, for very low quality.
-pub const fn jpeg_buffer_upper_bound(w: u16, h: u16, format: PixelFormat) -> usize {
-    let n = if matches!(format, PixelFormat::Gray8) { 1 } else { 3 };
+pub const fn jpeg_buffer_upper_bound(w: u16, h: u16, format: ImageFormat) -> usize {
+    let n = if matches!(format, ImageFormat::L8) { 1 } else { 3 };
     w as usize * h as usize * n * 2 + 1024
 }
 
@@ -553,17 +553,20 @@ impl Core {
 pub struct JpegEncoder<S: Sink> {
     core: Core,
     sink: S,
-    format: PixelFormat,
+    format: ImageFormat,
 }
 
 impl<S: Sink> JpegEncoder<S> {
     /// Writes the headers to `sink`.
-    pub fn new(width: u16, height: u16, format: PixelFormat, options: &JpegOptions, mut sink: S) -> Result<Self> {
+    pub fn new(width: u16, height: u16, format: ImageFormat, options: &JpegOptions, mut sink: S) -> Result<Self> {
         if width == 0 || height == 0 {
             return Err(Error::InvalidArgument);
         }
+        if !is_row_format(format) {
+            return Err(Error::Unsupported);
+        }
         let quality = if options.quality == 0 { 75 } else { i32::from(options.quality.min(100)) };
-        let comps = if format == PixelFormat::Gray8 { 1 } else { 3 };
+        let comps = if format == ImageFormat::L8 { 1 } else { 3 };
         let (sub_h, sub_v) = match (comps, options.subsampling) {
             (1, _) | (_, Subsampling::S444) => (1, 1),
             (_, Subsampling::S422) => (2, 1),
@@ -596,8 +599,8 @@ impl<S: Sink> JpegEncoder<S> {
             mcu_w,
             mcu_h,
             width_pad,
-            input_565: format == PixelFormat::Rgb565,
-            input_bgr: format == PixelFormat::Bgr888,
+            input_565: format == ImageFormat::Rgb565,
+            input_bgr: format == ImageFormat::Bgr888,
             t,
             blocks: buffer(mcu_h * width_pad * comps, options.caps)?,
             rows_in_buf: 0,

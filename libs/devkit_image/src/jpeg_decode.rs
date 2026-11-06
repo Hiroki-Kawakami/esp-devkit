@@ -13,7 +13,7 @@ use idf::heap::{self, Caps};
 use crate::mem::{Buffer, buffer, internal_buffer, state};
 use crate::stream::Reader;
 use crate::kernels;
-use crate::{DecodeOptions, Error, HAVE_PIE, ImageInfo, PixelFormat, Result, Stream};
+use crate::{DecodeOptions, Error, HAVE_PIE, ImageFormat, ImageInfo, Result, Stream};
 
 const FAST_BITS: i32 = 9;
 const FAST_SIZE: usize = 1 << FAST_BITS;
@@ -525,7 +525,7 @@ impl<'a> JpegDecoder<'a> {
     }
 
     pub fn info(&self) -> ImageInfo {
-        let format = if self.comps == 1 { PixelFormat::Gray8 } else { PixelFormat::Rgb888 };
+        let format = if self.comps == 1 { ImageFormat::L8 } else { ImageFormat::Rgb888 };
         ImageInfo { width: self.width, height: self.height, format }
     }
 

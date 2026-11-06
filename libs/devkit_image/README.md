@@ -10,6 +10,10 @@ crate runs on the host simulator and on a board that has no PIE, and
 `firmware/rust_image_bench` checks that the two agree by comparing output
 checksums.
 
+Pixel formats are `devkit_gfx::ImageFormat`. Rows come and go as `L8`,
+`Rgb888`, `Bgr888` or `Rgb565`; the resizer and the encoders refuse the others
+with `Unsupported`.
+
 ## Decoders
 
 JPEG, PNG, BMP, GIF, TIFF and WebP. `open` picks one from the first bytes of the
@@ -95,11 +99,11 @@ Both implement `Encoder`: `push_row`, then `finish`. `encode_buffer` and
 
 ## Dither and recolor
 
-`Ditherer` quantizes `Gray8` to N levels: Bayer 2/4/8 or error diffusion, integer
+`Ditherer` quantizes `L8` to N levels: Bayer 2/4/8 or error diffusion, integer
 only. `process_row_in_place` and `dither_in_place` work on one buffer.
 
 `Recolor` turns color into perceptual gray in two phases, so that the work straddles
-a box downscale and stays photometrically correct: `to_intensity`, a `Gray8`
+a box downscale and stays photometrically correct: `to_intensity`, a `L8`
 resizer, then `finalize`.
 
 ## Pipeline

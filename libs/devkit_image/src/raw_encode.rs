@@ -3,15 +3,15 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
-use crate::{Encoder, Error, ImageInfo, PixelFormat, Result};
+use crate::{Encoder, Error, ImageFormat, ImageInfo, Result};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RawFormat {
     /// 8 bpp gray.
     L8,
-    /// 4 bpp indexed from `Gray8` indices, first pixel in the high nibble.
+    /// 4 bpp indexed from `L8` indices, first pixel in the high nibble.
     I4,
-    /// 1 bpp indexed from `Gray8` indices, first pixel in the high bit.
+    /// 1 bpp indexed from `L8` indices, first pixel in the high bit.
     I1,
     Rgb888,
     Rgb565,
@@ -29,11 +29,11 @@ impl RawFormat {
         }
     }
 
-    pub const fn input_format(self) -> PixelFormat {
+    pub const fn input_format(self) -> ImageFormat {
         match self {
-            Self::L8 | Self::I4 | Self::I1 => PixelFormat::Gray8,
-            Self::Rgb888 => PixelFormat::Rgb888,
-            Self::Rgb565 => PixelFormat::Rgb565,
+            Self::L8 | Self::I4 | Self::I1 => ImageFormat::L8,
+            Self::Rgb888 => ImageFormat::Rgb888,
+            Self::Rgb565 => ImageFormat::Rgb565,
         }
     }
 }

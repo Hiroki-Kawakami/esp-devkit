@@ -11,7 +11,7 @@ use alloc::boxed::Box;
 use idf::heap::Caps;
 
 use crate::mem::{Buffer, buffer};
-use crate::{DecodeOptions, Error, ImageInfo, PixelFormat, Result, Stream};
+use crate::{DecodeOptions, Error, ImageFormat, ImageInfo, Result, Stream};
 use lossless::Vp8l;
 use lossy::Vp8;
 
@@ -402,7 +402,7 @@ impl<'a> WebpDecoder<'a> {
     }
 
     pub fn info(&self) -> ImageInfo {
-        ImageInfo { width: self.width, height: self.height, format: PixelFormat::Rgb888 }
+        ImageInfo { width: self.width, height: self.height, format: ImageFormat::Rgb888 }
     }
 
     fn frame_row(&mut self, out: &mut [u8], y: u32) -> Result<()> {

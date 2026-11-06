@@ -170,7 +170,7 @@ fn open_without_seek_keeps_the_sniffed_bytes() {
 fn jpeg_gray_flat() {
     let bytes = fixture("kJpgGrayFlat");
     let mut d = jpeg(&bytes).unwrap();
-    assert_eq!(d.info(), ImageInfo { width: 16, height: 16, format: PixelFormat::Gray8 });
+    assert_eq!(d.info(), ImageInfo { width: 16, height: 16, format: ImageFormat::L8 });
     let mut row = [0; 16];
     let mut rows = 0;
     while d.next_row(&mut row).unwrap() {
@@ -201,7 +201,7 @@ fn check_red(row: &[u8]) {
 fn jpeg_rgb_red() {
     let bytes = fixture("kJpgRgbRed");
     let mut d = jpeg(&bytes).unwrap();
-    assert_eq!(d.info().format, PixelFormat::Rgb888);
+    assert_eq!(d.info().format, ImageFormat::Rgb888);
     let mut row = [0; 16 * 3];
     assert!(d.next_row(&mut row).unwrap());
     check_red(&row);
@@ -233,7 +233,7 @@ fn jpeg_unsupported_sof() {
 fn jpeg_progressive_gray() {
     let bytes = fixture("kJpgProgGraySplit");
     let mut d = jpeg(&bytes).unwrap();
-    assert_eq!(d.info(), ImageInfo { width: 16, height: 16, format: PixelFormat::Gray8 });
+    assert_eq!(d.info(), ImageInfo { width: 16, height: 16, format: ImageFormat::L8 });
     let mut row = [0; 16];
     let mut rows = 0;
     while d.next_row(&mut row).unwrap() {
@@ -248,7 +248,7 @@ fn jpeg_progressive_gray() {
 fn jpeg_progressive_rgb() {
     let bytes = fixture("kJpgProgRgbRed");
     let mut d = jpeg(&bytes).unwrap();
-    assert_eq!(d.info().format, PixelFormat::Rgb888);
+    assert_eq!(d.info().format, ImageFormat::Rgb888);
     let mut row = [0; 16 * 3];
     assert!(d.next_row(&mut row).unwrap());
     check_red(&row);
@@ -306,7 +306,7 @@ fn jpeg_progressive_truncated_keeps_the_scans_that_arrived() {
 fn png_gray() {
     let bytes = fixture("kPngGray2x2");
     let mut d = png(&bytes).unwrap();
-    assert_eq!(d.info(), ImageInfo { width: 2, height: 2, format: PixelFormat::Gray8 });
+    assert_eq!(d.info(), ImageInfo { width: 2, height: 2, format: ImageFormat::L8 });
     let mut row = [0; 2];
     assert_eq!(d.next_row(&mut row), Ok(true));
     assert_eq!(row, [0, 255]);
@@ -319,7 +319,7 @@ fn png_gray() {
 fn png_rgb() {
     let bytes = fixture("kPngRgb2x2");
     let mut d = png(&bytes).unwrap();
-    assert_eq!(d.info().format, PixelFormat::Rgb888);
+    assert_eq!(d.info().format, ImageFormat::Rgb888);
     let mut row = [0; 6];
     assert!(d.next_row(&mut row).unwrap());
     assert_eq!(row, [255, 0, 0, 0, 255, 0]);
@@ -331,7 +331,7 @@ fn png_rgb() {
 fn png_palette() {
     let bytes = fixture("kPngPalette2x2");
     let mut d = png(&bytes).unwrap();
-    assert_eq!(d.info().format, PixelFormat::Rgb888);
+    assert_eq!(d.info().format, ImageFormat::Rgb888);
     let mut row = [0; 6];
     assert!(d.next_row(&mut row).unwrap());
     assert_eq!(row, [255, 0, 0, 0, 255, 0]);
@@ -385,13 +385,13 @@ fn png_signature_only() {
     assert!(matches!(png(&sig), Err(Error::Truncated)));
 }
 
-fn like_pillow(format: Format, name: &str, pixel: PixelFormat, tol: i32) {
+fn like_pillow(format: Format, name: &str, pixel: ImageFormat, tol: i32) {
     let bytes = fixture(name);
     let pixels = fixture(&format!("{name}Pixels"));
     let (w, h) = fixture_size(name);
     let mut d = Decoder::open(format, SliceStream::new(&bytes), &opts()).unwrap_or_else(|e| panic!("{name}: {e}"));
     assert_eq!(d.info(), ImageInfo { width: w as u16, height: h as u16, format: pixel }, "{name}");
-    let stride = w * pixel.bytes_per_pixel();
+    let stride = pixel.row_bytes(w);
     let mut row = vec![0; stride.max(1)];
     for y in 0..h {
         assert_eq!(d.next_row(&mut row), Ok(true), "{name} row {y}");
@@ -404,7 +404,7 @@ fn like_pillow(format: Format, name: &str, pixel: PixelFormat, tol: i32) {
 
 #[test]
 fn bmp_like_pillow() {
-    use PixelFormat::Rgb888;
+    use ImageFormat::Rgb888;
     for (name, tol) in [
         ("kBmp1", 0), ("kBmp4", 0), ("kBmp8", 0), ("kBmp24", 0), ("kBmp24Os2", 0), ("kBmp16", 1),
         ("kBmp565", 1), ("kBmp32", 0), ("kBmp32V5", 0), ("kBmpRle8", 0), ("kBmpRle4", 0),
@@ -416,7 +416,7 @@ fn bmp_like_pillow() {
 #[test]
 fn gif_like_pillow() {
     for name in ["kGif", "kGifInterlaced", "kGifTransparent", "kGifAnimated", "kGifOffset"] {
-        like_pillow(Format::Gif, name, PixelFormat::Rgb888, 0);
+        like_pillow(Format::Gif, name, ImageFormat::Rgb888, 0);
     }
 }
 
@@ -431,11 +431,11 @@ fn gif_truncated() {
 
 #[test]
 fn tiff_like_pillow() {
-    use PixelFormat::{Gray8, Rgb888};
+    use ImageFormat::{L8, Rgb888};
     for (name, format, tol) in [
-        ("kTiffGray", Gray8, 0), ("kTiffRgb", Rgb888, 0), ("kTiffPalette", Rgb888, 0),
-        ("kTiffRgba", Rgb888, 1), ("kTiffGrayAlpha", Gray8, 1), ("kTiffBilevel", Gray8, 0),
-        ("kTiffTiled", Rgb888, 0), ("kTiffTiledBig", Rgb888, 0), ("kTiffWhite4", Gray8, 0),
+        ("kTiffGray", L8, 0), ("kTiffRgb", Rgb888, 0), ("kTiffPalette", Rgb888, 0),
+        ("kTiffRgba", Rgb888, 1), ("kTiffGrayAlpha", L8, 1), ("kTiffBilevel", L8, 0),
+        ("kTiffTiled", Rgb888, 0), ("kTiffTiledBig", Rgb888, 0), ("kTiffWhite4", L8, 0),
         ("kTiffRgb16", Rgb888, 0), ("kTiffAssociated", Rgb888, 0),
     ] {
         like_pillow(Format::Tiff, name, format, tol);
@@ -463,7 +463,7 @@ fn webp_like_pillow() {
         ("kWebpAlpha", 1), ("kWebpAlphaHorizontal", 1), ("kWebpAlphaVertical", 1), ("kWebpAlphaGradient", 1),
         ("kWebpAnimated", 1), ("kWebpAnimOffset", 0),
     ] {
-        like_pillow(Format::Webp, name, PixelFormat::Rgb888, tol);
+        like_pillow(Format::Webp, name, ImageFormat::Rgb888, tol);
     }
 }
 
@@ -582,15 +582,7 @@ fn bmp_truncated() {
     assert_eq!(d.next_row(&mut row), Err(Error::Truncated));
 }
 
-#[test]
-fn bytes_per_pixel() {
-    assert_eq!(PixelFormat::Gray8.bytes_per_pixel(), 1);
-    assert_eq!(PixelFormat::Rgb888.bytes_per_pixel(), 3);
-    assert_eq!(PixelFormat::Rgb565.bytes_per_pixel(), 2);
-    assert_eq!(PixelFormat::Bgr888.bytes_per_pixel(), 3);
-}
-
-fn info(width: u16, height: u16, format: PixelFormat) -> ImageInfo {
+fn info(width: u16, height: u16, format: ImageFormat) -> ImageInfo {
     ImageInfo { width, height, format }
 }
 
@@ -606,16 +598,16 @@ fn resize(src: &[u8], i: ImageInfo, stride: usize, dst: &mut [u8], dst_stride: u
 fn resize_rgb888_to_bgr888() {
     let src = [10, 20, 30, 40, 50, 60];
     let mut dst = [0; 6];
-    let mut o = ResizeOptions { format: Some(PixelFormat::Bgr888), ..target(2, 1) };
-    resize(&src, info(2, 1, PixelFormat::Rgb888), 6, &mut dst, 6, &o).unwrap();
+    let mut o = ResizeOptions { format: Some(ImageFormat::Bgr888), ..target(2, 1) };
+    resize(&src, info(2, 1, ImageFormat::Rgb888), 6, &mut dst, 6, &o).unwrap();
     assert_eq!(dst, [30, 20, 10, 60, 50, 40]);
     let mut back = [0; 6];
-    o.format = Some(PixelFormat::Rgb888);
-    resize(&dst, info(2, 1, PixelFormat::Bgr888), 6, &mut back, 6, &o).unwrap();
+    o.format = Some(ImageFormat::Rgb888);
+    resize(&dst, info(2, 1, ImageFormat::Bgr888), 6, &mut back, 6, &o).unwrap();
     assert_eq!(back, src);
 }
 
-fn jpeg_bytes(src: &[u8], w: u16, h: u16, format: PixelFormat, options: &JpegOptions) -> Vec<u8> {
+fn jpeg_bytes(src: &[u8], w: u16, h: u16, format: ImageFormat, options: &JpegOptions) -> Vec<u8> {
     let mut out = Vec::new();
     let sink = |data: &[u8]| {
         out.extend_from_slice(data);
@@ -638,8 +630,8 @@ fn jpeg_encode_bgr888_matches_rgb888() {
         bgr[3 * i + 2] = rgb[3 * i];
     }
     let o = JpegOptions { quality: 90, ..Default::default() };
-    let a = jpeg_bytes(&rgb, 8, 8, PixelFormat::Rgb888, &o);
-    let b = jpeg_bytes(&bgr, 8, 8, PixelFormat::Bgr888, &o);
+    let a = jpeg_bytes(&rgb, 8, 8, ImageFormat::Rgb888, &o);
+    let b = jpeg_bytes(&bgr, 8, 8, ImageFormat::Bgr888, &o);
     assert!(!a.is_empty());
     assert_eq!(a, b);
 }
@@ -660,7 +652,7 @@ fn resize_output_size() {
 fn resize_identity_gray() {
     let src = [10, 20, 30, 40];
     let mut dst = [0; 4];
-    resize(&src, info(2, 2, PixelFormat::Gray8), 2, &mut dst, 2, &target(2, 2)).unwrap();
+    resize(&src, info(2, 2, ImageFormat::L8), 2, &mut dst, 2, &target(2, 2)).unwrap();
     assert_eq!(dst, src);
 }
 
@@ -668,7 +660,7 @@ fn resize_identity_gray() {
 fn resize_downscale_gray_2x() {
     let src: [u8; 16] = core::array::from_fn(|i| (i * 10) as u8);
     let mut dst = [0; 4];
-    resize(&src, info(4, 4, PixelFormat::Gray8), 4, &mut dst, 2, &target(2, 2)).unwrap();
+    resize(&src, info(4, 4, ImageFormat::L8), 4, &mut dst, 2, &target(2, 2)).unwrap();
     assert_eq!(dst, [25, 45, 105, 125]);
 }
 
@@ -676,7 +668,7 @@ fn resize_downscale_gray_2x() {
 fn resize_upscale_gray_2x() {
     let src = [0, 100, 200, 220];
     let mut dst = [0; 16];
-    resize(&src, info(2, 2, PixelFormat::Gray8), 2, &mut dst, 4, &target(4, 4)).unwrap();
+    resize(&src, info(2, 2, ImageFormat::L8), 2, &mut dst, 4, &target(4, 4)).unwrap();
     assert_eq!((dst[0], dst[3], dst[12], dst[15]), (0, 100, 200, 220));
     assert!((30..=36).contains(&dst[1]));
     assert!((64..=70).contains(&dst[2]));
@@ -686,7 +678,7 @@ fn resize_upscale_gray_2x() {
 fn resize_rgb888_downscale() {
     let src = [255, 0, 0, 0, 255, 0, 0, 0, 255, 100, 100, 100];
     let mut dst = [0; 3];
-    resize(&src, info(2, 2, PixelFormat::Rgb888), 6, &mut dst, 0, &target(1, 1)).unwrap();
+    resize(&src, info(2, 2, ImageFormat::Rgb888), 6, &mut dst, 0, &target(1, 1)).unwrap();
     assert!(dst.iter().all(|v| (87..=89).contains(v)));
 }
 
@@ -694,35 +686,35 @@ fn resize_rgb888_downscale() {
 fn resize_rgb565_roundtrip() {
     let src = [0xF8, 0xFC, 0xF8];
     let mut mid = [0; 2];
-    let mut o = ResizeOptions { format: Some(PixelFormat::Rgb565), ..target(1, 1) };
-    resize(&src, info(1, 1, PixelFormat::Rgb888), 3, &mut mid, 0, &o).unwrap();
+    let mut o = ResizeOptions { format: Some(ImageFormat::Rgb565), ..target(1, 1) };
+    resize(&src, info(1, 1, ImageFormat::Rgb888), 3, &mut mid, 0, &o).unwrap();
     assert_eq!(u16::from_ne_bytes(mid), 0xFFFF);
     let mut back = [0; 3];
-    o.format = Some(PixelFormat::Rgb888);
-    resize(&mid, info(1, 1, PixelFormat::Rgb565), 2, &mut back, 0, &o).unwrap();
+    o.format = Some(ImageFormat::Rgb888);
+    resize(&mid, info(1, 1, ImageFormat::Rgb565), 2, &mut back, 0, &o).unwrap();
     assert_eq!(back, [0xFF; 3]);
 }
 
 #[test]
 fn resize_gray_to_rgb888() {
     let mut dst = [0; 3];
-    let o = ResizeOptions { format: Some(PixelFormat::Rgb888), ..target(1, 1) };
-    resize(&[200], info(1, 1, PixelFormat::Gray8), 1, &mut dst, 0, &o).unwrap();
+    let o = ResizeOptions { format: Some(ImageFormat::Rgb888), ..target(1, 1) };
+    resize(&[200], info(1, 1, ImageFormat::L8), 1, &mut dst, 0, &o).unwrap();
     assert_eq!(dst, [200; 3]);
 }
 
 #[test]
 fn resize_rgb888_to_gray() {
     let mut dst = [0; 1];
-    let o = ResizeOptions { format: Some(PixelFormat::Gray8), ..target(1, 1) };
-    resize(&[100, 200, 50], info(1, 1, PixelFormat::Rgb888), 3, &mut dst, 0, &o).unwrap();
+    let o = ResizeOptions { format: Some(ImageFormat::L8), ..target(1, 1) };
+    resize(&[100, 200, 50], info(1, 1, ImageFormat::Rgb888), 3, &mut dst, 0, &o).unwrap();
     assert!((165..=171).contains(&dst[0]));
 }
 
 #[test]
 fn resize_keeps_the_format_by_default() {
     let mut dst = [0; 2];
-    resize(&[50, 150], info(2, 1, PixelFormat::Gray8), 0, &mut dst, 0, &target(2, 1)).unwrap();
+    resize(&[50, 150], info(2, 1, ImageFormat::L8), 0, &mut dst, 0, &target(2, 1)).unwrap();
     assert_eq!(dst, [50, 150]);
 }
 
@@ -730,7 +722,7 @@ fn resize_keeps_the_format_by_default() {
 fn resize_mixed_axis() {
     let src = [10, 30, 50, 70, 90, 110, 130, 150];
     let mut dst = [0; 8];
-    resize(&src, info(4, 2, PixelFormat::Gray8), 4, &mut dst, 2, &target(2, 4)).unwrap();
+    resize(&src, info(4, 2, ImageFormat::L8), 4, &mut dst, 2, &target(2, 4)).unwrap();
     assert_eq!(dst[..2], [20, 60]);
     assert_eq!(dst[6..], [100, 140]);
 }
@@ -738,14 +730,14 @@ fn resize_mixed_axis() {
 #[test]
 fn resize_in_place_downscale() {
     let mut buf: [u8; 16] = core::array::from_fn(|i| (i * 10) as u8);
-    resize_in_place(&mut buf, info(4, 4, PixelFormat::Gray8), 4, 2, &target(2, 2)).unwrap();
+    resize_in_place(&mut buf, info(4, 4, ImageFormat::L8), 4, 2, &target(2, 2)).unwrap();
     assert_eq!(buf[..4], [25, 45, 105, 125]);
 }
 
 #[test]
 fn resize_in_place_rejects_upscale() {
     let mut buf = [0; 16];
-    let r = resize_in_place(&mut buf, info(2, 2, PixelFormat::Gray8), 2, 4, &target(4, 4));
+    let r = resize_in_place(&mut buf, info(2, 2, ImageFormat::L8), 2, 4, &target(4, 4));
     assert_eq!(r, Err(Error::InvalidArgument));
 }
 
@@ -889,11 +881,11 @@ fn raw_stride() {
 
 #[test]
 fn raw_input_format() {
-    assert_eq!(RawFormat::L8.input_format(), PixelFormat::Gray8);
-    assert_eq!(RawFormat::I4.input_format(), PixelFormat::Gray8);
-    assert_eq!(RawFormat::I1.input_format(), PixelFormat::Gray8);
-    assert_eq!(RawFormat::Rgb888.input_format(), PixelFormat::Rgb888);
-    assert_eq!(RawFormat::Rgb565.input_format(), PixelFormat::Rgb565);
+    assert_eq!(RawFormat::L8.input_format(), ImageFormat::L8);
+    assert_eq!(RawFormat::I4.input_format(), ImageFormat::L8);
+    assert_eq!(RawFormat::I1.input_format(), ImageFormat::L8);
+    assert_eq!(RawFormat::Rgb888.input_format(), ImageFormat::Rgb888);
+    assert_eq!(RawFormat::Rgb565.input_format(), ImageFormat::Rgb565);
 }
 
 #[test]
@@ -944,7 +936,7 @@ fn raw_row_by_row() {
     let mut e = RawEncoder::new(RawFormat::I4, 4, 2, &mut dst).unwrap();
     assert_eq!(e.stride(), 2);
     assert_eq!(e.buffer_size(), 4);
-    assert_eq!(e.info().format, PixelFormat::Gray8);
+    assert_eq!(e.info().format, ImageFormat::L8);
     e.push_row(&[0x1, 0x2, 0x3, 0x4]).unwrap();
     e.push_row(&[0xF, 0xE, 0xD, 0xC]).unwrap();
     assert_eq!(e.finish(), Ok(4));
@@ -973,7 +965,7 @@ fn dither_chains_into_i4() {
 
 // Encodes, decodes it back with the JPEG decoder, and returns the decoded rows
 // with the encoded size.
-fn roundtrip(src: &[u8], w: u16, h: u16, format: PixelFormat, quality: u8, subsampling: Subsampling) -> (Vec<u8>, usize) {
+fn roundtrip(src: &[u8], w: u16, h: u16, format: ImageFormat, quality: u8, subsampling: Subsampling) -> (Vec<u8>, usize) {
     let options = JpegOptions { quality, subsampling, ..Default::default() };
     let bytes = jpeg_bytes(src, w, h, format, &options);
     assert_eq!(bytes[..2], [0xFF, 0xD8]);
@@ -990,14 +982,14 @@ fn roundtrip(src: &[u8], w: u16, h: u16, format: PixelFormat, quality: u8, subsa
 
 #[test]
 fn jpeg_encode_gray_flat() {
-    let (out, _) = roundtrip(&[128; 16 * 16], 16, 16, PixelFormat::Gray8, 90, Subsampling::Default);
+    let (out, _) = roundtrip(&[128; 16 * 16], 16, 16, ImageFormat::L8, 90, Subsampling::Default);
     assert!(out.iter().all(|&v| near(v, 128, 5)));
 }
 
 #[test]
 fn jpeg_encode_gray_split() {
     let src: Vec<u8> = (0..16 * 16).map(|i| if i % 16 < 8 { 40 } else { 220 }).collect();
-    let (out, _) = roundtrip(&src, 16, 16, PixelFormat::Gray8, 90, Subsampling::Default);
+    let (out, _) = roundtrip(&src, 16, 16, ImageFormat::L8, 90, Subsampling::Default);
     assert!(near(out[8 * 16 + 2], 40, 25));
     assert!(near(out[8 * 16 + 13], 220, 25));
 }
@@ -1005,7 +997,7 @@ fn jpeg_encode_gray_split() {
 #[test]
 fn jpeg_encode_rgb_red() {
     let src: Vec<u8> = [220, 30, 30].repeat(16 * 16);
-    let (out, _) = roundtrip(&src, 16, 16, PixelFormat::Rgb888, 90, Subsampling::Default);
+    let (out, _) = roundtrip(&src, 16, 16, ImageFormat::Rgb888, 90, Subsampling::Default);
     let c = (8 * 16 + 8) * 3;
     assert!(near(out[c], 220, 25));
     assert!(near(out[c + 1], 30, 30));
@@ -1020,7 +1012,7 @@ fn jpeg_encode_pads_to_whole_blocks() {
             src[y * 17 + x] = ((x + y) * 13) as u8;
         }
     }
-    let (out, _) = roundtrip(&src, 17, 9, PixelFormat::Gray8, 95, Subsampling::Default);
+    let (out, _) = roundtrip(&src, 17, 9, ImageFormat::L8, 95, Subsampling::Default);
     let err: i32 = out.iter().zip(&src).map(|(&a, &b)| (i32::from(a) - i32::from(b)).abs()).sum();
     assert!(err / (17 * 9) <= 12);
 }
@@ -1035,7 +1027,7 @@ fn jpeg_encode_low_quality_is_smaller() {
             src[(y * 32 + x) * 3 + 2] = ((x + y) * 4) as u8;
         }
     }
-    let size = |quality| jpeg_bytes(&src, 32, 32, PixelFormat::Rgb888, &JpegOptions { quality, ..Default::default() }).len();
+    let size = |quality| jpeg_bytes(&src, 32, 32, ImageFormat::Rgb888, &JpegOptions { quality, ..Default::default() }).len();
     let (hi, lo) = (size(95), size(20));
     assert!(lo < hi && lo > 0);
 }
@@ -1051,11 +1043,11 @@ fn jpeg_encode_subsampling() {
         }
     }
     let center = (8 * 16 + 8) * 3;
-    let (out, s444) = roundtrip(&src, 16, 16, PixelFormat::Rgb888, 90, Subsampling::S444);
+    let (out, s444) = roundtrip(&src, 16, 16, ImageFormat::Rgb888, 90, Subsampling::S444);
     assert!(near(out[center], 188, 30) && near(out[center + 1], 68, 30));
-    let (out, s422) = roundtrip(&src, 16, 16, PixelFormat::Rgb888, 90, Subsampling::S422);
+    let (out, s422) = roundtrip(&src, 16, 16, ImageFormat::Rgb888, 90, Subsampling::S422);
     assert!(near(out[center], 188, 30));
-    let (out, s420) = roundtrip(&src, 16, 16, PixelFormat::Rgb888, 90, Subsampling::S420);
+    let (out, s420) = roundtrip(&src, 16, 16, ImageFormat::Rgb888, 90, Subsampling::S420);
     assert!(near(out[center], 188, 30));
     assert!(s420 <= s422 && s422 <= s444);
 }
@@ -1064,33 +1056,42 @@ fn jpeg_encode_subsampling() {
 fn jpeg_encode_subsampling_padding() {
     let src: Vec<u8> = (0..17 * 17 * 3).map(|i| i as u8).collect();
     for s in [Subsampling::S444, Subsampling::S422, Subsampling::S420] {
-        roundtrip(&src, 17, 17, PixelFormat::Rgb888, 80, s);
+        roundtrip(&src, 17, 17, ImageFormat::Rgb888, 80, s);
     }
 }
 
 #[test]
 fn jpeg_encode_gray_ignores_subsampling() {
     let src: Vec<u8> = (0..16 * 16).map(|i| ((i * 13) & 0xFF) as u8).collect();
-    let a = roundtrip(&src, 16, 16, PixelFormat::Gray8, 80, Subsampling::S444);
-    let b = roundtrip(&src, 16, 16, PixelFormat::Gray8, 80, Subsampling::S420);
+    let a = roundtrip(&src, 16, 16, ImageFormat::L8, 80, Subsampling::S444);
+    let b = roundtrip(&src, 16, 16, ImageFormat::L8, 80, Subsampling::S420);
     assert_eq!(a, b);
 }
 
 #[test]
 fn jpeg_encode_info() {
     let mut sink = |_: &[u8]| Ok(());
-    for format in [PixelFormat::Rgb888, PixelFormat::Gray8, PixelFormat::Rgb565] {
+    for format in [ImageFormat::Rgb888, ImageFormat::L8, ImageFormat::Rgb565] {
         let e = JpegEncoder::new(8, 8, format, &JpegOptions::default(), &mut sink).unwrap();
         assert_eq!(e.info().format, format);
     }
-    assert!(jpeg_buffer_upper_bound(8, 8, PixelFormat::Rgb888) > 0);
+    assert!(jpeg_buffer_upper_bound(8, 8, ImageFormat::Rgb888) > 0);
+}
+
+#[test]
+fn formats_without_rows_here_are_refused() {
+    let mut sink = |_: &[u8]| Ok(());
+    assert!(matches!(JpegEncoder::new(8, 8, ImageFormat::Yuv420, &JpegOptions::default(), &mut sink), Err(Error::Unsupported)));
+    let options = ResizeOptions { format: Some(ImageFormat::L4), ..target(2, 1) };
+    assert!(matches!(Resizer::new(info(4, 2, ImageFormat::L8), &options), Err(Error::Unsupported)));
+    assert!(matches!(Resizer::new(info(4, 2, ImageFormat::Argb8888), &target(2, 1)), Err(Error::Unsupported)));
 }
 
 #[test]
 fn jpeg_encode_rgb565_red() {
     let red = (27u16 << 11) | (7 << 5) | 3;
     let src: Vec<u8> = red.to_ne_bytes().repeat(16 * 16);
-    let (out, _) = roundtrip(&src, 16, 16, PixelFormat::Rgb565, 90, Subsampling::Default);
+    let (out, _) = roundtrip(&src, 16, 16, ImageFormat::Rgb565, 90, Subsampling::Default);
     let c = (8 * 16 + 8) * 3;
     assert!(near(out[c], 220, 25));
     assert!(near(out[c + 1], 30, 30));
@@ -1114,8 +1115,8 @@ fn pattern(w: usize, h: usize) -> Vec<u8> {
 fn jpeg_slice_sink_matches_a_closure_in_staged_chunks() {
     let src = pattern(48, 40);
     let options = JpegOptions::default();
-    let mut buf = vec![0; jpeg_buffer_upper_bound(48, 40, PixelFormat::Rgb888)];
-    let e = JpegEncoder::new(48, 40, PixelFormat::Rgb888, &options, SliceSink::new(&mut buf)).unwrap();
+    let mut buf = vec![0; jpeg_buffer_upper_bound(48, 40, ImageFormat::Rgb888)];
+    let e = JpegEncoder::new(48, 40, ImageFormat::Rgb888, &options, SliceSink::new(&mut buf)).unwrap();
     let (written, _) = encode_buffer(e, &src, 0).unwrap();
 
     let mut out = Vec::new();
@@ -1127,7 +1128,7 @@ fn jpeg_slice_sink_matches_a_closure_in_staged_chunks() {
         max_chunk = max_chunk.max(data.len());
         Ok(())
     };
-    let e = JpegEncoder::new(48, 40, PixelFormat::Rgb888, &options, sink).unwrap();
+    let e = JpegEncoder::new(48, 40, ImageFormat::Rgb888, &options, sink).unwrap();
     let (total, _) = encode_buffer(e, &src, 0).unwrap();
     assert_eq!(total, written);
     assert_eq!(out, buf[..written]);
@@ -1144,7 +1145,7 @@ fn jpeg_sink_error_is_sticky() {
         room -= data.len();
         Ok(())
     };
-    let mut e = JpegEncoder::new(64, 64, PixelFormat::Gray8, &JpegOptions::default(), sink);
+    let mut e = JpegEncoder::new(64, 64, ImageFormat::L8, &JpegOptions::default(), sink);
     let mut failed = false;
     if let Ok(e) = &mut e {
         for y in 0..64u8 {
@@ -1162,7 +1163,7 @@ fn jpeg_sink_error_is_sticky() {
 #[test]
 fn jpeg_slice_sink_overflow_is_out_of_memory() {
     let mut buf = [0; 16];
-    let e = JpegEncoder::new(8, 8, PixelFormat::Gray8, &JpegOptions::default(), SliceSink::new(&mut buf)).unwrap();
+    let e = JpegEncoder::new(8, 8, ImageFormat::L8, &JpegOptions::default(), SliceSink::new(&mut buf)).unwrap();
     let r = encode_buffer(e, &[128; 64], 0);
     assert!(matches!(r, Err(Error::OutOfMemory)));
 }
@@ -1173,21 +1174,21 @@ fn jpeg_encode_stream_matches_buffer() {
     const H: usize = 20;
     let src: Vec<u8> = (0..W * H).map(|i| (i * 7) as u8).collect();
     let o = JpegOptions::default();
-    let reference = jpeg_bytes(&src, W as u16, H as u16, PixelFormat::Gray8, &o);
+    let reference = jpeg_bytes(&src, W as u16, H as u16, ImageFormat::L8, &o);
 
     let mut out = Vec::new();
     let sink = |data: &[u8]| {
         out.extend_from_slice(data);
         Ok(())
     };
-    let e = JpegEncoder::new(W as u16, H as u16, PixelFormat::Gray8, &o, sink).unwrap();
+    let e = JpegEncoder::new(W as u16, H as u16, ImageFormat::L8, &o, sink).unwrap();
     let mut row = [0; W];
     let (n, _) = encode_stream(e, &mut SliceStream::new(&src), &mut row).unwrap();
     assert_eq!(n, reference.len());
     assert_eq!(out, reference);
 
     let sink = |_: &[u8]| Ok(());
-    let e = JpegEncoder::new(W as u16, H as u16, PixelFormat::Gray8, &o, sink).unwrap();
+    let e = JpegEncoder::new(W as u16, H as u16, ImageFormat::L8, &o, sink).unwrap();
     let r = encode_stream(e, &mut SliceStream::new(&src[..src.len() - 1]), &mut row);
     assert!(matches!(r, Err(Error::Truncated)));
 }
@@ -1195,7 +1196,7 @@ fn jpeg_encode_stream_matches_buffer() {
 #[test]
 fn resizer_row_by_row() {
     let src: [u8; 16] = core::array::from_fn(|i| (i * 10) as u8);
-    let mut r = Resizer::new(info(4, 4, PixelFormat::Gray8), &target(2, 2)).unwrap();
+    let mut r = Resizer::new(info(4, 4, ImageFormat::L8), &target(2, 2)).unwrap();
     assert_eq!((r.info().width, r.info().height), (2, 2));
     let mut got = [0; 4];
     let mut at = 0;
@@ -1215,7 +1216,7 @@ fn resizer_row_by_row() {
 
 #[test]
 fn resizer_rejects_a_row_past_the_last() {
-    let mut r = Resizer::new(info(1, 1, PixelFormat::Gray8), &target(1, 1)).unwrap();
+    let mut r = Resizer::new(info(1, 1, ImageFormat::L8), &target(1, 1)).unwrap();
     let mut ready = r.push_row(&[7]).unwrap();
     let mut out = [0];
     assert_eq!(ready.pop(&mut out), Ok(true));
@@ -1256,9 +1257,9 @@ fn resize_orientation() {
         let opts = target(ow as u16, oh as u16);
         let gray: [u8; W * H] = core::array::from_fn(|i| src[i]);
         let mut got = [0; W * H];
-        resize_buffer(&gray, info(3, 2, PixelFormat::Gray8), W, &mut got, 0, &opts, o).unwrap();
+        resize_buffer(&gray, info(3, 2, ImageFormat::L8), W, &mut got, 0, &opts, o).unwrap();
         let mut rgb = [0; W * H * 3];
-        resize_buffer(&src, info(3, 2, PixelFormat::Rgb888), W * 3, &mut rgb, 0, &opts, o).unwrap();
+        resize_buffer(&src, info(3, 2, ImageFormat::Rgb888), W * 3, &mut rgb, 0, &opts, o).unwrap();
         for y in 0..H {
             for x in 0..W {
                 let (ox, oy) = oriented_xy(o, W, H, x, y);
@@ -1272,7 +1273,7 @@ fn resize_orientation() {
     assert_eq!(output_size(200, 100, &opts, Orientation::Rot90), Ok((50, 100)));
 
     let opts = ResizeOptions { fit: Fit::Contain, ..target(3, 3) };
-    let r = OrientedResizer::new(info(6, 3, PixelFormat::Rgb565), &opts, Orientation::Rot90).unwrap();
+    let r = OrientedResizer::new(info(6, 3, ImageFormat::Rgb565), &opts, Orientation::Rot90).unwrap();
     assert_eq!((r.info().width, r.info().height), (2, 3));
 }
 
@@ -1392,12 +1393,12 @@ fn pipeline_decoder_resize_chain() {
         assert_eq!(d.next_row(row), Ok(true));
     }
     let mut expected = [0; 8 * 8];
-    resize(&full, info(16, 16, PixelFormat::Gray8), 16, &mut expected, 8, &opts_r).unwrap();
+    resize(&full, info(16, 16, ImageFormat::L8), 16, &mut expected, 8, &opts_r).unwrap();
     assert_eq!(out, expected);
 }
 
-fn recolored(r: &Recolor, src: &[u8], format: PixelFormat) -> Vec<u8> {
-    let n = src.len() / format.bytes_per_pixel();
+fn recolored(r: &Recolor, src: &[u8], format: ImageFormat) -> Vec<u8> {
+    let n = src.len() / (format.bits() / 8);
     let (mut intensity, mut out) = (vec![0; n], vec![0; n]);
     r.to_intensity(src, format, &mut intensity).unwrap();
     r.finalize(&intensity, &mut out);
@@ -1407,7 +1408,7 @@ fn recolored(r: &Recolor, src: &[u8], format: PixelFormat) -> Vec<u8> {
 #[test]
 fn recolor_gray_passes_through_srgb() {
     let r = Recolor::new(&RecolorOptions::default());
-    let out = recolored(&r, &[0, 128, 255], PixelFormat::Gray8);
+    let out = recolored(&r, &[0, 128, 255], ImageFormat::L8);
     assert_eq!(out[0], 0);
     assert!(near(out[1], 128, 2));
     assert_eq!(out[2], 255);
@@ -1416,7 +1417,7 @@ fn recolor_gray_passes_through_srgb() {
 #[test]
 fn recolor_luma_ordering() {
     let r = Recolor::new(&RecolorOptions::default());
-    let f = |p: [u8; 3]| recolored(&r, &p, PixelFormat::Rgb888)[0];
+    let f = |p: [u8; 3]| recolored(&r, &p, ImageFormat::Rgb888)[0];
     let (red, green, blue) = (f([200, 0, 0]), f([0, 200, 0]), f([0, 0, 200]));
     assert!(green > red && red > blue);
 }
@@ -1427,7 +1428,7 @@ fn recolor_linear_vs_perceptual() {
     let perceptual = Recolor::new(&RecolorOptions { linear_downsample: false, ..Default::default() });
     let averaged = |r: &Recolor| {
         let mut i = [0; 2];
-        r.to_intensity(&[0, 255], PixelFormat::Gray8, &mut i).unwrap();
+        r.to_intensity(&[0, 255], ImageFormat::L8, &mut i).unwrap();
         let mut avg = [((u16::from(i[0]) + u16::from(i[1])) / 2) as u8];
         r.finalize_in_place(&mut avg);
         avg[0]
@@ -1441,14 +1442,14 @@ fn recolor_linear_vs_perceptual() {
 #[test]
 fn recolor_invert() {
     let r = Recolor::new(&RecolorOptions { invert: true, ..Default::default() });
-    assert_eq!(recolored(&r, &[0, 255], PixelFormat::Gray8), [255, 0]);
+    assert_eq!(recolored(&r, &[0, 255], ImageFormat::L8), [255, 0]);
 }
 
 #[test]
 fn recolor_epd_lut() {
     let lut: [u8; 16] = core::array::from_fn(|i| (i * 255 / 15) as u8);
     let r = Recolor::new(&RecolorOptions { out_gamma: GammaOut::EpdLut(lut), in_gamma: GammaIn::Linear, ..Default::default() });
-    let out = recolored(&r, &[0, 128, 255], PixelFormat::Gray8);
+    let out = recolored(&r, &[0, 128, 255], ImageFormat::L8);
     assert_eq!(out[0], 0);
     assert!(near(out[1], 128, 4));
     assert_eq!(out[2], 255);

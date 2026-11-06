@@ -10,7 +10,7 @@ use idf::heap::{self, Caps};
 
 use crate::mem::{Buffer, default_caps, small_buffer, state};
 use crate::stream::Reader;
-use crate::{DecodeOptions, Error, ImageInfo, PixelFormat, Result, Stream};
+use crate::{DecodeOptions, Error, ImageFormat, ImageInfo, Result, Stream};
 
 const SIGNATURE: [u8; 8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
 
@@ -82,7 +82,7 @@ fn paeth(a: u8, b: u8, c: u8) -> u8 {
 }
 
 /// PNG without interlacing, at up to 8 bits per sample. Alpha is composited over
-/// white, gray stays `Gray8`, and everything else comes out `Rgb888`.
+/// white, gray stays `L8`, and everything else comes out `Rgb888`.
 pub struct PngDecoder<'a> {
     r: Reader<'a>,
     idat: Box<Idat, Caps>,
@@ -91,7 +91,7 @@ pub struct PngDecoder<'a> {
 
     width: u16,
     height: u16,
-    format: PixelFormat,
+    format: ImageFormat,
     bitdepth: u8,
     colortype: u8,
     rowbytes: usize,
@@ -219,7 +219,7 @@ impl<'a> PngDecoder<'a> {
             window,
             width: w as u16,
             height: h as u16,
-            format: if rgb { PixelFormat::Rgb888 } else { PixelFormat::Gray8 },
+            format: if rgb { ImageFormat::Rgb888 } else { ImageFormat::L8 },
             bitdepth,
             colortype,
             rowbytes,

@@ -5,7 +5,7 @@
 
 use devkit::math::{lroundf, powf};
 
-use crate::{Error, PixelFormat, Result};
+use crate::{Error, ImageFormat, Result};
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Luma {
@@ -57,7 +57,7 @@ impl Default for RecolorOptions {
 
 /// Color to perceptual gray in two phases, so that the work straddles a box
 /// downscale and stays photometrically correct: `to_intensity` gives a value
-/// safe to area-average, a `Gray8` resizer averages it, `finalize` gives the
+/// safe to area-average, a `L8` resizer averages it, `finalize` gives the
 /// final gray.
 #[derive(Clone)]
 pub struct Recolor {
@@ -138,17 +138,17 @@ impl Recolor {
         Self { in_lut, out_lut, weights, linear_downsample: options.linear_downsample, invert: options.invert }
     }
 
-    /// `format` is `Gray8` or `Rgb888`; one intensity per pixel of `src`.
-    pub fn to_intensity(&self, src: &[u8], format: PixelFormat, intensity: &mut [u8]) -> Result<()> {
+    /// `format` is `L8` or `Rgb888`; one intensity per pixel of `src`.
+    pub fn to_intensity(&self, src: &[u8], format: ImageFormat, intensity: &mut [u8]) -> Result<()> {
         let [wr, wg, wb] = self.weights;
         let out = |lum: u32| if self.linear_downsample { (lum >> 8) as u8 } else { self.out_lut[(lum >> 8) as usize] };
         match format {
-            PixelFormat::Gray8 => {
+            ImageFormat::L8 => {
                 for (dst, &v) in intensity.iter_mut().zip(src) {
                     *dst = out(u32::from(self.in_lut[usize::from(v)]));
                 }
             }
-            PixelFormat::Rgb888 => {
+            ImageFormat::Rgb888 => {
                 for (dst, p) in intensity.iter_mut().zip(src.chunks_exact(3)) {
                     let [r, g, b] = [p[0], p[1], p[2]].map(|v| u32::from(self.in_lut[usize::from(v)]));
                     *dst = out(wr.wrapping_mul(r).wrapping_add(wg.wrapping_mul(g)).wrapping_add(wb.wrapping_mul(b)) >> 15);

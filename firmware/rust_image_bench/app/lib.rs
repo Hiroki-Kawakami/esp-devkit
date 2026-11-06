@@ -21,7 +21,7 @@ use core::ptr;
 use core::slice;
 
 use devkit_image::{
-    DecodeOptions, Decoder, Format, ImageInfo, JpegEncoder, JpegOptions, Orientation, PixelFormat, ResizeOptions,
+    DecodeOptions, Decoder, Format, ImageFormat, ImageInfo, JpegEncoder, JpegOptions, Orientation, ResizeOptions,
     SliceStream, Subsampling, default_caps, encode_buffer, internal_caps, jpeg_buffer_upper_bound, resize_buffer,
     resize_decoder,
 };
@@ -129,21 +129,23 @@ fn report(name: &str, c: Result<Run, String>, rust: Result<Run, String>, pixels:
     }
 }
 
-fn c_format(format: PixelFormat) -> ffi::imgf_pixfmt_t {
+fn c_format(format: ImageFormat) -> ffi::imgf_pixfmt_t {
     match format {
-        PixelFormat::Gray8 => ffi::imgf_pixfmt_t_IMGF_PIX_GRAY8,
-        PixelFormat::Rgb888 => ffi::imgf_pixfmt_t_IMGF_PIX_RGB888,
-        PixelFormat::Rgb565 => ffi::imgf_pixfmt_t_IMGF_PIX_RGB565,
-        PixelFormat::Bgr888 => ffi::imgf_pixfmt_t_IMGF_PIX_BGR888,
+        ImageFormat::L8 => ffi::imgf_pixfmt_t_IMGF_PIX_GRAY8,
+        ImageFormat::Rgb888 => ffi::imgf_pixfmt_t_IMGF_PIX_RGB888,
+        ImageFormat::Rgb565 => ffi::imgf_pixfmt_t_IMGF_PIX_RGB565,
+        ImageFormat::Bgr888 => ffi::imgf_pixfmt_t_IMGF_PIX_BGR888,
+        _ => unreachable!(),
     }
 }
 
-fn format_name(format: PixelFormat) -> &'static str {
+fn format_name(format: ImageFormat) -> &'static str {
     match format {
-        PixelFormat::Gray8 => "GRAY8",
-        PixelFormat::Rgb888 => "RGB888",
-        PixelFormat::Rgb565 => "RGB565",
-        PixelFormat::Bgr888 => "BGR888",
+        ImageFormat::L8 => "GRAY8",
+        ImageFormat::Rgb888 => "RGB888",
+        ImageFormat::Rgb565 => "RGB565",
+        ImageFormat::Bgr888 => "BGR888",
+        _ => unreachable!(),
     }
 }
 
@@ -226,9 +228,9 @@ fn bench_decode(label: &str, format: Format, data: &[u8], tw: u16, th: u16) {
     report(&name, c, rust, usize::from(info.width) * usize::from(info.height));
 }
 
-fn bench_decode_resize(label: &str, data: &[u8], tw: u16, th: u16, format: PixelFormat) {
+fn bench_decode_resize(label: &str, data: &[u8], tw: u16, th: u16, format: ImageFormat) {
     let name = format!("{label} decode+resize -> {tw}x{th} {}", format_name(format));
-    let bytes = usize::from(tw) * usize::from(th) * format.bytes_per_pixel();
+    let bytes = usize::from(th) * format.row_bytes(usize::from(tw));
     let c = timed(REPS, |keep| {
         let mut state = unsafe { mem::zeroed() };
         let d = c_open(Format::Jpeg, data, tw, th, &mut state)?;
@@ -263,12 +265,12 @@ struct Resize<'a> {
     sh: u16,
     dw: u16,
     dh: u16,
-    format: PixelFormat,
+    format: ImageFormat,
 }
 
 fn bench_resize(r: &Resize, dst: &mut [u8], place: &str, reps: usize) {
     let name = format!("resize{place} {}x{} -> {}x{} {}", r.sw, r.sh, r.dw, r.dh, format_name(r.format));
-    let bytes = usize::from(r.dw) * usize::from(r.dh) * r.format.bytes_per_pixel();
+    let bytes = usize::from(r.dh) * r.format.row_bytes(usize::from(r.dw));
     let c = timed(reps, |keep| {
         let mut o: ffi::imgf_resize_opts_t = unsafe { mem::zeroed() };
         o.target_w = r.dw;
@@ -283,7 +285,7 @@ fn bench_resize(r: &Resize, dst: &mut [u8], place: &str, reps: usize) {
         Ok(if keep { fnv(FNV_SEED, &dst[..bytes]) } else { 0 })
     });
     let rust = timed(reps, |keep| {
-        let info = ImageInfo { width: r.sw, height: r.sh, format: PixelFormat::Rgb888 };
+        let info = ImageInfo { width: r.sw, height: r.sh, format: ImageFormat::Rgb888 };
         let o = ResizeOptions { target_width: r.dw, target_height: r.dh, format: Some(r.format), ..Default::default() };
         resize_buffer(r.src, info, r.stride, dst, 0, &o, Orientation::None).map_err(|e| format!("resize {e}"))?;
         Ok(if keep { fnv(FNV_SEED, &dst[..bytes]) } else { 0 })
@@ -314,7 +316,7 @@ fn encode_c(src: &[u8], quality: u8, scratch: &mut [u8]) -> Result<usize, String
 fn encode_rust(src: &[u8], quality: u8, scratch: &mut [u8]) -> Result<usize, String> {
     let options = JpegOptions { quality, subsampling: Subsampling::S420, ..Default::default() };
     let sink = devkit_image::SliceSink::new(scratch);
-    let e = JpegEncoder::new(SRC_W as u16, SRC_H as u16, PixelFormat::Rgb888, &options, sink).map_err(|e| format!("create {e}"))?;
+    let e = JpegEncoder::new(SRC_W as u16, SRC_H as u16, ImageFormat::Rgb888, &options, sink).map_err(|e| format!("create {e}"))?;
     encode_buffer(e, src, SRC_W * 3).map(|(n, _)| n).map_err(|e| format!("encode {e}"))
 }
 
@@ -324,7 +326,7 @@ pub fn run() {
     let mut src = psram(SRC_W * SRC_H * 3);
     fill_source(&mut src);
 
-    let mut scratch = psram(jpeg_buffer_upper_bound(SRC_W as u16, SRC_H as u16, PixelFormat::Rgb888));
+    let mut scratch = psram(jpeg_buffer_upper_bound(SRC_W as u16, SRC_H as u16, ImageFormat::Rgb888));
     let mut jpegs = Vec::new();
     for quality in QUALITIES {
         let name = format!("jpeg encode q{quality} 4:2:0");
@@ -349,10 +351,10 @@ pub fn run() {
         bench_decode(&label, Format::Jpeg, jpeg, 0, 0);
         bench_decode(&label, Format::Jpeg, jpeg, SRC_W as u16 / 2, SRC_H as u16 / 2);
         bench_decode(&label, Format::Jpeg, jpeg, SRC_W as u16 / 4, SRC_H as u16 / 4);
-        bench_decode_resize(&label, jpeg, 1280, 720, PixelFormat::Rgb565);
-        bench_decode_resize(&label, jpeg, 1280, 720, PixelFormat::Rgb888);
-        bench_decode_resize(&label, jpeg, 1280, 720, PixelFormat::Bgr888);
-        bench_decode_resize(&label, jpeg, 640, 360, PixelFormat::Rgb565);
+        bench_decode_resize(&label, jpeg, 1280, 720, ImageFormat::Rgb565);
+        bench_decode_resize(&label, jpeg, 1280, 720, ImageFormat::Rgb888);
+        bench_decode_resize(&label, jpeg, 1280, 720, ImageFormat::Bgr888);
+        bench_decode_resize(&label, jpeg, 640, 360, ImageFormat::Rgb565);
     }
 
     bench_decode("png", Format::Png, PNG, 0, 0);
@@ -371,11 +373,11 @@ pub fn run() {
     let mut dst = psram(SRC_W * SRC_H * 3);
     let stride = SRC_W * 3;
     for (sw, sh, dw, dh, format) in [
-        (1920, 1080, 1280, 720, PixelFormat::Rgb888),
-        (1920, 1080, 1280, 720, PixelFormat::Rgb565),
-        (1920, 1080, 960, 540, PixelFormat::Rgb888),
-        (1920, 1080, 640, 360, PixelFormat::Rgb888),
-        (640, 360, 1280, 720, PixelFormat::Rgb888),
+        (1920, 1080, 1280, 720, ImageFormat::Rgb888),
+        (1920, 1080, 1280, 720, ImageFormat::Rgb565),
+        (1920, 1080, 960, 540, ImageFormat::Rgb888),
+        (1920, 1080, 640, 360, ImageFormat::Rgb888),
+        (640, 360, 1280, 720, ImageFormat::Rgb888),
     ] {
         bench_resize(&Resize { src: &src, stride, sw, sh, dw, dh, format }, &mut dst, "", REPS);
     }
@@ -396,7 +398,7 @@ pub fn run() {
         sh: INT_SH as u16,
         dw: INT_DW as u16,
         dh: INT_DH as u16,
-        format: PixelFormat::Rgb888,
+        format: ImageFormat::Rgb888,
     };
     bench_resize(&r, &mut small_dst, " (internal)", 30);
 
