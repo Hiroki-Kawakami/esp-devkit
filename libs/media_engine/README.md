@@ -1,7 +1,7 @@
 # media_engine
 
 The chip's media accelerators, driven from IDF's LL headers and its 2D-DMA
-allocator rather than its drivers. Built on ESP32-P4; the simulator runs the
+allocator rather than its drivers. Built for chips with a 2D engine (ESP32-P4, untried on ESP32-S31); the simulator runs the
 same operations on the CPU, as `idf_compat`'s PPA does.
 
 ## 2D engine

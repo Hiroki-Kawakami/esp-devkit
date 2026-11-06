@@ -3,7 +3,7 @@ idf_component_register(
     SRCS "src/executor_shim.c"
     PRIV_INCLUDE_DIRS "src"
     REQUIRES esp_app_format esp_common esp_system esp_timer freertos heap log nvs_flash esp_driver_i2c esp_driver_gpio
-             esp_driver_ledc esp_driver_i2s esp_partition esp_driver_ppa esp_driver_sdmmc esp_hw_support esp_lcd esp_mm sdmmc fatfs vfs
+             esp_driver_ledc esp_driver_i2s esp_partition esp_driver_sdmmc esp_hw_support esp_lcd esp_mm sdmmc fatfs vfs
     PRIV_REQUIRES devkit hal rust_rt)
 if(ESP_PLATFORM)
     set(log_headers "esp_log.h" "esp_log_config.h" "esp_log_level.h" "esp_log_timestamp.h"
@@ -15,9 +15,6 @@ if(ESP_PLATFORM)
     if(CONFIG_SOC_MIPI_DSI_SUPPORTED)
         list(APPEND driver_headers "esp_lcd_mipi_dsi.h")
     endif()
-    if(CONFIG_SOC_PPA_SUPPORTED)
-        list(APPEND driver_headers "driver/ppa.h")
-    endif()
     if(CONFIG_SOC_SDMMC_HOST_SUPPORTED)
         list(APPEND driver_headers "driver/sdmmc_host.h" "sd_protocol_types.h" "sd_pwr_ctrl_by_on_chip_ldo.h"
                                    "esp_vfs_fat.h" "sdmmc_cmd.h")
@@ -28,7 +25,7 @@ if(ESP_PLATFORM)
 else()
     set(log_headers "esp_log.h")
     set(target_headers "")
-    set(driver_headers "driver/i2c_master.h" "driver/ppa.h")
+    set(driver_headers "driver/i2c_master.h")
 endif()
 devkit_rust_crate(ROOT "src/lib.rs" TESTS
     BINDGEN_HEADERS "esp_app_desc.h" "esp_err.h" "esp_heap_caps.h" "multi_heap.h" "esp_system.h" "esp_random.h" "esp_mac.h" "esp_timer.h"

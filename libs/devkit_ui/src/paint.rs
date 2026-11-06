@@ -9,11 +9,14 @@ use core::alloc::Allocator;
 
 use core::time::Duration;
 
-use bsp_rs::display::{self, Blitter, FrameBuffer, ImageFormat, Rotation, Size};
+use bsp_rs::display::{FrameBuffer, ImageFormat, Rotation, Size};
 use devkit_gfx::{ArcMask, Argb8888, ClipStore, Color, CornerMask, Corners, DisplayList, GlyphCache, Prepared, Rect, Rgb565, ShadowMask, Surface, draw};
 use idf::heap::Caps;
 
+use media_engine::Srm;
+
 use crate::animate::faded;
+use crate::blit::{self, Blits};
 use crate::canvas::Canvas;
 use crate::node::{NONE, NodeContent, NodeIndex};
 use crate::presence::{Snapshot, half};
@@ -381,12 +384,7 @@ impl Tree {
         let count = width * (BAND_ROWS / 2) as usize;
         let mut bands = [band_memory(count)?, band_memory(count)?];
         let stride = width * size_of::<u16>();
-        let target = display::Picture {
-            ptr: picture.as_mut_ptr().cast(),
-            size: Size { width: picture.width as u16, height: picture.height as u16 },
-            format: ImageFormat::Rgb565,
-            len: picture.bytes(),
-        };
+        let target = (picture.as_mut_ptr().cast::<u8>(), Size::new(picture.width as u16, picture.height as u16));
         let (mut y, mut turn) = (0, 0);
         while y < area.h {
             let band = (y / BAND_ROWS) as usize;
@@ -401,10 +399,10 @@ impl Tree {
                 }
                 let bottom = (end as i16 * BAND_ROWS).min(area.h);
                 let block = Rect::new(area.x, area.y + y, area.w, bottom - y);
-                while engine.blitter.pending() > 1 {
-                    wait(engine.blitter);
+                while engine.blits.pending() > 1 {
+                    wait(engine.blits);
                 }
-                if let Err(err) = unsafe { engine.blitter.start_from(&fb, rotation, block, PICTURE_SCALE, target, at) } {
+                if let Err(err) = unsafe { from_panel(engine.blits, &fb, rotation, block, target, at) } {
                     idf::log::error!(c"ui", "zoom picture from the panel: {err}");
                     return None;
                 }
@@ -416,20 +414,16 @@ impl Tree {
             let band = Rect::new(area.x, area.y + y, area.w, rows);
             match engine.as_deref_mut() {
                 Some(engine) if lines > 0 => {
-                    while engine.blitter.pending() > 1 {
-                        wait(engine.blitter);
+                    while engine.blits.pending() > 1 {
+                        wait(engine.blits);
                     }
                     let memory = &mut bands[turn];
                     let surface = unsafe { Surface::half(memory.as_mut_ptr().cast(), stride, band) };
                     draw::<Rgb565, _, _, _>(&list, &prepared, &mut clips, &surface);
-                    let source = display::Picture {
-                        ptr: memory.as_mut_ptr().cast(),
-                        size: Size { width: width as u16, height: lines as u16 },
-                        format: ImageFormat::Rgb565,
-                        len: count * size_of::<u16>(),
-                    };
-                    let block = Rect::new(0, 0, width as i16, lines);
-                    if let Err(err) = unsafe { engine.blitter.start_scaled(source, block, Rotation::R0, 1.0, target, at) } {
+                    let mut op = Srm::new(unsafe { blit::image(memory.as_ptr().cast(), ImageFormat::Rgb565, Size::new(width as u16, lines as u16)) });
+                    op.at = (at.0 as i16, at.1 as i16);
+                    let copied = unsafe { blit::target(target.0, ImageFormat::Rgb565, target.1) }.and_then(|t| engine.blits.run(t, &op));
+                    if let Err(err) = copied {
                         idf::log::error!(c"ui", "zoom picture: {err}");
                         return None;
                     }
@@ -445,8 +439,8 @@ impl Tree {
             y += rows;
         }
         if let Some(engine) = engine {
-            while engine.blitter.pending() > 0 {
-                wait(engine.blitter);
+            while engine.blits.pending() > 0 {
+                wait(engine.blits);
             }
         }
         Some(())
@@ -499,7 +493,7 @@ fn argb_band(count: usize) -> Option<Vec<u32, Caps>> {
 
 /// The 2D engine, and the framebuffer on the panel with its turn.
 pub(crate) struct Engine<'a> {
-    pub(crate) blitter: &'a mut Blitter,
+    pub(crate) blits: &'a mut Blits,
     pub(crate) shown: Option<(FrameBuffer, Rotation)>,
 }
 
@@ -514,9 +508,27 @@ fn band_memory(count: usize) -> Option<Vec<u16, Caps>> {
     None
 }
 
+/// `block` of the logical picture in `fb`, as the panel shows it, scaled by
+/// `PICTURE_SCALE` into the picture at `at`.
+unsafe fn from_panel(blits: &mut Blits, fb: &FrameBuffer, rotation: Rotation, block: Rect, (ptr, size): (*mut u8, Size), at: (u16, u16)) -> idf::Result<()> {
+    let stored = unsafe { fb.target() }.and_then(|t| t.rotated(rotation).stored_rect(block)).ok_or(idf::Error::INVALID_ARG)?;
+    let mut op = Srm::new(unsafe { blit::image(fb.as_ptr(), fb.format(), fb.size()) });
+    op.src_rect = stored;
+    op.rotation = match rotation {
+        Rotation::R0 => Rotation::R0,
+        Rotation::R90 => Rotation::R270,
+        Rotation::R180 => Rotation::R180,
+        Rotation::R270 => Rotation::R90,
+    };
+    op.scale_x = PICTURE_SCALE;
+    op.scale_y = PICTURE_SCALE;
+    op.at = (at.0 as i16, at.1 as i16);
+    blits.run(unsafe { blit::target(ptr, ImageFormat::Rgb565, size) }?, &op)
+}
+
 /// The pixels stay in use until it returns, so it waits for good.
-fn wait(blitter: &mut Blitter) {
-    while !blitter.wait_timeout(Duration::from_secs(1)) {
+fn wait(blits: &mut Blits) {
+    while !blits.wait_timeout(Duration::from_secs(1)) {
         idf::log::error!(c"ui", "zoom picture stalled");
     }
 }

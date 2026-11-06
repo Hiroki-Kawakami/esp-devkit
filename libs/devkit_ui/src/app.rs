@@ -27,6 +27,7 @@ use crate::erased::Erased;
 use crate::external::{ExternalSurface, Policy};
 use crate::keyboard::KeyboardMode;
 use crate::plugin::{Plugin, PluginContext, PluginInit, Store, UiEvent};
+use crate::blit::Blits;
 use crate::paint::{Effects, Engine};
 use crate::presenter::{Config, Presenter, ROW_GRID, Strips};
 use crate::text_buffer::TextInput;
@@ -623,14 +624,14 @@ impl<C: Screen> AppState<C> {
             self.tree.capture_presences(&mut self.effects, &mut self.cache);
         }
         if self.tree.zoom_pending() {
-            match self.shared.display.blitter(2) {
-                Ok(mut blitter) => {
+            match Blits::new(2) {
+                Ok(mut blits) => {
                     let shown = self.presenter.shown().map(|fb| (fb, self.rotation));
-                    let mut engine = Engine { blitter: &mut blitter, shown };
+                    let mut engine = Engine { blits: &mut blits, shown };
                     self.tree.capture_zooms(&mut self.effects, &mut self.cache, Some(&mut engine));
                 }
                 Err(err) => {
-                    error!(TAG, "blitter: {err}");
+                    error!(TAG, "2D engine: {err}");
                     self.tree.capture_zooms(&mut self.effects, &mut self.cache, None);
                 }
             }

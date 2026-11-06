@@ -29,8 +29,6 @@ pub mod ledc;
 pub mod log;
 pub mod nvs;
 pub mod partition;
-#[cfg(any(not(target_os = "none"), CONFIG_SOC_PPA_SUPPORTED))]
-pub mod ppa;
 #[cfg(all(target_os = "none", CONFIG_SOC_SDMMC_HOST_SUPPORTED))]
 pub mod sdmmc;
 pub mod sync;

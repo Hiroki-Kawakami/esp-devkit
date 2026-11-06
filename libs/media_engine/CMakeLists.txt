@@ -3,7 +3,7 @@ set(srcs "/dev/null")
 set(headers "")
 set(options "")
 set(priv_requires devkit rust_rt)
-if(ESP_PLATFORM AND IDF_TARGET STREQUAL "esp32p4")
+if(ESP_PLATFORM AND (IDF_TARGET STREQUAL "esp32p4" OR IDF_TARGET STREQUAL "esp32s31"))
     set(srcs "src/clock.c")
     set(headers "hal/jpeg_ll.h" "hal/jpeg_hal.h" "hal/ppa_ll.h" "hal/dma2d_ll.h" "soc/dma2d_channel.h"
                 "soc/ppa_struct.h" "hal/dma2d_types.h" "hal/ppa_types.h" "esp_private/dma2d.h" "esp_intr_alloc.h" "clock.h")

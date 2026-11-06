@@ -52,10 +52,6 @@ impl Picture {
         self.blocks.as_mut_ptr().cast()
     }
 
-    pub(crate) fn bytes(&self) -> usize {
-        self.blocks.len() * size_of::<Block>()
-    }
-
     fn row(&self, y: u16) -> *const u16 {
         unsafe { self.blocks.as_ptr().cast::<u16>().add(usize::from(y) * self.width as usize) }
     }

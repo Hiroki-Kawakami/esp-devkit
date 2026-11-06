@@ -9,12 +9,15 @@ use core::ffi::CStr;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
 
-use bsp_rs::display::{Blender, Display, FrameBuffer, Rotation};
-use devkit_gfx::{Rect, Target};
+use bsp_rs::display::{Display, FrameBuffer, ImageFormat, Rotation};
+use devkit_gfx::{Rect, Size, Target};
 use idf::log::error;
 use idf::sync::Mutex;
 use idf::{Error, Result};
 
+use media_engine::{Blend, Slot};
+
+use crate::blit;
 use crate::presenter::Strips;
 
 const TAG: &CStr = c"external";
@@ -96,7 +99,6 @@ struct State {
 
 struct Inner {
     state: Mutex<State>,
-    blender: Mutex<Option<Blender>>,
 }
 
 /// A rectangle of the panel written by a task of its own, placed with
@@ -106,7 +108,7 @@ pub struct ExternalSurface(Arc<Inner>);
 
 impl ExternalSurface {
     pub fn new() -> Result<Self> {
-        Ok(Self(Arc::new(Inner { state: Mutex::new(State::default()), blender: Mutex::new(None) })))
+        Ok(Self(Arc::new(Inner { state: Mutex::new(State::default()) })))
     }
 
     pub fn set_policy(&self, policy: Policy) {
@@ -224,15 +226,7 @@ impl ExternalSurface {
             return Ok(());
         }
         if let (Some(overlay), false) = (overlay, exclusive) {
-            let mut blender = self.0.blender.lock();
-            if blender.is_none() {
-                *blender = Some(Blender::new()?);
-            }
-            let blender = blender.as_mut().ok_or(Error::INVALID_STATE)?;
-            let area = overlay.rect;
-            if !unsafe { blender.blend(&frame.fb, frame.rotation, area, overlay.pixels, BLEND_TIMEOUT) }? {
-                return Err(Error::TIMEOUT);
-            }
+            unsafe { lay_over(&frame.fb, frame.rotation, overlay.rect, overlay.pixels) }?;
         }
         let latest = buffers.latest.load(Ordering::Acquire);
         while display.scanning().is_some_and(|i| i != latest) {
@@ -262,7 +256,7 @@ impl ExternalFrame {
     /// Over what `begin` handed out, whatever the public fields say now.
     pub fn target(&self) -> Option<Target<'_>> {
         let (fb, area, rotation) = self.granted;
-        unsafe { fb.target(rotation, area) }
+        unsafe { fb.target() }?.rotated(rotation).crop(area)
     }
 
     /// Lays the UI on and presents, where the policy and the UI call for it.
@@ -283,4 +277,16 @@ impl Drop for ExternalFrame {
             wake();
         }
     }
+}
+
+/// `src`, ARGB already turned as the panel is, over `area` of the logical
+/// picture in `fb`.
+unsafe fn lay_over(fb: &FrameBuffer, rotation: Rotation, area: Rect, src: *const u8) -> Result<()> {
+    let stored = unsafe { fb.target() }.and_then(|t| t.rotated(rotation).stored_rect(area)).ok_or(Error::INVALID_ARG)?;
+    let mut target = unsafe { fb.target() }.and_then(|t| t.crop(stored)).ok_or(Error::INVALID_ARG)?;
+    let size = Size::new(stored.w as u16, stored.h as u16);
+    let op = Blend::new(unsafe { blit::image(src, ImageFormat::Argb8888, size) }, (stored.x, stored.y));
+    let mut slot = Slot::new();
+    let mut job = media_engine::ppa()?.blend(&op, &mut target, &mut slot)?;
+    job.wait_timeout(BLEND_TIMEOUT).ok_or(Error::TIMEOUT)?
 }

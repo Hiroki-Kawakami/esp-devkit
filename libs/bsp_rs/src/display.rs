@@ -6,11 +6,6 @@
 use core::marker::PhantomData;
 use core::ptr::NonNull;
 use core::slice;
-#[cfg(any(not(target_os = "none"), CONFIG_SOC_PPA_SUPPORTED))]
-use core::time::Duration;
-
-#[cfg(any(not(target_os = "none"), CONFIG_SOC_PPA_SUPPORTED))]
-use idf::ppa::{self, Srm, SrmOp};
 use idf::{Error, Result};
 
 use crate::Absent;
@@ -78,163 +73,11 @@ impl FrameBuffer {
         unsafe { slice::from_raw_parts_mut(self.as_ptr().add(y * self.stride), self.stride) }
     }
 
-    /// `area` of the logical picture turned by `rotation`; `None` when it does
-    /// not fit. Nothing else may write `area` while the target lives.
-    pub unsafe fn target(&self, rotation: Rotation, area: Rect) -> Option<Target<'static>> {
+    /// The whole framebuffer as it is stored. Nothing else may write what the
+    /// target, or one cropped from it, covers while it lives.
+    pub unsafe fn target(&self) -> Option<Target<'static>> {
         let stride = usize::from(self.size.width);
-        let target = unsafe { Target::from_raw(self.ptr, self.len(), self.format, self.size, stride) }?;
-        target.rotated(rotation).crop(area)
-    }
-}
-
-/// Copies pixels into framebuffers with the display's 2D engine. One per task;
-/// the engine serves them in turn.
-#[cfg(any(not(target_os = "none"), CONFIG_SOC_PPA_SUPPORTED))]
-pub struct Blitter {
-    srm: Srm,
-}
-
-#[cfg(any(not(target_os = "none"), CONFIG_SOC_PPA_SUPPORTED))]
-impl Blitter {
-    /// Queues `src`, packed rows covering `area` of the logical picture, and
-    /// returns. `src` must stay valid and `fb` unread until [`Self::wait`] has
-    /// returned for it. A rotated copy must span at least 8 rows of `area`:
-    /// the engine stops completing shorter ones while the panel scans out.
-    pub unsafe fn start(&mut self, fb: &FrameBuffer, rotation: Rotation, area: Rect, src: *const u8) -> Result<()> {
-        let format = color_mode(fb.format())?;
-        let size = fb.size();
-        let (dst_x, dst_y) = panel_origin(size, rotation, area).ok_or(Error::INVALID_ARG)?;
-        let (width, height) = (area.w as u32, area.h as u32);
-        let op = SrmOp {
-            src,
-            src_width: width,
-            src_height: height,
-            src_x: 0,
-            src_y: 0,
-            block_width: width,
-            block_height: height,
-            src_format: format,
-            dst: fb.as_ptr(),
-            dst_size: fb.len() as u32,
-            dst_width: u32::from(size.width),
-            dst_height: u32::from(size.height),
-            dst_x,
-            dst_y,
-            format,
-            rotation: ppa_rotation(rotation),
-            scale: 1.0,
-        };
-        unsafe { self.srm.start(&op) }
-    }
-
-    /// Queues `area` of the logical picture in `fb`, as the panel shows it,
-    /// scaled by `scale` into `dst` at `at`. `scale` goes in steps of 1/16.
-    pub unsafe fn start_from(&mut self, fb: &FrameBuffer, rotation: Rotation, area: Rect, scale: f32, dst: Picture, at: (u16, u16)) -> Result<()> {
-        let size = fb.size();
-        let (x, y) = panel_origin(size, rotation, area).ok_or(Error::INVALID_ARG)?;
-        let (width, height) = if rotation.swaps_axes() { (area.h, area.w) } else { (area.w, area.h) };
-        let back = match rotation {
-            Rotation::R0 => Rotation::R0,
-            Rotation::R90 => Rotation::R270,
-            Rotation::R180 => Rotation::R180,
-            Rotation::R270 => Rotation::R90,
-        };
-        let source = Picture { ptr: fb.as_ptr(), size, format: fb.format(), len: fb.len() };
-        unsafe { self.start_scaled(source, Rect::new(x as i16, y as i16, width, height), back, scale, dst, at) }
-    }
-
-    /// Queues `block` of `src`, scaled by `scale` and turned as `rotation`
-    /// says, into `dst` at `at`. `scale` goes in steps of 1/16.
-    pub unsafe fn start_scaled(&mut self, src: Picture, block: Rect, rotation: Rotation, scale: f32, dst: Picture, at: (u16, u16)) -> Result<()> {
-        let (x, y, width, height) = unsigned(block).ok_or(Error::INVALID_ARG)?;
-        let op = SrmOp {
-            src: src.ptr,
-            src_width: u32::from(src.size.width),
-            src_height: u32::from(src.size.height),
-            src_x: x,
-            src_y: y,
-            block_width: width,
-            block_height: height,
-            src_format: color_mode(src.format)?,
-            dst: dst.ptr,
-            dst_size: dst.len as u32,
-            dst_width: u32::from(dst.size.width),
-            dst_height: u32::from(dst.size.height),
-            dst_x: u32::from(at.0),
-            dst_y: u32::from(at.1),
-            format: color_mode(dst.format)?,
-            rotation: ppa_rotation(rotation),
-            scale,
-        };
-        unsafe { self.srm.start(&op) }
-    }
-
-    /// Queues a `width` x `height` ARGB8888 picture, turned as `rotation` says,
-    /// into `dst`, which holds the turned picture and nothing else. The same
-    /// rules as [`Self::start`].
-    pub unsafe fn start_argb(&mut self, rotation: Rotation, width: u16, height: u16, src: *const u8, dst: *mut u8) -> Result<()> {
-        let (dst_width, dst_height) = match rotation {
-            Rotation::R0 | Rotation::R180 => (u32::from(width), u32::from(height)),
-            Rotation::R90 | Rotation::R270 => (u32::from(height), u32::from(width)),
-        };
-        let op = SrmOp {
-            src,
-            src_width: u32::from(width),
-            src_height: u32::from(height),
-            src_x: 0,
-            src_y: 0,
-            block_width: u32::from(width),
-            block_height: u32::from(height),
-            src_format: ppa::ColorMode::Argb8888,
-            dst,
-            dst_size: dst_width * dst_height * 4,
-            dst_width,
-            dst_height,
-            dst_x: 0,
-            dst_y: 0,
-            format: ppa::ColorMode::Argb8888,
-            rotation: ppa_rotation(rotation),
-            scale: 1.0,
-        };
-        unsafe { self.srm.start(&op) }
-    }
-
-    pub fn pending(&self) -> u32 {
-        self.srm.pending()
-    }
-
-    /// `false` on timeout, with the copy still pending.
-    pub fn wait_timeout(&mut self, timeout: Duration) -> bool {
-        self.srm.wait_timeout(timeout)
-    }
-}
-
-/// Pixels the 2D engine reads or writes: `len` bytes from `ptr`, holding a
-/// picture of `size`. A destination is cache-line aligned in address and `len`.
-#[derive(Clone, Copy)]
-pub struct Picture {
-    pub ptr: *mut u8,
-    pub size: Size,
-    pub format: ImageFormat,
-    pub len: usize,
-}
-
-#[cfg(any(not(target_os = "none"), CONFIG_SOC_PPA_SUPPORTED))]
-fn color_mode(format: ImageFormat) -> Result<ppa::ColorMode> {
-    match format {
-        ImageFormat::Rgb565 => Ok(ppa::ColorMode::Rgb565),
-        ImageFormat::Bgr888 => Ok(ppa::ColorMode::Rgb888),
-        _ => Err(Error::NOT_SUPPORTED),
-    }
-}
-
-#[cfg(any(not(target_os = "none"), CONFIG_SOC_PPA_SUPPORTED))]
-fn ppa_rotation(rotation: Rotation) -> ppa::Rotation {
-    match rotation {
-        Rotation::R0 => ppa::Rotation::R0,
-        Rotation::R90 => ppa::Rotation::R90,
-        Rotation::R180 => ppa::Rotation::R180,
-        Rotation::R270 => ppa::Rotation::R270,
+        unsafe { Target::from_raw(self.ptr, self.len(), self.format, self.size, stride) }
     }
 }
 
@@ -244,61 +87,6 @@ fn unsigned(rect: Rect) -> Option<(u32, u32, u32, u32)> {
         return None;
     }
     Some((rect.x as u32, rect.y as u32, rect.w as u32, rect.h as u32))
-}
-
-/// Where `area` of the logical picture lands on a panel of `size`.
-fn panel_origin(size: Size, rotation: Rotation, area: Rect) -> Option<(u32, u32)> {
-    let (panel_w, panel_h) = (u32::from(size.width), u32::from(size.height));
-    let (x, y, w, h) = unsigned(area)?;
-    let (logical_w, logical_h) = match rotation {
-        Rotation::R0 | Rotation::R180 => (panel_w, panel_h),
-        Rotation::R90 | Rotation::R270 => (panel_h, panel_w),
-    };
-    if x + w > logical_w || y + h > logical_h {
-        return None;
-    }
-    Some(match rotation {
-        Rotation::R0 => (x, y),
-        Rotation::R90 => (y, panel_h - x - w),
-        Rotation::R180 => (panel_w - x - w, panel_h - y - h),
-        Rotation::R270 => (panel_w - y - h, x),
-    })
-}
-
-/// Lays ARGB8888 pictures over framebuffers with the display's 2D engine. One
-/// per task.
-#[cfg(any(not(target_os = "none"), CONFIG_SOC_PPA_SUPPORTED))]
-pub struct Blender {
-    blend: ppa::Blend,
-}
-
-#[cfg(any(not(target_os = "none"), CONFIG_SOC_PPA_SUPPORTED))]
-impl Blender {
-    pub fn new() -> Result<Self> {
-        Ok(Self { blend: ppa::Blend::new()? })
-    }
-
-    /// Blocks until done. `src` holds `area` of the logical picture, already
-    /// turned as `rotation` says.
-    pub unsafe fn blend(&mut self, fb: &FrameBuffer, rotation: Rotation, area: Rect, src: *const u8, timeout: Duration) -> Result<bool> {
-        let format = color_mode(fb.format())?;
-        let size = fb.size();
-        let (x, y) = panel_origin(size, rotation, area).ok_or(Error::INVALID_ARG)?;
-        let (width, height) = if rotation.swaps_axes() { (area.h as u32, area.w as u32) } else { (area.w as u32, area.h as u32) };
-        let op = ppa::BlendOp {
-            foreground: src,
-            width,
-            height,
-            picture: fb.as_ptr(),
-            picture_size: fb.len() as u32,
-            picture_width: u32::from(size.width),
-            picture_height: u32::from(size.height),
-            x,
-            y,
-            format,
-        };
-        unsafe { self.blend.run(&op, timeout) }
-    }
 }
 
 pub(crate) trait Driver: Send + Sync {
@@ -430,11 +218,6 @@ impl Display {
     }
 
     /// `max_pending` copies may be in flight at once.
-    #[cfg(any(not(target_os = "none"), CONFIG_SOC_PPA_SUPPORTED))]
-    pub fn blitter(&self, max_pending: u32) -> Result<Blitter> {
-        Ok(Blitter { srm: Srm::new(max_pending)? })
-    }
-
     /// 0..=100; 0 turns the backlight off.
     pub fn set_brightness(&self, level: u8) -> Result<()> {
         self.0.set_brightness(level)

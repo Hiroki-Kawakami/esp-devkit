@@ -532,8 +532,9 @@ config.plugins.push(Box::new(SavedColorMode::new()));
 
   // On the writing task. `begin` does not wait.
   if let Some(frame) = video.begin() {
-      unsafe { blitter.start(&frame.fb, frame.rotation, frame.area, pixels) }?;
-      // Wait for the copies, then:
+      let mut target = frame.target().ok_or(Error::INVALID_STATE)?;
+      media_engine::ppa()?.srm(&Srm::new(picture), &mut target, &mut slot)?.wait()?;
+      drop(target);
       frame.end();
   }
   ```
@@ -601,7 +602,8 @@ loop {
 ```
 
 - Damaged rows are drawn into internal RAM strips, by one task per core, and
-  copied into a framebuffer with `Blitter`, rotated as `Config::rotation` says.
+  copied into a framebuffer with `media_engine`'s 2D engine, rotated as
+  `Config::rotation` says.
 - `PresentMode::Swap` flips at a frame boundary without tearing. With three
   framebuffers a new frame starts drawing while the last one waits for the
   boundary; with two, it waits too. `PresentMode::InPlace` overwrites the

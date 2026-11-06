@@ -10,6 +10,7 @@ extern crate alloc;
 
 mod animate;
 mod app;
+mod blit;
 mod bump;
 mod canvas;
 mod component;

@@ -8,11 +8,12 @@ use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use core::time::Duration;
 
 use bsp_rs::display::{Display, ImageFormat, Rect};
-use devkit_gfx::Color;
+use devkit_gfx::{Color, Image};
 use devkit_ui::widgets::{button, top_bar};
 use devkit_ui::{Component, Cx, Element, ExternalSurface, Policy, Screen, Ui, id};
 use idf::sync::OnceLock;
 use idf::thread;
+use media_engine::{Slot, Srm};
 
 static DISPLAY: OnceLock<&'static Display> = OnceLock::new();
 pub static VIDEO_FRAMES: AtomicU32 = AtomicU32::new(0);
@@ -45,7 +46,8 @@ fn write_row(row: &mut [u8], format: ImageFormat, shift: usize) {
 }
 
 fn produce(display: &'static Display, video: ExternalSurface, playback: Arc<Playback>) {
-    let Ok(mut blitter) = display.blitter(1) else { return };
+    let Ok(ppa) = media_engine::ppa() else { return };
+    let mut slot = Slot::new();
     let size = display.size();
     let mut storage = alloc::vec![0u8; usize::from(size.width.max(size.height)) * BAND_ROWS * 3 + 64];
     let start = storage.as_ptr().align_offset(64);
@@ -73,11 +75,17 @@ fn produce(display: &'static Display, video: ExternalSurface, playback: Arc<Play
         while y < area.h {
             let height = (area.h - y).min(BAND_ROWS as i16);
             let band = Rect::new(area.x, area.y + y, area.w, height);
-            if let Err(err) = unsafe { blitter.start(&frame.fb, frame.rotation, band, pixels.as_ptr()) } {
+            let image = Image::from_pixels(format, area.w as u16, height as u16, area.w as usize, &pixels[..stride * height as usize]);
+            let mut op = Srm::new(image);
+            op.at = (band.x, band.y);
+            let copied = match frame.target().and_then(|t| t.crop(band)) {
+                Some(mut target) => ppa.srm(&op, &mut target, &mut slot).and_then(|job| job.wait()),
+                None => Err(idf::Error::INVALID_ARG),
+            };
+            if let Err(err) = copied {
                 idf::log::error!(c"ui_demo", "video: {err}");
                 break;
             }
-            blitter.wait_timeout(Duration::from_secs(1));
             y += height;
         }
         frame.end();

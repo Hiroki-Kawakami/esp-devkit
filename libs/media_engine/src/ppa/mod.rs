@@ -7,9 +7,11 @@ use core::future::Future;
 use core::marker::PhantomData;
 use core::pin::Pin;
 use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+use core::time::Duration;
 
 use devkit::executor::Park;
 use idf::executor::TaskPark;
+use idf::time::Instant;
 
 use devkit_gfx::{Color, Image, ImageFormat, Rect, Rotation, Target};
 use idf::{Error, Result};
@@ -456,6 +458,27 @@ impl Job<'_> {
                 return result;
             }
             park.park(None);
+        }
+    }
+
+    /// `None` once `timeout` has passed, with the job still running.
+    pub fn wait_timeout(&mut self, timeout: Duration) -> Option<Result<()>> {
+        let park = TaskPark::current();
+        let waker = unsafe { Waker::from_raw(park_waker(&park)) };
+        let mut cx = Context::from_waker(&waker);
+        let start = Instant::now();
+        let tick = idf::executor::tick_duration(1).as_micros().max(1);
+        loop {
+            if let Poll::Ready(result) = self.inner.poll(&mut cx) {
+                self.inner.forget_waker();
+                return Some(result);
+            }
+            let left = timeout.saturating_sub(start.elapsed());
+            if left.is_zero() {
+                self.inner.forget_waker();
+                return None;
+            }
+            park.park(Some((left.as_micros() / tick) as u32 + 1));
         }
     }
 }

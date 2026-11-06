@@ -27,10 +27,11 @@ let board = bsp_rs::init(&bsp_rs::Config::default())?;
   and returns without waiting for it. `wait_frame()` blocks until that boundary
   and `scanning()` is the framebuffer being scanned, so a framebuffer other than
   it and the last presented one is free to draw into.
-- `blitter(n)` returns a `Blitter` for the calling task, on chips with a 2D
-  engine and in the simulator. `start` queues packed rows for an area of the
-  logical picture, rotated into a framebuffer, with up to `n` in flight.
-  Rotated copies must span at least 8 rows of the area.
+- The display does not copy pixels itself: writers put them into a
+  framebuffer's `target()`, turned and cropped with `Target::rotated` and
+  `crop`, with `media_engine` for the 2D engine. A rotated copy there must span
+  at least 8 rows of the area: the engine stops completing shorter ones while
+  the panel scans out.
 - `set_brightness` takes 0..=100; the backlight starts off.
 - `Rect`, `Size`, `Rotation` and `ImageFormat` are `devkit_gfx`'s. `init`
   and the 2D engine return `NOT_SUPPORTED` for a format they cannot take; the
@@ -101,7 +102,7 @@ the screen.
   100 ms. A pose must hold for 300 ms before it counts, and free fall or a shock
   keeps the last one. `orientation()` is `None` until there is one.
 - `Orientation::Rotated(r)` is the `Rotation` that shows the picture upright,
-  ready for `Blitter::start`. `set_orientation_cb` delivers each new pose on the
+  ready for `FrameBuffer::target`. `set_orientation_cb` delivers each new pose on the
   dispatch task.
 - `inject` replaces the sensor, in panel axes, until `None`.
 

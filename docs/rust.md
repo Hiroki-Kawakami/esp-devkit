@@ -604,13 +604,6 @@ is `esp_cache_msync` with `Flags::{C2M, M2C, INVALIDATE, UNALIGNED}`,
 never shares a cache line with a DMA (`ptr` itself on chips without one). In
 the simulator `msync` does nothing.
 
-`idf::ppa::Srm` is a PPA client for scale-rotate-mirror transfers, on chips with
-a PPA and in the simulator, where `start` finishes the transfer on the CPU.
-`start` queues a transaction and returns; `wait` takes the oldest one.
-`new(n)` allows `n` in flight. The source is copied whole, rotation is
-counter-clockwise, and the destination's address and size must be cache-line
-aligned. One client per task; the engine serves clients in turn.
-
 `idf::thread` follows `std::thread` on FreeRTOS tasks:
 
 ```rust

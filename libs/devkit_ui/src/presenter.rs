@@ -13,15 +13,18 @@ use core::ffi::CStr;
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use core::time::Duration;
 
-use bsp_rs::display::{Blitter, Display, FrameBuffer, ImageFormat, Rotation};
+use bsp_rs::display::{Display, FrameBuffer, ImageFormat, Rotation};
 use devkit::Lease;
-use devkit_gfx::{Argb8888, Bgr888, ClipStore, Damage, DisplayList, GlyphCache, Pixel, Prepared, Rect, Rgb565, Surface, draw, draw_from};
+use devkit_gfx::{Argb8888, Bgr888, ClipStore, Damage, DisplayList, GlyphCache, Pixel, Prepared, Rect, Rgb565, Size, Surface, draw, draw_from};
 use idf::heap::Caps;
 use idf::log::{error, warn};
 use idf::sync::Semaphore;
 use idf::time::Instant;
 use idf::{Error, Result, thread};
 
+use media_engine::{Slot, Srm};
+
+use crate::blit::{self, Blits};
 use crate::external::{Buffers, NO_BACK, Overlay};
 
 const TAG: &CStr = c"presenter";
@@ -198,7 +201,7 @@ unsafe impl Sync for Shared {}
 
 struct Lane {
     id: usize,
-    blitter: Blitter,
+    blits: Blits,
     turn: usize,
     last: Rect,
     before: Rect,
@@ -220,7 +223,7 @@ impl Lane {
                 Some(ImageFormat::Bgr888) => self.strips::<Bgr888>(&shared, job, list, prepared),
                 _ => self.strips::<Rgb565>(&shared, job, list, prepared),
             }
-            while self.blitter.pending() > 0 {
+            while self.blits.pending() > 0 {
                 self.wait_blit(&shared, job);
             }
             shared.raster_us[self.id].store(self.raster, Ordering::Relaxed);
@@ -231,14 +234,14 @@ impl Lane {
 
     fn wait_blit(&mut self, shared: &Shared, job: &Job) {
         let t = Instant::now();
-        while !self.blitter.wait_timeout(STALL_TIMEOUT) {
+        while !self.blits.wait_timeout(STALL_TIMEOUT) {
             error!(
                 TAG,
                 "lane {}: blit stalled, last {:?}, before {:?}, pending {}, strip {}/{}, frame {}, {:?}",
                 self.id,
                 self.last,
                 self.before,
-                self.blitter.pending(),
+                self.blits.pending(),
                 shared.next.load(Ordering::Relaxed),
                 job.strips.len(),
                 shared.frame.load(Ordering::Relaxed),
@@ -253,7 +256,7 @@ impl Lane {
         loop {
             let index = shared.next.fetch_add(1, Ordering::Relaxed);
             let Some(strip) = job.strips.get(index) else { return };
-            if self.blitter.pending() == STRIPS_PER_LANE as u32 {
+            if self.blits.pending() == STRIPS_PER_LANE {
                 self.wait_blit(shared, job);
             }
             let t = Instant::now();
@@ -264,7 +267,14 @@ impl Lane {
             let surface = unsafe { Surface::new(buffer, strip.w as usize * P::BYTES, *strip) };
             draw::<P, _, _, _>(list, prepared, &mut self.clips, &surface);
             self.raster += t.elapsed().as_micros() as u32;
-            if let Err(err) = unsafe { self.blitter.start(&fb, job.rotation, *strip, buffer) } {
+            let Some(target) = (unsafe { fb.target() }).and_then(|t| t.rotated(job.rotation).crop(*strip)) else {
+                error!(TAG, "blit {strip:?}: outside the panel");
+                continue;
+            };
+            let size = Size::new(strip.w as u16, strip.h as u16);
+            let mut op = Srm::new(unsafe { blit::image(buffer, fb.format(), size) });
+            op.at = (strip.x, strip.y);
+            if let Err(err) = self.blits.run(target, &op) {
                 error!(TAG, "blit {strip:?}: {err}");
             }
         }
@@ -315,7 +325,7 @@ impl Presenter {
         for id in 0..MAX_LANES {
             let lane = Lane {
                 id,
-                blitter: display.blitter(STRIPS_PER_LANE as u32)?,
+                blits: Blits::new(STRIPS_PER_LANE)?,
                 turn: 0,
                 last: Rect::default(),
                 before: Rect::default(),
@@ -609,11 +619,14 @@ impl Presenter {
         if self.rotation == Rotation::R0 {
             return Ok(Overlay { _memory: memory, pixels: drawn, rect });
         }
-        let mut blitter = self.display.blitter(1)?;
-        unsafe { blitter.start_argb(self.rotation, rect.w as u16, rect.h as u16, drawn, turned) }?;
-        if !blitter.wait_timeout(STALL_TIMEOUT) {
-            return Err(Error::TIMEOUT);
-        }
+        let size = Size::new(rect.w as u16, rect.h as u16);
+        let turned_size = if self.rotation.swaps_axes() { Size::new(size.height, size.width) } else { size };
+        let mut op = Srm::new(unsafe { blit::image(drawn, ImageFormat::Argb8888, size) });
+        op.rotation = self.rotation;
+        let mut target = unsafe { blit::target(turned, ImageFormat::Argb8888, turned_size) }?;
+        let mut slot = Slot::new();
+        let mut job = media_engine::ppa()?.srm(&op, &mut target, &mut slot)?;
+        job.wait_timeout(STALL_TIMEOUT).ok_or(Error::TIMEOUT)??;
         Ok(Overlay { _memory: memory, pixels: turned, rect })
     }
 

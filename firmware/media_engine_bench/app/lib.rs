@@ -7,6 +7,13 @@
 
 extern crate alloc;
 
+#[allow(dead_code, non_camel_case_types, non_snake_case, non_upper_case_globals, unsafe_op_in_unsafe_fn)]
+#[allow(clippy::all)]
+mod ffi {
+    include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
+}
+mod idf_ppa;
+
 use alloc::vec::Vec;
 use core::alloc::{Allocator, Layout};
 use core::ffi::CStr;
@@ -15,7 +22,6 @@ use core::time::Duration;
 use devkit_gfx::{Color, Image, ImageFormat, Rect, Rotation, Size, Target};
 use idf::heap::Caps;
 use idf::log::{error, info};
-use idf::ppa as idf_ppa;
 use idf::time::Instant;
 use media_engine::{Background, Blend, Fill, Slot, Srm, ppa};
 
@@ -364,7 +370,7 @@ pub fn run() {
     let dst = buffer(SRC_W * SRC_H * 2);
     fill_source(src565, ImageFormat::Rgb565);
     fill_source(src888, ImageFormat::Bgr888);
-    let mut srm = match idf_ppa::Srm::new(1) {
+    let mut srm = match idf_ppa::Srm::new() {
         Ok(s) => s,
         Err(err) => return error!(TAG, "IDF SRM: {err}"),
     };
