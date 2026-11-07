@@ -3,24 +3,23 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
-use core::alloc::{Allocator, Layout};
 use core::ffi::{CStr, c_void};
 use core::mem;
 use core::ptr::{self, NonNull};
-use core::sync::atomic::{AtomicU32, Ordering, fence};
+use core::sync::atomic::{AtomicU32, Ordering};
 use core::task::{Context, Poll, Waker};
 use core::time::Duration;
 
 use devkit_gfx::{ImageFormat, Rotation};
 use idf::cache::{self, Flags};
-use idf::heap::Caps;
 use idf::log::error;
 use idf::sync::Spinlock;
 use idf::time::Instant;
 use idf::{Error, Result, thread};
 
 use super::{Alpha, In, Kind, Out, Plan, Yuv, YuvRange, YuvStandard, scaled};
-use crate::sys;
+use crate::dma::{self, Descriptor, Fields};
+use crate::{sys, wait};
 
 const TAG: &CStr = c"ppa";
 /// What a drop waits before it stops a job the engine never finished.
@@ -103,9 +102,7 @@ struct Engine {
     queue: Spinlock<Queue>,
     pool: sys::dma2d_pool_handle_t,
     placeholder: *mut sys::dma2d_trans_t,
-    /// What the 2D-DMA is given; the CPU writes them through `desc_cpu`.
-    desc: [*mut sys::dma2d_descriptor_t; DESCRIPTORS],
-    desc_cpu: [*mut sys::dma2d_descriptor_t; DESCRIPTORS],
+    desc: [Descriptor; DESCRIPTORS],
 }
 
 unsafe impl Send for Engine {}
@@ -135,28 +132,12 @@ pub(super) struct Engines {
     blend: Engine,
 }
 
-fn internal(size: usize, align: usize) -> Result<*mut u8> {
-    let layout = Layout::from_size_align(size, align).map_err(|_| Error::INVALID_ARG)?;
-    let block = (Caps::DMA | Caps::INTERNAL).allocate_zeroed(layout).map_err(|_| Error::NO_MEM)?;
-    Ok(block.as_ptr().cast())
-}
-
 impl Engine {
     fn new(pool: sys::dma2d_pool_handle_t) -> Result<Self> {
-        let align = cache::alignment(Caps::DMA | Caps::INTERNAL);
-        let desc_size = mem::size_of::<sys::dma2d_descriptor_t>().next_multiple_of(align);
-        let mut desc: [*mut sys::dma2d_descriptor_t; DESCRIPTORS] = [ptr::null_mut(); DESCRIPTORS];
-        let mut desc_cpu = [ptr::null_mut(); DESCRIPTORS];
-        for (d, cpu) in desc.iter_mut().zip(&mut desc_cpu) {
-            *d = internal(desc_size, align)?.cast();
-            // Nothing cached of them may be written back over what the CPU
-            // writes through the uncached alias from here on.
-            unsafe { cache::msync(d.cast(), desc_size, Flags::C2M | Flags::INVALIDATE) }?;
-            *cpu = cache::uncached(*d);
-        }
-        let placeholder = internal(unsafe { sys::dma2d_get_trans_elm_size() }, 4)?.cast();
+        let desc = [Descriptor::new()?, Descriptor::new()?, Descriptor::new()?];
+        let placeholder = dma::internal(unsafe { sys::dma2d_get_trans_elm_size() }, 4)?.cast();
         let queue = Queue { running: ptr::null_mut(), head: ptr::null_mut(), tail: ptr::null_mut(), busy: false };
-        Ok(Self { queue: Spinlock::new(queue), pool, placeholder, desc, desc_cpu })
+        Ok(Self { queue: Spinlock::new(queue), pool, placeholder, desc })
     }
 }
 
@@ -284,8 +265,10 @@ pub(super) struct Pending {
 
 unsafe impl Send for Pending {}
 
-impl Pending {
-    pub(super) fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Result<()>> {
+impl wait::Pollable for Pending {
+    type Output = Result<()>;
+
+    fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Result<()>> {
         let node = self.node.as_ptr();
         let engine = unsafe { (*node).engine() };
         engine.queue.with(|_| unsafe {
@@ -302,11 +285,13 @@ impl Pending {
         })
     }
 
-    pub(super) fn forget_waker(&mut self) {
+    fn forget_waker(&mut self) {
         let node = self.node.as_ptr();
         unsafe { (*node).engine() }.queue.with(|_| unsafe { (*node).waker = None });
     }
+}
 
+impl Pending {
     fn state(&self) -> State {
         let node = self.node.as_ptr();
         unsafe { (*node).engine() }.queue.with(|_| unsafe { (*node).state })
@@ -586,43 +571,10 @@ fn setup(plan: &Plan) -> Result<Setup> {
     Ok(setup)
 }
 
-fn pbyte(bits: usize) -> u32 {
-    match bits {
-        4 => sys::DMA2D_DESCRIPTOR_PBYTE_0B5_PER_PIXEL,
-        8 => sys::DMA2D_DESCRIPTOR_PBYTE_1B0_PER_PIXEL,
-        12 => sys::DMA2D_DESCRIPTOR_PBYTE_1B5_PER_PIXEL,
-        16 => sys::DMA2D_DESCRIPTOR_PBYTE_2B0_PER_PIXEL,
-        24 => sys::DMA2D_DESCRIPTOR_PBYTE_3B0_PER_PIXEL,
-        _ => sys::DMA2D_DESCRIPTOR_PBYTE_4B0_PER_PIXEL,
-    }
-}
-
-/// `dma2d_descriptor_t` as its three words of bitfields: bindgen's setters go
-/// bit by bit and cost microseconds a descriptor.
-#[repr(C, align(8))]
-struct Descriptor {
-    words: [u32; 3],
-    buffer: *mut c_void,
-    next: *mut c_void,
-}
-
-const _: () = assert!(mem::size_of::<Descriptor>() == mem::size_of::<sys::dma2d_descriptor_t>());
-
-/// One single-block descriptor, through the uncached alias.
-unsafe fn describe(desc: *mut sys::dma2d_descriptor_t, buffer: *const u8, pic: (u32, u32), block: (u32, u32), at: (u32, u32), bits: usize) {
-    const FIELD: u32 = (1 << 14) - 1;
-    let d = desc.cast::<Descriptor>();
-    let owner = sys::DMA2D_DESCRIPTOR_BUFFER_OWNER_DMA;
-    unsafe {
-        (*d).words = [
-            (block.1 & FIELD) | (block.0 & FIELD) << 14 | 1 << 29 | 1 << 30 | owner << 31,
-            (pic.1 & FIELD) | (pic.0 & FIELD) << 14 | pbyte(bits) << 28,
-            (at.1 & FIELD) | (at.0 & FIELD) << 14 | sys::DMA2D_DESCRIPTOR_BLOCK_RW_MODE_SINGLE << 28,
-        ];
-        (*d).buffer = buffer.cast_mut().cast();
-        (*d).next = ptr::null_mut();
-    }
-    fence(Ordering::SeqCst);
+/// One single-block descriptor.
+unsafe fn describe(desc: &Descriptor, buffer: *const u8, picture: (u32, u32), block: (u32, u32), at: (u32, u32), bits: usize) {
+    let fields = Fields { block, picture, at, two_d: true, multiple: false, eof: true, pbyte: dma::pbyte(bits), buffer };
+    unsafe { desc.write(&fields) };
 }
 
 unsafe fn connect(chan: sys::dma2d_channel_handle_t, periph: sys::dma2d_trigger_peripheral_t, sel: u32, desc: *mut sys::dma2d_descriptor_t) {
@@ -675,12 +627,12 @@ unsafe extern "C" fn picked(n: u32, chans: *const sys::dma2d_trans_channel_info_
             Kind::Srm => {
                 sys::ppa_ll_srm_reset(dev);
                 let (x, y, w, h) = input.block;
-                describe(engine.desc_cpu[0], input.buffer, input.pic, (w, h), (x, y), input.bits);
+                describe(&engine.desc[0], input.buffer, input.pic, (w, h), (x, y), input.bits);
                 // A zero block trips DESC_ERROR, and YUV420 needs it even; the RX
                 // block is written back whatever it says.
-                describe(engine.desc_cpu[1], out.buffer, out.pic, (2, 2), out.at, out.bits);
-                connect(tx, sys::dma2d_trigger_peripheral_t_DMA2D_TRIG_PERIPH_PPA_SRM, sys::SOC_DMA2D_TRIG_PERIPH_PPA_SRM_TX, engine.desc[0]);
-                connect(rx, sys::dma2d_trigger_peripheral_t_DMA2D_TRIG_PERIPH_PPA_SRM, sys::SOC_DMA2D_TRIG_PERIPH_PPA_SRM_RX, engine.desc[1]);
+                describe(&engine.desc[1], out.buffer, out.pic, (2, 2), out.at, out.bits);
+                connect(tx, sys::dma2d_trigger_peripheral_t_DMA2D_TRIG_PERIPH_PPA_SRM, sys::SOC_DMA2D_TRIG_PERIPH_PPA_SRM_TX, engine.desc[0].dma);
+                connect(rx, sys::dma2d_trigger_peripheral_t_DMA2D_TRIG_PERIPH_PPA_SRM, sys::SOC_DMA2D_TRIG_PERIPH_PPA_SRM_RX, engine.desc[1].dma);
                 if setup.yuv444_in {
                     let mut csc: sys::dma2d_csc_config_t = mem::zeroed();
                     csc.__bindgen_anon_1.tx_csc_option = setup.yuv444_std;
@@ -719,13 +671,13 @@ unsafe extern "C" fn picked(n: u32, chans: *const sys::dma2d_trans_channel_info_
                 sys::ppa_ll_blend_reset(dev);
                 let (bx, by, bw, bh) = input.block;
                 let (fx, fy, fw, fh) = fg.block;
-                describe(engine.desc_cpu[0], input.buffer, input.pic, (bw, bh), (bx, by), input.bits);
-                describe(engine.desc_cpu[1], fg.buffer, fg.pic, (fw, fh), (fx, fy), fg.bits);
-                describe(engine.desc_cpu[2], out.buffer, out.pic, (fw, fh), out.at, out.bits);
+                describe(&engine.desc[0], input.buffer, input.pic, (bw, bh), (bx, by), input.bits);
+                describe(&engine.desc[1], fg.buffer, fg.pic, (fw, fh), (fx, fy), fg.bits);
+                describe(&engine.desc[2], out.buffer, out.pic, (fw, fh), out.at, out.bits);
                 let periph = sys::dma2d_trigger_peripheral_t_DMA2D_TRIG_PERIPH_PPA_BLEND;
-                connect(tx, periph, sys::SOC_DMA2D_TRIG_PERIPH_PPA_BLEND_BG_TX, engine.desc[0]);
-                connect(fg_tx, periph, sys::SOC_DMA2D_TRIG_PERIPH_PPA_BLEND_FG_TX, engine.desc[1]);
-                connect(rx, periph, sys::SOC_DMA2D_TRIG_PERIPH_PPA_BLEND_RX, engine.desc[2]);
+                connect(tx, periph, sys::SOC_DMA2D_TRIG_PERIPH_PPA_BLEND_BG_TX, engine.desc[0].dma);
+                connect(fg_tx, periph, sys::SOC_DMA2D_TRIG_PERIPH_PPA_BLEND_FG_TX, engine.desc[1].dma);
+                connect(rx, periph, sys::SOC_DMA2D_TRIG_PERIPH_PPA_BLEND_RX, engine.desc[2].dma);
                 on_done(rx, setup);
                 sys::dma2d_start(tx);
                 sys::dma2d_start(fg_tx);
@@ -767,8 +719,8 @@ unsafe extern "C" fn picked(n: u32, chans: *const sys::dma2d_trans_channel_info_
             Kind::Fill => {
                 sys::ppa_ll_blend_reset(dev);
                 let (w, h, mut color) = setup.fill;
-                describe(engine.desc_cpu[0], out.buffer, out.pic, (w, h), out.at, out.bits);
-                connect(rx, sys::dma2d_trigger_peripheral_t_DMA2D_TRIG_PERIPH_PPA_BLEND, sys::SOC_DMA2D_TRIG_PERIPH_PPA_BLEND_RX, engine.desc[0]);
+                describe(&engine.desc[0], out.buffer, out.pic, (w, h), out.at, out.bits);
+                connect(rx, sys::dma2d_trigger_peripheral_t_DMA2D_TRIG_PERIPH_PPA_BLEND, sys::SOC_DMA2D_TRIG_PERIPH_PPA_BLEND_RX, engine.desc[0].dma);
                 on_done(rx, setup);
                 sys::dma2d_start(rx);
                 sys::ppa_ll_blend_configure_filling_block_color(dev, out.cm, (&raw mut color).cast());

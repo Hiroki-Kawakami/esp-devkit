@@ -726,8 +726,8 @@ UI framework on `bsp_rs`; see its README.
 
 ### `media_engine` (`libs/media_engine`)
 
-The chip's media accelerators (the 2D engine for now) on IDF's HAL and 2D-DMA
-allocator; see its README.
+The chip's media accelerators (the 2D engine and the JPEG decoder) on IDF's
+HAL and 2D-DMA allocator; see its README.
 
 ## Runtime (`libs/rust_rt`)
 

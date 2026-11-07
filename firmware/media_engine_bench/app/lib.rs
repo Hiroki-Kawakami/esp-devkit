@@ -12,7 +12,10 @@ extern crate alloc;
 mod ffi {
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 }
+#[cfg(target_os = "none")]
+mod c_jpeg;
 mod idf_ppa;
+mod jpeg;
 
 use alloc::vec::Vec;
 use core::alloc::{Allocator, Layout};
@@ -25,19 +28,19 @@ use idf::log::{error, info};
 use idf::time::Instant;
 use media_engine::{Background, Blend, Fill, Slot, Srm, ppa};
 
-const TAG: &CStr = c"media_engine_bench";
+pub(crate) const TAG: &CStr = c"media_engine_bench";
 const SRC_W: usize = 1280;
 const SRC_H: usize = 720;
 const STRIP_ROWS: usize = 16;
-const REPS: usize = 3;
+pub(crate) const REPS: usize = 3;
 const STABILITY_FRAMES: usize = 500;
-const FNV_SEED: u32 = 0x811c_9dc5;
+pub(crate) const FNV_SEED: u32 = 0x811c_9dc5;
 
 fn fnv(data: &[u8]) -> u32 {
     data.iter().fold(FNV_SEED, |h, &b| (h ^ u32::from(b)).wrapping_mul(0x0100_0193))
 }
 
-fn buffer(len: usize) -> &'static mut [u8] {
+pub(crate) fn buffer(len: usize) -> &'static mut [u8] {
     let len = len.next_multiple_of(64);
     let layout = Layout::from_size_align(len, 64).unwrap();
     let block = Caps::SPIRAM.allocate_zeroed(layout).expect("PSRAM");
@@ -380,5 +383,6 @@ pub fn run() {
     compare_strips(&mut srm, src565, dst);
     compare_blend(src565, dst);
     check_fill(dst);
+    jpeg::run();
     info!(TAG, "done");
 }

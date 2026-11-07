@@ -9,9 +9,17 @@
 
 extern crate alloc;
 
+#[cfg(CONFIG_SOC_PPA_SUPPORTED)]
+mod dma;
+#[cfg(any(not(target_os = "none"), CONFIG_SOC_PPA_SUPPORTED))]
+mod jpeg;
 #[cfg(any(not(target_os = "none"), CONFIG_SOC_PPA_SUPPORTED))]
 mod ppa;
+#[cfg(any(not(target_os = "none"), CONFIG_SOC_PPA_SUPPORTED))]
+mod wait;
 
+#[cfg(any(not(target_os = "none"), CONFIG_SOC_PPA_SUPPORTED))]
+pub use jpeg::{DecodeConfig, Decode, Decoder, Header, Sampling, Strip, Strips};
 #[cfg(any(not(target_os = "none"), CONFIG_SOC_PPA_SUPPORTED))]
 pub use ppa::{Alpha, Background, Blend, Fill, Job, Ppa, Slot, Srm, Yuv, YuvRange, YuvStandard, ppa};
 

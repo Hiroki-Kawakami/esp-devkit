@@ -38,6 +38,38 @@ ppa.fill(&Fill { rect, color }, &mut target, &mut slot)?.wait()?;
 - `wait` parks the calling task itself; `block_on` would cost an executor's
   setup, about 30 us, for every job.
 
+## JPEG decoder
+
+```rust
+let mut dec = Decoder::new(&DecodeConfig { format: ImageFormat::Rgb565, yuv })?;
+let header = Header::parse(&data)?;              // padded_width x padded_height is what it writes
+dec.decode(&data, &mut target)?.await?;          // or .wait()?
+
+let mut strips = dec.strips(&data, &mut [&mut a, &mut b])?;
+while let Some(strip) = strips.next().await? {   // or next_blocking()?
+    // strip.pixels(): padded_rows() rows of stride_bytes(), from row y()
+}
+```
+
+- Baseline JPEGs, gray or 4:4:4, 4:2:2 and 4:2:0 colour. A colour picture
+  comes out as `Rgb888`, `Bgr888` or `Rgb565`, a gray one as `L8`; anything
+  else is `NOT_SUPPORTED`. `yuv` picks studio or full range (what JFIF files
+  use) and BT.601 or BT.709.
+- The decoder writes the picture rounded up to whole MCUs, rows
+  `padded_width` long. `decode` needs a target that is exactly that wide in
+  stride, at least `padded_height` tall, unturned and in the configured format.
+- `strips` decodes into one or two 64-byte aligned buffers the 2D-DMA reaches.
+  A strip is as many 16-row bands as fit a buffer, but no more than an even
+  share of the picture between the buffers. Holding a `Strip` keeps its buffer
+  from the decoder; with two buffers the decoder fills the other one meanwhile,
+  with one it waits.
+- The timeout (`set_timeout`, 200 ms at first) counts time the decoder goes
+  without writing, not time a strip is held.
+- Dropping a `Decode` or a `Strips` stops the codec. Like a PPA job, neither
+  may be leaked while it runs.
+- It takes the codec's interrupt for good on its first frame, so IDF's JPEG
+  driver must not be in use in the same firmware afterwards.
+
 ## Interrupt path
 
 The engine start (`picked` in `src/ppa/hw.rs`) runs inside `dma2d_enqueue`

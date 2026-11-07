@@ -14,6 +14,7 @@ use devkit_gfx::{Color, ImageFormat, Rotation};
 use idf::{Error, Result};
 
 use super::{Alpha, In, Kind, Plan, SCALE_FRAG, YuvRange, YuvStandard};
+use crate::wait;
 
 pub(super) struct Engines;
 
@@ -57,12 +58,14 @@ impl Node {
 
 pub(super) struct Pending;
 
-impl Pending {
-    pub(super) fn poll(&mut self, _cx: &mut Context<'_>) -> Poll<Result<()>> {
+impl wait::Pollable for Pending {
+    type Output = Result<()>;
+
+    fn poll(&mut self, _cx: &mut Context<'_>) -> Poll<Result<()>> {
         Poll::Ready(Ok(()))
     }
 
-    pub(super) fn forget_waker(&mut self) {}
+    fn forget_waker(&mut self) {}
 }
 
 fn readable(format: ImageFormat, foreground: bool) -> bool {

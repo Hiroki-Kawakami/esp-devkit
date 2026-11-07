@@ -6,12 +6,11 @@
 use core::future::Future;
 use core::marker::PhantomData;
 use core::pin::Pin;
-use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+use core::task::{Context, Poll};
 use core::time::Duration;
 
-use devkit::executor::Park;
-use idf::executor::TaskPark;
-use idf::time::Instant;
+
+use crate::wait;
 
 use devkit_gfx::{Color, Image, ImageFormat, Rect, Rotation, Target};
 use idf::{Error, Result};
@@ -448,60 +447,20 @@ pub struct Job<'a> {
 impl Job<'_> {
     /// From a task that is not async.
     pub fn wait(mut self) -> Result<()> {
-        // block_on would set up a whole executor for each job.
-        let park = TaskPark::current();
-        let waker = unsafe { Waker::from_raw(park_waker(&park)) };
-        let mut cx = Context::from_waker(&waker);
-        loop {
-            if let Poll::Ready(result) = self.inner.poll(&mut cx) {
-                self.inner.forget_waker();
-                return result;
-            }
-            park.park(None);
-        }
+        wait::block(&mut self.inner, None).unwrap_or(Err(Error::TIMEOUT))
     }
 
     /// `None` once `timeout` has passed, with the job still running.
     pub fn wait_timeout(&mut self, timeout: Duration) -> Option<Result<()>> {
-        let park = TaskPark::current();
-        let waker = unsafe { Waker::from_raw(park_waker(&park)) };
-        let mut cx = Context::from_waker(&waker);
-        let start = Instant::now();
-        let tick = idf::executor::tick_duration(1).as_micros().max(1);
-        loop {
-            if let Poll::Ready(result) = self.inner.poll(&mut cx) {
-                self.inner.forget_waker();
-                return Some(result);
-            }
-            let left = timeout.saturating_sub(start.elapsed());
-            if left.is_zero() {
-                self.inner.forget_waker();
-                return None;
-            }
-            park.park(Some((left.as_micros() / tick) as u32 + 1));
-        }
+        wait::block(&mut self.inner, Some(timeout))
     }
-}
-
-/// Wakes the task that owns `park`; valid while `park` is, which `wait` keeps
-/// by taking the waker back before it returns.
-fn park_waker(park: &TaskPark) -> RawWaker {
-    unsafe fn clone(data: *const ()) -> RawWaker {
-        RawWaker::new(data, &VTABLE)
-    }
-    unsafe fn wake(data: *const ()) {
-        unsafe { (*data.cast::<TaskPark>()).unpark() };
-    }
-    unsafe fn drop(_: *const ()) {}
-    static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, wake, wake, drop);
-    RawWaker::new(core::ptr::from_ref(park).cast(), &VTABLE)
 }
 
 impl Future for Job<'_> {
     type Output = Result<()>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<()>> {
-        self.get_mut().inner.poll(cx)
+        wait::Pollable::poll(&mut self.get_mut().inner, cx)
     }
 }
 
