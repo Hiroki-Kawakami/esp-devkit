@@ -1829,6 +1829,10 @@ impl Tree {
             && !self.layout_dirty
     }
 
+    pub(crate) fn has_queued(&self) -> bool {
+        !self.queue.is_empty()
+    }
+
     /// Something happens after a delay, without an event to wake for.
     pub(crate) fn timed(&self) -> bool {
         self.contacts.iter().any(|c| self.nodes.get(c.tap as usize).is_some_and(|n| n.repeat)) || self.gesture_timed()
