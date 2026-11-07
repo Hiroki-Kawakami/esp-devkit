@@ -23,6 +23,15 @@ impl Engines {
         Ok(Self)
     }
 
+    pub(super) fn check(&self, plan: &Plan) -> Result<()> {
+        let ok = match plan.kind {
+            Kind::Srm => readable(plan.input.format, false) && writable(plan.out.format),
+            Kind::Blend => readable(plan.input.format, false) && readable(plan.fg.format, true) && writable(plan.out.format),
+            Kind::Fill => writable(plan.out.format),
+        };
+        if ok { Ok(()) } else { Err(Error::NOT_SUPPORTED) }
+    }
+
     pub(super) fn submit(&'static self, plan: Plan, _node: &mut Node) -> Result<Pending> {
         match plan.kind {
             Kind::Srm => {
@@ -48,15 +57,25 @@ impl Engines {
     }
 }
 
-pub(super) struct Node;
+pub(super) fn sync_out(_out: &super::Out) -> Result<()> {
+    Ok(())
+}
+
+pub(crate) struct Node;
 
 impl Node {
-    pub(super) fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self
     }
 }
 
 pub(super) struct Pending;
+
+impl Pending {
+    pub(super) fn nothing() -> Self {
+        Self
+    }
+}
 
 impl wait::Pollable for Pending {
     type Output = Result<()>;

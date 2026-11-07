@@ -7,12 +7,12 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::alloc::Layout;
 
-use devkit_gfx::{ImageFormat, Size, Target};
+use devkit_gfx::{Image, ImageFormat, Rect, Rotation, Size, Target};
 use devkit_image::{JpegEncoder, JpegOptions, Subsampling, encode_buffer};
 use idf::Error;
 
-use super::{DecodeConfig, Decoder, Header, Sampling};
-use crate::ppa::{Yuv, YuvRange, YuvStandard};
+use super::{DecodeConfig, Decoder, Header, Sampling, Transform};
+use crate::ppa::{Slot, Srm, Yuv, YuvRange, YuvStandard, ppa};
 
 fn jpeg(w: u16, h: u16, format: ImageFormat, subsampling: Subsampling) -> Vec<u8> {
     let channels = if format == ImageFormat::L8 { 1 } else { 3 };
@@ -98,4 +98,59 @@ fn what_the_codec_cannot_do_is_refused() {
     let mut dec = Decoder::new(&config(ImageFormat::Rgb888)).unwrap();
     let mut tiny = [aligned(16 * 3 * 8)];
     assert_eq!(dec.strips(&color, &mut tiny).err(), Some(Error::INVALID_SIZE));
+}
+
+/// What `render` lays down strip by strip is what one `Srm` of the whole
+/// decoded picture lays down.
+#[test]
+fn a_render_matches_one_srm_of_the_whole_picture() {
+    let data = jpeg(48, 72, ImageFormat::Rgb888, Subsampling::S420);
+    let mut dec = Decoder::new(&config(ImageFormat::Rgb565)).unwrap();
+    let whole = aligned(48 * 80 * 2);
+    let mut target = Target::new(&mut *whole, ImageFormat::Rgb565, Size::new(48, 80), 48).unwrap();
+    dec.decode(&data, &mut target).unwrap().wait().unwrap();
+    drop(target);
+    let picture = Image::from_pixels(ImageFormat::Rgb565, 48, 72, 48, whole);
+
+    let cases = [
+        (Transform::new(), None),
+        (Transform { rotation: Rotation::R90, at: (4, 2), ..Transform::new() }, None),
+        (Transform { rotation: Rotation::R270, mirror_x: true, at: (-10, 5), ..Transform::new() }, Some(Rect::new(3, 4, 50, 30))),
+        (Transform { rotation: Rotation::R180, src_rect: Some(Rect::new(5, 8, 40, 60)), at: (20, -7), ..Transform::new() }, Some(Rect::new(0, 0, 60, 40))),
+    ];
+    for (i, (t, area)) in cases.iter().enumerate() {
+        let (mut a, mut b) = (vec![0u8; 80 * 80 * 2], vec![0u8; 80 * 80 * 2]);
+        let mut target = Target::new(&mut a, ImageFormat::Rgb565, Size::new(80, 80), 80).unwrap();
+        if let Some(area) = area {
+            target = target.crop(*area).unwrap();
+        }
+        let mut buffers = [aligned(48 * 2 * 16), aligned(48 * 2 * 16)];
+        dec.render(&data, &mut buffers, t, &mut target).unwrap().wait().unwrap();
+        drop(target);
+
+        let mut target = Target::new(&mut b, ImageFormat::Rgb565, Size::new(80, 80), 80).unwrap();
+        if let Some(area) = area {
+            target = target.crop(*area).unwrap();
+        }
+        let mut op = Srm::new(picture);
+        op.src_rect = t.src_rect.unwrap_or(op.src_rect);
+        (op.at, op.rotation, op.mirror_x) = (t.at, t.rotation, t.mirror_x);
+        ppa().unwrap().srm(&op, &mut target, &mut Slot::new()).unwrap().wait().unwrap();
+        drop(target);
+        assert!(a == b, "case {i}");
+        assert!(a.iter().any(|&p| p != 0), "case {i}");
+    }
+}
+
+#[test]
+fn a_strip_edge_off_a_whole_row_is_refused() {
+    let data = jpeg(48, 72, ImageFormat::Rgb888, Subsampling::S420);
+    let mut dec = Decoder::new(&config(ImageFormat::Rgb565)).unwrap();
+    let mut out = vec![0u8; 64 * 64 * 2];
+    let mut target = Target::new(&mut out, ImageFormat::Rgb565, Size::new(64, 64), 64).unwrap();
+    let mut buffers = [aligned(48 * 2 * 16)];
+    let t = Transform { scale_x: 0.75, scale_y: 0.75, src_rect: Some(Rect::new(0, 1, 48, 40)), ..Transform::new() };
+    assert_eq!(dec.render(&data, &mut buffers, &t, &mut target).err(), Some(Error::INVALID_ARG));
+    let t = Transform { scale_x: 0.75, scale_y: 0.75, src_rect: Some(Rect::new(0, 4, 48, 40)), ..Transform::new() };
+    dec.render(&data, &mut buffers, &t, &mut target).unwrap().wait().unwrap();
 }

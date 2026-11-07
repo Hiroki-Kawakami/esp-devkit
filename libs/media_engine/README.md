@@ -26,6 +26,9 @@ ppa.fill(&Fill { rect, color }, &mut target, &mut slot)?.wait()?;
 - Coordinates and the operation's turn and mirrors are in the target's logical
   picture; the target's own turn is added on top. Blend refuses a turned
   target.
+- An `Srm` that leaves the target's area is cut off at it, to whole source
+  pixels: a scaled picture may stop up to one scaled pixel short of the edge.
+  One that misses the area entirely is a job that is done at once.
 - Dropping a job blocks until the engine is done with its pixels, and stops it
   after a second without an end. A job must never be leaked while it runs
   (`mem::forget`, a leaked box, an `Rc` cycle): the engine would go on writing
@@ -70,6 +73,30 @@ while let Some(strip) = strips.next().await? {   // or next_blocking()?
 - It takes the codec's interrupt for good on its first frame, so IDF's JPEG
   driver must not be in use in the same firmware afterwards.
 
+## JPEG into a target
+
+```rust
+let mut t = Transform::new();
+t.rotation = Rotation::R90;
+t.at = (x, y);
+dec.render(&data, &mut [&mut a, &mut b], &t, &mut target)?.await?;   // or .wait()?
+```
+
+- `render` decodes through strips, as `strips` does, and lays each strip into
+  the target with the 2D engine as soon as it is written. `Transform` is an
+  `Srm` without its source: the picture's part, scale, turn, mirrors and place,
+  cut off at the target's area the same way.
+- The strips are in the configured decode format; the target's format is the
+  output, converted by the engine.
+- Every strip boundary inside the picture's part must land on a whole output
+  row: with a scale of n/16, a boundary's distance from the part's top must be
+  a multiple of 16/gcd(16, n). Otherwise `render` refuses with `INVALID_ARG`.
+- The decoder's and the engine's interrupts hand strips to each other; the
+  calling task only waits for the end. Strips go into the engine's queue one at
+  a time, so other jobs can run between them.
+- The caches over what lands in the target are written back and dropped once,
+  before the decode starts.
+
 ## Interrupt path
 
 The engine start (`picked` in `src/ppa/hw.rs`) runs inside `dma2d_enqueue`
@@ -83,3 +110,8 @@ suspect this first: jpeg_decode_enhanced's code in the same interrupt path hit
 them about once in 500 frames, and putting that code in IRAM made them go.
 `picked`, `done`, `finish` and `start_running` are what would go there, with the
 LL calls they make.
+
+`render` plans each strip's job in the 2D-DMA interrupt, so nothing on that path
+may use floating point: the chip faults with "Coprocessors must not be used in
+ISRs". `Placement` holds scales as integer sixteenths for that reason, and
+`srm_plan` takes one instead of an `Srm`'s `f32` scales.

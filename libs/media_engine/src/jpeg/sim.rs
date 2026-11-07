@@ -16,7 +16,7 @@ use devkit_image::{DecodeOptions, JpegDecoder, SliceStream};
 use idf::{Error, Result};
 
 use super::header::Header;
-use super::{Frame, Output};
+use super::{Chain, Frame, Output};
 use crate::wait;
 
 pub(super) fn init() -> Result<()> {
@@ -26,6 +26,7 @@ pub(super) fn init() -> Result<()> {
 pub(super) struct Session {
     header: Header,
     output: Output,
+    chain: Option<Chain>,
     row_bytes: usize,
     picture: Vec<u8>,
     next: u16,
@@ -66,7 +67,7 @@ impl Session {
         if let Output::Whole(ptr, _) = frame.output {
             unsafe { core::ptr::copy_nonoverlapping(picture.as_ptr(), ptr, picture.len()) };
         }
-        Ok(Self { header: frame.header, output: frame.output, row_bytes: frame.row_bytes, picture, next: 0, blocking: false })
+        Ok(Self { header: frame.header, output: frame.output, chain: frame.chain, row_bytes: frame.row_bytes, picture, next: 0, blocking: false })
     }
 
     pub(super) fn row_bytes(&self) -> usize {
@@ -85,17 +86,35 @@ impl wait::Pollable for Session {
 
     fn poll(&mut self, _cx: &mut Context<'_>) -> Poll<Result<Option<u16>>> {
         let Output::Strips(l) = self.output else { return Poll::Ready(Ok(None)) };
+        if let Some(chain) = self.chain {
+            while self.next < l.strip_count {
+                let index = self.strip(l);
+                let y = index * l.rows;
+                let buffer = l.buffers[usize::from(index) % l.count];
+                if let Some(plan) = chain.plan(buffer, y, l.rows.min(self.header.padded_height - y))? {
+                    chain.ppa.run(plan)?;
+                }
+            }
+            return Poll::Ready(Ok(None));
+        }
         if self.next >= l.strip_count {
             return Poll::Ready(Ok(None));
         }
+        Poll::Ready(Ok(Some(self.strip(l))))
+    }
+
+    fn forget_waker(&mut self) {}
+}
+
+impl Session {
+    /// Copies the next strip into its buffer.
+    fn strip(&mut self, l: super::Layout) -> u16 {
         let index = self.next;
         self.next += 1;
         let y = usize::from(index * l.rows);
         let rows = usize::from(l.rows.min(self.header.padded_height - index * l.rows));
         let src = &self.picture[y * self.row_bytes..(y + rows) * self.row_bytes];
         unsafe { core::ptr::copy_nonoverlapping(src.as_ptr(), l.buffers[usize::from(index) % l.count], src.len()) };
-        Poll::Ready(Ok(Some(index)))
+        index
     }
-
-    fn forget_waker(&mut self) {}
 }

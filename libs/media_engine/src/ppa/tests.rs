@@ -76,16 +76,62 @@ fn srm_lands_at_its_place_and_scales() {
 }
 
 #[test]
-fn what_leaves_the_target_or_its_formats_is_refused() {
+fn what_the_engine_cannot_do_is_refused() {
     let mut out = vec![0u8; 8];
     let mut target = Target::new(&mut out, ImageFormat::Rgb565, Size::new(2, 2), 2).unwrap();
-    assert_eq!(srm(&[1, 2], 2, &mut target, |op| op.at = (1, 0)).err(), Some(Error::INVALID_ARG));
     assert_eq!(srm(&[1, 2], 2, &mut target, |op| op.scale_x = 0.0).err(), Some(Error::INVALID_ARG));
+    assert_eq!(srm(&[1, 2], 2, &mut target, |op| op.src_rect = Rect::new(1, 0, 2, 1)).err(), Some(Error::INVALID_ARG));
     assert_eq!(srm(&[1, 2], 2, &mut target, |op| op.byte_swap = true).err(), None);
 
     let mut gray = vec![0u8; 4];
     let mut l4 = Target::new(&mut gray, ImageFormat::L4, Size::new(2, 2), 2).unwrap();
     assert_eq!(srm(&[1, 2], 2, &mut l4, |_| {}).err(), Some(Error::NOT_SUPPORTED));
+}
+
+#[test]
+fn what_leaves_the_area_is_cut_off() {
+    let mut out = vec![0u8; 8];
+    let mut target = Target::new(&mut out, ImageFormat::Rgb565, Size::new(2, 2), 2).unwrap();
+    srm(&[1, 2], 2, &mut target, |op| op.at = (1, 0)).unwrap();
+    srm(&[3, 4], 2, &mut target, |op| op.at = (-5, 1)).unwrap();
+    assert_eq!(read(&out), [0, 1, 0, 0]);
+}
+
+/// A cut job writes what the whole one writes inside the area, and nothing
+/// outside it, however it is turned and mirrored.
+#[test]
+fn a_cut_job_matches_the_whole_one_inside_the_area() {
+    let src: Vec<u16> = (1..=6 * 4).collect();
+    let area = Rect::new(2, 1, 4, 3);
+    for rotation in [Rotation::R0, Rotation::R90, Rotation::R180, Rotation::R270] {
+        for (mirror_x, mirror_y) in [(false, false), (true, false), (false, true)] {
+            for target_turn in [Rotation::R0, Rotation::R90] {
+                let set = |op: &mut Srm<'_>| {
+                    op.at = (1, -1);
+                    op.rotation = rotation;
+                    op.mirror_x = mirror_x;
+                    op.mirror_y = mirror_y;
+                };
+                let mut whole = vec![0u8; 8 * 8 * 2];
+                let t = Target::new(&mut whole, ImageFormat::Rgb565, Size::new(8, 8), 8).unwrap();
+                srm(&src, 6, &mut t.rotated(target_turn), set).unwrap();
+                let mut cut = vec![0u8; 8 * 8 * 2];
+                let t = Target::new(&mut cut, ImageFormat::Rgb565, Size::new(8, 8), 8).unwrap();
+                srm(&src, 6, &mut t.rotated(target_turn).crop(area).unwrap(), set).unwrap();
+                let (whole, cut) = (read(&whole), read(&cut));
+                let mut probe = [0u8; 128];
+                let probe = Target::new(&mut probe, ImageFormat::Rgb565, Size::new(8, 8), 8).unwrap().rotated(target_turn);
+                let stored = probe.stored_rect(area).unwrap();
+                for y in 0..8 {
+                    for x in 0..8 {
+                        let inside = Rect::new(x, y, 1, 1);
+                        let expect = if stored.contains(&inside) { whole[(y * 8 + x) as usize] } else { 0 };
+                        assert_eq!(cut[(y * 8 + x) as usize], expect, "{rotation:?} {mirror_x} {mirror_y} {target_turn:?} ({x}, {y})");
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[test]

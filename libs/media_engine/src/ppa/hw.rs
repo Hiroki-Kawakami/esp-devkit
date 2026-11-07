@@ -80,12 +80,21 @@ struct Setup {
     fill: (u32, u32, u32),
 }
 
-pub(super) struct Node {
+/// Called in the 2D-DMA interrupt when a chained job ends, done or not.
+#[derive(Clone, Copy)]
+pub(crate) struct Hook {
+    pub f: unsafe fn(arg: *const c_void, index: u16, done: bool),
+    pub arg: *const c_void,
+    pub index: u16,
+}
+
+pub(crate) struct Node {
     setup: Setup,
     trans: sys::dma2d_trans_config_t,
     engine: Option<&'static Engine>,
     state: State,
     waker: Option<Waker>,
+    hook: Option<Hook>,
     next: *mut Node,
 }
 
@@ -109,13 +118,14 @@ unsafe impl Send for Engine {}
 unsafe impl Sync for Engine {}
 
 impl Node {
-    pub(super) fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             setup: unsafe { mem::zeroed() },
             trans: unsafe { mem::zeroed() },
             engine: None,
             state: State::Done,
             waker: None,
+            hook: None,
             next: ptr::null_mut(),
         }
     }
@@ -156,6 +166,22 @@ impl Engines {
     }
 
     pub(super) fn submit(&'static self, plan: Plan, node: &mut Node) -> Result<Pending> {
+        sync_caches(&plan)?;
+        let node = self.enqueue(plan, node, None)?;
+        Ok(Pending { node: Some(node) })
+    }
+
+    pub(super) fn check(&self, plan: &Plan) -> Result<()> {
+        setup(plan).map(|_| ())
+    }
+
+    /// From the 2D-DMA interrupt as well: caches are the caller's, and `node`
+    /// must stay put until the hook has run.
+    pub(super) fn chain(&'static self, plan: Plan, node: *mut Node, hook: Hook) -> Result<()> {
+        self.enqueue(plan, unsafe { &mut *node }, Some(hook)).map(|_| ())
+    }
+
+    fn enqueue(&'static self, plan: Plan, node: &mut Node, hook: Option<Hook>) -> Result<NonNull<Node>> {
         let engine = if plan.kind == Kind::Srm { &self.srm } else { &self.blend };
         let mut setup = setup(&plan)?;
         setup.engine = engine;
@@ -164,8 +190,7 @@ impl Engines {
             Kind::Blend => (2, 0),
             Kind::Fill => (0, 0),
         };
-        sync_caches(&plan)?;
-        *node = Node { setup, trans: unsafe { mem::zeroed() }, engine: Some(engine), state: State::Queued, waker: None, next: ptr::null_mut() };
+        *node = Node { setup, trans: unsafe { mem::zeroed() }, engine: Some(engine), state: State::Queued, waker: None, hook, next: ptr::null_mut() };
         let node: *mut Node = node;
         unsafe {
             let trans = &mut (*node).trans;
@@ -194,7 +219,7 @@ impl Engines {
         if start {
             start_running(engine, node);
         }
-        Ok(Pending { node: NonNull::new(node).ok_or(Error::NO_MEM)? })
+        NonNull::new(node).ok_or(Error::NO_MEM)
     }
 }
 
@@ -215,7 +240,7 @@ fn start_running(engine: &'static Engine, mut node: *mut Node) {
 
 /// Ends the running node as `state` and makes the next one running.
 fn finish(engine: &'static Engine, state: State) -> Option<*mut Node> {
-    let mut waker = None;
+    let (mut waker, mut hook) = (None, None);
     let next = engine.queue.with(|q| {
         let done = q.running;
         if done.is_null() {
@@ -224,6 +249,7 @@ fn finish(engine: &'static Engine, state: State) -> Option<*mut Node> {
         unsafe {
             (*done).state = state;
             waker = (*done).waker.clone();
+            hook = (*done).hook;
         }
         let next = q.head;
         if next.is_null() {
@@ -244,6 +270,9 @@ fn finish(engine: &'static Engine, state: State) -> Option<*mut Node> {
     if let Some(waker) = waker {
         waker.wake_by_ref();
     }
+    if let Some(h) = hook {
+        unsafe { (h.f)(h.arg, h.index, state == State::Done) };
+    }
     next
 }
 
@@ -260,7 +289,7 @@ unsafe extern "C" fn done(
 }
 
 pub(super) struct Pending {
-    node: NonNull<Node>,
+    node: Option<NonNull<Node>>,
 }
 
 unsafe impl Send for Pending {}
@@ -269,7 +298,8 @@ impl wait::Pollable for Pending {
     type Output = Result<()>;
 
     fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Result<()>> {
-        let node = self.node.as_ptr();
+        let Some(node) = self.node else { return Poll::Ready(Ok(())) };
+        let node = node.as_ptr();
         let engine = unsafe { (*node).engine() };
         engine.queue.with(|_| unsafe {
             match (*node).state {
@@ -286,20 +316,36 @@ impl wait::Pollable for Pending {
     }
 
     fn forget_waker(&mut self) {
-        let node = self.node.as_ptr();
+        let Some(node) = self.node else { return };
+        let node = node.as_ptr();
         unsafe { (*node).engine() }.queue.with(|_| unsafe { (*node).waker = None });
     }
 }
 
 impl Pending {
+    pub(super) fn nothing() -> Self {
+        Self { node: None }
+    }
+
+    /// Waits for, or stops, the job `node` last took, as dropping its job does.
+    pub(super) fn settle(node: *mut Node) {
+        if unsafe { (*node).engine.is_some() } {
+            drop(Self { node: NonNull::new(node) });
+        }
+    }
+
+    fn node(&self) -> *mut Node {
+        self.node.map_or(ptr::null_mut(), NonNull::as_ptr)
+    }
+
     fn state(&self) -> State {
-        let node = self.node.as_ptr();
+        let node = self.node();
         unsafe { (*node).engine() }.queue.with(|_| unsafe { (*node).state })
     }
 
     /// Takes a queued node out; false once it has started.
     fn unqueue(&self) -> bool {
-        let node = self.node.as_ptr();
+        let node = self.node();
         unsafe { (*node).engine() }.queue.with(|q| unsafe {
             if (*node).state != State::Queued {
                 return false;
@@ -324,7 +370,7 @@ impl Pending {
     }
 
     fn force_end(&self) {
-        let node = self.node.as_ptr();
+        let node = self.node();
         let engine = unsafe { (*node).engine() };
         let still = engine.queue.with(|q| {
             if q.running != node || unsafe { (*node).state } != State::Running {
@@ -348,7 +394,7 @@ impl Pending {
 
 impl Drop for Pending {
     fn drop(&mut self) {
-        if !self.unqueue() {
+        if self.node.is_some() && !self.unqueue() {
             let start = Instant::now();
             while matches!(self.state(), State::Running) {
                 if start.elapsed() >= DROP_TIMEOUT {
@@ -369,6 +415,11 @@ fn span(ptr: *const u8, len: usize, pic_w: u32, format: ImageFormat, (x, y, w, h
     (unsafe { ptr.add(first) }, last - first)
 }
 
+pub(super) fn sync_out(out: &Out) -> Result<()> {
+    let (at, len) = span(out.ptr, out.len, out.pic_w, out.format, (out.at.0, out.at.1, out.size.0, out.size.1));
+    unsafe { cache::msync(at, len, Flags::C2M | Flags::INVALIDATE | Flags::UNALIGNED) }
+}
+
 fn sync_caches(plan: &Plan) -> Result<()> {
     for input in [&plan.input, &plan.fg] {
         // A background in the target is covered by the output's write-back.
@@ -378,9 +429,7 @@ fn sync_caches(plan: &Plan) -> Result<()> {
             let _ = unsafe { cache::msync(at, len, Flags::C2M | Flags::UNALIGNED) };
         }
     }
-    let out = &plan.out;
-    let (at, len) = span(out.ptr, out.len, out.pic_w, out.format, (out.at.0, out.at.1, out.size.0, out.size.1));
-    unsafe { cache::msync(at, len, Flags::C2M | Flags::INVALIDATE | Flags::UNALIGNED) }
+    sync_out(&plan.out)
 }
 
 fn srm_mode(format: ImageFormat, output: bool) -> Option<(u32, bool)> {

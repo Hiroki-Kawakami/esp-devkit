@@ -9,11 +9,10 @@ use core::pin::Pin;
 use core::task::{Context, Poll};
 use core::time::Duration;
 
-
-use crate::wait;
-
 use devkit_gfx::{Color, Image, ImageFormat, Rect, Rotation, Target};
 use idf::{Error, Result};
+
+use crate::wait;
 
 #[cfg(target_os = "none")]
 #[path = "hw.rs"]
@@ -21,6 +20,10 @@ mod backend;
 #[cfg(not(target_os = "none"))]
 #[path = "sim.rs"]
 mod backend;
+
+pub(crate) use backend::Node;
+#[cfg(target_os = "none")]
+pub(crate) use backend::Hook;
 
 /// How the engine changes the alpha of the pixels it reads.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -56,7 +59,8 @@ pub struct Yuv {
 
 /// Scale, then rotate, then mirror `src_rect` of `src` into the target, its
 /// top left at `at` of the target's logical picture. Scales go in steps of
-/// 1/16 from 1/16 up.
+/// 1/16 from 1/16 up. What falls outside the target's area is cut off, to
+/// whole source pixels inside it.
 #[derive(Clone, Copy)]
 pub struct Srm<'a> {
     pub src: Image<'a>,
@@ -228,6 +232,143 @@ fn even(v: u32) -> bool {
     v % 2 == 0
 }
 
+/// Edges cut off a rectangle: left, top, right, bottom.
+type Trims = [u32; 4];
+
+/// Trims of the scaled source as trims of what lands, turned and mirrored.
+fn turn(t: Trims, rotation: Rotation, mirror_x: bool, mirror_y: bool) -> Trims {
+    let k = usize::from(quarter_turns(rotation));
+    let mut o = [t[k % 4], t[(1 + k) % 4], t[(2 + k) % 4], t[(3 + k) % 4]];
+    if mirror_x {
+        o.swap(0, 2);
+    }
+    if mirror_y {
+        o.swap(1, 3);
+    }
+    o
+}
+
+fn unturn(mut o: Trims, rotation: Rotation, mirror_x: bool, mirror_y: bool) -> Trims {
+    if mirror_x {
+        o.swap(0, 2);
+    }
+    if mirror_y {
+        o.swap(1, 3);
+    }
+    let k = usize::from(quarter_turns(rotation));
+    [o[(4 - k) % 4], o[(5 - k) % 4], o[(6 - k) % 4], o[(7 - k) % 4]]
+}
+
+fn sixteenths((int, frag): (u32, u32)) -> u32 {
+    int * SCALE_FRAG + frag
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct Placement {
+    pub src_rect: Rect,
+    pub at: (i16, i16),
+    pub scale_x: (u32, u32),
+    pub scale_y: (u32, u32),
+    pub rotation: Rotation,
+    pub mirror_x: bool,
+    pub mirror_y: bool,
+}
+
+impl Placement {
+    pub fn new(src_rect: Rect, at: (i16, i16), scale_x: f32, scale_y: f32, rotation: Rotation, mirror_x: bool, mirror_y: bool) -> Result<Self> {
+        let p = Self { src_rect, at, scale_x: scale(scale_x)?, scale_y: scale(scale_y)?, rotation, mirror_x, mirror_y };
+        let (w, h) = p.landed_size();
+        if w == 0 || h == 0 || w > i16::MAX as u32 || h > i16::MAX as u32 {
+            return Err(Error::INVALID_ARG);
+        }
+        Ok(p)
+    }
+
+    /// Source rows that land on whole rows.
+    pub fn row_step(&self) -> u32 {
+        let q = sixteenths(self.scale_y);
+        let mut g = (SCALE_FRAG, q);
+        while g.1 != 0 {
+            g = (g.1, g.0 % g.1);
+        }
+        SCALE_FRAG / g.0
+    }
+
+    pub fn landed_size(&self) -> (u32, u32) {
+        let (w, h) = (scaled(self.src_rect.w as u32, self.scale_x), scaled(self.src_rect.h as u32, self.scale_y));
+        if self.rotation.swaps_axes() { (h, w) } else { (w, h) }
+    }
+
+    pub fn landed(&self) -> Rect {
+        let (w, h) = self.landed_size();
+        Rect::new(self.at.0, self.at.1, w as i16, h as i16)
+    }
+
+    /// `part`, inside `src_rect`, placed where it lands as part of the whole.
+    pub fn part(&self, part: Rect) -> Self {
+        let (sw, sh) = (scaled(self.src_rect.w as u32, self.scale_x), scaled(self.src_rect.h as u32, self.scale_y));
+        let left = scaled((part.x - self.src_rect.x) as u32, self.scale_x);
+        let top = scaled((part.y - self.src_rect.y) as u32, self.scale_y);
+        let (w, h) = (scaled(part.w as u32, self.scale_x), scaled(part.h as u32, self.scale_y));
+        let o = turn([left, top, sw - left - w, sh - top - h], self.rotation, self.mirror_x, self.mirror_y);
+        Self { src_rect: part, at: (self.at.0 + o[0] as i16, self.at.1 + o[1] as i16), ..*self }
+    }
+
+    /// Cut down to what lands inside `area`, to whole source pixels and source
+    /// rows that are multiples of `row_step` from the top; `even` keeps the
+    /// cut source columns and rows on even coordinates. `None` when nothing is
+    /// left.
+    pub fn clip(&self, area: Rect, row_step: u32, even: (bool, bool)) -> Option<Self> {
+        let landed = self.landed();
+        if area.contains(&landed) {
+            return Some(*self);
+        }
+        let inside = landed.intersect(&area);
+        if inside.is_empty() {
+            return None;
+        }
+        let cut = [
+            (inside.x - landed.x) as u32,
+            (inside.y - landed.y) as u32,
+            (landed.right() - inside.right()) as u32,
+            (landed.bottom() - inside.bottom()) as u32,
+        ];
+        let s = unturn(cut, self.rotation, self.mirror_x, self.mirror_y);
+        let (w, h) = (self.src_rect.w as u32, self.src_rect.h as u32);
+        let (sw, sh) = (scaled(w, self.scale_x), scaled(h, self.scale_y));
+        let (qx, qy) = (sixteenths(self.scale_x), sixteenths(self.scale_y));
+        let mut a = (s[0] * SCALE_FRAG).div_ceil(qx);
+        let mut b = ((sw - s[2]) * SCALE_FRAG / qx).min(w);
+        let mut r0 = (s[1] * SCALE_FRAG).div_ceil(qy).next_multiple_of(row_step);
+        let mut r1 = ((sh - s[3]) * SCALE_FRAG / qy).min(h);
+        if r1 < h {
+            r1 -= r1 % row_step;
+        }
+        let (x, y) = (self.src_rect.x as u32, self.src_rect.y as u32);
+        if even.0 {
+            a += (x + a) % 2;
+            b -= (x + b) % 2;
+        }
+        if even.1 {
+            r0 += (y + r0) % 2;
+            r1 -= (y + r1) % 2;
+        }
+        if b <= a || r1 <= r0 || scaled(b - a, self.scale_x) == 0 || scaled(r1 - r0, self.scale_y) == 0 {
+            return None;
+        }
+        let part = Rect::new((x + a) as i16, (y + r0) as i16, (b - a) as i16, (r1 - r0) as i16);
+        Some(self.part(part))
+    }
+}
+
+fn even_axes(format: ImageFormat) -> (bool, bool) {
+    match format {
+        ImageFormat::Yuv420 => (true, true),
+        ImageFormat::Yuyv | ImageFormat::Uyvy => (true, false),
+        _ => (false, false),
+    }
+}
+
 fn input(image: &Image<'_>, rect: Rect, yuv: Yuv, rgb_swap: bool, byte_swap: bool, alpha: Alpha) -> Result<In> {
     let bounds = Rect::new(0, 0, image.width() as i16, image.height() as i16);
     if rect.is_empty() || rect.x < 0 || rect.y < 0 || !bounds.contains(&rect) {
@@ -291,33 +432,47 @@ fn none_in() -> In {
 }
 
 impl Srm<'_> {
-    fn plan(&self, target: &mut Target<'_>) -> Result<Plan> {
-        let input = input(&self.src, self.src_rect, self.src_yuv, self.rgb_swap, self.byte_swap, self.alpha)?;
-        let (sx, sy) = (scale(self.scale_x)?, scale(self.scale_y)?);
-        let (w, h) = (scaled(input.block.2, sx), scaled(input.block.3, sy));
-        if w == 0 || h == 0 {
-            return Err(Error::INVALID_ARG);
-        }
-        let (lw, lh) = if self.rotation.swaps_axes() { (h, w) } else { (w, h) };
-        let logical = Rect::new(self.at.0, self.at.1, lw as i16, lh as i16);
-        let stored = target.stored_rect(logical).ok_or(Error::INVALID_ARG)?;
-        let turned = target.rotation().swaps_axes();
-        let (mirror_x, mirror_y) = if turned { (self.mirror_y, self.mirror_x) } else { (self.mirror_x, self.mirror_y) };
-        let rotation = from_quarter_turns(quarter_turns(self.rotation) + quarter_turns(target.rotation()));
-        Ok(Plan {
-            kind: Kind::Srm,
-            input,
-            fg: none_in(),
-            fg_color: Color::rgb(0, 0, 0),
-            out: output(target, stored, self.dst_yuv)?,
-            rotation,
-            scale_x: sx,
-            scale_y: sy,
-            mirror_x,
-            mirror_y,
-            color: Color::rgb(0, 0, 0),
-        })
+    fn placement(&self) -> Result<Placement> {
+        Placement::new(self.src_rect, self.at, self.scale_x, self.scale_y, self.rotation, self.mirror_x, self.mirror_y)
     }
+
+    /// `None` when nothing of it lands in the target's area.
+    fn plan(&self, target: &mut Target<'_>) -> Result<Option<Plan>> {
+        input(&self.src, self.src_rect, self.src_yuv, self.rgb_swap, self.byte_swap, self.alpha)?;
+        let source = Source { image: self.src, yuv: self.src_yuv, rgb_swap: self.rgb_swap, byte_swap: self.byte_swap, alpha: self.alpha };
+        srm_plan(&source, self.placement()?, self.dst_yuv, target)
+    }
+}
+
+pub(crate) struct Source<'a> {
+    pub image: Image<'a>,
+    pub yuv: Yuv,
+    pub rgb_swap: bool,
+    pub byte_swap: bool,
+    pub alpha: Alpha,
+}
+
+/// Without floating point, which a 2D-DMA interrupt must not touch.
+pub(crate) fn srm_plan(src: &Source<'_>, placement: Placement, dst_yuv: Yuv, target: &mut Target<'_>) -> Result<Option<Plan>> {
+    let Some(p) = placement.clip(target.area(), 1, even_axes(src.image.format())) else { return Ok(None) };
+    let input = input(&src.image, p.src_rect, src.yuv, src.rgb_swap, src.byte_swap, src.alpha)?;
+    let stored = target.stored_rect(p.landed()).ok_or(Error::INVALID_ARG)?;
+    let turned = target.rotation().swaps_axes();
+    let (mirror_x, mirror_y) = if turned { (p.mirror_y, p.mirror_x) } else { (p.mirror_x, p.mirror_y) };
+    let rotation = from_quarter_turns(quarter_turns(p.rotation) + quarter_turns(target.rotation()));
+    Ok(Some(Plan {
+        kind: Kind::Srm,
+        input,
+        fg: none_in(),
+        fg_color: Color::rgb(0, 0, 0),
+        out: output(target, stored, dst_yuv)?,
+        rotation,
+        scale_x: p.scale_x,
+        scale_y: p.scale_y,
+        mirror_x,
+        mirror_y,
+        color: Color::rgb(0, 0, 0),
+    }))
 }
 
 impl Blend<'_> {
@@ -416,8 +571,10 @@ impl Default for Slot {
 impl Ppa {
     /// Writes into `target` until the job is done; see [`Job`].
     pub fn srm<'a>(&'static self, op: &Srm<'a>, target: &'a mut Target<'_>, slot: &'a mut Slot) -> Result<Job<'a>> {
-        let plan = op.plan(target)?;
-        self.submit(plan, slot)
+        match op.plan(target)? {
+            Some(plan) => self.submit(plan, slot),
+            None => Ok(Job { inner: backend::Pending::nothing(), _borrow: PhantomData }),
+        }
     }
 
     pub fn blend<'a>(&'static self, op: &Blend<'a>, target: &'a mut Target<'_>, slot: &'a mut Slot) -> Result<Job<'a>> {
@@ -432,6 +589,33 @@ impl Ppa {
 
     fn submit<'a>(&'static self, plan: Plan, slot: &'a mut Slot) -> Result<Job<'a>> {
         Ok(Job { inner: self.engines.submit(plan, &mut slot.node)?, _borrow: PhantomData })
+    }
+
+    /// Whether the engine takes `plan`, so a chained submit of it cannot fail.
+    pub(crate) fn check(&self, plan: &Plan) -> Result<()> {
+        self.engines.check(plan)
+    }
+
+    #[cfg(target_os = "none")]
+    pub(crate) fn chain(&'static self, plan: Plan, node: *mut Node, hook: Hook) -> Result<()> {
+        self.engines.chain(plan, node, hook)
+    }
+
+    #[cfg(target_os = "none")]
+    pub(crate) fn settle(&self, node: *mut Node) {
+        backend::Pending::settle(node);
+    }
+
+    #[cfg(not(target_os = "none"))]
+    pub(crate) fn run(&'static self, plan: Plan) -> Result<()> {
+        self.engines.submit(plan, &mut Node::new()).map(|_| ())
+    }
+
+    /// Writes back and drops the caches over `rect` of the target's logical
+    /// picture, for chained jobs that write there.
+    pub(crate) fn sync_target(&self, target: &mut Target<'_>, rect: Rect) -> Result<()> {
+        let stored = target.stored_rect(rect).ok_or(Error::INVALID_ARG)?;
+        backend::sync_out(&output(target, stored, Yuv::default())?)
     }
 }
 

@@ -22,10 +22,9 @@ use idf::time::Instant;
 use idf::{Error, Result};
 
 use super::header::{self, Header, Sampling, Tables};
-use super::{Frame, Layout, Output};
+use super::{Chain, Frame, Layout, Output};
 use crate::dma::{self, Descriptor, Fields};
-use crate::ppa::YuvRange;
-use crate::ppa::YuvStandard;
+use crate::ppa::{Hook, Node, YuvRange, YuvStandard};
 use crate::{sys, wait};
 
 const TAG: &CStr = c"jpeg";
@@ -73,9 +72,65 @@ struct State {
     rx: sys::dma2d_channel_handle_t,
     tail: u16,
     waker: Option<Waker>,
+    chain: bool,
+    submitted: u16,
+    completed: u16,
+    failed: bool,
+    submitting: u8,
 }
 
 unsafe impl Send for State {}
+
+impl State {
+    const fn new() -> Self {
+        Self {
+            active: false,
+            strips: false,
+            strip_count: 0,
+            delivered: 0,
+            eof: false,
+            status: 0,
+            events: 0,
+            rx: ptr::null_mut(),
+            tail: 0,
+            waker: None,
+            chain: false,
+            submitted: 0,
+            completed: 0,
+            failed: false,
+            submitting: 0,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct StripGeom {
+    layout: Layout,
+    hb: u32,
+    mcu_h: u32,
+    padded_width: u32,
+    padded_height: u16,
+    bits: usize,
+}
+
+impl StripGeom {
+    fn rows_of(&self, index: u16) -> u16 {
+        self.layout.rows.min(self.padded_height - index * self.layout.rows)
+    }
+
+    fn fields(&self, index: u16) -> Fields {
+        Fields {
+            block: (self.hb, self.mcu_h),
+            picture: (self.padded_width, u32::from(self.rows_of(index))),
+            at: (0, 0),
+            two_d: true,
+            multiple: true,
+            eof: false,
+            pbyte: dma::pbyte(self.bits),
+            buffer: self.layout.buffers[usize::from(index) % self.layout.count],
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 struct Setup {
@@ -95,6 +150,9 @@ struct Codec {
     rx: [Descriptor; RX_POOL],
     setup: UnsafeCell<Setup>,
     tables: UnsafeCell<Tables>,
+    geom: UnsafeCell<Option<StripGeom>>,
+    chain: UnsafeCell<Option<Chain>>,
+    nodes: [UnsafeCell<Node>; super::MAX_STRIP_BUFFERS],
     state: Spinlock<State>,
 }
 
@@ -122,18 +180,6 @@ impl Codec {
             error!(TAG, "2D-DMA pool: {err}");
             return Err(err);
         }
-        let state = State {
-            active: false,
-            strips: false,
-            strip_count: 0,
-            delivered: 0,
-            eof: false,
-            status: 0,
-            events: 0,
-            rx: ptr::null_mut(),
-            tail: 0,
-            waker: None,
-        };
         Ok(Self {
             lock: Mutex::new(()),
             hal: UnsafeCell::new(hal),
@@ -144,7 +190,10 @@ impl Codec {
             rx: [Descriptor::new()?, Descriptor::new()?, Descriptor::new()?],
             setup: UnsafeCell::new(Setup { sampling: Sampling::Gray, csc: 0, scramble: 0, full: None }),
             tables: UnsafeCell::new(Tables::new()),
-            state: Spinlock::new(state),
+            geom: UnsafeCell::new(None),
+            chain: UnsafeCell::new(None),
+            nodes: [UnsafeCell::new(Node::new()), UnsafeCell::new(Node::new())],
+            state: Spinlock::new(State::new()),
         })
     }
 
@@ -192,24 +241,94 @@ unsafe extern "C" fn on_interrupt(arg: *mut c_void) {
     }
 }
 
-fn wake(codec: &'static Codec, f: impl FnOnce(&mut State)) {
-    let waker = codec.state.with(|s| {
-        f(s);
+fn wake<T>(codec: &'static Codec, f: impl FnOnce(&mut State) -> T) -> T {
+    let (out, waker) = codec.state.with(|s| {
+        let out = f(s);
         s.events = s.events.wrapping_add(1);
-        s.waker.clone()
+        (out, s.waker.clone())
     });
     if let Some(waker) = waker {
         waker.wake_by_ref();
     }
+    out
+}
+
+/// Strips delivered but not yet handed to the engine, taken for the caller to
+/// hand over; `submitting` stays up until it has.
+fn take_ready(s: &mut State) -> Option<(u16, u16)> {
+    if !s.chain || s.submitted >= s.delivered {
+        return None;
+    }
+    let range = (s.submitted, s.delivered);
+    s.submitted = s.delivered;
+    s.submitting += 1;
+    Some(range)
+}
+
+fn submit(codec: &'static Codec, (from, to): (u16, u16)) {
+    let chain = unsafe { (*codec.chain.get()).as_ref() };
+    let geom = unsafe { (*codec.geom.get()).as_ref() };
+    if let (Some(chain), Some(g)) = (chain, geom) {
+        for index in from..to {
+            let buffer = g.layout.buffers[usize::from(index) % g.layout.count];
+            let plan = chain.plan(buffer, index * g.layout.rows, g.rows_of(index));
+            let hook = Hook { f: strip_done, arg: ptr::from_ref(codec).cast(), index };
+            let node = codec.nodes[usize::from(index) % g.layout.count].get();
+            match plan {
+                Ok(Some(plan)) => {
+                    if chain.ppa.chain(plan, node, hook).is_err() {
+                        unsafe { strip_done(hook.arg, index, false) };
+                    }
+                }
+                Ok(None) => unsafe { strip_done(hook.arg, index, true) },
+                Err(_) => unsafe { strip_done(hook.arg, index, false) },
+            }
+        }
+    }
+    codec.state.with(|s| s.submitting -= 1);
+}
+
+unsafe fn strip_done(arg: *const c_void, index: u16, done: bool) {
+    let codec: &'static Codec = unsafe { &*arg.cast() };
+    link_after(codec, index);
+    wake(codec, |s| {
+        s.completed += 1;
+        s.failed |= !done;
+    });
+}
+
+/// Links the strip that reuses strip `index`'s buffer.
+fn link_after(codec: &'static Codec, index: u16) {
+    let Some(g) = (unsafe { *codec.geom.get() }) else { return };
+    let tail = index + g.layout.count as u16;
+    if tail >= g.layout.strip_count {
+        return;
+    }
+    let (prev, next) = (&codec.rx[usize::from(tail - 1) % RX_POOL], &codec.rx[usize::from(tail) % RX_POOL]);
+    codec.state.with(|s| {
+        if !s.active || s.rx.is_null() {
+            return;
+        }
+        unsafe {
+            next.write(&g.fields(tail));
+            prev.link(Some(next));
+            sys::dma2d_append(s.rx);
+        }
+        s.tail = tail;
+    });
 }
 
 unsafe extern "C" fn on_desc_done(_: sys::dma2d_channel_handle_t, _: *mut sys::dma2d_event_data_t, arg: *mut c_void) -> bool {
     let codec: &'static Codec = unsafe { &*arg.cast() };
-    wake(codec, |s| {
+    let ready = wake(codec, |s| {
         if s.active && s.strips && s.delivered < s.strip_count {
             s.delivered += 1;
         }
+        take_ready(s)
     });
+    if let Some(range) = ready {
+        submit(codec, range);
+    }
     false
 }
 
@@ -217,10 +336,14 @@ unsafe extern "C" fn on_rx_eof(_: sys::dma2d_channel_handle_t, _: *mut sys::dma2
     let codec: &'static Codec = unsafe { &*arg.cast() };
     // The last strip's descriptor-done is not always reported, but the end of
     // the frame means every strip is written.
-    wake(codec, |s| {
+    let ready = wake(codec, |s| {
         s.delivered = s.strip_count;
         s.eof = true;
+        take_ready(s)
     });
+    if let Some(range) = ready {
+        submit(codec, range);
+    }
     false
 }
 
@@ -321,6 +444,7 @@ pub(super) struct Session {
     data: *const u8,
     len: usize,
     output: Output,
+    chain: Option<Chain>,
     row_bytes: usize,
     timeout: Duration,
     lock: Option<Pin<Box<MutexLock<'static, ()>>>>,
@@ -373,6 +497,7 @@ impl Session {
             data: frame.data.as_ptr(),
             len: frame.data.len(),
             output: frame.output,
+            chain: frame.chain,
             row_bytes: frame.row_bytes,
             timeout: frame.timeout,
             lock: None,
@@ -402,20 +527,14 @@ impl Session {
         }
     }
 
-    fn rows_of(&self, l: &Layout, index: u16) -> u16 {
-        l.rows.min(self.header.padded_height - index * l.rows)
-    }
-
-    fn strip_fields(&self, l: &Layout, index: u16) -> Fields {
-        Fields {
-            block: (self.hb, u32::from(self.header.mcu.1)),
-            picture: (u32::from(self.header.padded_width), u32::from(self.rows_of(l, index))),
-            at: (0, 0),
-            two_d: true,
-            multiple: true,
-            eof: false,
-            pbyte: dma::pbyte(self.format.bits()),
-            buffer: l.buffers[usize::from(index) % l.count],
+    fn geom(&self, layout: Layout) -> StripGeom {
+        StripGeom {
+            layout,
+            hb: self.hb,
+            mcu_h: u32::from(self.header.mcu.1),
+            padded_width: u32::from(self.header.padded_width),
+            padded_height: self.header.padded_height,
+            bits: self.format.bits(),
         }
     }
 
@@ -493,9 +612,10 @@ impl Session {
                 (false, 1, 1)
             }
             Output::Strips(l) => {
+                let g = self.geom(l);
                 let linked = l.count.min(usize::from(l.strip_count));
                 for i in 0..linked {
-                    unsafe { codec.rx[i].write(&self.strip_fields(&l, i as u16)) };
+                    unsafe { codec.rx[i].write(&g.fields(i as u16)) };
                     if i > 0 {
                         unsafe { codec.rx[i - 1].link(Some(&codec.rx[i])) };
                     }
@@ -507,20 +627,13 @@ impl Session {
                 (true, l.strip_count, linked)
             }
         };
-        unsafe { *codec.setup.get() = self.setup };
+        unsafe {
+            *codec.setup.get() = self.setup;
+            *codec.geom.get() = self.strip_layout().map(|l| self.geom(l));
+            *codec.chain.get() = self.chain;
+        }
         codec.state.with(|s| {
-            *s = State {
-                active: true,
-                strips,
-                strip_count,
-                delivered: 0,
-                eof: false,
-                status: 0,
-                events: 0,
-                rx: ptr::null_mut(),
-                tail: linked as u16 - 1,
-                waker: None,
-            }
+            *s = State { active: true, strips, strip_count, tail: linked as u16 - 1, chain: self.chain.is_some(), ..State::new() }
         });
         let trans = codec.trans.get();
         unsafe {
@@ -545,6 +658,7 @@ impl Session {
         self.finished = true;
         let codec = codec();
         let eof = codec.state.with(|s| {
+            s.chain = false;
             s.active = false;
             s.rx = ptr::null_mut();
             s.waker = None;
@@ -553,6 +667,18 @@ impl Session {
         if !eof {
             let mut yield_ = false;
             unsafe { sys::dma2d_force_end(codec.placeholder, &mut yield_) };
+        }
+        if let Some(chain) = self.chain {
+            while codec.state.with(|s| s.submitting) != 0 {
+                core::hint::spin_loop();
+            }
+            for node in &codec.nodes {
+                chain.ppa.settle(node.get());
+            }
+        }
+        unsafe {
+            *codec.geom.get() = None;
+            *codec.chain.get() = None;
         }
         self.guard = None;
     }
@@ -563,33 +689,15 @@ impl Session {
     }
 
     pub(super) fn release(&mut self, index: u16) {
-        let Some(l) = self.strip_layout() else { return };
         self.since = Instant::now();
-        if self.finished {
-            return;
+        if self.started && !self.finished {
+            link_after(codec(), index);
         }
-        let tail = index + l.count as u16;
-        if tail >= l.strip_count {
-            return;
-        }
-        let codec = codec();
-        let (prev, next) = (&codec.rx[usize::from(tail - 1) % RX_POOL], &codec.rx[usize::from(tail) % RX_POOL]);
-        unsafe { next.write(&self.strip_fields(&l, tail)) };
-        codec.state.with(|s| {
-            if !s.active || s.rx.is_null() {
-                return;
-            }
-            unsafe {
-                prev.link(Some(next));
-                sys::dma2d_append(s.rx);
-            }
-            s.tail = tail;
-        });
     }
 
     fn deliver(&mut self, index: u16) -> Result<()> {
         let Some(l) = self.strip_layout() else { return Ok(()) };
-        let len = (self.row_bytes * usize::from(self.rows_of(&l, index))).next_multiple_of(64);
+        let len = (self.row_bytes * usize::from(self.geom(l).rows_of(index))).next_multiple_of(64);
         unsafe { cache::msync(l.buffers[usize::from(index) % l.count], len, Flags::M2C) }
     }
 }
@@ -615,15 +723,25 @@ impl wait::Pollable for Session {
             }
         }
         let codec = codec();
-        let (status, eof, delivered, events) = codec.state.with(|s| {
+        let (status, eof, delivered, events, completed, failed) = codec.state.with(|s| {
             s.waker = Some(cx.waker().clone());
-            (s.status, s.eof, s.delivered, s.events)
+            (s.status, s.eof, s.delivered, s.events, s.completed, s.failed)
         });
         if status != 0 {
             error!(TAG, "decoder status {status:#x}");
             return self.fail(Error::INVALID_STATE);
         }
+        if failed {
+            error!(TAG, "the 2D engine failed a strip");
+            return self.fail(Error::FAIL);
+        }
         match self.output {
+            Output::Strips(l) if self.chain.is_some() => {
+                if eof && completed >= l.strip_count {
+                    self.finish();
+                    return Poll::Ready(Ok(None));
+                }
+            }
             Output::Whole(ptr, len) if eof => {
                 self.finish();
                 return Poll::Ready(unsafe { cache::msync(ptr, len, Flags::M2C) }.map(|()| None));

@@ -19,7 +19,7 @@ mod ppa;
 mod wait;
 
 #[cfg(any(not(target_os = "none"), CONFIG_SOC_PPA_SUPPORTED))]
-pub use jpeg::{DecodeConfig, Decode, Decoder, Header, Sampling, Strip, Strips};
+pub use jpeg::{DecodeConfig, Decode, Decoder, Header, Render, Sampling, Strip, Strips, Transform};
 #[cfg(any(not(target_os = "none"), CONFIG_SOC_PPA_SUPPORTED))]
 pub use ppa::{Alpha, Background, Blend, Fill, Job, Ppa, Slot, Srm, Yuv, YuvRange, YuvStandard, ppa};
 
