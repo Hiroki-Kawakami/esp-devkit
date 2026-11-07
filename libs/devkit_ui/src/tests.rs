@@ -3224,6 +3224,21 @@ fn a_surface_keeps_to_the_row_grid_and_sees_what_lies_over_it() {
 }
 
 #[test]
+fn the_opaque_core_of_an_overlay_leaves_its_rounded_corners_and_margins_out() {
+    let (width, height) = (12usize, 10usize);
+    let mut pixels = alloc::vec![0u8; width * height * 4];
+    for y in 1..9 {
+        let inset = if y == 1 || y == 8 { 3 } else { 2 };
+        for x in inset..width - inset {
+            pixels[(y * width + x) * 4 + 3] = if x == inset { 0x80 } else { 0xff };
+        }
+    }
+    let core = crate::presenter::opaque_core(&pixels, devkit_gfx::Size::new(width as u16, height as u16));
+    assert_eq!(core, Some(Rect::new(3, 2, 7, 6)));
+    assert_eq!(crate::presenter::opaque_core(&alloc::vec![0u8; 16], devkit_gfx::Size::new(2, 2)), None);
+}
+
+#[test]
 fn portrait_and_landscape_follow_the_shape_of_the_panel() {
     let tall = (720, 1280);
     let wide = (1280, 720);

@@ -25,7 +25,7 @@ use idf::{Error, Result, thread};
 use media_engine::{Slot, Srm};
 
 use crate::blit::{self, Blits};
-use crate::external::{Buffers, NO_BACK, Overlay};
+use crate::external::{Buffers, Core, NO_BACK, Overlay};
 
 const TAG: &CStr = c"presenter";
 
@@ -681,18 +681,45 @@ impl Presenter {
         prepared.prepare(list, &[rect], cache);
         let surface = unsafe { Surface::new(drawn, rect.w as usize * Argb8888::BYTES, rect) };
         draw_from::<Argb8888, _, _, _>(list, first, prepared, &mut ClipStore::new_in(Caps::SPIRAM), &surface);
-        if self.rotation == Rotation::R0 {
-            return Ok(Overlay { _memory: memory, pixels: drawn, rect });
-        }
         let size = Size::new(rect.w as u16, rect.h as u16);
+        let opaque = opaque_core(unsafe { core::slice::from_raw_parts(drawn, bytes) }, size).filter(|c| c.area() * 2 >= rect.area());
         let turned_size = if self.rotation.swaps_axes() { Size::new(size.height, size.width) } else { size };
-        let mut op = Srm::new(unsafe { blit::image(drawn, ImageFormat::Argb8888, size) });
-        op.rotation = self.rotation;
-        let mut target = unsafe { blit::target(turned, ImageFormat::Argb8888, turned_size) }?;
+        let pixels = if self.rotation == Rotation::R0 {
+            drawn
+        } else {
+            let mut op = Srm::new(unsafe { blit::image(drawn, ImageFormat::Argb8888, size) });
+            op.rotation = self.rotation;
+            let mut target = unsafe { blit::target(turned, ImageFormat::Argb8888, turned_size) }?;
+            let mut slot = Slot::new();
+            let mut job = media_engine::ppa()?.srm(&op, &mut target, &mut slot)?;
+            job.wait_timeout(STALL_TIMEOUT).ok_or(Error::TIMEOUT)??;
+            turned
+        };
+        let core = opaque.and_then(|local| match self.copy_core(pixels, turned_size, local) {
+            Ok(core) => Some(Core { rect: local.offset(rect.x, rect.y), ..core }),
+            Err(err) => {
+                error!(TAG, "overlay core: {err}");
+                None
+            }
+        });
+        Ok(Overlay { _memory: memory, pixels, rect, core })
+    }
+
+    /// `local` of an overlay turned for the panel at `pixels`, in the panel's
+    /// format.
+    fn copy_core(&self, pixels: *mut u8, turned_size: Size, local: Rect) -> Result<Core> {
+        let format = self.display.pixel_format();
+        let src = unsafe { blit::target(pixels, ImageFormat::Argb8888, turned_size) }?.rotated(self.rotation).stored_rect(local).ok_or(Error::INVALID_ARG)?;
+        let line = size_of::<Line>();
+        let memory = Strips::allocate(format.row_bytes(src.w as usize) * src.h as usize + line * 2, Caps::SPIRAM)?;
+        let core = unsafe { memory.ptr.add(memory.ptr.align_offset(line)) };
+        let mut op = Srm::new(unsafe { blit::image(pixels, ImageFormat::Argb8888, turned_size) });
+        op.src_rect = src;
+        let mut target = unsafe { blit::target(core, format, Size::new(src.w as u16, src.h as u16)) }?;
         let mut slot = Slot::new();
         let mut job = media_engine::ppa()?.srm(&op, &mut target, &mut slot)?;
         job.wait_timeout(STALL_TIMEOUT).ok_or(Error::TIMEOUT)??;
-        Ok(Overlay { _memory: memory, pixels: turned, rect })
+        Ok(Core { _memory: memory, pixels: core, format, rect: local })
     }
 
     /// The framebuffer with the last frame.
@@ -704,4 +731,51 @@ impl Presenter {
     pub fn wait_visible(&self) -> Result<()> {
         self.wait_flip()
     }
+}
+
+/// The largest rectangle of opaque pixels in ARGB `pixels` of `size`.
+pub(crate) fn opaque_core(pixels: &[u8], size: Size) -> Option<Rect> {
+    let (width, height) = (usize::from(size.width), usize::from(size.height));
+    let runs: Vec<(usize, usize)> = (0..height)
+        .map(|y| {
+            let row = &pixels[y * width * Argb8888::BYTES..][..width * Argb8888::BYTES];
+            let (mut best, mut start) = ((0, 0), None);
+            for (x, pixel) in row.chunks_exact(Argb8888::BYTES).enumerate() {
+                match (pixel[3] == 0xff, start) {
+                    (true, None) => start = Some(x),
+                    (false, Some(from)) => {
+                        if x - from > best.1 - best.0 {
+                            best = (from, x);
+                        }
+                        start = None;
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(from) = start
+                && width - from > best.1 - best.0
+            {
+                best = (from, width);
+            }
+            best
+        })
+        .collect();
+    let mut best: Option<(usize, Rect)> = None;
+    for top in 0..height {
+        let (mut left, mut right) = runs[top];
+        if (right - left) * (height - top) <= best.map_or(0, |b| b.0) {
+            continue;
+        }
+        for (bottom, &(l, r)) in runs.iter().enumerate().skip(top) {
+            (left, right) = (left.max(l), right.min(r));
+            if right <= left {
+                break;
+            }
+            let area = (right - left) * (bottom + 1 - top);
+            if area > best.map_or(0, |b| b.0) {
+                best = Some((area, Rect::new(left as i16, top as i16, (right - left) as i16, (bottom + 1 - top) as i16)));
+            }
+        }
+    }
+    best.map(|b| b.1)
 }

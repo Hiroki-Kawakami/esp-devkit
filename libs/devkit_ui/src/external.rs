@@ -5,6 +5,8 @@
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
+use core::cell::Cell;
 use core::ffi::CStr;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
@@ -15,7 +17,7 @@ use idf::log::error;
 use idf::sync::Mutex;
 use idf::{Error, Result};
 
-use media_engine::{Blend, Slot};
+use media_engine::{Blend, Slot, Srm};
 
 use crate::blit;
 use crate::presenter::Strips;
@@ -72,10 +74,19 @@ struct Link {
     wake: Arc<dyn Fn() + Send + Sync>,
 }
 
-/// UI to lay over a surface, turned for the panel.
+/// UI to lay over a surface, turned for the panel. Over `core` it is opaque,
+/// and copied in the panel's format instead of blended.
 pub(crate) struct Overlay {
     pub(crate) _memory: Strips,
     pub(crate) pixels: *const u8,
+    pub(crate) rect: Rect,
+    pub(crate) core: Option<Core>,
+}
+
+pub(crate) struct Core {
+    pub(crate) _memory: Strips,
+    pub(crate) pixels: *const u8,
+    pub(crate) format: ImageFormat,
     pub(crate) rect: Rect,
 }
 
@@ -90,6 +101,11 @@ struct State {
     rect_changes: u32,
     composite: bool,
     overlay: Option<Arc<Overlay>>,
+    /// Changes whenever what a framebuffer holds under the overlay may no
+    /// longer be what `stamped` says.
+    generation: u32,
+    /// Per framebuffer, the `generation` whose overlay it holds untouched.
+    stamped: Vec<u32>,
     writing: bool,
     writing_changes: u32,
     notified: bool,
@@ -105,6 +121,12 @@ struct Inner {
 /// `Ui::external`. The UI never draws inside it.
 #[derive(Clone)]
 pub struct ExternalSurface(Arc<Inner>);
+
+impl State {
+    fn invalidate(&mut self) {
+        self.generation = self.generation.wrapping_add(1).max(1);
+    }
+}
 
 impl ExternalSurface {
     pub fn new() -> Result<Self> {
@@ -148,7 +170,7 @@ impl ExternalSurface {
         state.notified = false;
         state.pending = Rect::default();
         let area = rect;
-        Some(ExternalFrame { surface: self.clone(), granted: (fb, area, rotation), fb, index, area, rotation })
+        Some(ExternalFrame { surface: self.clone(), granted: (fb, area, rotation), written: Cell::new(None), ended: false, fb, index, area, rotation })
     }
 
     pub(crate) fn same(&self, other: &Self) -> bool {
@@ -156,12 +178,15 @@ impl ExternalSurface {
     }
 
     pub(crate) fn attach(&self, display: &'static Display, rotation: Rotation, buffers: Buffers, wake: Arc<dyn Fn() + Send + Sync>) {
-        self.0.state.lock().link = Some(Link { display, rotation, buffers, wake });
+        let mut state = self.0.state.lock();
+        state.link = Some(Link { display, rotation, buffers, wake });
+        state.invalidate();
     }
 
     pub(crate) fn detach(&self) {
         let mut state = self.0.state.lock();
         (state.link, state.rect, state.overlay, state.composite) = (None, None, None, false);
+        state.invalidate();
     }
 
     pub(crate) fn policy(&self) -> Policy {
@@ -183,12 +208,14 @@ impl ExternalSurface {
         if state.rect != rect {
             state.rect = rect;
             state.rect_changes = state.rect_changes.wrapping_add(1);
+            state.invalidate();
         }
     }
 
     pub(crate) fn set_rotation(&self, rotation: Rotation) {
         let mut state = self.0.state.lock();
         state.rect_changes = state.rect_changes.wrapping_add(1);
+        state.invalidate();
         if let Some(link) = &mut state.link {
             link.rotation = rotation;
         }
@@ -199,7 +226,17 @@ impl ExternalSurface {
     }
 
     pub(crate) fn set_overlay(&self, overlay: Option<Arc<Overlay>>) {
-        self.0.state.lock().overlay = overlay;
+        let mut state = self.0.state.lock();
+        state.overlay = overlay;
+        state.invalidate();
+    }
+
+    fn stamp(&self, index: usize, generation: u32) {
+        let mut state = self.0.state.lock();
+        if state.stamped.len() <= index {
+            state.stamped.resize(index + 1, 0);
+        }
+        state.stamped[index] = generation;
     }
 
     pub(crate) fn request_refresh(&self, area: Rect) {
@@ -222,7 +259,8 @@ impl ExternalSurface {
     fn compose(&self, frame: &ExternalFrame) -> Result<()> {
         let state = self.0.state.lock();
         let exclusive = state.policy == Policy::Exclusive;
-        let (composite, overlay) = (state.composite, state.overlay.clone());
+        let (composite, overlay, generation) = (state.composite, state.overlay.clone(), state.generation);
+        let stamped = state.stamped.get(frame.index) == Some(&generation);
         let Some(link) = &state.link else { return Ok(()) };
         let (display, buffers) = (link.display, link.buffers.clone());
         drop(state);
@@ -230,7 +268,12 @@ impl ExternalSurface {
             return Ok(());
         }
         if let (Some(overlay), false) = (overlay, exclusive) {
-            unsafe { lay_over(&frame.fb, frame.rotation, overlay.rect, overlay.pixels) }?;
+            let written = frame.written.get().unwrap_or(frame.granted.1);
+            let dirty = if stamped { written.intersect(&overlay.rect) } else { overlay.rect };
+            if !dirty.is_empty() {
+                unsafe { lay_over(&frame.fb, frame.rotation, &overlay, dirty) }?;
+            }
+            self.stamp(frame.index, generation);
         }
         let latest = buffers.latest.load(Ordering::Acquire);
         while display.scanning().is_some_and(|i| i != latest) {
@@ -248,6 +291,8 @@ impl ExternalSurface {
 pub struct ExternalFrame {
     surface: ExternalSurface,
     granted: (FrameBuffer, Rect, Rotation),
+    written: Cell<Option<Rect>>,
+    ended: bool,
     pub fb: FrameBuffer,
     /// Changes when the frame goes to another framebuffer, for writers that
     /// only send what changed.
@@ -263,17 +308,29 @@ impl ExternalFrame {
         unsafe { fb.target() }?.rotated(rotation).crop(area)
     }
 
+    /// Narrows what the frame is taken to have written, from all of `area` to
+    /// the rectangles named, so that `end` lays the UI on again only there.
+    pub fn wrote(&self, rect: Rect) {
+        self.written.set(Some(self.written.get().map_or(rect, |w| w.union(&rect))));
+    }
+
     /// Lays the UI on and presents, where the policy and the UI call for it.
-    pub fn end(self) {
+    pub fn end(mut self) {
         if let Err(err) = self.surface.compose(&self) {
             error!(TAG, "end: {err}");
         }
+        self.ended = true;
     }
 }
 
 impl Drop for ExternalFrame {
     fn drop(&mut self) {
         let mut state = self.surface.0.state.lock();
+        if !self.ended
+            && let Some(stamped) = state.stamped.get_mut(self.index)
+        {
+            *stamped = 0;
+        }
         state.writing = false;
         let wake = state.link.as_ref().map(|l| l.wake.clone());
         drop(state);
@@ -283,14 +340,30 @@ impl Drop for ExternalFrame {
     }
 }
 
-/// `src`, ARGB already turned as the panel is, over `area` of the logical
-/// picture in `fb`.
-unsafe fn lay_over(fb: &FrameBuffer, rotation: Rotation, area: Rect, src: *const u8) -> Result<()> {
-    let stored = unsafe { fb.target() }.and_then(|t| t.rotated(rotation).stored_rect(area)).ok_or(Error::INVALID_ARG)?;
-    let mut target = unsafe { fb.target() }.and_then(|t| t.crop(stored)).ok_or(Error::INVALID_ARG)?;
-    let size = Size::new(stored.w as u16, stored.h as u16);
-    let op = Blend::new(unsafe { blit::image(src, ImageFormat::Argb8888, size) }, (stored.x, stored.y));
+/// `clip` of `overlay`, both in the logical picture, onto `fb`.
+unsafe fn lay_over(fb: &FrameBuffer, rotation: Rotation, overlay: &Overlay, clip: Rect) -> Result<()> {
+    let turned = unsafe { fb.target() }.ok_or(Error::INVALID_ARG)?.rotated(rotation);
+    let stored = |rect: Rect| turned.stored_rect(rect).ok_or(Error::INVALID_ARG);
+    let whole = stored(overlay.rect)?;
+    let ppa = media_engine::ppa()?;
     let mut slot = Slot::new();
-    let mut job = media_engine::ppa()?.blend(&op, &mut target, &mut slot)?;
-    job.wait_timeout(BLEND_TIMEOUT).ok_or(Error::TIMEOUT)?
+    let core = overlay.core.as_ref().map_or(Rect::default(), |c| c.rect);
+    for part in overlay.rect.subtract(&core).map(|r| r.intersect(&clip)).filter(|r| !r.is_empty()) {
+        let part = stored(part)?;
+        let mut target = unsafe { fb.target() }.and_then(|t| t.crop(part)).ok_or(Error::INVALID_ARG)?;
+        let fg = unsafe { blit::image(overlay.pixels, ImageFormat::Argb8888, Size::new(whole.w as u16, whole.h as u16)) };
+        let mut op = Blend::new(fg, (part.x, part.y));
+        (op.fg_at, op.size) = ((part.x - whole.x, part.y - whole.y), (part.w, part.h));
+        ppa.blend(&op, &mut target, &mut slot)?.wait_timeout(BLEND_TIMEOUT).ok_or(Error::TIMEOUT)??;
+    }
+    let Some(core) = &overlay.core else { return Ok(()) };
+    let part = core.rect.intersect(&clip);
+    if part.is_empty() {
+        return Ok(());
+    }
+    let (from, part) = (stored(core.rect)?, stored(part)?);
+    let mut target = unsafe { fb.target() }.and_then(|t| t.crop(part)).ok_or(Error::INVALID_ARG)?;
+    let mut op = Srm::new(unsafe { blit::image(core.pixels, core.format, Size::new(from.w as u16, from.h as u16)) });
+    (op.src_rect, op.at) = (Rect::new(part.x - from.x, part.y - from.y, part.w, part.h), (part.x, part.y));
+    ppa.srm(&op, &mut target, &mut slot)?.wait_timeout(BLEND_TIMEOUT).ok_or(Error::TIMEOUT)?
 }

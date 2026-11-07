@@ -555,7 +555,11 @@ config.plugins.push(Box::new(SavedColorMode::new()));
 - `frame.target()` is that area as a `devkit_gfx::Target`, for writers that
   take one. It borrows the frame, so it is gone by `end`.
 - What lies over a surface is drawn into ARGB memory when it changes, and `end`
-  blends it with the 2D engine, so video does not wait for the UI.
+  lays it on with the 2D engine, so video does not wait for the UI. Its opaque
+  middle is kept in the panel's format and copied; only the rest is blended.
+- `end` lays the UI on a framebuffer once, and after that only where the frame
+  wrote. `frame.wrote(rect)` names what it wrote; a frame that names nothing is
+  taken to have written all of `area`.
 - `set_on_refresh` asks for `area` again on the UI task when what the surface
   wrote is gone: the rectangle moved or grew, or UI opened, changed or closed
   over it, or `Exclusive` began. Nothing waits for the answer. Playing is no
