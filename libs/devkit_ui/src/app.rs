@@ -389,7 +389,8 @@ impl<C: Screen> AppState<C> {
         }
         let (rotation, color_mode) = (init.rotation, init.color_mode);
         config.presenter.rotation = rotation;
-        let presenter = Presenter::new(display, &config.presenter)?;
+        let data_caps = config.presenter.data_caps;
+        let presenter = Presenter::new(display, config.presenter)?;
         let (events, receiver) = channel(QUEUE_DEPTH);
         let shared = Arc::new(Shared {
             events,
@@ -397,7 +398,7 @@ impl<C: Screen> AppState<C> {
             dropped: AtomicU32::new(0),
             busy: AtomicBool::new(true),
             display,
-            rotation: AtomicU8::new(rotation_code(config.presenter.rotation)),
+            rotation: AtomicU8::new(rotation_code(rotation)),
             touch,
         });
         if let Some(touch) = touch {
@@ -421,7 +422,7 @@ impl<C: Screen> AppState<C> {
             shared,
             receiver,
             tree: {
-                let mut tree = Tree::new(root, area, config.presenter.data_caps, config.theme);
+                let mut tree = Tree::new(root, area, data_caps, config.theme);
                 tree.add_keyboard(config.keyboard);
                 tree.color_mode = color_mode;
                 tree.set_pixel_format(display.pixel_format());
@@ -429,8 +430,8 @@ impl<C: Screen> AppState<C> {
             },
             presenter,
             cache: GlyphCache::new_in(config.glyph_cache_bytes, config.glyph_cache_caps),
-            effects: Effects::new(config.presenter.data_caps),
-            data_caps: config.presenter.data_caps,
+            effects: Effects::new(data_caps),
+            data_caps,
             timing: Timing::default(),
             surface: None,
             hole: None,

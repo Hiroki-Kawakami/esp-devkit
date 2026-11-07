@@ -57,9 +57,8 @@ pub struct Config {
     /// Tasks drawing strips, one per core.
     pub lanes: usize,
     pub priority: u32,
-    /// Strip memory in total, split evenly into two buffers per lane.
-    pub strip_bytes: usize,
-    pub strip_caps: Caps,
+    /// Split evenly into two buffers per lane.
+    pub strips: StripSource,
     /// The presenter's own lists. Memory that may stay on one heap for the whole
     /// UI; the default fits boards with PSRAM.
     pub data_caps: Caps,
@@ -76,12 +75,16 @@ impl Default for Config {
             rotation: Rotation::R0,
             lanes: MAX_LANES,
             priority: 10,
-            strip_bytes: 4 * 64 * 1024,
-            strip_caps: Caps::DMA | Caps::INTERNAL,
+            strips: StripSource::Allocate { bytes: 4 * 64 * 1024, caps: Caps::DMA | Caps::INTERNAL },
             data_caps: Caps::SPIRAM,
             lane_stack_caps: Caps::SIMD,
         }
     }
+}
+
+pub enum StripSource {
+    Allocate { bytes: usize, caps: Caps },
+    Given(Strips),
 }
 
 /// One `render`, in microseconds; lane times are summed over the lanes.
@@ -300,12 +303,38 @@ pub struct Presenter {
     fresh: bool,
 }
 
+fn area(display: &Display, rotation: Rotation) -> Rect {
+    let size = display.size();
+    let (w, h) = (size.width as i16, size.height as i16);
+    match rotation {
+        Rotation::R0 | Rotation::R180 => Rect::new(0, 0, w, h),
+        Rotation::R90 | Rotation::R270 => Rect::new(0, 0, h, w),
+    }
+}
+
+fn holds_rows(display: &Display, rotation: Rotation, buffer_bytes: usize) -> bool {
+    let stride = display.pixel_format().row_bytes(area(display, rotation).w as usize);
+    if buffer_bytes < stride * ROW_GRID as usize {
+        error!(TAG, "strips of {buffer_bytes} bytes hold no 16 rows of {stride}");
+        return false;
+    }
+    true
+}
+
 impl Presenter {
-    pub fn new(display: &'static Display, config: &Config) -> Result<Self> {
+    /// Refused when a strip buffer cannot hold 16 rows of the logical width.
+    pub fn new(display: &'static Display, config: Config) -> Result<Self> {
         if !(1..=MAX_LANES).contains(&config.lanes) {
             return Err(Error::INVALID_ARG);
         }
-        let strips = Strips::allocate(config.strip_bytes, config.strip_caps)?;
+        let strips = match config.strips {
+            StripSource::Allocate { bytes, caps } => Strips::allocate(bytes, caps)?,
+            StripSource::Given(strips) => strips,
+        };
+        let (_, buffer_bytes) = strips.buffers(config.lanes);
+        if !holds_rows(display, config.rotation, buffer_bytes) {
+            return Err(Error::INVALID_SIZE);
+        }
         let shared = Arc::new(Shared {
             start: [Semaphore::try_new(0, 1)?, Semaphore::try_new(0, 1)?],
             done: Semaphore::try_new(0, MAX_LANES as u32)?,
@@ -342,7 +371,6 @@ impl Presenter {
                 .stack_caps(config.lane_stack_caps);
             builder.spawn(move || lane.run(shared))?;
         }
-        let (_, buffer_bytes) = strips.buffers(config.lanes);
         let mut presenter = Self {
             display,
             shared,
@@ -436,9 +464,7 @@ impl Presenter {
     /// `strips` back, when a buffer cannot hold 16 rows of the logical width.
     pub fn set_strips(&mut self, strips: Strips, lanes: usize) -> core::result::Result<Strips, Strips> {
         let (_, buffer_bytes) = strips.buffers(lanes.clamp(1, MAX_LANES));
-        let stride = self.display.pixel_format().row_bytes(self.area().w as usize);
-        if !(1..=MAX_LANES).contains(&lanes) || buffer_bytes < stride * ROW_GRID as usize {
-            error!(TAG, "strips of {buffer_bytes} bytes hold no 16 rows of {stride}");
+        if !(1..=MAX_LANES).contains(&lanes) || !holds_rows(self.display, self.rotation, buffer_bytes) {
             return Err(strips);
         }
         self.lanes = lanes;
@@ -449,23 +475,16 @@ impl Presenter {
     /// Turns the picture from the next frame on, which repaints everything.
     /// Refused when a buffer cannot hold 16 rows of the new logical width.
     pub fn set_rotation(&mut self, rotation: Rotation) -> Result<()> {
-        let previous = core::mem::replace(&mut self.rotation, rotation);
-        let stride = self.display.pixel_format().row_bytes(self.area().w as usize);
-        if self.buffer_bytes < stride * ROW_GRID as usize {
-            self.rotation = previous;
+        if !holds_rows(self.display, rotation, self.buffer_bytes) {
             return Err(Error::INVALID_SIZE);
         }
+        self.rotation = rotation;
         self.reset()
     }
 
     /// The logical picture.
     pub fn area(&self) -> Rect {
-        let size = self.display.size();
-        let (w, h) = (size.width as i16, size.height as i16);
-        match self.rotation {
-            Rotation::R0 | Rotation::R180 => Rect::new(0, 0, w, h),
-            Rotation::R90 | Rotation::R270 => Rect::new(0, 0, h, w),
-        }
+        area(self.display, self.rotation)
     }
 
     pub fn invalidate(&mut self, rect: Rect) {

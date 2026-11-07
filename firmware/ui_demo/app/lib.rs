@@ -27,7 +27,7 @@ use core::time::Duration;
 use bsp_rs::Board;
 use bsp_rs::display::{Display, ImageFormat};
 use devkit::StaticLease;
-use devkit_ui::{App, AppConfig, AutoRotation, ColorMode, Rotation, SavedColorMode, Strips, TextInput};
+use devkit_ui::{App, AppConfig, AutoRotation, ColorMode, Rotation, SavedColorMode, StripSource, Strips, TextInput};
 use idf::heap::Caps;
 use idf::log::{error, info};
 use idf::sync::{Mutex, Semaphore};
@@ -35,12 +35,11 @@ use idf::{system, thread};
 
 use bench::{Bench, Params, Present};
 use scene::Kind;
-use screens::{Home, SPARE_STRIPS, StatusBar, StatusMsg};
+use screens::{Home, StatusBar, StatusMsg};
 
 const TAG: &CStr = c"ui_demo";
 const SETTINGS_VALID: u32 = 0x5549_4445;
 const STRIP_BYTES: usize = 4 * 64 * 1024;
-const VIDEO_STRIP_BYTES: usize = 2 * 64 * 1024;
 
 #[repr(C, align(64))]
 struct SharedSram([u8; STRIP_BYTES]);
@@ -179,8 +178,11 @@ fn run_demo(board: &Board, display: &'static Display, settings: &Settings) {
     if settings.stack_psram {
         config.presenter.lane_stack_caps = Caps::SPIRAM;
     }
-    config.presenter.strip_bytes = VIDEO_STRIP_BYTES;
-    config.presenter.strip_caps = Caps::SPIRAM;
+    let Some(sram) = SRAM.take() else {
+        error!(TAG, "strips: taken");
+        return;
+    };
+    config.presenter.strips = StripSource::Given(Strips::new(sram));
     let mut app = match App::new(display, board.touch, Home, config) {
         Ok(app) => app,
         Err(err) => {
@@ -210,17 +212,6 @@ fn run_demo(board: &Board, display: &'static Display, settings: &Settings) {
         }
     };
     let status = app.chrome(StatusBar::new());
-    let Some(sram) = SRAM.take() else {
-        error!(TAG, "strips: taken");
-        return;
-    };
-    match app.set_strips(Strips::new(sram), 2) {
-        Ok(video) => *SPARE_STRIPS.lock() = Some(video),
-        Err(_) => {
-            error!(TAG, "strips: refused");
-            return;
-        }
-    }
     harness_rs::register("video", |_| Ok(Some(screens::VIDEO_FRAMES.load(Ordering::Relaxed).to_string())));
     harness_rs::register("ui", move |args| match args {
         ["tree"] => probe.tree().map(Some),

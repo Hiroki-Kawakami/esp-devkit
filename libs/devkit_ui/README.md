@@ -564,9 +564,17 @@ config.plugins.push(Box::new(SavedColorMode::new()));
 ## Memory
 
 Memory goes where `Config` says: `data_caps` for nodes, text, display lists and
-masks, `strip_caps` for the strips and `lane_stack_caps` for the lane stacks;
-`AppConfig` has the glyph cache. The render mode can change while running, apart from
-what the UI shows, for a UI that gives way to something faster:
+masks, `strips` for the strips and `lane_stack_caps` for the lane stacks;
+`AppConfig` has the glyph cache. `StripSource::Allocate` takes the strips from
+the heap; `StripSource::Given` draws only in memory handed over, such as a
+`StaticLease`:
+
+```rust
+config.presenter.strips = StripSource::Given(Strips::new(SRAM.take().unwrap()));
+```
+
+The render mode can change while running, apart from what the UI shows, for a
+UI that gives way to something faster:
 
 ```rust
 static SRAM: StaticLease<SharedSram> = StaticLease::new(SharedSram([0; BYTES]));
@@ -591,7 +599,7 @@ decoder.start(cx.take_strips().and_then(Strips::into_inner::<Lease<SharedSram>>)
 alone:
 
 ```rust
-let mut presenter = Presenter::new(display, &Config::default())?;
+let mut presenter = Presenter::new(display, Config::default())?;
 loop {
     presenter.acquire()?;
     let dirty = apply_input();

@@ -263,10 +263,10 @@ impl Detail {
     }
 
     fn toggle_video(&mut self, cx: &mut Cx<Self>) {
-        let parked = SPARE_STRIPS.lock().take();
-        let strips = match parked {
-            Some(strips) => Some(strips),
-            None => Strips::allocate(VIDEO_STRIP_BYTES, Caps::SPIRAM).ok(),
+        let strips = if self.video {
+            SPARE_STRIPS.lock().take()
+        } else {
+            Strips::allocate(VIDEO_STRIP_BYTES, Caps::SPIRAM).ok()
         };
         if let Some(strips) = strips {
             let lanes = if self.video { 2 } else { 1 };
@@ -287,7 +287,12 @@ impl Component for Detail {
             DetailMsg::Star => self.star = !self.star,
             DetailMsg::Ask => cx.nav_of::<Overlay>().push(Confirm),
             DetailMsg::Video => self.toggle_video(cx),
-            DetailMsg::VideoReady => *SPARE_STRIPS.lock() = cx.take_strips(),
+            DetailMsg::VideoReady => {
+                let replaced = cx.take_strips();
+                if self.video {
+                    *SPARE_STRIPS.lock() = replaced;
+                }
+            }
         }
         cx.rebuild();
     }

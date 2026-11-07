@@ -13,7 +13,7 @@ use core::time::Duration;
 
 use bsp_rs::display::Display;
 use devkit_gfx::{DisplayList, GlyphCache, ImageFormat};
-use devkit_ui::{Config, PresentMode, Presenter, Rotation, Stats, Strips};
+use devkit_ui::{Config, PresentMode, Presenter, Rotation, Stats, StripSource, Strips};
 use idf::heap::Caps;
 use idf::thread;
 use idf::time::Instant;
@@ -65,15 +65,14 @@ impl Bench {
             &*Box::leak(Box::new(Assets::new(format, size.width as i16))),
             &*Box::leak(Box::new(Assets::new(format, size.height as i16))),
         ];
-        let config = Config { strip_bytes: STRIP_BYTES, strip_caps: Caps::SPIRAM, ..Config::default() };
-        let mut presenter = Presenter::new(display, &config)?;
-        let spare = presenter.set_strips(sram, 2).map_err(|_| idf::Error::INVALID_SIZE)?;
+        let config = Config { strips: StripSource::Given(sram), ..Config::default() };
+        let presenter = Presenter::new(display, config)?;
         Ok(Self {
             presenter,
             assets,
             cache: GlyphCache::new_in(GLYPH_CACHE_BYTES, Caps::SPIRAM),
             list: DisplayList::new_in(Caps::INTERNAL),
-            spare: Some(spare),
+            spare: None,
             in_psram: false,
             load_stop: Arc::new(AtomicBool::new(true)),
             load_bytes: Arc::new(AtomicU32::new(0)),
@@ -89,7 +88,10 @@ impl Bench {
         let rotation = if p.rotated { Rotation::R90 } else { Rotation::R0 };
         self.presenter.configure(mode, count, rotation, p.lanes)?;
         if self.in_psram != p.strips_psram {
-            let strips = self.spare.take().ok_or(idf::Error::INVALID_STATE)?;
+            let strips = match self.spare.take() {
+                Some(strips) => strips,
+                None => Strips::allocate(STRIP_BYTES, Caps::SPIRAM)?,
+            };
             match self.presenter.set_strips(strips, p.lanes) {
                 Ok(old) => self.spare = Some(old),
                 Err(strips) => {
