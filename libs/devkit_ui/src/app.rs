@@ -24,7 +24,7 @@ use idf::time::Instant;
 
 use crate::component::{Component, Screen};
 use crate::erased::Erased;
-use crate::external::{ExternalSurface, Policy};
+use crate::external::{ExternalSurface, Overlay, Picture, Policy};
 use crate::keyboard::KeyboardMode;
 use crate::plugin::{Plugin, PluginContext, PluginInit, Store, UiEvent};
 use crate::blit::Blits;
@@ -32,6 +32,7 @@ use crate::paint::{Effects, Engine};
 use crate::presenter::{Config, Presenter, ROW_GRID, Strips};
 use crate::text_buffer::TextInput;
 use crate::theme::{ColorMode, Theme};
+use crate::node::NodeIndex;
 use crate::tree::Tree;
 
 const TAG: &CStr = c"ui";
@@ -341,6 +342,9 @@ pub struct AppState<C: Screen> {
     surface: Option<ExternalSurface>,
     hole: Option<Rect>,
     overlay: Option<Rect>,
+    /// The picture of a node sliding over the surface: the node, where it
+    /// shows unmoved, and the area the picture covers there.
+    slide: Option<(NodeIndex, Rect, Rect, Arc<Picture>)>,
     exclusive: bool,
     waiting: Option<Instant>,
     switching: Option<Instant>,
@@ -438,6 +442,7 @@ impl<C: Screen> AppState<C> {
             surface: None,
             hole: None,
             overlay: None,
+            slide: None,
             exclusive: false,
             waiting: None,
             switching: None,
@@ -585,7 +590,7 @@ impl<C: Screen> AppState<C> {
         if let Some(old) = self.surface.take() {
             old.detach();
             self.presenter.set_external(None, false);
-            (self.hole, self.overlay) = (None, None);
+            (self.hole, self.overlay, self.slide) = (None, None, None);
         }
     }
 
@@ -608,7 +613,7 @@ impl<C: Screen> AppState<C> {
         self.shared.rotation.store(rotation_code(next), Ordering::Release);
         self.tree.set_area(self.presenter.area());
         self.rotated = true;
-        self.overlay = None;
+        (self.overlay, self.slide) = (None, None);
         self.notify(UiEvent::Rotated(next));
         if let Some(surface) = &self.surface {
             surface.set_rotation(next);
@@ -756,12 +761,21 @@ impl<C: Screen> AppState<C> {
             Err(err) => error!(TAG, "render: {err}"),
         }
         note(&mut self.timing.render, painted);
-        if let Some((surface, _)) = &shown {
+        if let Some((surface, hole)) = &shown {
+            let slide = hole.and_then(|h| self.tree.sliding_over(h).map(|s| (h, s))).filter(|&(h, (_, home, (dx, dy)))| {
+                overlap.is_none_or(|o| grid_rows(home.offset(dx, dy)).intersect(&h).contains(&o))
+            });
+            if let Some((hole, (id, home, offset))) = slide {
+                drop(list);
+                self.lay_slide(surface, hole, id, home, offset);
+                return;
+            }
+            self.slide = None;
             let changed = overlap != self.overlay || overlap.is_some_and(|o| damage.iter().any(|d| d.intersects(&o)));
             if changed {
                 match overlap {
                     Some(rect) => match self.presenter.render_overlay(&list, self.tree.external_split.get(), rect, &mut self.cache) {
-                        Ok(overlay) => surface.set_overlay(Some(Arc::new(overlay))),
+                        Ok(picture) => surface.set_overlay(Some(Arc::new(Overlay { picture: Arc::new(picture), rect }))),
                         Err(err) => error!(TAG, "overlay: {err}"),
                     },
                     None => surface.set_overlay(None),
@@ -772,6 +786,38 @@ impl<C: Screen> AppState<C> {
                 self.overlay = overlap;
             }
         }
+    }
+
+    /// Moves the picture of a node sliding over the surface, drawn once where
+    /// it shows unmoved; what changes inside it meanwhile shows when it stops.
+    fn lay_slide(&mut self, surface: &ExternalSurface, hole: Rect, id: NodeIndex, home: Rect, (dx, dy): (i16, i16)) {
+        let reuse = self.slide.as_ref().filter(|s| s.0 == id && s.1 == home).map(|s| (s.2, s.3.clone()));
+        let (area, picture) = match reuse {
+            Some(found) => found,
+            None => {
+                let mut list = DisplayList::new_in(self.data_caps);
+                let area = self.tree.paint_alone(id, home, &mut self.effects, &mut list);
+                let picture = match self.presenter.render_overlay(&list, 0, area, &mut self.cache) {
+                    Ok(picture) => Arc::new(picture),
+                    Err(err) => {
+                        error!(TAG, "overlay: {err}");
+                        return;
+                    }
+                };
+                self.slide = Some((id, home, area, picture.clone()));
+                (area, picture)
+            }
+        };
+        let rect = area.offset(dx, dy);
+        let visible = Some(rect.intersect(&hole)).filter(|r| !r.is_empty());
+        if visible == self.overlay {
+            return;
+        }
+        surface.set_overlay(Some(Arc::new(Overlay { picture, rect })));
+        for area in [visible, self.overlay].into_iter().flatten() {
+            surface.request_refresh(area);
+        }
+        self.overlay = visible;
     }
 
     /// Runs on the calling task, which then owns the UI.

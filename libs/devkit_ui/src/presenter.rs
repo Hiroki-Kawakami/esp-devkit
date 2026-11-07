@@ -25,7 +25,7 @@ use idf::{Error, Result, thread};
 use media_engine::{Slot, Srm};
 
 use crate::blit::{self, Blits};
-use crate::external::{Buffers, Core, NO_BACK, Overlay};
+use crate::external::{Buffers, Core, NO_BACK, Picture};
 
 const TAG: &CStr = c"presenter";
 
@@ -672,7 +672,7 @@ impl Presenter {
         first: usize,
         rect: Rect,
         cache: &mut GlyphCache<C>,
-    ) -> Result<Overlay> {
+    ) -> Result<Picture> {
         let bytes = rect.area() as usize * Argb8888::BYTES;
         let memory = Strips::allocate((bytes + size_of::<Line>()) * STRIPS_PER_LANE, Caps::SPIRAM)?;
         let [[drawn, turned], _] = memory.buffers(1).0;
@@ -696,16 +696,16 @@ impl Presenter {
             turned
         };
         let core = opaque.and_then(|local| match self.copy_core(pixels, turned_size, local) {
-            Ok(core) => Some(Core { rect: local.offset(rect.x, rect.y), ..core }),
+            Ok(core) => Some(core),
             Err(err) => {
                 error!(TAG, "overlay core: {err}");
                 None
             }
         });
-        Ok(Overlay { _memory: memory, pixels, rect, core })
+        Ok(Picture { _memory: memory, pixels, size, rotation: self.rotation, core })
     }
 
-    /// `local` of an overlay turned for the panel at `pixels`, in the panel's
+    /// `local` of a picture turned for the panel at `pixels`, in the panel's
     /// format.
     fn copy_core(&self, pixels: *mut u8, turned_size: Size, local: Rect) -> Result<Core> {
         let format = self.display.pixel_format();

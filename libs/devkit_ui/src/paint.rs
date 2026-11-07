@@ -449,18 +449,25 @@ impl Tree {
 
 impl Tree {
     /// `id` as shown at `shown`, without what moves it in or out.
-    pub(crate) fn snapshot<C: Allocator + Clone>(&self, id: NodeIndex, shown: Rect, effects: &mut Effects, cache: &mut GlyphCache<C>) -> Option<Snapshot> {
-        if shown.is_empty() {
-            return None;
-        }
+    /// What `id` paints alone at `shown`, where it shows unmoved, and the area
+    /// that takes.
+    pub(crate) fn paint_alone<'a>(&'a self, id: NodeIndex, shown: Rect, effects: &mut Effects, list: &mut DisplayList<'a, Caps>) -> Rect {
         let node = &self.nodes[id as usize];
         let area = shown.expand(shadow_extent(&node.style));
         let dx = i32::from(shown.x) - i32::from(node.rect.x) - i32::from(node.translate.0);
         let dy = i32::from(shown.y) - i32::from(node.rect.y) - i32::from(node.translate.1);
-        let mut list = DisplayList::new_in(self.caps);
         self.capturing.set(id);
-        self.paint_node(id, dx, dy, area, Inherited { opacity: 255, foreground: None }, effects, &[area], &mut list);
+        self.paint_node(id, dx, dy, area, Inherited { opacity: 255, foreground: None }, effects, &[area], list);
         self.capturing.set(NONE);
+        area
+    }
+
+    pub(crate) fn snapshot<C: Allocator + Clone>(&self, id: NodeIndex, shown: Rect, effects: &mut Effects, cache: &mut GlyphCache<C>) -> Option<Snapshot> {
+        if shown.is_empty() {
+            return None;
+        }
+        let mut list = DisplayList::new_in(self.caps);
+        let area = self.paint_alone(id, shown, effects, &mut list);
         let mut snapshot = Snapshot::allocate(area.w, area.h)?;
         let mut prepared = Prepared::new_in(self.caps);
         prepared.prepare(&list, &[area], cache);

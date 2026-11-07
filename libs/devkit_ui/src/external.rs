@@ -74,15 +74,24 @@ struct Link {
     wake: Arc<dyn Fn() + Send + Sync>,
 }
 
-/// UI to lay over a surface, turned for the panel. Over `core` it is opaque,
-/// and copied in the panel's format instead of blended.
+/// UI to lay over a surface: `picture` with its top left at `rect`, which
+/// may reach past the surface.
 pub(crate) struct Overlay {
+    pub(crate) picture: Arc<Picture>,
+    pub(crate) rect: Rect,
+}
+
+/// UI drawn in ARGB, turned for the panel. Over `core` it is opaque, and
+/// copied in the panel's format instead of blended.
+pub(crate) struct Picture {
     pub(crate) _memory: Strips,
     pub(crate) pixels: *const u8,
-    pub(crate) rect: Rect,
+    pub(crate) size: Size,
+    pub(crate) rotation: Rotation,
     pub(crate) core: Option<Core>,
 }
 
+/// `rect` of a picture, from its top left.
 pub(crate) struct Core {
     pub(crate) _memory: Strips,
     pub(crate) pixels: *const u8,
@@ -90,8 +99,8 @@ pub(crate) struct Core {
     pub(crate) rect: Rect,
 }
 
-unsafe impl Send for Overlay {}
-unsafe impl Sync for Overlay {}
+unsafe impl Send for Picture {}
+unsafe impl Sync for Picture {}
 
 #[derive(Default)]
 struct State {
@@ -269,7 +278,7 @@ impl ExternalSurface {
         }
         if let (Some(overlay), false) = (overlay, exclusive) {
             let written = frame.written.get().unwrap_or(frame.granted.1);
-            let dirty = if stamped { written.intersect(&overlay.rect) } else { overlay.rect };
+            let dirty = if stamped { written } else { overlay.rect }.intersect(&overlay.rect).intersect(&frame.granted.1);
             if !dirty.is_empty() {
                 unsafe { lay_over(&frame.fb, frame.rotation, &overlay, dirty) }?;
             }
@@ -342,28 +351,38 @@ impl Drop for ExternalFrame {
 
 /// `clip` of `overlay`, both in the logical picture, onto `fb`.
 unsafe fn lay_over(fb: &FrameBuffer, rotation: Rotation, overlay: &Overlay, clip: Rect) -> Result<()> {
+    let picture = &*overlay.picture;
     let turned = unsafe { fb.target() }.ok_or(Error::INVALID_ARG)?.rotated(rotation);
-    let stored = |rect: Rect| turned.stored_rect(rect).ok_or(Error::INVALID_ARG);
-    let whole = stored(overlay.rect)?;
     let ppa = media_engine::ppa()?;
     let mut slot = Slot::new();
-    let core = overlay.core.as_ref().map_or(Rect::default(), |c| c.rect);
-    for part in overlay.rect.subtract(&core).map(|r| r.intersect(&clip)).filter(|r| !r.is_empty()) {
-        let part = stored(part)?;
-        let mut target = unsafe { fb.target() }.and_then(|t| t.crop(part)).ok_or(Error::INVALID_ARG)?;
-        let fg = unsafe { blit::image(overlay.pixels, ImageFormat::Argb8888, Size::new(whole.w as u16, whole.h as u16)) };
-        let mut op = Blend::new(fg, (part.x, part.y));
-        (op.fg_at, op.size) = ((part.x - whole.x, part.y - whole.y), (part.w, part.h));
+    let whole = Rect::new(overlay.rect.x, overlay.rect.y, picture.size.width as i16, picture.size.height as i16);
+    let core = picture.core.as_ref().map_or(Rect::default(), |c| c.rect.offset(whole.x, whole.y));
+    let fg = unsafe { picture_view(picture.pixels, ImageFormat::Argb8888, picture.size, picture.rotation) }?;
+    for part in whole.subtract(&core).map(|r| r.intersect(&clip)).filter(|r| !r.is_empty()) {
+        let src = fg.stored_rect(part.offset(-whole.x, -whole.y)).ok_or(Error::INVALID_ARG)?;
+        let dst = turned.stored_rect(part).ok_or(Error::INVALID_ARG)?;
+        let mut target = unsafe { fb.target() }.and_then(|t| t.crop(dst)).ok_or(Error::INVALID_ARG)?;
+        let mut op = Blend::new(unsafe { blit::image(picture.pixels, ImageFormat::Argb8888, fg.size()) }, (dst.x, dst.y));
+        (op.fg_at, op.size) = ((src.x, src.y), (src.w, src.h));
         ppa.blend(&op, &mut target, &mut slot)?.wait_timeout(BLEND_TIMEOUT).ok_or(Error::TIMEOUT)??;
     }
-    let Some(core) = &overlay.core else { return Ok(()) };
-    let part = core.rect.intersect(&clip);
+    let Some(opaque) = &picture.core else { return Ok(()) };
+    let part = core.intersect(&clip);
     if part.is_empty() {
         return Ok(());
     }
-    let (from, part) = (stored(core.rect)?, stored(part)?);
-    let mut target = unsafe { fb.target() }.and_then(|t| t.crop(part)).ok_or(Error::INVALID_ARG)?;
-    let mut op = Srm::new(unsafe { blit::image(core.pixels, core.format, Size::new(from.w as u16, from.h as u16)) });
-    (op.src_rect, op.at) = (Rect::new(part.x - from.x, part.y - from.y, part.w, part.h), (part.x, part.y));
+    let size = Size::new(opaque.rect.w as u16, opaque.rect.h as u16);
+    let view = unsafe { picture_view(opaque.pixels, opaque.format, size, picture.rotation) }?;
+    let src = view.stored_rect(part.offset(-core.x, -core.y)).ok_or(Error::INVALID_ARG)?;
+    let dst = turned.stored_rect(part).ok_or(Error::INVALID_ARG)?;
+    let mut target = unsafe { fb.target() }.and_then(|t| t.crop(dst)).ok_or(Error::INVALID_ARG)?;
+    let mut op = Srm::new(unsafe { blit::image(opaque.pixels, opaque.format, view.size()) });
+    (op.src_rect, op.at) = (src, (dst.x, dst.y));
     ppa.srm(&op, &mut target, &mut slot)?.wait_timeout(BLEND_TIMEOUT).ok_or(Error::TIMEOUT)?
+}
+
+/// Pixels of a logical `size` stored turned by `rotation`.
+pub(crate) unsafe fn picture_view(pixels: *const u8, format: ImageFormat, size: Size, rotation: Rotation) -> Result<Target<'static>> {
+    let stored = if rotation.swaps_axes() { Size::new(size.height, size.width) } else { size };
+    Ok(unsafe { blit::target(pixels.cast_mut(), format, stored) }?.rotated(rotation))
 }

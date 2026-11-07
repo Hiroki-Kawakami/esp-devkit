@@ -557,6 +557,8 @@ config.plugins.push(Box::new(SavedColorMode::new()));
 - What lies over a surface is drawn into ARGB memory when it changes, and `end`
   lays it on with the 2D engine, so video does not wait for the UI. Its opaque
   middle is kept in the panel's format and copied; only the rest is blended.
+  While a node over it only slides in or out, its picture is drawn once and
+  moved; what changes inside it shows when it stops.
 - `end` lays the UI on a framebuffer once, and after that only where the frame
   wrote. `frame.wrote(rect)` names what it wrote; a frame that names nothing is
   taken to have written all of `area`.

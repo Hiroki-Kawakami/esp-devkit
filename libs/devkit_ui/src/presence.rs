@@ -345,6 +345,17 @@ impl Tree {
         }
     }
 
+    /// A node only sliding in or out over `area`: where it shows unmoved, and
+    /// how far it is moved from there.
+    pub(crate) fn sliding_over(&self, area: Rect) -> Option<(NodeIndex, Rect, (i16, i16))> {
+        self.motions.iter().find_map(|m| {
+            let MotionKind::Presence(running) = &m.kind else { return None };
+            let slides = running.absent.opacity == 255 && running.absent.scale == 1.0 && !running.capture;
+            let pose = self.nodes[m.node as usize].pose?;
+            (slides && running.shown.intersects(&area)).then_some((m.node, running.shown, pose.offset))
+        })
+    }
+
     pub(crate) fn presence_within(&self, id: NodeIndex) -> bool {
         self.motions.iter().filter(|m| matches!(m.kind, MotionKind::Presence(_))).any(|m| {
             let mut node = m.node;
