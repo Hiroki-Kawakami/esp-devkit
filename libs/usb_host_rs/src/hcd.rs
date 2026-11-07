@@ -45,6 +45,8 @@ pub(crate) struct PipeId(pub u16);
 pub(crate) struct Request {
     pub setup: Option<Setup>,
     pub endpoint: u8,
+    /// Into the buffer, on a cache line.
+    pub offset: usize,
     pub len: usize,
     /// OUT: end with a zero-length packet when `len` is a multiple of the
     /// max packet size.
@@ -63,10 +65,11 @@ unsafe impl Send for Request {}
 unsafe impl Sync for Request {}
 
 impl Request {
-    pub fn new(setup: Option<Setup>, endpoint: u8, buffer: Buffer, len: usize, zlp: bool) -> Arc<Self> {
+    pub fn new(setup: Option<Setup>, endpoint: u8, buffer: Buffer, offset: usize, len: usize, zlp: bool) -> Arc<Self> {
         Arc::new(Self {
             setup,
             endpoint,
+            offset,
             len,
             zlp,
             buffer: UnsafeCell::new(Some(buffer)),
@@ -88,14 +91,15 @@ impl Request {
     #[allow(clippy::mut_from_ref, dead_code)]
     pub unsafe fn data(&self) -> &mut [u8] {
         let buffer = unsafe { (*self.buffer.get()).as_mut().unwrap() };
-        &mut buffer[..self.len]
+        &mut buffer[self.offset..self.offset + self.len]
     }
 
-    /// The whole allocation, cache lines included: what the controller may
-    /// write. Same safety as `data`.
+    /// The allocation from `offset` on, cache lines included: what the
+    /// controller may write. Same safety as `data`.
     #[allow(dead_code)]
     pub unsafe fn dma(&self) -> (*mut u8, usize) {
-        unsafe { (*self.buffer.get()).as_ref().unwrap().dma() }
+        let (ptr, capacity) = unsafe { (*self.buffer.get()).as_ref().unwrap().dma() };
+        (unsafe { ptr.add(self.offset) }, capacity - self.offset)
     }
 
     pub fn complete(&self, result: Result<usize>) {

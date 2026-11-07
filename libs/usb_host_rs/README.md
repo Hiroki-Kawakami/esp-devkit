@@ -34,6 +34,8 @@ loop {
   queued on one endpoint and run in order. Dropping the future cancels the
   transfer; the buffer is freed once the controller lets go of it. There are
   no timeouts: wrap the future in `idf::executor::timeout`.
+- `transfer_at` moves part of a buffer from an offset on a cache line
+  (`Buffer::ALIGN`), so one buffer can collect more than one transfer.
 - VBUS is the caller's.
 - A cancel takes effect at a packet boundary: a transfer already under way
   completes as `Canceled`, and a packet the device sent before the halt is

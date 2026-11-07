@@ -41,6 +41,13 @@ const BULK_QTDS: usize = 2;
 const QTD_XFER_SIZE: u32 = 0x1_ffff;
 /// One bulk descriptor's worth, kept a multiple of every max packet size.
 const MAX_BULK_BYTES: usize = 65536;
+/// No max packet size is larger, so an IN rounded up to one stays inside.
+const MAX_PACKET_BYTES: usize = 1024;
+
+/// What an IN of `len` may write: rounded up to whole packets.
+fn in_span(len: usize, capacity: usize) -> usize {
+    len.next_multiple_of(MAX_PACKET_BYTES).min(capacity)
+}
 const SETUP_BYTES: usize = 8;
 const CHAN_FLAG_ACTIVE: u32 = 1 << 0;
 const CHAN_FLAG_HALT_REQUESTED: u32 = 1 << 1;
@@ -811,7 +818,7 @@ impl Hcd for Dwc2 {
         let reads = if control { request.is_in() } else { data_in };
         unsafe {
             if reads {
-                msync(data, capacity, Flags::M2C);
+                msync(data, in_span(request.len, capacity), Flags::M2C);
             } else {
                 msync(data, request.len, Flags::C2M | Flags::UNALIGNED);
             }
@@ -890,7 +897,7 @@ impl Hcd for Dwc2 {
     fn finished(&self, request: &Request) {
         if request.is_in() {
             let (data, capacity) = unsafe { request.dma() };
-            unsafe { msync(data, capacity, Flags::M2C) };
+            unsafe { msync(data, in_span(request.len, capacity), Flags::M2C) };
         }
         self.reap();
     }

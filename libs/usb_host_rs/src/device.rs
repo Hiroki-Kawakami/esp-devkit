@@ -164,7 +164,7 @@ impl Device {
             return (buf, Err(Error::NoDevice));
         }
         let len = usize::from(setup.length);
-        hcd::run(self.0.ep0, Request::new(Some(setup), 0, buf, len, false)).await
+        hcd::run(self.0.ep0, Request::new(Some(setup), 0, buf, 0, len, false)).await
     }
 
     /// Opens the alternate's bulk endpoints; sends no SET_INTERFACE. The
@@ -268,7 +268,16 @@ impl Endpoint {
     /// IN transfer ends at a short packet. Transfers queued on one endpoint
     /// run in order; dropping the future cancels this one.
     pub async fn transfer(&self, buf: Buffer, len: usize) -> (Buffer, Result<usize>) {
-        self.submit(buf, len, false).await
+        self.submit(buf, 0, len, false).await
+    }
+
+    /// `transfer` on `len` bytes of `buf` from `offset`, a multiple of
+    /// `Buffer::ALIGN`, so one buffer can take a transfer after another.
+    pub async fn transfer_at(&self, buf: Buffer, offset: usize, len: usize) -> (Buffer, Result<usize>) {
+        if offset % Buffer::ALIGN != 0 {
+            return (buf, Err(Error::InvalidArgument));
+        }
+        self.submit(buf, offset, len, false).await
     }
 
     /// OUT only: ends with a zero-length packet when `len` is a multiple of
@@ -277,17 +286,17 @@ impl Endpoint {
         if self.descriptor().is_in() {
             return (buf, Err(Error::InvalidArgument));
         }
-        self.submit(buf, len, true).await
+        self.submit(buf, 0, len, true).await
     }
 
-    async fn submit(&self, buf: Buffer, len: usize, zlp: bool) -> (Buffer, Result<usize>) {
-        if len > buf.len() {
+    async fn submit(&self, buf: Buffer, offset: usize, len: usize, zlp: bool) -> (Buffer, Result<usize>) {
+        if offset.checked_add(len).is_none_or(|end| end > buf.len()) {
             return (buf, Err(Error::InvalidArgument));
         }
         if self.claim.device.is_gone() {
             return (buf, Err(Error::NoDevice));
         }
-        hcd::run(self.pipe(), Request::new(None, self.address(), buf, len, zlp)).await
+        hcd::run(self.pipe(), Request::new(None, self.address(), buf, offset, len, zlp)).await
     }
 
     /// Clears the device's halt and resumes the endpoint with DATA0.

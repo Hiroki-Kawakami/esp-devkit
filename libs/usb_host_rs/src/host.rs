@@ -124,7 +124,7 @@ async fn enumerate() -> Result<Device> {
 
 async fn control(pipe: PipeId, setup: Setup, buf: Buffer, stage: &str) -> Result<(Buffer, usize)> {
     let len = usize::from(setup.length);
-    let request = Request::new(Some(setup), 0, buf, len, false);
+    let request = Request::new(Some(setup), 0, buf, 0, len, false);
     let result = match executor::timeout(CONTROL_TIMEOUT, hcd::run(pipe, request)).await {
         Ok((buf, Ok(n))) => Ok((buf, n)),
         Ok((_, Err(err))) => Err(err),
