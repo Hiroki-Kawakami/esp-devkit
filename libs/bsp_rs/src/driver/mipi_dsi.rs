@@ -60,37 +60,49 @@ pub(crate) struct Config {
     pub panel_init: fn(&PanelIo, ImageFormat) -> Result<()>,
 }
 
-pub(crate) struct MipiDsi {
-    backlight: Option<ledc::Channel>,
-    backlight_min_duty: u32,
+struct Stack {
     panel: DpiPanel,
     _io: PanelIo,
     _bus: dsi::Bus,
+    frame_buffers: [Option<NonNull<u8>>; dsi::MAX_FRAME_BUFFERS],
+}
+
+pub(crate) struct MipiDsi {
+    backlight: Option<ledc::Channel>,
+    backlight_min_duty: u32,
+    stack: Option<Stack>,
     _phy_power: ldo::Channel,
     size: Size,
     format: ImageFormat,
-    frame_buffers: [Option<NonNull<u8>>; dsi::MAX_FRAME_BUFFERS],
     fb_num: u8,
     shown: AtomicUsize,
+    lane_bit_rate_mbps_rgb565: f32,
+    lane_bit_rate_mbps_rgb888: f32,
+    dpi_clock_freq_mhz: f32,
+    video_timing: VideoTiming,
+    panel_init: fn(&PanelIo, ImageFormat) -> Result<()>,
 }
 
 unsafe impl Send for MipiDsi {}
 unsafe impl Sync for MipiDsi {}
 
+fn color_format(format: ImageFormat) -> Result<ColorFormat> {
+    match format {
+        ImageFormat::Rgb565 => Ok(ColorFormat::Rgb565),
+        ImageFormat::Bgr888 => Ok(ColorFormat::Rgb888),
+        _ => Err(Error::NOT_SUPPORTED),
+    }
+}
+
 impl MipiDsi {
     pub(crate) fn new(config: &Config) -> Result<Self> {
-        let color = match config.pixel_format {
-            ImageFormat::Rgb565 => ColorFormat::Rgb565,
-            ImageFormat::Bgr888 => ColorFormat::Rgb888,
-            _ => return Err(Error::NOT_SUPPORTED),
-        };
+        color_format(config.pixel_format)?;
         if config.size.width == 0 || config.size.height == 0
             || usize::from(config.fb_num) > dsi::MAX_FRAME_BUFFERS
             || u32::from(config.backlight_min_duty) > BACKLIGHT_MAX_DUTY + 1 - 100
         {
             return Err(Error::INVALID_ARG);
         }
-        let fb_num = config.fb_num.max(1);
 
         let backlight = match config.backlight_gpio {
             Some(gpio) => {
@@ -111,46 +123,54 @@ impl MipiDsi {
 
         let phy_power = ldo::Channel::acquire(PHY_LDO_CHANNEL, PHY_LDO_MV)?;
 
+        let mut dsi = Self {
+            backlight,
+            backlight_min_duty: u32::from(config.backlight_min_duty.max(1)),
+            stack: None,
+            _phy_power: phy_power,
+            size: config.size,
+            format: config.pixel_format,
+            fb_num: config.fb_num.max(1),
+            shown: AtomicUsize::new(0),
+            lane_bit_rate_mbps_rgb565: config.lane_bit_rate_mbps_rgb565,
+            lane_bit_rate_mbps_rgb888: config.lane_bit_rate_mbps_rgb888,
+            dpi_clock_freq_mhz: config.dpi_clock_freq_mhz,
+            video_timing: config.video_timing,
+            panel_init: config.panel_init,
+        };
+        dsi.stack = Some(dsi.start(dsi.format, dsi.fb_num)?);
+        Ok(dsi)
+    }
+
+    fn start(&self, format: ImageFormat, fb_num: u8) -> Result<Stack> {
+        let color = color_format(format)?;
         let bus = dsi::Bus::new(&dsi::BusConfig {
             bus_id: 0,
             num_data_lanes: 2,
             lane_bit_rate_mbps: match color {
-                ColorFormat::Rgb565 => config.lane_bit_rate_mbps_rgb565,
-                ColorFormat::Rgb888 => config.lane_bit_rate_mbps_rgb888,
+                ColorFormat::Rgb565 => self.lane_bit_rate_mbps_rgb565,
+                ColorFormat::Rgb888 => self.lane_bit_rate_mbps_rgb888,
             },
         })?;
         let io = bus.new_dbi_io(0, 8, 8)?;
         let mut panel = bus.new_dpi_panel(&dsi::DpiPanelConfig {
             virtual_channel: 0,
-            dpi_clock_freq_mhz: config.dpi_clock_freq_mhz,
+            dpi_clock_freq_mhz: self.dpi_clock_freq_mhz,
             in_color_format: color,
             out_color_format: color,
             num_fbs: fb_num,
             video_timing: VideoTiming {
-                h_size: u32::from(config.size.width),
-                v_size: u32::from(config.size.height),
-                ..config.video_timing
+                h_size: u32::from(self.size.width),
+                v_size: u32::from(self.size.height),
+                ..self.video_timing
             },
         })?;
         panel.enable_dma2d()?;
         panel.enable_frame_sync()?;
-        (config.panel_init)(&io, config.pixel_format)?;
+        (self.panel_init)(&io, format)?;
         panel.panel().init()?;
         let frame_buffers = panel.frame_buffers()?;
-
-        Ok(Self {
-            backlight,
-            backlight_min_duty: u32::from(config.backlight_min_duty.max(1)),
-            panel,
-            _io: io,
-            _bus: bus,
-            _phy_power: phy_power,
-            size: config.size,
-            format: config.pixel_format,
-            frame_buffers,
-            fb_num,
-            shown: AtomicUsize::new(0),
-        })
+        Ok(Stack { panel, _io: io, _bus: bus, frame_buffers })
     }
 }
 
@@ -168,15 +188,16 @@ impl Driver for MipiDsi {
     }
 
     fn frame_buffer(&self, index: usize) -> Option<FrameBuffer> {
-        let ptr = (*self.frame_buffers.get(index)?)?;
+        let ptr = (*self.stack.as_ref()?.frame_buffers.get(index)?)?;
         Some(unsafe { FrameBuffer::new(ptr, self.size, self.format) })
     }
 
     fn present(&self, index: usize) -> Result<()> {
-        let fb = self.frame_buffers.get(index).copied().flatten().ok_or(Error::INVALID_ARG)?;
+        let stack = self.stack.as_ref().ok_or(Error::INVALID_STATE)?;
+        let fb = stack.frame_buffers.get(index).copied().flatten().ok_or(Error::INVALID_ARG)?;
         self.shown.store(index, Ordering::Relaxed);
         unsafe {
-            self.panel.panel().draw_bitmap(
+            stack.panel.panel().draw_bitmap(
                 0,
                 0,
                 i32::from(self.size.width),
@@ -184,16 +205,17 @@ impl Driver for MipiDsi {
                 fb.as_ptr().cast(),
             )
         }?;
-        self.panel.set_queued(index);
+        stack.panel.set_queued(index);
         Ok(())
     }
 
     fn scanning(&self) -> Option<usize> {
-        self.panel.scanning()
+        self.stack.as_ref()?.panel.scanning()
     }
 
     fn wait_frame(&self) -> Result<()> {
-        if self.panel.wait_frame(FRAME_TIMEOUT) { Ok(()) } else { Err(Error::TIMEOUT) }
+        let stack = self.stack.as_ref().ok_or(Error::INVALID_STATE)?;
+        if stack.panel.wait_frame(FRAME_TIMEOUT) { Ok(()) } else { Err(Error::TIMEOUT) }
     }
 
     fn shown(&self) -> Option<FrameBuffer> {
@@ -214,5 +236,38 @@ impl Driver for MipiDsi {
             duty.max(min + level - 1)
         };
         backlight.set_duty(duty)
+    }
+
+    fn reconfigure(&mut self, format: ImageFormat, fb_num: u8) -> Result<()> {
+        color_format(format)?;
+        if fb_num == 0 || usize::from(fb_num) > dsi::MAX_FRAME_BUFFERS {
+            return Err(Error::INVALID_ARG);
+        }
+        if format == self.format && fb_num == self.fb_num && self.stack.is_some() {
+            return Ok(());
+        }
+        let duty = self.backlight.as_ref().map(|b| b.duty());
+        if let Some(backlight) = &self.backlight {
+            backlight.set_duty(0)?;
+        }
+        self.stack = None;
+        self.shown.store(0, Ordering::Relaxed);
+        let result = match self.start(format, fb_num) {
+            Ok(stack) => {
+                (self.stack, self.format, self.fb_num) = (Some(stack), format, fb_num);
+                Ok(())
+            }
+            Err(err) => {
+                error!(TAG, "reconfigure to {format:?} x{fb_num}: {err}");
+                self.stack = self.start(self.format, self.fb_num).inspect_err(|err| error!(TAG, "restore: {err}")).ok();
+                Err(err)
+            }
+        };
+        if let (Some(backlight), Some(duty), true) = (&self.backlight, duty, self.stack.is_some()) {
+            if let Err(err) = backlight.set_duty(duty) {
+                error!(TAG, "backlight: {err}");
+            }
+        }
+        result
     }
 }

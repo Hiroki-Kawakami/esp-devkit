@@ -110,7 +110,7 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
     #[cfg(CONFIG_BSP_RS_DRIVER_ESP_HOSTED)]
     coprocessor_init();
     let power = power::start(PowerDriver::new(bus, pi4ioe2), audio);
-    Ok(Board { audio, display: Some(DISPLAY.get_or_init(|| display::Display(display))), imu, power, rtc, sd, touch })
+    Ok(Board { audio, display: Some(DISPLAY.get_or_init(|| display::Display::new(display))), imu, power, rtc, sd, touch })
 }
 
 // PI4IOE1 owns LCD_RST + TP_RST + SPK_EN + the headphone-detect input; PI4IOE2

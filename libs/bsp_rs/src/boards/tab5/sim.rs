@@ -7,7 +7,7 @@ use idf::Result;
 use idf::log::{info, warn};
 use idf::sync::OnceLock;
 
-use super::{PANEL_SIZE, TAG, resolve_fb_num, resolve_pixel_format};
+use super::{PANEL_SIZE, PIXEL_FORMATS, TAG, resolve_fb_num, resolve_pixel_format};
 use crate::audio;
 use crate::display;
 use crate::power;
@@ -38,7 +38,7 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
     };
     info!(TAG, "board: Tab5 (simulator)");
     host.send(&Event::device("M5Stack Tab5"));
-    let panel = SimPanel::new(host, PANEL_SIZE, resolve_pixel_format(config)?, resolve_fb_num(config))?;
+    let panel = SimPanel::new(host, PANEL_SIZE, PIXEL_FORMATS, resolve_pixel_format(config)?, resolve_fb_num(config))?;
     let touch = sim_touch::start(host, touch::Config {
         width: PANEL_SIZE.width,
         height: PANEL_SIZE.height,
@@ -57,5 +57,5 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
     let power = power::start(SimPower::new(Some(host)), audio);
     let rtc = SimRtc::new(host).and_then(|driver| rtc::start(driver).inspect_err(|err| warn!(TAG, "rtc unavailable: {err}")).ok());
     let sd = sd::start(SimSd::new()).inspect_err(|err| warn!(TAG, "sd unavailable: {err}")).ok();
-    Ok(Board { audio, display: Some(DISPLAY.get_or_init(|| display::Display(panel))), imu, power, rtc, sd, touch })
+    Ok(Board { audio, display: Some(DISPLAY.get_or_init(|| display::Display::new(panel))), imu, power, rtc, sd, touch })
 }

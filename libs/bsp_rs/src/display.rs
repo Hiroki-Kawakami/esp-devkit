@@ -3,6 +3,7 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
+use core::cell::UnsafeCell;
 use core::marker::PhantomData;
 use core::ptr::NonNull;
 use core::slice;
@@ -121,6 +122,10 @@ pub(crate) trait Driver: Send + Sync {
     fn set_brightness(&self, _level: u8) -> Result<()> {
         Err(Error::NOT_SUPPORTED)
     }
+
+    fn reconfigure(&mut self, _format: ImageFormat, _fb_num: u8) -> Result<()> {
+        Err(Error::NOT_SUPPORTED)
+    }
 }
 
 impl Driver for Absent {
@@ -176,6 +181,10 @@ macro_rules! driver_enum {
             fn set_brightness(&self, level: u8) -> idf::Result<()> {
                 match self { $(Self::$variant(d) => d.set_brightness(level)),+ }
             }
+
+            fn reconfigure(&mut self, format: $crate::display::ImageFormat, fb_num: u8) -> idf::Result<()> {
+                match self { $(Self::$variant(d) => d.reconfigure(format, fb_num)),+ }
+            }
         }
     };
 }
@@ -183,50 +192,75 @@ macro_rules! driver_enum {
 #[cfg_attr(not(target_os = "none"), allow(unused_imports))]
 pub(crate) use driver_enum;
 
-pub struct Display(pub(crate) crate::board::Display);
+pub struct Display {
+    size: Size,
+    driver: UnsafeCell<crate::board::Display>,
+}
+
+unsafe impl Sync for Display {}
 
 impl Display {
+    #[allow(dead_code)]
+    pub(crate) fn new(driver: crate::board::Display) -> Self {
+        Self { size: driver.size(), driver: UnsafeCell::new(driver) }
+    }
+
+    fn driver(&self) -> &crate::board::Display {
+        unsafe { &*self.driver.get() }
+    }
+
     pub fn size(&self) -> Size {
-        self.0.size()
+        self.size
     }
 
     pub fn pixel_format(&self) -> ImageFormat {
-        self.0.pixel_format()
+        self.driver().pixel_format()
     }
 
     pub fn frame_buffer_count(&self) -> usize {
-        self.0.frame_buffer_count()
+        self.driver().frame_buffer_count()
     }
 
     pub fn frame_buffer(&self, index: usize) -> Option<FrameBuffer> {
-        self.0.frame_buffer(index)
+        self.driver().frame_buffer(index)
     }
 
     pub fn present(&self, index: usize) -> Result<()> {
-        self.0.present(index)
+        self.driver().present(index)
     }
 
     /// The framebuffer the panel is scanning; `present` takes effect at the
     /// next frame boundary.
     pub fn scanning(&self) -> Option<usize> {
-        self.0.scanning()
+        self.driver().scanning()
     }
 
     /// Blocks until the next frame boundary.
     pub fn wait_frame(&self) -> Result<()> {
-        self.0.wait_frame()
+        self.driver().wait_frame()
     }
 
     /// `max_pending` copies may be in flight at once.
     /// 0..=100; 0 turns the backlight off.
     pub fn set_brightness(&self, level: u8) -> Result<()> {
-        self.0.set_brightness(level)
+        self.driver().set_brightness(level)
+    }
+
+    /// Rebuilds the panel with `config`, where 0 and `None` keep the current
+    /// value. On failure the previous configuration is rebuilt if it can be.
+    /// Either way every framebuffer handed out before is gone. Nothing but
+    /// `size` may be called on this display meanwhile.
+    pub unsafe fn reconfigure(&self, config: &Config) -> Result<()> {
+        let driver = unsafe { &mut *self.driver.get() };
+        let format = config.pixel_format.unwrap_or_else(|| driver.pixel_format());
+        let fb_num = if config.fb_num != 0 { config.fb_num } else { driver.frame_buffer_count() as u8 };
+        driver.reconfigure(format, fb_num)
     }
 
     /// Reads what the panel shows, in its pixel format. Rows may be torn by
     /// concurrent drawing, and only one `Readback` may exist at a time.
     pub unsafe fn readback(&self, area: Rect) -> Result<Readback<'_>> {
-        let fb = self.0.shown().ok_or(Error::NOT_SUPPORTED)?;
+        let fb = self.driver().shown().ok_or(Error::NOT_SUPPORTED)?;
         let size = fb.size();
         let (x, y, w, h) = unsigned(area).ok_or(Error::INVALID_ARG)?;
         if x + w > u32::from(size.width) || y + h > u32::from(size.height) {

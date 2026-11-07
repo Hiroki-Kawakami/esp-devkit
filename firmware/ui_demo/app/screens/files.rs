@@ -270,7 +270,7 @@ impl Detail {
         };
         if let Some(strips) = strips {
             let lanes = if self.video { 2 } else { 1 };
-            cx.set_render_mode(RenderMode { strips, lanes }, DetailMsg::VideoReady);
+            cx.set_render_mode(RenderMode { strips, lanes, display: Default::default() }, DetailMsg::VideoReady);
             self.video = !self.video;
         }
     }

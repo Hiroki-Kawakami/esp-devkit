@@ -41,6 +41,7 @@ const IDLE_WAIT: Duration = Duration::from_secs(3600);
 const CARET_WAIT: Duration = Duration::from_millis(250);
 const REPEAT_WAIT: Duration = Duration::from_millis(20);
 const HOLE_WAIT: Duration = Duration::from_millis(100);
+const SURFACE_WAIT: Duration = Duration::from_secs(1);
 const TAP_HOLD: Duration = Duration::from_millis(40);
 const DROP_LOG_EVERY: u32 = 256;
 
@@ -342,6 +343,7 @@ pub struct AppState<C: Screen> {
     overlay: Option<Rect>,
     exclusive: bool,
     waiting: Option<Instant>,
+    switching: Option<Instant>,
     requested: Rotation,
     rotation: Rotation,
     rotated: bool,
@@ -438,6 +440,7 @@ impl<C: Screen> AppState<C> {
             overlay: None,
             exclusive: false,
             waiting: None,
+            switching: None,
             requested: rotation,
             rotation,
             rotated: false,
@@ -535,11 +538,55 @@ impl<C: Screen> AppState<C> {
 
     fn apply_render_mode(&mut self) {
         let Some((slot, request)) = self.tree.render_request.take() else { return };
-        let given_up = match self.presenter.set_strips(request.strips, request.lanes) {
+        if !self.presenter.changes_display(&request.display) {
+            let given_up = match self.presenter.set_strips(request.strips, request.lanes) {
+                Ok(old) => old,
+                Err(same) => same,
+            };
+            self.tree.render_done(slot, request.reply, given_up);
+            return;
+        }
+        if !self.presenter.fits_display(&request.display, &request.strips, request.lanes) {
+            error!(TAG, "render mode: strips hold no 16 rows in {:?}", request.display.pixel_format);
+            self.tree.render_done(slot, request.reply, request.strips);
+            return;
+        }
+        if self.tree.transiting() {
+            self.tree.render_request = Some((slot, request));
+            return;
+        }
+        if let Some(surface) = &self.surface {
+            surface.detach();
+            if surface.writing() {
+                let since = *self.switching.get_or_insert_with(Instant::now);
+                if since.elapsed() < SURFACE_WAIT {
+                    self.tree.render_request = Some((slot, request));
+                    return;
+                }
+                error!(TAG, "render mode: a surface kept writing its frame");
+                self.switching = None;
+                self.release_surface();
+                self.tree.render_done(slot, request.reply, request.strips);
+                return;
+            }
+        }
+        self.switching = None;
+        self.release_surface();
+        self.exclusive = false;
+        let given_up = match unsafe { self.presenter.set_display(&request.display, request.strips, request.lanes) } {
             Ok(old) => old,
             Err(same) => same,
         };
+        self.tree.set_pixel_format(self.shared.display.pixel_format());
         self.tree.render_done(slot, request.reply, given_up);
+    }
+
+    fn release_surface(&mut self) {
+        if let Some(old) = self.surface.take() {
+            old.detach();
+            self.presenter.set_external(None, false);
+            (self.hole, self.overlay) = (None, None);
+        }
     }
 
     fn follow_rotation(&mut self) {
@@ -574,11 +621,7 @@ impl<C: Screen> AppState<C> {
         let shown = self.tree.external().map(|(surface, hole)| (surface.clone(), hole));
         let attached = self.surface.as_ref();
         if attached.is_none_or(|a| shown.as_ref().is_none_or(|s| !s.0.same(a))) {
-            if let Some(old) = self.surface.take() {
-                old.detach();
-                self.presenter.set_external(None, false);
-                (self.hole, self.overlay) = (None, None);
-            }
+            self.release_surface();
             if let Some((surface, _)) = &shown {
                 let shared = self.shared.clone();
                 let wake = Arc::new(move || {
@@ -740,7 +783,7 @@ impl<C: Screen> AppState<C> {
             self.shared.busy.store(!self.tree.idle(), Ordering::Release);
             // While animating the presenter paces frames; a timed wait here
             // would add at least two ticks to each.
-            let wait = if self.tree.timed() || self.waiting.is_some() {
+            let wait = if self.tree.timed() || self.waiting.is_some() || self.switching.is_some() {
                 REPEAT_WAIT
             } else if self.tree.has_caret() {
                 CARET_WAIT

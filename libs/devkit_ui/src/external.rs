@@ -168,6 +168,10 @@ impl ExternalSurface {
         self.0.state.lock().policy
     }
 
+    pub(crate) fn writing(&self) -> bool {
+        self.0.state.lock().writing
+    }
+
     /// Whether a frame started for an earlier rectangle is still being written.
     pub(crate) fn writing_outdated(&self) -> bool {
         let state = self.0.state.lock();

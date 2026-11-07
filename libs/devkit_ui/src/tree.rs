@@ -520,7 +520,10 @@ impl Tree {
     }
 
     pub(crate) fn set_pixel_format(&mut self, format: ImageFormat) {
-        self.format = format;
+        if format != self.format {
+            self.format = format;
+            self.mark_all_dirty();
+        }
     }
 
     pub(crate) fn alloc_slot(&mut self) -> u16 {

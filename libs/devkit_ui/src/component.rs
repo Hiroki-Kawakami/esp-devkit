@@ -5,6 +5,7 @@
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
+use bsp_rs::display;
 use devkit_gfx::Rect;
 
 use crate::app::{Handle, Link};
@@ -99,6 +100,7 @@ pub(crate) enum Hook {
 pub(crate) struct RenderRequest {
     pub(crate) strips: Strips,
     pub(crate) lanes: usize,
+    pub(crate) display: display::Config,
     pub(crate) reply: Option<Erased>,
 }
 
@@ -106,6 +108,9 @@ pub(crate) struct RenderRequest {
 pub struct RenderMode {
     pub strips: Strips,
     pub lanes: usize,
+    /// Pixel format and framebuffer count; 0 and `None` keep what the display
+    /// has.
+    pub display: display::Config,
 }
 
 #[derive(Default)]
@@ -269,12 +274,14 @@ impl<C: Component> Cx<C> {
         self.requests.theme = Some(theme);
     }
 
-    /// Changes the render mode before the next frame. `done` then arrives, with
-    /// the memory given up in [`Self::take_strips`]; a mode that cannot work
-    /// leaves things as they are and hands its own memory back instead.
+    /// Changes the render mode before the next frame; a display change also
+    /// waits for screen transitions and a surface frame being written to end.
+    /// `done` then arrives, with the memory given up in [`Self::take_strips`];
+    /// a mode that cannot work leaves things as they are and hands its own
+    /// memory back instead.
     pub fn set_render_mode(&mut self, mode: RenderMode, done: C::Msg) {
         let reply = Some(Erased::new(done));
-        self.requests.render = Some(RenderRequest { strips: mode.strips, lanes: mode.lanes, reply });
+        self.requests.render = Some(RenderRequest { strips: mode.strips, lanes: mode.lanes, display: mode.display, reply });
     }
 
     pub fn take_strips(&mut self) -> Option<Strips> {

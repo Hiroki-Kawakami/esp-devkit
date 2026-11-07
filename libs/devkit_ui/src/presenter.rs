@@ -13,7 +13,7 @@ use core::ffi::CStr;
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use core::time::Duration;
 
-use bsp_rs::display::{Display, FrameBuffer, ImageFormat, Rotation};
+use bsp_rs::display::{self, Display, FrameBuffer, ImageFormat, Rotation};
 use devkit::Lease;
 use devkit_gfx::{Argb8888, Bgr888, ClipStore, Damage, DisplayList, GlyphCache, Pixel, Prepared, Rect, Rgb565, Size, Surface, draw, draw_from};
 use idf::heap::Caps;
@@ -312,8 +312,8 @@ fn area(display: &Display, rotation: Rotation) -> Rect {
     }
 }
 
-fn holds_rows(display: &Display, rotation: Rotation, buffer_bytes: usize) -> bool {
-    let stride = display.pixel_format().row_bytes(area(display, rotation).w as usize);
+fn holds_rows(display: &Display, format: ImageFormat, rotation: Rotation, buffer_bytes: usize) -> bool {
+    let stride = format.row_bytes(area(display, rotation).w as usize);
     if buffer_bytes < stride * ROW_GRID as usize {
         error!(TAG, "strips of {buffer_bytes} bytes hold no 16 rows of {stride}");
         return false;
@@ -332,7 +332,7 @@ impl Presenter {
             StripSource::Given(strips) => strips,
         };
         let (_, buffer_bytes) = strips.buffers(config.lanes);
-        if !holds_rows(display, config.rotation, buffer_bytes) {
+        if !holds_rows(display, display.pixel_format(), config.rotation, buffer_bytes) {
             return Err(Error::INVALID_SIZE);
         }
         let shared = Arc::new(Shared {
@@ -463,8 +463,54 @@ impl Presenter {
     /// the memory used so far: nothing draws in it any more. Refused, handing
     /// `strips` back, when a buffer cannot hold 16 rows of the logical width.
     pub fn set_strips(&mut self, strips: Strips, lanes: usize) -> core::result::Result<Strips, Strips> {
-        let (_, buffer_bytes) = strips.buffers(lanes.clamp(1, MAX_LANES));
-        if !(1..=MAX_LANES).contains(&lanes) || !holds_rows(self.display, self.rotation, buffer_bytes) {
+        let Some(buffer_bytes) = self.fit(&strips, lanes, self.display.pixel_format()) else {
+            return Err(strips);
+        };
+        self.lanes = lanes;
+        self.buffer_bytes = buffer_bytes;
+        Ok(core::mem::replace(&mut self.strips, strips))
+    }
+
+    fn fit(&self, strips: &Strips, lanes: usize, format: ImageFormat) -> Option<usize> {
+        if !(1..=MAX_LANES).contains(&lanes) {
+            return None;
+        }
+        let (_, buffer_bytes) = strips.buffers(lanes);
+        holds_rows(self.display, format, self.rotation, buffer_bytes).then_some(buffer_bytes)
+    }
+
+    fn format_after(&self, config: &display::Config) -> ImageFormat {
+        config.pixel_format.unwrap_or_else(|| self.display.pixel_format())
+    }
+
+    /// Whether `config` asks the display for something it is not.
+    pub fn changes_display(&self, config: &display::Config) -> bool {
+        self.format_after(config) != self.display.pixel_format()
+            || (config.fb_num != 0 && usize::from(config.fb_num) != self.display.frame_buffer_count())
+    }
+
+    /// Whether `set_display` would take `strips` for `config`.
+    pub fn fits_display(&self, config: &display::Config, strips: &Strips, lanes: usize) -> bool {
+        self.fit(strips, lanes, self.format_after(config)).is_some()
+    }
+
+    /// `Display::reconfigure`, then `set_strips`, and everything is repainted.
+    /// Refused without touching the display when the strips would not hold 16
+    /// rows; when the display fails, `strips` come back too. Nothing else may
+    /// use the display or its framebuffers meanwhile.
+    pub unsafe fn set_display(&mut self, config: &display::Config, strips: Strips, lanes: usize) -> core::result::Result<Strips, Strips> {
+        let Some(buffer_bytes) = self.fit(&strips, lanes, self.format_after(config)) else {
+            return Err(strips);
+        };
+        (self.hole, self.hold) = (None, false);
+        let result = unsafe { self.display.reconfigure(config) };
+        self.buffers.latest.store(self.display.scanning().unwrap_or(0), Ordering::Release);
+        self.buffers.back.store(NO_BACK, Ordering::Release);
+        if let Err(err) = self.reset() {
+            error!(TAG, "reset: {err}");
+        }
+        if let Err(err) = result {
+            error!(TAG, "display: {err}");
             return Err(strips);
         }
         self.lanes = lanes;
@@ -475,7 +521,7 @@ impl Presenter {
     /// Turns the picture from the next frame on, which repaints everything.
     /// Refused when a buffer cannot hold 16 rows of the new logical width.
     pub fn set_rotation(&mut self, rotation: Rotation) -> Result<()> {
-        if !holds_rows(self.display, rotation, self.buffer_bytes) {
+        if !holds_rows(self.display, self.display.pixel_format(), rotation, self.buffer_bytes) {
             return Err(Error::INVALID_SIZE);
         }
         self.rotation = rotation;

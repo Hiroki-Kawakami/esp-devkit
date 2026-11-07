@@ -35,13 +35,13 @@ fn resolve_fb_num(config: &Config) -> u8 {
     if config.display.fb_num != 0 { config.display.fb_num } else { 2 }
 }
 
+const PIXEL_FORMATS: &[ImageFormat] = &[ImageFormat::Rgb565, ImageFormat::Bgr888];
+
 fn resolve_pixel_format(config: &Config) -> Result<ImageFormat> {
-    match config.display.pixel_format {
-        None | Some(ImageFormat::Rgb565) => Ok(ImageFormat::Rgb565),
-        Some(ImageFormat::Bgr888) => Ok(ImageFormat::Bgr888),
-        Some(other) => {
-            error!(TAG, "display: {other:?} is not supported");
-            Err(Error::NOT_SUPPORTED)
-        }
+    let format = config.display.pixel_format.unwrap_or(PIXEL_FORMATS[0]);
+    if !PIXEL_FORMATS.contains(&format) {
+        error!(TAG, "display: {format:?} is not supported");
+        return Err(Error::NOT_SUPPORTED);
     }
+    Ok(format)
 }
