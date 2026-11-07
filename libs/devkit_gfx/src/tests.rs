@@ -954,3 +954,23 @@ fn an_image_draw_cannot_take_is_left_out_and_counted() {
     list.clear();
     assert_eq!(list.skipped(), 0);
 }
+
+#[test]
+fn image_buf_is_aligned_and_reshapes_within_its_memory() {
+    let mut buf = ImageBuf::new_in(ImageFormat::Rgb565, 5, 3, 6, 64, Global).unwrap();
+    assert_eq!(buf.pixels().as_ptr() as usize % 64, 0);
+    assert_eq!((buf.stride_bytes(), buf.pixels().len()), (12, 36));
+    assert!(buf.pixels().iter().all(|&b| b == 0));
+    buf.pixels_mut()[12] = 7;
+    let image = buf.image();
+    assert_eq!((image.width(), image.height(), image.stride(), image.pixels()[12]), (5, 3, 6, 7));
+    buf.reshape(ImageFormat::Bgr888, 4, 4, 4);
+    assert_eq!(buf.pixels().len(), 48);
+}
+
+#[test]
+#[should_panic]
+fn image_buf_reshape_beyond_its_memory_panics() {
+    let mut buf = ImageBuf::new(ImageFormat::L8, 4, 4, 4).unwrap();
+    buf.reshape(ImageFormat::Rgb565, 4, 4, 4);
+}

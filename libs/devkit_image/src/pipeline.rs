@@ -159,7 +159,7 @@ fn run_producer<P: FnOnce(&Ring) -> Result<()>>(ring: &Ring, producer: P) -> Res
     result
 }
 
-fn run_consumer<C: FnOnce(&Ring) -> Result<()>>(ring: &Ring, consumer: C) -> Result<()> {
+fn run_consumer<T, C: FnOnce(&Ring) -> Result<T>>(ring: &Ring, consumer: C) -> Result<T> {
     let result = consumer(ring);
     if result.is_err() {
         ring.abort();
@@ -168,11 +168,12 @@ fn run_consumer<C: FnOnce(&Ring) -> Result<()>>(ring: &Ring, consumer: C) -> Res
 }
 
 /// Runs both sides to the end and returns the producer's error, else the
-/// consumer's. The closures may borrow from the caller.
-pub fn run<P, C>(options: &PipelineOptions, producer: P, consumer: C) -> Result<()>
+/// consumer's result. The closures may borrow from the caller.
+pub fn run<T, P, C>(options: &PipelineOptions, producer: P, consumer: C) -> Result<T>
 where
+    T: Send,
     P: FnOnce(&Ring) -> Result<()> + Send,
-    C: FnOnce(&Ring) -> Result<()> + Send,
+    C: FnOnce(&Ring) -> Result<T> + Send,
 {
     let ring = Ring::new(options)?;
     let ring = &ring;
@@ -193,18 +194,18 @@ where
 }
 
 /// A pipeline running in the background.
-pub struct Job {
+pub struct Job<T = ()> {
     producer: JoinHandle<Result<()>>,
-    consumer: JoinHandle<Result<()>>,
+    consumer: JoinHandle<Result<T>>,
 }
 
-impl Job {
+impl<T> Job<T> {
     /// Both sides have finished.
     pub fn is_finished(&self) -> bool {
         self.producer.is_finished() && self.consumer.is_finished()
     }
 
-    pub fn join(self) -> Result<()> {
+    pub fn join(self) -> Result<T> {
         let produced = self.producer.join();
         let consumed = self.consumer.join();
         produced.and(consumed)
@@ -212,10 +213,11 @@ impl Job {
 }
 
 /// `run` that returns at once, for closures that own what they use.
-pub fn start<P, C>(options: &PipelineOptions, producer: P, consumer: C) -> Result<Job>
+pub fn start<T, P, C>(options: &PipelineOptions, producer: P, consumer: C) -> Result<Job<T>>
 where
+    T: Send + 'static,
     P: FnOnce(&Ring) -> Result<()> + Send + 'static,
-    C: FnOnce(&Ring) -> Result<()> + Send + 'static,
+    C: FnOnce(&Ring) -> Result<T> + Send + 'static,
 {
     let ring = Arc::new(Ring::new(options)?);
     let p_ring = ring.clone();

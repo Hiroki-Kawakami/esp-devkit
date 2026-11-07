@@ -33,17 +33,6 @@ pub(crate) fn buffer<T: Zeroable>(len: usize, caps: Option<Caps>) -> Result<Buff
     Ok(heap::zeroed_slice(len, caps.unwrap_or_else(default_caps))?)
 }
 
-/// A whole picture about to be overwritten, where clearing it first would cost as
-/// much as a good part of the work on it.
-///
-/// # Safety
-/// Every byte must be written before it is read.
-pub(crate) unsafe fn uninit_buffer(len: usize, caps: Option<Caps>) -> Result<Buffer> {
-    let mut v = heap::try_vec(len, caps.unwrap_or_else(default_caps))?;
-    unsafe { v.set_len(len) };
-    Ok(v.into_boxed_slice())
-}
-
 pub(crate) fn internal_buffer<T: Zeroable>(len: usize) -> Result<Buffer<T>> {
     Ok(heap::zeroed_slice(len, internal_caps())?)
 }

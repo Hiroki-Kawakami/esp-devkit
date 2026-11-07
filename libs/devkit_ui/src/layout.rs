@@ -70,7 +70,7 @@ impl Tree {
         let content_h = inner(avail_h, top, bottom);
         let (w, h) = match &self.nodes[id as usize].content {
             NodeContent::Text(_) => self.measure_text(id, content_w),
-            NodeContent::Image { image, .. } => (image.width() as i16, image.height() as i16),
+            NodeContent::Image { image, .. } => (image.image().width() as i16, image.image().height() as i16),
             NodeContent::Scroll(_) => match self.nodes[id as usize].first_child {
                 NONE => (0, 0),
                 child => {

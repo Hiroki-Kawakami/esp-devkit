@@ -75,7 +75,11 @@ while last.pop(&mut dst)? {
 ```
 
 `resize_decoder` and `resize_buffer` do this for a whole picture.
-`resize_in_place` works on one buffer, for a picture that shrinks on every axis.
+`resize_decoder` returns a new `ImageBuf`; `resize_decoder_into` writes into the
+caller's memory at a stride, such as part of a larger picture or an `ImageBuf`
+allocated on the alignment a DMA writer needs. `resize_in_place` works on one
+buffer, for a picture that shrinks on every axis, and `resize_image_in_place`
+does it to an `ImageBuf`, which takes the new size.
 `DecodeOptions::target_width` lets JPEG do most of a large reduction while it
 decodes.
 
@@ -111,8 +115,9 @@ resizer, then `finalize`.
 `pipeline::run` runs a producer and a consumer on two tasks with a bounded ring of
 rows between them, so that for instance decode and resize overlap with dither and
 encode on two cores. The closures may borrow from the caller. An error on either
-side aborts the other's wait, and the producer's error wins. `pipeline::start` is
-the same for closures that own what they use, and returns a `Job` to poll.
+side aborts the other's wait, and the producer's error wins; otherwise the
+consumer's result comes back. `pipeline::start` is the same for closures that own
+what they use, and returns a `Job` to poll and join for that result.
 
 ## Using it on ESP32-P4
 

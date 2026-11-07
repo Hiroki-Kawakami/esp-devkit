@@ -34,7 +34,7 @@ pub use font::Font;
 pub use format::ImageFormat;
 pub use geom::{Corners, Rect, Rotation, Sides, Size};
 pub use glyph_cache::GlyphCache;
-pub use image::Image;
+pub use image::{Image, ImageBuf, ImageSource};
 pub use list::{DisplayList, Op, overlap};
 pub use pixel::{Argb8888, Bgr888, Pixel, Rgb565};
 pub use raster::{Raster, RasterTarget};

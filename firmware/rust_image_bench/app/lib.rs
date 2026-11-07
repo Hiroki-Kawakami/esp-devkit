@@ -253,7 +253,7 @@ fn bench_decode_resize(label: &str, data: &[u8], tw: u16, th: u16, format: Image
         let mut d = Decoder::open(Format::Jpeg, SliceStream::new(data), &options).map_err(|e| format!("open {e}"))?;
         let o = ResizeOptions { target_width: tw, target_height: th, format: Some(format), ..Default::default() };
         let out = resize_decoder(&mut d, &o, Orientation::None).map_err(|e| format!("resize {e}"))?;
-        Ok(if keep { fnv(FNV_SEED, &out.data) } else { 0 })
+        Ok(if keep { fnv(FNV_SEED, out.pixels()) } else { 0 })
     });
     report(&name, c, rust, usize::from(tw) * usize::from(th));
 }

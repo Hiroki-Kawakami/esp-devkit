@@ -4,8 +4,6 @@
  */
 
 use std::ffi::CString;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use idf::fs::File;
 
@@ -746,7 +744,7 @@ fn resize_decoder_png() {
     let bytes = fixture("kPngGrad16");
     let mut d = Decoder::Png(png(&bytes).unwrap());
     let out = resize_decoder(&mut d, &target(8, 8), Orientation::None).unwrap();
-    assert_eq!((out.info.width, out.info.height), (8, 8));
+    assert_eq!((out.width(), out.height(), out.format()), (8, 8, ImageFormat::L8));
     for y in 0..8 {
         for x in 0..8 {
             let mut sum = 0;
@@ -755,7 +753,7 @@ fn resize_decoder_png() {
                     sum += ((x * 2 + xx) * 16 + (y * 2 + yy) * 4) & 0xFF;
                 }
             }
-            assert!(near(out.data[(y * 8 + x) as usize], sum / 4, 1));
+            assert!(near(out.pixels()[(y * 8 + x) as usize], sum / 4, 1));
         }
     }
 }
@@ -765,8 +763,41 @@ fn resize_decoder_jpeg() {
     let bytes = fixture("kJpgGrayBig");
     let mut d = Decoder::Jpeg(jpeg(&bytes).unwrap());
     let out = resize_decoder(&mut d, &target(16, 16), Orientation::None).unwrap();
-    assert_eq!((out.info.width, out.info.height), (16, 16));
-    assert!(out.data.iter().all(|v| (90..=110).contains(v)));
+    assert_eq!((out.width(), out.height()), (16, 16));
+    assert!(out.pixels().iter().all(|v| (90..=110).contains(v)));
+}
+
+#[test]
+fn resize_decoder_into_a_strided_slice() {
+    let bytes = fixture("kPngGrad16");
+    let whole = resize_decoder(&mut Decoder::Png(png(&bytes).unwrap()), &target(8, 8), Orientation::None).unwrap();
+    let mut atlas = [0xEE; 20 * 9];
+    let mut d = Decoder::Png(png(&bytes).unwrap());
+    let out = resize_decoder_into(&mut d, &mut atlas[20 + 4..], 20, &target(8, 8), Orientation::None).unwrap();
+    assert_eq!((out.width, out.height), (8, 8));
+    assert!(atlas[..24].iter().all(|&v| v == 0xEE));
+    for y in 0..8 {
+        let row = 20 * (y + 1);
+        assert_eq!(&atlas[row + 4..row + 12], &whole.pixels()[y * 8..y * 8 + 8]);
+        assert!(atlas[row..row + 4].iter().chain(&atlas[row + 12..row + 20]).all(|&v| v == 0xEE));
+    }
+}
+
+#[test]
+fn resize_decoder_into_rejects_a_short_slice() {
+    let bytes = fixture("kPngGrad16");
+    let mut d = Decoder::Png(png(&bytes).unwrap());
+    let mut dst = [0; 8 * 8 - 1];
+    assert_eq!(resize_decoder_into(&mut d, &mut dst, 0, &target(8, 8), Orientation::None).err(), Some(Error::InvalidArgument));
+}
+
+#[test]
+fn resize_image_in_place_reshapes() {
+    let mut image = ImageBuf::new(ImageFormat::L8, 4, 4, 4).unwrap();
+    image.pixels_mut().copy_from_slice(&[10, 10, 50, 50, 10, 10, 50, 50, 90, 90, 130, 130, 90, 90, 130, 130]);
+    resize_image_in_place(&mut image, &target(2, 2)).unwrap();
+    assert_eq!((image.width(), image.height(), image.stride()), (2, 2, 2));
+    assert_eq!(image.pixels(), &[10, 50, 90, 130]);
 }
 
 fn dither_opts(algorithm: DitherAlgorithm, levels: u8, output: DitherOutput) -> DitherOptions {
@@ -1307,8 +1338,6 @@ fn pipeline_backpressure() {
 #[test]
 fn pipeline_start_and_poll() {
     let options = PipelineOptions { row_bytes: 16, slots: 3, ..Default::default() };
-    let got = Arc::new(AtomicUsize::new(0));
-    let counter = got.clone();
     let job = pipeline::start(
         &options,
         |ring: &Ring| {
@@ -1317,20 +1346,19 @@ fn pipeline_start_and_poll() {
             }
             Ok(())
         },
-        move |ring: &Ring| {
-            let mut row = [0; 16];
+        |ring: &Ring| {
+            let (mut row, mut got) = ([0; 16], 0);
             while ring.get(&mut row)? {
-                counter.fetch_add(1, Ordering::Relaxed);
+                got += 1;
             }
-            Ok(())
+            Ok(got)
         },
     )
     .unwrap();
     while !job.is_finished() {
         idf::thread::yield_now();
     }
-    assert_eq!(job.join(), Ok(()));
-    assert_eq!(got.load(Ordering::Relaxed), 200);
+    assert_eq!(job.join(), Ok(200));
 }
 
 #[test]

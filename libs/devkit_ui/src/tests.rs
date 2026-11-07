@@ -4753,3 +4753,59 @@ fn a_task_lives_while_its_row_does() {
     let (_, wider) = task_rows(3);
     assert_eq!(wider, started + 2, "overscan reaches further past the end");
 }
+
+#[derive(Clone, Copy)]
+enum GalleryMsg {
+    Show(usize),
+    Same,
+}
+
+struct Gallery {
+    pictures: Vec<alloc::sync::Arc<dyn devkit_gfx::ImageSource>>,
+    shown: usize,
+}
+
+impl Component for Gallery {
+    type Msg = GalleryMsg;
+
+    fn update(&mut self, msg: GalleryMsg, cx: &mut Cx<Self>) {
+        if let GalleryMsg::Show(index) = msg {
+            self.shown = index;
+        }
+        cx.rebuild();
+    }
+
+    fn view<'a>(&'a self, ui: &'a Ui<GalleryMsg>) -> Element<'a, GalleryMsg> {
+        ui.column([ui.image(&self.pictures[self.shown]).id(id!("picture"))]).align(Align::Start)
+    }
+}
+
+impl Screen for Gallery {}
+
+#[test]
+fn a_shared_image_repaints_when_swapped_and_is_released_by_its_node() {
+    let picture = |w, h| -> alloc::sync::Arc<dyn devkit_gfx::ImageSource> {
+        alloc::sync::Arc::new(devkit_gfx::ImageBuf::new(ImageFormat::Rgb565, w, h, usize::from(w)).unwrap())
+    };
+    let pictures = alloc::vec![picture(4, 3), picture(4, 3), picture(6, 5)];
+    let watch: Vec<_> = pictures.iter().map(alloc::sync::Arc::downgrade).collect();
+    let mut tree = Tree::new(Gallery { pictures, shown: 0 }, SCREEN, Caps::INTERNAL, theme());
+    run(&mut tree);
+    let first = rect_of(&tree, "picture");
+    assert_eq!((first.w, first.h), (4, 3));
+    assert_eq!(watch[0].strong_count(), 2);
+
+    tree.post(tree.root_id, Erased::new(GalleryMsg::Same));
+    assert!(run(&mut tree).is_empty());
+
+    tree.post(tree.root_id, Erased::new(GalleryMsg::Show(1)));
+    assert!(run(&mut tree).contains(&first));
+    assert_eq!((watch[0].strong_count(), watch[1].strong_count()), (1, 2));
+
+    tree.post(tree.root_id, Erased::new(GalleryMsg::Show(2)));
+    run(&mut tree);
+    let last = rect_of(&tree, "picture");
+    assert_eq!((last.w, last.h), (6, 5));
+    drop(tree);
+    assert!(watch.iter().all(|w| w.strong_count() == 0));
+}

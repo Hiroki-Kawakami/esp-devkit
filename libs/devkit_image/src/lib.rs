@@ -25,6 +25,7 @@ mod stream;
 mod tiff;
 mod webp;
 
+use core::alloc::AllocError;
 use core::fmt;
 
 include!(concat!(env!("OUT_DIR"), "/pie.rs"));
@@ -41,8 +42,8 @@ pub use png::PngDecoder;
 pub use raw_encode::{RawEncoder, RawFormat};
 pub use recolor::{GammaIn, GammaOut, Luma, Recolor, RecolorOptions};
 pub use resize::{
-    Finished, Fit, OrientedFinished, OrientedReady, OrientedResizer, Orientation, Ready, ResizeOptions, ResizedImage,
-    Resizer, output_size, resize_buffer, resize_decoder, resize_in_place,
+    Finished, Fit, OrientedFinished, OrientedReady, OrientedResizer, Orientation, Ready, ResizeOptions, Resizer,
+    output_size, resize_buffer, resize_decoder, resize_decoder_into, resize_image_in_place, resize_in_place,
 };
 pub use stream::{FileStream, Sink, SliceSink, SliceStream, Stream};
 pub use tiff::TiffDecoder;
@@ -83,7 +84,13 @@ impl From<idf::Error> for Error {
     }
 }
 
-pub use devkit_gfx::ImageFormat;
+impl From<AllocError> for Error {
+    fn from(_: AllocError) -> Self {
+        Self::OutOfMemory
+    }
+}
+
+pub use devkit_gfx::{ImageBuf, ImageFormat};
 
 /// The formats rows are decoded to, resized between and encoded from.
 pub(crate) const fn is_row_format(format: ImageFormat) -> bool {

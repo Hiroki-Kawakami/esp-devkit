@@ -32,7 +32,7 @@ use crate::keyboard::{InputKind, KeyboardMode, KeyboardPanel};
 use crate::erased::Erased;
 use crate::motion::{Clock, Motion, MotionKind};
 use crate::nav::{NavOp, NavigatorNode, Overlay, Root, Saved};
-use crate::node::{CanvasNode, CollectionNode, NONE, Node, NodeContent, NodeIndex, Placement, Pull, ScrollNode, TextNode};
+use crate::node::{CanvasNode, CollectionNode, NONE, Node, NodeContent, NodeImage, NodeIndex, Placement, Pull, ScrollNode, TextNode};
 use crate::presenter::{ROW_GRID, Strips};
 use crate::progress::ProgressNode;
 use crate::style::{Dimension, Insets, Role, ScreenStyle, State, Style};
@@ -1081,15 +1081,17 @@ impl Tree {
                 }
             }
             (NodeContent::Image { image, tint }, Content::Image { image: new, tint: new_tint }) => {
-                let same = core::ptr::eq(image.pixels(), new.pixels());
-                let same_size = image.width() == new.width() && image.height() == new.height();
-                if !same || *tint != *new_tint {
-                    *image = *new;
-                    *tint = *new_tint;
+                if !image.same(*new) {
+                    let (old, fresh) = (image.image(), NodeImage::new(*new));
+                    if old.width() != fresh.image().width() || old.height() != fresh.image().height() {
+                        self.layout_dirty = true;
+                    }
+                    *image = fresh;
                     node.paint_dirty = true;
                 }
-                if !same_size {
-                    self.layout_dirty = true;
+                if *tint != *new_tint {
+                    *tint = *new_tint;
+                    node.paint_dirty = true;
                 }
             }
             (NodeContent::External(surface), Content::External(new)) => {
@@ -1158,7 +1160,7 @@ impl Tree {
                 string.extend_from_slice(text.as_bytes());
                 NodeContent::Text(TextNode { font, string, options, run, laid_out: None, edit, scroll: Cell::new(0), reveal: None })
             }
-            Content::Image { image, tint } => NodeContent::Image { image, tint },
+            Content::Image { image, tint } => NodeContent::Image { image: NodeImage::new(image), tint },
             Content::Scroll => NodeContent::Scroll(ScrollNode { offset: 0, content: 0 }),
             Content::Collection { count, layout, revision, overscan, item } => {
                 let grid = Placement::new(layout, &element.style, 0);

@@ -5,17 +5,18 @@
 
 use alloc::boxed::Box;
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::cell::Cell;
 
-use devkit_gfx::{Color, FontChain, Image, Rect, TextOptions, TextRun};
+use devkit_gfx::{Color, FontChain, Image, ImageSource, Rect, TextOptions, TextRun};
 use idf::heap::Caps;
 
 use crate::component::ScrollEdge;
 use crate::popover::Anchored;
 use crate::animate::Fades;
 use crate::external::ExternalSurface;
-use crate::element::{CollectionLayout, DragMap, DrawMap, Edit, InputMap, ItemMap, ScrollMap, SizeMap};
+use crate::element::{CollectionLayout, DragMap, DrawMap, Edit, ImageRef, InputMap, ItemMap, ScrollMap, SizeMap};
 use crate::erased::Erased;
 use crate::gesture::GestureMap;
 use crate::id::Id;
@@ -227,10 +228,39 @@ pub(crate) struct CanvasNode {
     pub(crate) reported: (i16, i16),
 }
 
+pub(crate) enum NodeImage {
+    Static(Image<'static>),
+    Shared(Arc<dyn ImageSource>),
+}
+
+impl NodeImage {
+    pub(crate) fn new(image: ImageRef<'_>) -> Self {
+        match image {
+            ImageRef::Static(image) => Self::Static(image),
+            ImageRef::Shared(image) => Self::Shared(image.clone()),
+        }
+    }
+
+    pub(crate) fn image(&self) -> Image<'_> {
+        match self {
+            Self::Static(image) => *image,
+            Self::Shared(image) => image.image(),
+        }
+    }
+
+    pub(crate) fn same(&self, other: ImageRef<'_>) -> bool {
+        match (self, other) {
+            (Self::Static(image), ImageRef::Static(new)) => core::ptr::eq(image.pixels(), new.pixels()),
+            (Self::Shared(image), ImageRef::Shared(new)) => Arc::ptr_eq(image, new),
+            _ => false,
+        }
+    }
+}
+
 pub(crate) enum NodeContent {
     Box,
     Text(TextNode),
-    Image { image: Image<'static>, tint: Color },
+    Image { image: NodeImage, tint: Color },
     Scroll(ScrollNode),
     Collection(CollectionNode),
     Canvas(CanvasNode),

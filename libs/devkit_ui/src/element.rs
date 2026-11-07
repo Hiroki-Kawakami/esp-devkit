@@ -4,6 +4,7 @@
  */
 
 use alloc::boxed::Box;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::any::{Any, TypeId};
 use core::fmt::{self, Write};
@@ -12,7 +13,7 @@ use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
 use core::ptr::{self, NonNull};
 
-use devkit_gfx::{Align as TextAlign, Color, Corners, Elide, FontChain, Image, ImageFormat, Overflow, Sides, TextOptions};
+use devkit_gfx::{Align as TextAlign, Color, Corners, Elide, FontChain, Image, ImageFormat, ImageSource, Overflow, Sides, TextOptions};
 
 use crate::bump::Bump;
 use crate::popover::Anchored;
@@ -73,11 +74,29 @@ impl<C: Child, M: Copy + 'static> ChildSpec for ChildElement<C, M> {
 }
 
 #[derive(Clone, Copy)]
+pub enum ImageRef<'a> {
+    Static(Image<'static>),
+    Shared(&'a Arc<dyn ImageSource>),
+}
+
+impl From<Image<'static>> for ImageRef<'_> {
+    fn from(image: Image<'static>) -> Self {
+        Self::Static(image)
+    }
+}
+
+impl<'a> From<&'a Arc<dyn ImageSource>> for ImageRef<'a> {
+    fn from(image: &'a Arc<dyn ImageSource>) -> Self {
+        Self::Shared(image)
+    }
+}
+
+#[derive(Clone, Copy)]
 pub(crate) enum Content<'a> {
     Empty,
     Box,
     Text { font: &'static FontChain, text: &'a str, options: TextOptions, edit: Option<Edit> },
-    Image { image: Image<'static>, tint: Color },
+    Image { image: ImageRef<'a>, tint: Color },
     Scroll,
     Collection { count: usize, layout: CollectionLayout, revision: Option<u32>, overscan: u8, item: ItemMap },
     Canvas(DrawMap),
@@ -963,8 +982,8 @@ impl<M: Copy> Ui<M> {
         self.store(&text)
     }
 
-    pub fn image<'a>(&'a self, image: Image<'static>) -> Element<'a, M> {
-        Element::new(self.bump, Content::Image { image, tint: Color::rgb(0, 0, 0) }, &mut [])
+    pub fn image<'a>(&'a self, image: impl Into<ImageRef<'a>>) -> Element<'a, M> {
+        Element::new(self.bump, Content::Image { image: image.into(), tint: Color::rgb(0, 0, 0) }, &mut [])
     }
 
     /// Pixels drawn by `draw` of the component whose view this is, in every

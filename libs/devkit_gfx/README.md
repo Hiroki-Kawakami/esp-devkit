@@ -50,6 +50,10 @@ draw::<Rgb565, _, _>(&list, &prepared, &surface);
   format is left out of the list and counted by `DisplayList::skipped`.
 - An `Image` holds any format for the writers that read one; its stride is in
   pixels, as a `Target`'s is.
+- `ImageBuf` owns its pixels, allocated from the given allocator on the given
+  alignment and rounded up to a multiple of it. `image()` lends them as an
+  `Image`; `reshape` gives them another size within the same memory.
+  `ImageSource` lends an `Image` from behind an `Arc`, across tasks.
 - A `Target` is where a writer other than `draw` puts pixels: an area of the
   logical picture, turned by a `Rotation` onto the stored one, with the stride
   in pixels. Whoever holds it is the only writer there, and a writer refuses

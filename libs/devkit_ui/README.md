@@ -58,6 +58,10 @@ app.run();
   keeps its state and rebuilds only when its props differ or it asks to.
 - Widgets are functions returning an `Element`; the primitives are boxes, text,
   images, `scroll` and `collection`.
+- `ui.image` takes an `Image<'static>` or an `&Arc<dyn ImageSource>`, such as
+  an `ImageBuf` decoded on another task. The node keeps its own `Arc`, so the
+  pixels live while it shows them, and a different `Arc` repaints it; the
+  pixels of a shared one must not change.
 - `on_scroll` reports a scroller's offset as it moves, below 0 or above the end
   while it is stretched past one. `scroll_border(id)` shows a divider under a
   node while the scroller with that id is past its start, without a message

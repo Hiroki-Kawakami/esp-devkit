@@ -3,11 +3,13 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
+use core::alloc::Allocator;
 use core::ptr;
 
+use devkit_gfx::ImageBuf;
 use idf::heap::Caps;
 
-use crate::mem::{Buffer, buffer, uninit_buffer};
+use crate::mem::{Buffer, buffer, default_caps};
 use crate::kernels;
 use crate::{Decoder, Error, HAVE_PIE, ImageFormat, ImageInfo, Result, is_row_format};
 
@@ -788,21 +790,32 @@ impl OrientedFinished {
     }
 }
 
-/// A resized picture of `resize_decoder`.
-pub struct ResizedImage {
-    pub data: Buffer,
-    pub info: ImageInfo,
+/// Every remaining row of an opened decoder into one new picture. Open the
+/// decoder with a matching target so that it can downscale while it decodes.
+pub fn resize_decoder(decoder: &mut Decoder, options: &ResizeOptions, orientation: Orientation) -> Result<ImageBuf<Caps>> {
+    let info = decoder.info();
+    let (width, height) = output_size(info.width, info.height, options, orientation)?;
+    let format = options.format.unwrap_or(info.format);
+    if !is_row_format(format) {
+        return Err(Error::Unsupported);
+    }
+    let caps = options.caps.unwrap_or_else(default_caps);
+    // Every row lands in it, or the call fails and it is dropped unread.
+    let mut image = unsafe { ImageBuf::new_uninit_in(format, width, height, usize::from(width), 1, caps)? };
+    let stride = image.stride_bytes();
+    resize_decoder_into(decoder, image.pixels_mut(), stride, options, orientation)?;
+    Ok(image)
 }
 
-/// Every remaining row of an opened decoder into one new buffer. Open the decoder
-/// with a matching target so that it can downscale while it decodes.
-pub fn resize_decoder(decoder: &mut Decoder, options: &ResizeOptions, orientation: Orientation) -> Result<ResizedImage> {
+/// `resize_decoder` into the caller's memory. A stride of 0 is tight packing.
+pub fn resize_decoder_into(decoder: &mut Decoder, dst: &mut [u8], dst_stride: usize, options: &ResizeOptions, orientation: Orientation) -> Result<ImageInfo> {
     let info = decoder.info();
     let mut r = OrientedResizer::new(info, options, orientation)?;
     let out = r.info();
-    let stride = out.row_bytes();
-    // Every row lands in it, or the call fails and it is dropped unread.
-    let mut data = unsafe { uninit_buffer(stride * usize::from(out.height), options.caps)? };
+    let stride = if dst_stride == 0 { out.row_bytes() } else { dst_stride };
+    if stride < out.row_bytes() || dst.len() < (usize::from(out.height) - 1) * stride + out.row_bytes() {
+        return Err(Error::InvalidArgument);
+    }
     let mut row: Buffer = buffer(info.row_bytes(), Some(Caps::DEFAULT))?;
     let rows = if orientation.swaps_axes() { usize::from(out.width) } else { usize::from(out.height) };
     let mut done = 0;
@@ -811,18 +824,18 @@ pub fn resize_decoder(decoder: &mut Decoder, options: &ResizeOptions, orientatio
             return Err(Error::Truncated);
         }
         let mut ready = r.push_row(&row)?;
-        while done < rows && ready.pop(&mut data, stride)? {
+        while done < rows && ready.pop(dst, stride)? {
             done += 1;
         }
     }
     let mut last = r.finish();
-    while done < rows && last.pop(&mut data, stride)? {
+    while done < rows && last.pop(dst, stride)? {
         done += 1;
     }
     if done != rows {
         return Err(Error::Decode);
     }
-    Ok(ResizedImage { data, info: out })
+    Ok(out)
 }
 
 fn check_strides(info: ImageInfo, src_stride: usize, dst_format: ImageFormat, dst_w: u16, dst_stride: usize) -> Result<(usize, usize, usize)> {
@@ -889,4 +902,15 @@ pub fn resize_in_place(buf: &mut [u8], info: ImageInfo, src_stride: usize, dst_s
         done += 1;
     }
     if done == usize::from(dh) { Ok(()) } else { Err(Error::Decode) }
+}
+
+/// `resize_in_place` over a picture, which takes the new size, tightly packed.
+pub fn resize_image_in_place<A: Allocator>(image: &mut ImageBuf<A>, options: &ResizeOptions) -> Result<()> {
+    let info = ImageInfo { width: image.width(), height: image.height(), format: image.format() };
+    let (width, height) = output_size(info.width, info.height, options, Orientation::None)?;
+    let format = options.format.unwrap_or(info.format);
+    let stride = image.stride_bytes();
+    resize_in_place(image.pixels_mut(), info, stride, 0, options)?;
+    image.reshape(format, width, height, usize::from(width));
+    Ok(())
 }
