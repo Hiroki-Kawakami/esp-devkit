@@ -9,7 +9,7 @@ if(NOT ESP_PLATFORM)
     set(include_dirs "src/sim")
 elseif(CONFIG_SOC_USB_OTG_SUPPORTED)
     set(headers "hal/usb_dwc_hal.h" "hal/usb_dwc_ll.h" "soc/usb_periph.h" "esp_private/usb_phy.h"
-                "esp_intr_alloc.h" "esp_heap_caps.h")
+                "esp_heap_caps.h")
     list(APPEND requires esp_hal_usb esp_hw_support hal)
 endif()
 idf_component_register(SRCS ${srcs} PRIV_INCLUDE_DIRS ${include_dirs} PRIV_REQUIRES ${requires})

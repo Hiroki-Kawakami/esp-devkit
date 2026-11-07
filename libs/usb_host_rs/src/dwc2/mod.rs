@@ -17,8 +17,9 @@ use core::time::Duration;
 use idf::cache::{self, Flags};
 use idf::executor::{self, Sender};
 use idf::heap::Caps;
+use idf::intr::{self, Interrupt};
 use idf::log::{error, warn};
-use idf::sync::Spinlock;
+use idf::sync::{OnceLock, Spinlock};
 use idf::thread;
 use idf::time::Instant;
 
@@ -163,7 +164,6 @@ struct Inner {
     frame_list: *mut u32,
     frame_bytes: usize,
     fifo: ffi::usb_dwc_hal_fifo_config_t,
-    intr: ffi::intr_handle_t,
     events: Option<Sender<PortEvent>>,
     speed: Speed,
     enabled: bool,
@@ -179,6 +179,7 @@ struct Inner {
 
 pub(crate) struct Dwc2 {
     inner: Spinlock<Option<Inner>>,
+    intr: OnceLock<Interrupt>,
 }
 
 unsafe impl Send for Inner {}
@@ -216,7 +217,13 @@ unsafe fn msync(addr: *mut u8, len: usize, flags: Flags) {
 
 impl Dwc2 {
     pub(crate) const fn new() -> Self {
-        Self { inner: Spinlock::new(None) }
+        Self { inner: Spinlock::new(None), intr: OnceLock::new() }
+    }
+
+    fn set_interrupt(&self, on: bool) {
+        if let Some(intr) = self.intr.get() {
+            let _ = if on { intr.enable() } else { intr.disable() };
+        }
     }
 
     /// Runs `f` under the lock, then completes what it finished and posts
@@ -591,12 +598,11 @@ impl Hcd for Dwc2 {
         fifo.ptx_fifo_lines = depth * 5 / 32;
         fifo.rx_fifo_lines = hal.constant_config.fifo_size - fifo.nptx_fifo_lines - fifo.ptx_fifo_lines;
 
-        let mut inner = Inner {
+        let inner = Inner {
             hal,
             frame_list,
             frame_bytes,
             fifo,
-            intr: ptr::null_mut(),
             events: Some(events),
             speed: Speed::Full,
             enabled: false,
@@ -608,22 +614,18 @@ impl Hcd for Dwc2 {
         };
         Self::sync_frame_list(&inner);
         let irq = unsafe { ffi::usb_dwc_info.controllers[PORT as usize].irq };
-        let err = unsafe {
-            ffi::esp_intr_alloc(
-                irq,
-                (ffi::ESP_INTR_FLAG_LEVEL1 | ffi::ESP_INTR_FLAG_INTRDISABLED) as i32,
-                Some(Self::isr),
-                (self as *const Self).cast_mut().cast(),
-                &mut inner.intr,
-            )
+        let flags = intr::Flags::LEVEL1 | intr::Flags::INTRDISABLED;
+        let arg = (self as *const Self).cast_mut().cast();
+        let intr = match unsafe { Interrupt::new(irq, flags, Self::isr, arg) } {
+            Ok(intr) => intr,
+            Err(err) => {
+                error!(TAG, "esp_intr_alloc: {err}");
+                return Err(Error::Failed);
+            }
         };
-        if err != 0 {
-            error!(TAG, "esp_intr_alloc: {err}");
-            return Err(Error::Failed);
-        }
-        let intr = inner.intr;
+        let _ = self.intr.set(intr);
         self.inner.with(|slot| *slot = Some(inner));
-        unsafe { ffi::esp_intr_enable(intr) };
+        self.set_interrupt(true);
         thread::sleep(INIT_DELAY);
         self.locked(Self::power_on);
         Ok(())
@@ -861,7 +863,7 @@ impl Hcd for Dwc2 {
     }
 
     fn recover(&self) {
-        let intr = self.locked(|inner| {
+        self.locked(|inner| {
             for index in 0..inner.pipes.len() {
                 cancel_all(inner, index, Error::NoDevice);
                 if let Some(p) = inner.pipes[index].as_mut() {
@@ -871,9 +873,8 @@ impl Hcd for Dwc2 {
                 }
             }
             inner.enabled = false;
-            inner.intr
         });
-        unsafe { ffi::esp_intr_disable(intr) };
+        self.set_interrupt(false);
         self.locked(|inner| {
             unsafe {
                 ffi::usb_dwc_hal_core_soft_reset(&mut inner.hal);
@@ -881,7 +882,7 @@ impl Hcd for Dwc2 {
             }
             Self::sync_frame_list(inner);
         });
-        unsafe { ffi::esp_intr_enable(intr) };
+        self.set_interrupt(true);
         self.locked(Self::power_on);
         self.reap();
     }

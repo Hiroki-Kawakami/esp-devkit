@@ -16,6 +16,7 @@ use core::time::Duration;
 use devkit_gfx::ImageFormat;
 use idf::cache::{self, Flags};
 use idf::executor::Timer;
+use idf::intr::{self, Interrupt};
 use idf::log::error;
 use idf::sync::{Mutex, MutexGuard, MutexLock, OnceLock, Spinlock};
 use idf::time::Instant;
@@ -204,27 +205,18 @@ impl Codec {
     /// The codec's interrupt, allocated by the first frame; IDF's driver must
     /// not be using the codec in the same firmware.
     fn interrupt(&'static self) -> Result<()> {
-        static ALLOCATED: OnceLock<()> = OnceLock::new();
-        ALLOCATED
+        static INTERRUPT: OnceLock<Interrupt> = OnceLock::new();
+        INTERRUPT
             .get_or_try_init(|| {
                 let dev = self.dev();
                 unsafe { sys::jpeg_ll_clear_intr_mask(dev, DECODER_EVENTS) };
                 let status = unsafe { sys::jpeg_ll_get_interrupt_status_reg(dev) } as u32;
-                let mut handle = ptr::null_mut();
-                let err = unsafe {
-                    sys::esp_intr_alloc_intrstatus(
-                        sys::periph_interrupt_t_ETS_JPEG_INTR_SOURCE as i32,
-                        0,
-                        status,
-                        DECODER_EVENTS,
-                        Some(on_interrupt),
-                        ptr::from_ref(self).cast_mut().cast(),
-                        &mut handle,
-                    )
-                };
-                Error::check(err).inspect_err(|err| error!(TAG, "interrupt: {err}"))?;
+                let source = sys::periph_interrupt_t_ETS_JPEG_INTR_SOURCE as i32;
+                let arg = ptr::from_ref(self).cast_mut().cast();
+                let interrupt = unsafe { Interrupt::with_status(source, intr::Flags::empty(), status, DECODER_EVENTS, on_interrupt, arg) }
+                    .inspect_err(|err| error!(TAG, "interrupt: {err}"))?;
                 unsafe { sys::jpeg_ll_enable_intr_mask(dev, DECODER_EVENTS & !OUT_EOF) };
-                Ok::<(), Error>(())
+                Ok::<_, Error>(interrupt)
             })
             .map(|_| ())
     }
