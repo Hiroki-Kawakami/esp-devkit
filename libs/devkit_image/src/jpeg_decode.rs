@@ -11,6 +11,8 @@ use devkit::{A16, Zeroable};
 use idf::heap::{self, Caps};
 
 use crate::mem::{Buffer, buffer, internal_buffer, state};
+use crate::pixel::{Ycc, out_format, store_row, store_ycc_row};
+use crate::planes::{PlaneLayout, PlaneRows, Planes};
 use crate::stream::Reader;
 use crate::kernels;
 use crate::{DecodeOptions, Error, HAVE_PIE, ImageFormat, ImageInfo, Result, Stream};
@@ -401,6 +403,7 @@ pub struct JpegDecoder<'a> {
     band_valid_rows: usize,
     band_row: usize,
     out_row: usize,
+    format: ImageFormat,
 }
 
 fn read_u16(r: &mut Reader) -> Option<i32> {
@@ -519,14 +522,14 @@ impl<'a> JpegDecoder<'a> {
             band_valid_rows: 0,
             band_row: 0,
             out_row: 0,
+            format: ImageFormat::Rgb888,
         };
         d.parse_header(options)?;
         Ok(d)
     }
 
     pub fn info(&self) -> ImageInfo {
-        let format = if self.comps == 1 { ImageFormat::L8 } else { ImageFormat::Rgb888 };
-        ImageInfo { width: self.width, height: self.height, format }
+        ImageInfo { width: self.width, height: self.height, format: self.format }
     }
 
     fn parse_sof(&mut self, progressive: bool) -> Result<()> {
@@ -628,6 +631,7 @@ impl<'a> JpegDecoder<'a> {
     }
 
     fn setup(&mut self, options: &DecodeOptions) -> Result<()> {
+        self.format = out_format(if self.comps == 1 { ImageFormat::L8 } else { ImageFormat::Rgb888 }, options.format)?;
         let (w, h) = (self.w, self.h);
         let mut scale = 1;
         if options.target_width > 0 && options.target_height > 0 {
@@ -1012,37 +1016,68 @@ impl<'a> JpegDecoder<'a> {
         self.mcu_row_idx += 1;
     }
 
-    // Single-rounding Q8, so that the SIMD kernel can match it exactly.
     fn emit_row(&self, py: usize, dst: &mut [u8]) {
         let w = usize::from(self.width);
-        let plane = |i: usize| self.band[self.plane[i] + (py >> self.vsh[i]) * self.pstride[i]..].as_ptr();
-        let yr = plane(0);
+        let plane = |i: usize| &self.band[self.plane[i] + (py >> self.vsh[i]) * self.pstride[i]..];
         if self.comps == 1 {
-            unsafe { ptr::copy_nonoverlapping(yr, dst.as_mut_ptr(), w) };
+            store_row(plane(0), ImageFormat::L8, dst, self.format, w);
             return;
         }
-        let (cbr, crr) = (plane(1), plane(2));
-        let (hsh1, hsh2) = (self.hsh[1], self.hsh[2]);
-        let mut x = 0;
-        let mut out = dst.as_mut_ptr();
-        if HAVE_PIE && hsh1 == hsh2 && w >> 4 > 0 {
-            let n = w >> 4;
-            unsafe { kernels::ycc_rgb(out, yr, cbr, crr, n, hsh1 != 0) };
-            x = n << 4;
-            out = unsafe { out.add(x * 3) };
+        store_ycc_row(plane(0), plane(1), plane(2), (self.hsh[1], self.hsh[2]), Ycc::Jfif, dst, self.format, w);
+    }
+
+    /// The YCbCr planes as stored, where the chroma planes are sampled alike
+    /// and the luma plane is not subsampled.
+    pub fn plane_layout(&self) -> Option<PlaneLayout> {
+        let same = self.hsh[1] == self.hsh[2] && self.vsh[1] == self.vsh[2];
+        if self.comps != 3 || self.hsh[0] != 0 || self.vsh[0] != 0 || !same {
+            return None;
         }
-        while x < w {
-            unsafe {
-                let y0 = i32::from(*yr.add(x)) << 8;
-                let cb = i32::from(*cbr.add(x >> hsh1)) - 128;
-                let cr = i32::from(*crr.add(x >> hsh2)) - 128;
-                *out = clamp8((y0 + 359 * cr) >> 8);
-                *out.add(1) = clamp8((y0 - 88 * cb - 183 * cr) >> 8);
-                *out.add(2) = clamp8((y0 + 454 * cb) >> 8);
-                out = out.add(3);
+        let shift = (self.hsh[1], self.vsh[1]);
+        Some(PlaneLayout { width: self.width, height: self.height, shift, ycc: Ycc::Jfif })
+    }
+
+    /// The next band of planes, or `None` at the end of the image. Refuses
+    /// with `InvalidState` in the middle of a band that `next_row` started.
+    pub fn next_planes(&mut self) -> Result<Option<Planes<'_>>> {
+        let layout = self.plane_layout().ok_or(Error::Unsupported)?;
+        if self.band_row != 0 && self.band_row < self.band_valid_rows {
+            return Err(Error::InvalidState);
+        }
+        if self.bits.err {
+            return Err(Error::Truncated);
+        }
+        if self.progressive && !self.prog_ready {
+            if let Err(e) = self.prog_decode() {
+                self.bits.err = true;
+                return Err(e);
             }
-            x += 1;
+            self.prog_ready = true;
         }
+        if self.out_row >= usize::from(self.height) || self.mcu_row_idx >= self.mcu_rows {
+            return Ok(None);
+        }
+        if self.progressive {
+            self.output_mcu_row_prog();
+        } else {
+            self.decode_mcu_row();
+        }
+        if self.bits.err {
+            return Err(Error::Truncated);
+        }
+        let (first, count) = (self.out_row, self.band_valid_rows);
+        self.band_row = count;
+        self.out_row += count;
+        let vs = layout.shift.1;
+        let (c_first, c_end) = (first >> vs, (first + count).div_ceil(1 << vs));
+        let rows = |i: usize, first: usize, count: usize| PlaneRows {
+            data: &self.band[self.plane[i]..],
+            stride: self.pstride[i],
+            first,
+            count,
+        };
+        let chroma = c_end - c_first;
+        Ok(Some(Planes { planes: [rows(0, first, count), rows(1, c_first, chroma), rows(2, c_first, chroma)] }))
     }
 
     /// Writes a row and returns `true`; `false` at the end of the image.

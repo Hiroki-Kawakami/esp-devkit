@@ -110,9 +110,34 @@ fn timed(reps: usize, mut f: impl FnMut(bool) -> Result<u32, String>) -> Result<
 }
 
 fn report(name: &str, c: Result<Run, String>, rust: Result<Run, String>, pixels: usize) {
+    report_as(name, c, rust, pixels, |c, rust| String::from(if c == rust { "match" } else { "MISMATCH" }));
+}
+
+fn psnr(a: &[u8], b: &[u8]) -> f64 {
+    let se: f64 = a.iter().zip(b).map(|(&x, &y)| (f64::from(x) - f64::from(y)) * (f64::from(x) - f64::from(y))).sum();
+    if se == 0.0 {
+        return f64::INFINITY;
+    }
+    10.0 * devkit::math::log2(255.0 * 255.0 * a.len() as f64 / se) / devkit::math::log2(10.0)
+}
+
+fn report_rust(name: &str, rust: Result<Run, String>, pixels: usize) {
+    match rust {
+        Ok(rust) => info!(
+            TAG,
+            "{name:<46}               Rust {:>9.2} ms          {:.2} Mpx/s  {:08x}",
+            rust.us as f64 / 1000.0,
+            pixels as f64 / rust.us as f64,
+            rust.hash,
+        ),
+        Err(e) => info!(TAG, "{name:<46} FAILED Rust {e}"),
+    }
+}
+
+fn report_as(name: &str, c: Result<Run, String>, rust: Result<Run, String>, pixels: usize, verdict: impl FnOnce(u32, u32) -> String) {
     match (c, rust) {
         (Ok(c), Ok(rust)) => {
-            let verdict = if c.hash == rust.hash { "match" } else { "MISMATCH" };
+            let verdict = verdict(c.hash, rust.hash);
             info!(
                 TAG,
                 "{name:<46} C {:>9.2} ms  Rust {:>9.2} ms  x{:.3}  {:.2} Mpx/s  {:08x} {verdict}",
@@ -212,6 +237,21 @@ fn decode_rust(format: Format, data: &[u8], options: &DecodeOptions, row: &mut [
     Ok(hash)
 }
 
+fn bench_decode_to(label: &str, format: Format, data: &[u8], out: ImageFormat) {
+    let options = DecodeOptions { format: Some(out), ..Default::default() };
+    let info = match Decoder::open(format, SliceStream::new(data), &options) {
+        Ok(d) => d.info(),
+        Err(e) => {
+            info!(TAG, "{label} FAILED open {e}");
+            return;
+        }
+    };
+    let name = format!("{label} decode -> {}x{} {}", info.width, info.height, format_name(out));
+    let mut row = psram(info.row_bytes());
+    let rust = timed(REPS, |keep| decode_rust(format, data, &options, &mut row, keep));
+    report_rust(&name, rust, usize::from(info.width) * usize::from(info.height));
+}
+
 fn bench_decode(label: &str, format: Format, data: &[u8], tw: u16, th: u16) {
     let options = DecodeOptions { target_width: tw, target_height: th, ..Default::default() };
     let info = match Decoder::open(format, SliceStream::new(data), &options) {
@@ -228,12 +268,13 @@ fn bench_decode(label: &str, format: Format, data: &[u8], tw: u16, th: u16) {
     report(&name, c, rust, usize::from(info.width) * usize::from(info.height));
 }
 
-fn bench_decode_resize(label: &str, data: &[u8], tw: u16, th: u16, format: ImageFormat) {
+fn bench_decode_resize(label: &str, kind: Format, data: &[u8], tw: u16, th: u16, format: ImageFormat) {
     let name = format!("{label} decode+resize -> {tw}x{th} {}", format_name(format));
     let bytes = usize::from(th) * format.row_bytes(usize::from(tw));
+    let (mut c_out, mut rust_out) = (psram(bytes), psram(bytes));
     let c = timed(REPS, |keep| {
         let mut state = unsafe { mem::zeroed() };
-        let d = c_open(Format::Jpeg, data, tw, th, &mut state)?;
+        let d = c_open(kind, data, tw, th, &mut state)?;
         let mut o: ffi::imgf_resize_opts_t = unsafe { mem::zeroed() };
         o.target_w = tw;
         o.target_h = th;
@@ -244,18 +285,38 @@ fn bench_decode_resize(label: &str, data: &[u8], tw: u16, th: u16, format: Image
         if err != ffi::IMGF_OK as i32 {
             return Err(format!("resize {err}"));
         }
-        let hash = if keep { fnv(FNV_SEED, unsafe { slice::from_raw_parts(out, bytes) }) } else { 0 };
+        let mut hash = 0;
+        if keep {
+            c_out.copy_from_slice(unsafe { slice::from_raw_parts(out, bytes) });
+            hash = fnv(FNV_SEED, &c_out);
+        }
         unsafe { ffi::imgf_free(out.cast::<c_void>()) };
         Ok(hash)
     });
+    let mut planar = false;
     let rust = timed(REPS, |keep| {
         let options = DecodeOptions { target_width: tw, target_height: th, ..Default::default() };
-        let mut d = Decoder::open(Format::Jpeg, SliceStream::new(data), &options).map_err(|e| format!("open {e}"))?;
+        let mut d = Decoder::open(kind, SliceStream::new(data), &options).map_err(|e| format!("open {e}"))?;
+        planar = d.plane_layout().is_some();
         let o = ResizeOptions { target_width: tw, target_height: th, format: Some(format), ..Default::default() };
         let out = resize_decoder(&mut d, &o, Orientation::None).map_err(|e| format!("resize {e}"))?;
+        if keep {
+            rust_out.copy_from_slice(out.pixels());
+        }
         Ok(if keep { fnv(FNV_SEED, out.pixels()) } else { 0 })
     });
-    report(&name, c, rust, usize::from(tw) * usize::from(th));
+    let label = if planar { format!("{name} (planes)") } else { name };
+    report_as(&label, c, rust, usize::from(tw) * usize::from(th), |c, rust| {
+        if c == rust {
+            String::from("match")
+        } else if planar && format != ImageFormat::Rgb565 {
+            format!("{:.1} dB", psnr(&c_out, &rust_out))
+        } else if planar {
+            String::from("differs")
+        } else {
+            String::from("MISMATCH")
+        }
+    });
 }
 
 struct Resize<'a> {
@@ -351,10 +412,15 @@ pub fn run() {
         bench_decode(&label, Format::Jpeg, jpeg, 0, 0);
         bench_decode(&label, Format::Jpeg, jpeg, SRC_W as u16 / 2, SRC_H as u16 / 2);
         bench_decode(&label, Format::Jpeg, jpeg, SRC_W as u16 / 4, SRC_H as u16 / 4);
-        bench_decode_resize(&label, jpeg, 1280, 720, ImageFormat::Rgb565);
-        bench_decode_resize(&label, jpeg, 1280, 720, ImageFormat::Rgb888);
-        bench_decode_resize(&label, jpeg, 1280, 720, ImageFormat::Bgr888);
-        bench_decode_resize(&label, jpeg, 640, 360, ImageFormat::Rgb565);
+        bench_decode_to(&label, Format::Jpeg, jpeg, ImageFormat::Rgb565);
+        bench_decode_to(&label, Format::Jpeg, jpeg, ImageFormat::Bgr888);
+        bench_decode_resize(&label, Format::Jpeg, jpeg, 1280, 720, ImageFormat::Rgb565);
+        bench_decode_resize(&label, Format::Jpeg, jpeg, 1280, 720, ImageFormat::Rgb888);
+        bench_decode_resize(&label, Format::Jpeg, jpeg, 1280, 720, ImageFormat::Bgr888);
+        bench_decode_resize(&label, Format::Jpeg, jpeg, 640, 360, ImageFormat::Rgb565);
+        bench_decode_resize(&label, Format::Jpeg, jpeg, 640, 360, ImageFormat::Rgb888);
+        bench_decode_resize(&label, Format::Jpeg, jpeg, 320, 180, ImageFormat::Rgb888);
+        bench_decode_resize(&label, Format::Jpeg, jpeg, 320, 180, ImageFormat::Bgr888);
     }
 
     bench_decode("png", Format::Png, PNG, 0, 0);
@@ -369,6 +435,11 @@ pub fn run() {
             bench_decode(label, format, data, 0, 0);
         }
     }
+    if !WEBP_LOSSY.is_empty() {
+        bench_decode_to("webp lossy", Format::Webp, WEBP_LOSSY, ImageFormat::Rgb565);
+        bench_decode_resize("webp lossy", Format::Webp, WEBP_LOSSY, 320, 180, ImageFormat::Rgb888);
+    }
+    bench_decode_to("png", Format::Png, PNG, ImageFormat::Rgb565);
 
     let mut dst = psram(SRC_W * SRC_H * 3);
     let stride = SRC_W * 3;

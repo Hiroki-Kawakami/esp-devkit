@@ -8,6 +8,7 @@ use alloc::boxed::Box;
 use idf::heap::Caps;
 
 use crate::mem::{Buffer, buffer, state};
+use crate::pixel::{Store, out_format, with_store};
 use crate::stream::Reader;
 use crate::{DecodeOptions, Error, ImageFormat, ImageInfo, Result, Stream};
 
@@ -61,6 +62,7 @@ pub struct BmpDecoder<'a> {
 
     width: u16,
     height: u16,
+    format: ImageFormat,
     data_offset: usize,
     stride: usize,
     bpp: usize,
@@ -182,6 +184,7 @@ impl<'a> BmpDecoder<'a> {
             caps: options.caps,
             width: w as u16,
             height: h as u16,
+            format: out_format(ImageFormat::Rgb888, options.format)?,
             data_offset,
             stride,
             bpp,
@@ -209,46 +212,44 @@ impl<'a> BmpDecoder<'a> {
     }
 
     pub fn info(&self) -> ImageInfo {
-        ImageInfo { width: self.width, height: self.height, format: ImageFormat::Rgb888 }
+        ImageInfo { width: self.width, height: self.height, format: self.format }
     }
 
-    fn put_index(&self, dst: &mut [u8], idx: usize) {
+    fn put_index<S: Store>(&self, dst: &mut [u8], idx: usize) {
         let idx = if idx >= self.palette_count { 0 } else { idx };
-        dst[..3].copy_from_slice(&self.palette[idx]);
+        let p = &self.palette[idx];
+        S::rgb(dst, p[0], p[1], p[2]);
     }
 
-    fn convert_row(&self, src: &[u8], dst: &mut [u8]) {
+    fn convert_row<S: Store>(&self, src: &[u8], dst: &mut [u8]) {
         let w = usize::from(self.width);
+        let out = dst[..w * S::BYTES].chunks_exact_mut(S::BYTES);
         match self.bpp {
             1 | 4 | 8 => {
                 let bpp = self.bpp;
-                for (x, out) in dst[..w * 3].chunks_exact_mut(3).enumerate() {
+                for (x, o) in out.enumerate() {
                     let bitpos = x * bpp;
                     let idx = usize::from(src[bitpos >> 3] >> (8 - bpp - (bitpos & 7))) & ((1 << bpp) - 1);
-                    self.put_index(out, idx);
+                    self.put_index::<S>(o, idx);
                 }
             }
             16 => {
-                for (out, p) in dst[..w * 3].chunks_exact_mut(3).zip(src.chunks_exact(2)) {
+                for (o, p) in out.zip(src.chunks_exact(2)) {
                     let px = le16(p);
-                    for c in 0..3 {
-                        out[c] = self.channels[c].value(px);
-                    }
+                    let [r, g, b] = self.channels.each_ref().map(|c| c.value(px));
+                    S::rgb(o, r, g, b);
                 }
             }
             24 => {
-                for (out, p) in dst[..w * 3].chunks_exact_mut(3).zip(src.chunks_exact(3)) {
-                    out[0] = p[2];
-                    out[1] = p[1];
-                    out[2] = p[0];
+                for (o, p) in out.zip(src.chunks_exact(3)) {
+                    S::rgb(o, p[2], p[1], p[0]);
                 }
             }
             _ => {
-                for (out, p) in dst[..w * 3].chunks_exact_mut(3).zip(src.chunks_exact(4)) {
+                for (o, p) in out.zip(src.chunks_exact(4)) {
                     let px = le32(p);
-                    for c in 0..3 {
-                        out[c] = self.channels[c].value(px);
-                    }
+                    let [r, g, b] = self.channels.each_ref().map(|c| c.value(px));
+                    S::rgb(o, r, g, b);
                 }
             }
         }
@@ -360,9 +361,11 @@ impl<'a> BmpDecoder<'a> {
             }
             let w = usize::from(self.width);
             let line = &self.indices.as_ref().unwrap()[stored * w..(stored + 1) * w];
-            for (out, &idx) in dst.chunks_exact_mut(3).zip(line) {
-                self.put_index(out, usize::from(idx));
-            }
+            with_store!(self.format, S => {
+                for (out, &idx) in dst.chunks_exact_mut(S::BYTES).zip(line) {
+                    self.put_index::<S>(out, usize::from(idx));
+                }
+            });
             self.row += 1;
             return Ok(true);
         }
@@ -377,7 +380,7 @@ impl<'a> BmpDecoder<'a> {
         }
         let at = (stored - self.chunk_first) * self.stride;
         let chunk = self.chunk.as_ref().unwrap();
-        self.convert_row(&chunk[at..at + self.stride], dst);
+        with_store!(self.format, S => self.convert_row::<S>(&chunk[at..at + self.stride], dst));
         self.row += 1;
         Ok(true)
     }

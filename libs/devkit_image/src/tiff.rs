@@ -11,6 +11,7 @@ use devkit_compression::{self as compression, Inflate, Lzw, LzwOptions, LzwWork,
 use idf::heap::{self, Caps};
 
 use crate::mem::{Buffer, buffer, default_caps, state};
+use crate::pixel::{Store, out_format, store_row, with_store};
 use crate::stream::Reader;
 use crate::{DecodeOptions, Error, ImageFormat, ImageInfo, Result, Stream};
 
@@ -167,6 +168,7 @@ pub struct TiffDecoder<'a> {
     counts: Buffer<u32>,
     raw_bytes: usize,
     out_bpp: usize,
+    format: ImageFormat,
 
     chunk: Box<Chunk, Caps>,
     inflate: Option<(Box<Inflate, Caps>, Box<Window, Caps>)>,
@@ -358,6 +360,7 @@ impl<'a> TiffDecoder<'a> {
             counts,
             raw_bytes,
             out_bpp,
+            format: out_format(if out_bpp == 3 { ImageFormat::Rgb888 } else { ImageFormat::L8 }, options.format)?,
             chunk: state()?,
             inflate,
             lzw,
@@ -374,8 +377,11 @@ impl<'a> TiffDecoder<'a> {
     }
 
     pub fn info(&self) -> ImageInfo {
-        let format = if self.out_bpp == 3 { ImageFormat::Rgb888 } else { ImageFormat::L8 };
-        ImageInfo { width: self.width, height: self.height, format }
+        ImageInfo { width: self.width, height: self.height, format: self.format }
+    }
+
+    fn native(&self) -> ImageFormat {
+        if self.out_bpp == 3 { ImageFormat::Rgb888 } else { ImageFormat::L8 }
     }
 
     fn start_chunk(&mut self, index: usize) -> bool {
@@ -497,26 +503,25 @@ impl<'a> TiffDecoder<'a> {
         }
     }
 
-    fn convert(&self, dst: &mut [u8], pixels: usize) {
-        for x in 0..pixels {
+    fn convert<S: Store>(&self, dst: &mut [u8], pixels: usize) {
+        for (x, o) in dst[..pixels * S::BYTES].chunks_exact_mut(S::BYTES).enumerate() {
             let s = x * self.spp;
             if self.photometric == PHOTO_PALETTE {
                 let idx = self.sample(s) as usize;
-                for c in 0..3 {
-                    dst[3 * x + c] = (self.palette[c][idx] >> 8) as u8;
-                }
+                let [r, g, b] = [0, 1, 2].map(|c| (self.palette[c][idx] >> 8) as u8);
+                S::rgb(o, r, g, b);
             } else if self.photometric == PHOTO_RGB {
-                for c in 0..3 {
+                let [r, g, b] = [0, 1, 2].map(|c| {
                     let v = self.scaled(self.sample(s + c));
-                    dst[3 * x + c] =
-                        if self.alpha != ALPHA_NONE { self.over_white(v, self.scaled(self.sample(s + 3))) } else { v };
-                }
+                    if self.alpha != ALPHA_NONE { self.over_white(v, self.scaled(self.sample(s + 3))) } else { v }
+                });
+                S::rgb(o, r, g, b);
             } else {
                 let mut v = self.scaled(self.sample(s));
                 if self.photometric == PHOTO_WHITE_IS_ZERO {
                     v = 255 - v;
                 }
-                dst[x] = if self.alpha != ALPHA_NONE { self.over_white(v, self.scaled(self.sample(s + 1))) } else { v };
+                S::gray(o, if self.alpha != ALPHA_NONE { self.over_white(v, self.scaled(self.sample(s + 1))) } else { v });
             }
         }
     }
@@ -541,7 +546,7 @@ impl<'a> TiffDecoder<'a> {
                     result = Err(Error::Truncated);
                     break 'tiles;
                 }
-                self.convert(&mut band[r * stride + x0 * self.out_bpp..], pixels);
+                with_store!(self.native(), S => self.convert::<S>(&mut band[r * stride + x0 * self.out_bpp..], pixels));
             }
         }
         self.band = Some(band);
@@ -560,9 +565,9 @@ impl<'a> TiffDecoder<'a> {
             if self.row >= self.band_first + self.band_rows || self.band_rows == 0 {
                 self.load_band()?;
             }
-            let stride = usize::from(self.width) * self.out_bpp;
-            let at = (self.row - self.band_first) * stride;
-            dst[..stride].copy_from_slice(&self.band.as_ref().unwrap()[at..at + stride]);
+            let w = usize::from(self.width);
+            let at = (self.row - self.band_first) * w * self.out_bpp;
+            store_row(&self.band.as_ref().unwrap()[at..], self.native(), dst, self.format, w);
             self.row += 1;
             return Ok(true);
         }
@@ -577,7 +582,7 @@ impl<'a> TiffDecoder<'a> {
         if !self.read_raw_row() {
             return Err(Error::Truncated);
         }
-        self.convert(dst, usize::from(self.width));
+        with_store!(self.format, S => self.convert::<S>(dst, usize::from(self.width)));
         self.rows_left -= 1;
         self.row += 1;
         Ok(true)

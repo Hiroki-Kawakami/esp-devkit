@@ -3,7 +3,10 @@
 Times `libs/devkit_image` against `libs/image_framework` in one binary: JPEG encode,
 baseline, progressive and PNG decode, decode+resize, resize, and WebP decode. Each
 line prints the best of 3 rounds of each, the ratio, and whether their output
-checksums match.
+checksums match. A decode+resize that devkit_image does in YCbCr planes is marked
+`(planes)` and prints the PSNR between the two instead, `differs` for RGB565.
+Lines with Rust alone time a decoder writing another format and print its
+checksum, for comparing the board with the simulator.
 
 ```sh
 devkit run simulator

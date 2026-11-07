@@ -7,13 +7,16 @@ use alloc::boxed::Box;
 
 use idf::heap::Caps;
 
-use crate::{BmpDecoder, Error, GifDecoder, ImageInfo, JpegDecoder, PngDecoder, Result, Stream, TiffDecoder, WebpDecoder};
+use crate::planes::{PlaneLayout, Planes};
+use crate::{BmpDecoder, Error, GifDecoder, ImageFormat, ImageInfo, JpegDecoder, PngDecoder, Result, Stream, TiffDecoder, WebpDecoder};
 
-/// Hints a decoder may ignore.
 #[derive(Clone, Copy, Default, Debug)]
 pub struct DecodeOptions {
-    /// Decode-time downscale toward this size, where a format has one: JPEG picks
-    /// a 1/N factor. Both must be non-zero to count.
+    /// The row format to write, `L8`, `Rgb888`, `Bgr888` or `Rgb565`; `None`
+    /// keeps the decoder's own, `L8` or `Rgb888`.
+    pub format: Option<ImageFormat>,
+    /// A hint: decode-time downscale toward this size, where a format has one:
+    /// JPEG picks a 1/N factor. Both must be non-zero to count.
     pub target_width: u16,
     pub target_height: u16,
     /// Bound on the decoded size; past it the decoder downscales further. 0 is
@@ -150,5 +153,25 @@ impl<'a> Decoder<'a> {
     /// the end of the image.
     pub fn next_row(&mut self, dst: &mut [u8]) -> Result<bool> {
         each!(self, d => d.next_row(dst))
+    }
+
+    /// How the decoder's YCbCr planes are sampled, where it can lend them.
+    pub fn plane_layout(&self) -> Option<PlaneLayout> {
+        match self {
+            Self::Jpeg(d) => d.plane_layout(),
+            Self::Webp(d) => d.plane_layout(),
+            _ => None,
+        }
+    }
+
+    /// The planes finished since the last call, `None` at the end of the
+    /// image; `Unsupported` without a `plane_layout`. Use it instead of
+    /// `next_row`, not alongside.
+    pub fn next_planes(&mut self) -> Result<Option<Planes<'_>>> {
+        match self {
+            Self::Jpeg(d) => d.next_planes(),
+            Self::Webp(d) => d.next_planes(),
+            _ => Err(Error::Unsupported),
+        }
     }
 }

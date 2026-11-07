@@ -17,6 +17,8 @@ mod jpeg_encode;
 mod kernels;
 mod mem;
 pub mod pipeline;
+mod pixel;
+mod planes;
 mod png;
 mod raw_encode;
 mod recolor;
@@ -38,11 +40,12 @@ pub use gif::GifDecoder;
 pub use jpeg_decode::JpegDecoder;
 pub use jpeg_encode::{JpegEncoder, JpegOptions, Subsampling, jpeg_buffer_upper_bound};
 pub use mem::{Buffer, default_caps, internal_caps};
+pub use planes::{PlaneLayout, Planes};
 pub use png::PngDecoder;
 pub use raw_encode::{RawEncoder, RawFormat};
 pub use recolor::{GammaIn, GammaOut, Luma, Recolor, RecolorOptions};
 pub use resize::{
-    Finished, Fit, OrientedFinished, OrientedReady, OrientedResizer, Orientation, Ready, ResizeOptions, Resizer,
+    Finished, Fit, OrientedFinished, OrientedReady, OrientedResizer, Orientation, PlanarResizer, Ready, ResizeOptions, Resizer,
     output_size, resize_buffer, resize_decoder, resize_decoder_into, resize_image_in_place, resize_in_place,
 };
 pub use stream::{FileStream, Sink, SliceSink, SliceStream, Stream};

@@ -12,7 +12,10 @@ checksums.
 
 Pixel formats are `devkit_gfx::ImageFormat`. Rows come and go as `L8`,
 `Rgb888`, `Bgr888` or `Rgb565`; the resizer and the encoders refuse the others
-with `Unsupported`.
+with `Unsupported`. Each stage converts as it writes a pixel, so a picture
+reaches a panel in the panel's format without a pass of its own:
+`DecodeOptions::format` and `ResizeOptions::format` name what a decoder and a
+resizer write.
 
 ## Decoders
 
@@ -82,6 +85,18 @@ buffer, for a picture that shrinks on every axis, and `resize_image_in_place`
 does it to an `ImageBuf`, which takes the new size.
 `DecodeOptions::target_width` lets JPEG do most of a large reduction while it
 decodes.
+
+### YCbCr planes
+
+A JPEG or an opaque lossy WebP can lend its YCbCr samples as the file stores
+them: `Decoder::plane_layout` tells how the chroma is subsampled and
+`next_planes` hands over the rows finished since the last call, instead of
+`next_row`. `PlanarResizer` resizes each plane on its own, chroma at its own
+resolution, and converts to the output format once per output pixel; a chroma
+sample covers the picture unevenly where it has an odd size, and the chroma
+resize places it where it is. `resize_decoder` takes this path by itself
+whenever the decoder has planes. Its output differs slightly from resizing RGB
+rows, by no more than the RGB path differs from the source.
 
 ### Orientation
 

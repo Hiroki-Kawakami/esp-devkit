@@ -10,6 +10,7 @@ use devkit_compression::{self as compression, Error as CompressionError, Lzw, Lz
 use idf::heap::{self, Caps};
 
 use crate::mem::{Buffer, buffer, default_caps, state};
+use crate::pixel::{Store, out_format, with_store};
 use crate::stream::Reader;
 use crate::{DecodeOptions, Error, ImageFormat, ImageInfo, Result, Stream};
 
@@ -106,9 +107,13 @@ pub struct GifDecoder<'a> {
     lzw: Box<Lzw, Caps>,
     work: Box<LzwWork, Caps>,
 
+    /// In `format`, `bytes` long each.
     palette: Box<[[u8; 3]; 256], Caps>,
     palette_count: usize,
     transparent: Option<u8>,
+    format: ImageFormat,
+    bytes: usize,
+    white: [u8; 3],
 
     width: u16,
     height: u16,
@@ -199,6 +204,16 @@ impl<'a> GifDecoder<'a> {
             return Err(Error::Decode);
         }
 
+        let format = out_format(ImageFormat::Rgb888, options.format)?;
+        let mut white = [0; 3];
+        with_store!(format, S => {
+            for entry in palette.iter_mut() {
+                let [r, g, b] = *entry;
+                S::rgb(entry, r, g, b);
+            }
+            S::rgb(&mut white, 255, 255, 255);
+        });
+
         let mut lzw: Box<Lzw, Caps> = state()?;
         let mut work: Box<LzwWork, Caps> = heap::zeroed_box(default_caps())?;
         let lzw_options = LzwOptions { literal_bits: min_bits, msb_first: false, early_change: false };
@@ -213,6 +228,9 @@ impl<'a> GifDecoder<'a> {
             palette,
             palette_count,
             transparent,
+            format,
+            bytes: format.row_bytes(1),
+            white,
             width: w as u16,
             height: h as u16,
             left: left as usize,
@@ -227,7 +245,7 @@ impl<'a> GifDecoder<'a> {
     }
 
     pub fn info(&self) -> ImageInfo {
-        ImageInfo { width: self.width, height: self.height, format: ImageFormat::Rgb888 }
+        ImageInfo { width: self.width, height: self.height, format: self.format }
     }
 
     fn expand_interlaced(&mut self) -> Result<()> {
@@ -253,8 +271,10 @@ impl<'a> GifDecoder<'a> {
         if self.row >= usize::from(self.height) {
             return Ok(false);
         }
-        let y = self.row;
-        dst[..usize::from(self.width) * 3].fill(0xFF);
+        let (y, n) = (self.row, self.bytes);
+        for out in dst[..usize::from(self.width) * n].chunks_exact_mut(n) {
+            out.copy_from_slice(&self.white[..n]);
+        }
 
         if y >= self.top && y < self.top + self.frame_h {
             let fy = y - self.top;
@@ -271,12 +291,12 @@ impl<'a> GifDecoder<'a> {
                 Some(indices) => &indices[fy * w..(fy + 1) * w],
                 None => &self.line[..w],
             };
-            for (out, &idx) in dst[self.left * 3..].chunks_exact_mut(3).zip(line) {
+            for (out, &idx) in dst[self.left * n..].chunks_exact_mut(n).zip(line) {
                 if Some(idx) == self.transparent {
                     continue;
                 }
                 let idx = if usize::from(idx) >= self.palette_count { 0 } else { usize::from(idx) };
-                out.copy_from_slice(&self.palette[idx]);
+                out.copy_from_slice(&self.palette[idx][..n]);
             }
         }
         self.row += 1;

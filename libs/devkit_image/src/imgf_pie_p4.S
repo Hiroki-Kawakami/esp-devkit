@@ -16,6 +16,12 @@ imgf_ycc_consts:
     .short -183     /* Cr -> G  (-0.71414 * 256) */
     .short 454      /* Cb -> B   (1.772   * 256) */
     .short 0, 0, 0
+imgf_ycc565_consts:
+    .short 0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800
+    .short 0x00F8, 0x00F8, 0x00F8, 0x00F8, 0x00F8, 0x00F8, 0x00F8, 0x00F8
+    .short -3, -3, -3, -3, -3, -3, -3, -3
+    .short 0x00FC, 0x00FC, 0x00FC, 0x00FC, 0x00FC, 0x00FC, 0x00FC, 0x00FC
+    .short 3, 3, 3, 3, 3, 3, 3, 3
 
     .balign 16
     .global imgf_idct_tab8
@@ -122,14 +128,61 @@ imgf_idct_tab2:
     esp.vsadds.s16 \qhi, \qhi, t3
 .endm
 
-/* void imgf_k_ycc_rgb_h1(uint8_t *dst, const uint8_t *y,
- *                        const uint8_t *cb, const uint8_t *cr, int n16)
- * void imgf_k_ycc_rgb_h0(...)
+/* Writes the 16 R, G and B bytes in q4, q2 and q3 to a0 and advances it.
+ * May use q0, q1 and q5 to q7. */
+.macro OUT_RGB
+    esp.vzipt.8 q4, q2, q3
+    esp.vst.128.ip q4, a0, 16
+    esp.vst.128.ip q2, a0, 16
+    esp.vst.128.ip q3, a0, 16
+.endm
+
+.macro OUT_BGR
+    esp.vzipt.8 q3, q2, q4
+    esp.vst.128.ip q3, a0, 16
+    esp.vst.128.ip q2, a0, 16
+    esp.vst.128.ip q4, a0, 16
+.endm
+
+/* Host-endian RGB565: B | R << 8 and G in 16-bit lanes, then masked and
+ * shifted into place. */
+.macro OUT_565
+    esp.zero.q q0
+    esp.vzip.8 q3, q4                       /* q3/q4 = B | R << 8 */
+    esp.vzip.8 q2, q0                       /* q2/q0 = G */
+    la t6, imgf_ycc565_consts
+    esp.vld.128.ip q5, t6, 16               /* 0xF800 */
+    esp.vld.128.ip q6, t6, 16               /* 0x00F8 */
+    esp.vld.128.ip q7, t6, 16               /* shift -3 */
+    esp.andq q1, q3, q6
+    esp.vsld.16 q1, q1, q7
+    esp.andq q3, q3, q5
+    esp.orq q3, q3, q1
+    esp.andq q1, q4, q6
+    esp.vsld.16 q1, q1, q7
+    esp.andq q4, q4, q5
+    esp.orq q4, q4, q1
+    esp.vld.128.ip q5, t6, 16               /* 0x00FC */
+    esp.vld.128.ip q6, t6, 0                /* shift +3 */
+    esp.andq q2, q2, q5
+    esp.vsld.16 q2, q2, q6
+    esp.orq q3, q3, q2
+    esp.andq q0, q0, q5
+    esp.vsld.16 q0, q0, q6
+    esp.orq q4, q4, q0
+    esp.vst.128.ip q3, a0, 16
+    esp.vst.128.ip q4, a0, 16
+    esp.vld.128.ip q7, t4, 0                /* the Q8 coefficients again */
+.endm
+
+/* void imgf_k_ycc_<out>_h1(uint8_t *dst, const uint8_t *y,
+ *                          const uint8_t *cb, const uint8_t *cr, int n16)
+ * void imgf_k_ycc_<out>_h0(...)
  *
- * n16 groups of 16 pixels. The chroma loads read 16 bytes to use 8, so the
- * planes need 16 bytes of slack after the last row.
+ * n16 groups of 16 pixels to RGB888, BGR888 or RGB565. The chroma loads read
+ * 16 bytes to use 8, so the planes need 16 bytes of slack after the last row.
  */
-.macro YCC_BODY chroma
+.macro YCC_BODY chroma, out
     addi sp, sp, -16
     sw s0, 0(sp)
     sw s1, 4(sp)
@@ -178,10 +231,7 @@ imgf_idct_tab2:
     esp.srcmb.s16.qacc q0, t5, 0
     PACK8 q3, q0                            /* q3 = 16 B bytes */
 
-    esp.vzipt.8 q4, q2, q3
-    esp.vst.128.ip q4, a0, 16
-    esp.vst.128.ip q2, a0, 16
-    esp.vst.128.ip q3, a0, 16
+    \out
 
     addi a4, a4, -1
     bnez a4, 1b
@@ -196,15 +246,43 @@ imgf_idct_tab2:
     .global imgf_k_ycc_rgb_h1
     .type imgf_k_ycc_rgb_h1, @function
 imgf_k_ycc_rgb_h1:
-    YCC_BODY CHROMA_H1
+    YCC_BODY CHROMA_H1, OUT_RGB
     .size imgf_k_ycc_rgb_h1, .-imgf_k_ycc_rgb_h1
 
     .balign 4
     .global imgf_k_ycc_rgb_h0
     .type imgf_k_ycc_rgb_h0, @function
 imgf_k_ycc_rgb_h0:
-    YCC_BODY CHROMA_H0
+    YCC_BODY CHROMA_H0, OUT_RGB
     .size imgf_k_ycc_rgb_h0, .-imgf_k_ycc_rgb_h0
+
+    .balign 4
+    .global imgf_k_ycc_bgr_h1
+    .type imgf_k_ycc_bgr_h1, @function
+imgf_k_ycc_bgr_h1:
+    YCC_BODY CHROMA_H1, OUT_BGR
+    .size imgf_k_ycc_bgr_h1, .-imgf_k_ycc_bgr_h1
+
+    .balign 4
+    .global imgf_k_ycc_bgr_h0
+    .type imgf_k_ycc_bgr_h0, @function
+imgf_k_ycc_bgr_h0:
+    YCC_BODY CHROMA_H0, OUT_BGR
+    .size imgf_k_ycc_bgr_h0, .-imgf_k_ycc_bgr_h0
+
+    .balign 4
+    .global imgf_k_ycc_565_h1
+    .type imgf_k_ycc_565_h1, @function
+imgf_k_ycc_565_h1:
+    YCC_BODY CHROMA_H1, OUT_565
+    .size imgf_k_ycc_565_h1, .-imgf_k_ycc_565_h1
+
+    .balign 4
+    .global imgf_k_ycc_565_h0
+    .type imgf_k_ycc_565_h0, @function
+imgf_k_ycc_565_h0:
+    YCC_BODY CHROMA_H0, OUT_565
+    .size imgf_k_ycc_565_h0, .-imgf_k_ycc_565_h0
 
 /* void imgf_k_idct(uint8_t *dst, int stride, const int16_t *dqc, int rowmask,
  *                  const int16_t *tab)

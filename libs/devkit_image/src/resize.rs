@@ -3,6 +3,8 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
+use alloc::collections::VecDeque;
+use alloc::vec::Vec;
 use core::alloc::Allocator;
 use core::ptr;
 
@@ -10,8 +12,9 @@ use devkit_gfx::ImageBuf;
 use idf::heap::Caps;
 
 use crate::mem::{Buffer, buffer, default_caps};
-use crate::kernels;
-use crate::{Decoder, Error, HAVE_PIE, ImageFormat, ImageInfo, Result, is_row_format};
+use crate::pixel::{pack_row, store_ycc_row, unpack_row};
+use crate::planes::{PlaneLayout, Planes};
+use crate::{Decoder, Error, ImageFormat, ImageInfo, Result, is_row_format};
 
 const Q16: u32 = 65536;
 
@@ -19,9 +22,6 @@ const Q16: u32 = 65536;
 // which an integer ratio hits constantly, so a box vertical pass gets four
 // fractional bits and does the only rounding.
 const HROW_FRAC_BITS: u32 = 4;
-const LUMA_R_Q8: i32 = 54;
-const LUMA_G_Q8: i32 = 183;
-const LUMA_B_Q8: i32 = 19;
 
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub enum Fit {
@@ -144,6 +144,180 @@ impl BoxTable {
     }
 }
 
+impl BoxTable {
+    /// `BoxTable` for samples that need not be alike: source sample `j` covers
+    /// `[src(j), src(j + 1))` and destination sample `x` covers
+    /// `[dst(x), dst(x + 1))`, both on one scale from 0 to the same end.
+    fn spans(n_src: usize, src: impl Fn(usize) -> u64, n_dst: usize, dst: impl Fn(usize) -> u64, caps: Option<Caps>) -> Result<Self> {
+        let mut off: Buffer<u32> = buffer(n_dst + 1, caps)?;
+        let mut first: Buffer<u32> = buffer(n_dst, caps)?;
+        let mut j = 0;
+        for x in 0..n_dst {
+            let (lo, hi) = (dst(x), dst(x + 1));
+            while j + 1 < n_src && src(j + 1) <= lo {
+                j += 1;
+            }
+            let mut k = j;
+            while k + 1 < n_src && src(k + 1) < hi {
+                k += 1;
+            }
+            first[x] = j as u32;
+            off[x + 1] = off[x] + (k - j + 1) as u32;
+        }
+        let mut weights: Buffer<u32> = buffer(off[n_dst] as usize, caps)?;
+        for x in 0..n_dst {
+            let (lo, hi) = (dst(x), dst(x + 1));
+            let (mut cum, mut wsum) = (0u64, 0u32);
+            for i in off[x]..off[x + 1] {
+                let k = first[x] as usize + (i - off[x]) as usize;
+                let (a, b) = (lo.max(src(k)), hi.min(src(k + 1)));
+                if b > a {
+                    cum += b - a;
+                }
+                let ws = (cum * u64::from(Q16) / (hi - lo)) as u32;
+                weights[i as usize] = ws - wsum;
+                wsum = ws;
+            }
+        }
+        Ok(Self { off, src: first, weights })
+    }
+}
+
+enum ChromaAxis {
+    Box(BoxTable),
+    Linear(Bilinear),
+}
+
+impl ChromaAxis {
+    /// `s` luma samples, a chroma sample covering `1 << shift` of them, to `d`
+    /// outputs placed where the luma resize of this axis puts them.
+    fn new(s: usize, shift: u32, d: usize, caps: Option<Caps>) -> Result<Self> {
+        let n = s.div_ceil(1 << shift);
+        let (s64, d64) = (s as u64, d as u64);
+        if d <= n {
+            return Ok(Self::Box(BoxTable::spans(n, |j| ((j << shift).min(s) as u64) * d64, d, |x| x as u64 * s64, caps)?));
+        }
+        // Positions in luma sample centres, scaled to stay integral: the luma
+        // resize box-averages where it shrinks and joins the corners where it grows.
+        let u = 1i64 << shift;
+        let (s, d) = (s as i64, d as i64);
+        let (scale, at): (i64, &dyn Fn(usize) -> i64) = if d <= s {
+            (2 * d, &|x| (2 * x as i64 + 1) * s - d)
+        } else if d > 1 {
+            (2 * (d - 1), &|x| 2 * x as i64 * (s - 1))
+        } else {
+            (2, &|_| s - 1)
+        };
+        let centre = |j: usize| (2 * j as i64 * u + u - 1) * scale / 2;
+        Ok(Self::Linear(Bilinear::at(n, centre, d as usize, at, caps)?))
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Self::Box(t) => t.src.len(),
+            Self::Linear(t) => t.lo.len(),
+        }
+    }
+}
+
+/// Resizes the two chroma planes to one sample per output pixel. A chroma
+/// sample covers the picture unevenly where it has an odd size.
+struct ChromaScaler {
+    dw: usize,
+    horizontal: ChromaAxis,
+    vertical: ChromaAxis,
+    /// The latest source row of each plane after the horizontal pass, and the
+    /// one before for a growing vertical axis.
+    hrow: [[Buffer<u16>; 2]; 2],
+    acc: [[Buffer<u32>; 3]; 2],
+    out: [Buffer; 2],
+    src_y: usize,
+    dst_y: usize,
+}
+
+impl ChromaScaler {
+    /// The picture is `size` pixels and a chroma sample covers `1 << shift`
+    /// of them.
+    fn new(size: (usize, usize), shift: (u32, u32), out: (usize, usize), caps: Option<Caps>) -> Result<Self> {
+        let horizontal = ChromaAxis::new(size.0, shift.0, out.0, caps)?;
+        let vertical = ChromaAxis::new(size.1, shift.1, out.1, caps)?;
+        let dw = out.0;
+        let acc = || -> Result<[Buffer<u32>; 3]> { Ok([buffer(dw, caps)?, buffer(dw, caps)?, buffer(dw, caps)?]) };
+        let hrow = || -> Result<[Buffer<u16>; 2]> { Ok([buffer(dw, caps)?, buffer(dw, caps)?]) };
+        Ok(Self {
+            dw,
+            horizontal,
+            vertical,
+            hrow: [hrow()?, hrow()?],
+            acc: [acc()?, acc()?],
+            out: [buffer(dw + ROW_SLACK, caps)?, buffer(dw + ROW_SLACK, caps)?],
+            src_y: 0,
+            dst_y: 0,
+        })
+    }
+
+    /// Takes the next source rows of Cb and Cr and hands `done` each pair of
+    /// destination rows they complete, in order.
+    fn push(&mut self, rows: [&[u8]; 2], mut done: impl FnMut(&[u8], &[u8]) -> Result<()>) -> Result<()> {
+        let shift = 16 - HROW_FRAC_BITS;
+        let round = 1 << (shift - 1);
+        for (row, hrow) in rows.iter().zip(&mut self.hrow) {
+            hrow.swap(0, 1);
+            match &self.horizontal {
+                ChromaAxis::Box(t) => hreduce_box::<u8, 1>(row, self.dw, &mut hrow[0], t, shift, round),
+                ChromaAxis::Linear(t) => hexpand_bilinear::<u8, 1>(row, self.dw, &mut hrow[0], t, shift, round),
+            }
+        }
+        let r = self.src_y as u32;
+        let rows = self.vertical.len();
+        match &self.vertical {
+            ChromaAxis::Box(t) => {
+                let mut y = self.dst_y;
+                while y < rows && t.src[y] <= r {
+                    let i = t.off[y] + (r - t.src[y]);
+                    if i < t.off[y + 1] {
+                        let w = t.weights[i as usize];
+                        for (acc, hrow) in self.acc.iter_mut().zip(&self.hrow) {
+                            for (a, &h) in acc[y % 3].iter_mut().zip(&hrow[0][..]) {
+                                *a += u32::from(h) * w;
+                            }
+                        }
+                    }
+                    y += 1;
+                }
+                while self.dst_y < rows && t.src[self.dst_y] + (t.off[self.dst_y + 1] - t.off[self.dst_y]) <= r + 1 {
+                    for (acc, out) in self.acc.iter_mut().zip(&mut self.out) {
+                        for (o, a) in out.iter_mut().zip(acc[self.dst_y % 3].iter_mut()) {
+                            *o = ((*a + (1 << (VOUT_SHIFT - 1))) >> VOUT_SHIFT).min(255) as u8;
+                            *a = 0;
+                        }
+                    }
+                    done(&self.out[0], &self.out[1])?;
+                    self.dst_y += 1;
+                }
+            }
+            ChromaAxis::Linear(t) => {
+                while self.dst_y < rows && t.hi[self.dst_y] <= r {
+                    let y = self.dst_y;
+                    let (lo, b) = (t.lo[y], t.blend[y]);
+                    let inv = Q16 - b;
+                    for (hrow, out) in self.hrow.iter().zip(&mut self.out) {
+                        let low = if lo == r { &hrow[0] } else { &hrow[1] };
+                        for ((o, &l), &h) in out.iter_mut().zip(&low[..self.dw]).zip(&hrow[0][..]) {
+                            let v = (u32::from(l) * inv + u32::from(h) * b + (1 << (VOUT_SHIFT - 1))) >> VOUT_SHIFT;
+                            *o = v.min(255) as u8;
+                        }
+                    }
+                    done(&self.out[0], &self.out[1])?;
+                    self.dst_y += 1;
+                }
+            }
+        }
+        self.src_y += 1;
+        Ok(())
+    }
+}
+
 struct Bilinear {
     lo: Buffer<u32>,
     hi: Buffer<u32>,
@@ -151,6 +325,31 @@ struct Bilinear {
 }
 
 impl Bilinear {
+    /// Between the source samples whose positions `src(j)` straddle each
+    /// destination's `dst(x)`, held at the ends; positions only need to grow
+    /// with their index, on one scale.
+    fn at(n_src: usize, src: impl Fn(usize) -> i64, n_dst: usize, dst: impl Fn(usize) -> i64, caps: Option<Caps>) -> Result<Self> {
+        let mut t = Self { lo: buffer(n_dst, caps)?, hi: buffer(n_dst, caps)?, blend: buffer(n_dst, caps)? };
+        let last = n_src - 1;
+        let mut j = 0;
+        for x in 0..n_dst {
+            let p = dst(x);
+            while j < last && src(j + 1) <= p {
+                j += 1;
+            }
+            let (lo, hi, blend) = if p <= src(0) {
+                (0, 0, 0)
+            } else if j == last {
+                (last, last, 0)
+            } else {
+                let (a, b) = (src(j), src(j + 1));
+                (j, j + 1, (((p - a) * i64::from(Q16) + (b - a) / 2) / (b - a)) as u32)
+            };
+            (t.lo[x], t.hi[x], t.blend[x]) = (lo as u32, hi as u32, blend);
+        }
+        Ok(t)
+    }
+
     fn new(s: u32, d: u32, caps: Option<Caps>) -> Result<Self> {
         let mut t = Self { lo: buffer(d as usize, caps)?, hi: buffer(d as usize, caps)?, blend: buffer(d as usize, caps)? };
         for x in 0..d {
@@ -168,97 +367,6 @@ impl Bilinear {
             t.blend[x as usize] = (rem * Q16 + den / 2) / den;
         }
         Ok(t)
-    }
-}
-
-#[inline(always)]
-fn clamp8(v: i32) -> u8 {
-    v.clamp(0, 255) as u8
-}
-
-fn unpack_row(src: &[u8], dst: &mut [u16], w: usize, format: ImageFormat, ch: usize) {
-    if ch == 1 {
-        for (d, &s) in dst.iter_mut().zip(&src[..w]) {
-            *d = u16::from(s);
-        }
-        return;
-    }
-    match format {
-        ImageFormat::L8 => {
-            for (d, &g) in dst.chunks_exact_mut(3).zip(&src[..w]) {
-                d.fill(u16::from(g));
-            }
-        }
-        ImageFormat::Rgb888 | ImageFormat::Bgr888 => {
-            let r = if format == ImageFormat::Bgr888 { 2 } else { 0 };
-            for (d, s) in dst.chunks_exact_mut(3).zip(src[..w * 3].chunks_exact(3)) {
-                d[0] = u16::from(s[r]);
-                d[1] = u16::from(s[1]);
-                d[2] = u16::from(s[2 - r]);
-            }
-        }
-        ImageFormat::Rgb565 => {
-            for (d, s) in dst.chunks_exact_mut(3).zip(src[..w * 2].chunks_exact(2)) {
-                let p = u16::from_ne_bytes([s[0], s[1]]);
-                let (r5, g6, b5) = ((p >> 11) & 0x1F, (p >> 5) & 0x3F, p & 0x1F);
-                d[0] = (r5 << 3) | (r5 >> 2);
-                d[1] = (g6 << 2) | (g6 >> 4);
-                d[2] = (b5 << 3) | (b5 >> 2);
-            }
-        }
-        _ => unreachable!(),
-    }
-}
-
-fn pack_row(src: &[u16], dst: &mut [u8], w: usize, format: ImageFormat, ch: usize) {
-    if ch == 1 {
-        let mut i = 0;
-        if HAVE_PIE && format == ImageFormat::L8 && w >= 16 {
-            let n = w >> 4;
-            kernels::pack_bytes(dst, src, n);
-            i = n << 4;
-        }
-        for (d, &s) in dst[i..w].iter_mut().zip(&src[i..]) {
-            *d = clamp8(i32::from(s));
-        }
-        return;
-    }
-    match format {
-        ImageFormat::L8 => {
-            for (d, s) in dst[..w].iter_mut().zip(src.chunks_exact(3)) {
-                let (r, g, b) = (i32::from(s[0]), i32::from(s[1]), i32::from(s[2]));
-                *d = clamp8((r * LUMA_R_Q8 + g * LUMA_G_Q8 + b * LUMA_B_Q8 + 128) >> 8);
-            }
-        }
-        ImageFormat::Rgb888 | ImageFormat::Bgr888 => {
-            let r = if format == ImageFormat::Bgr888 { 2 } else { 0 };
-            let mut i = 0;
-            if HAVE_PIE && r == 0 && w * 3 >= 16 {
-                let n = (w * 3) >> 4;
-                kernels::pack_bytes(dst, src, n);
-                i = (n << 4) / 3;
-            }
-            for (d, s) in dst[i * 3..w * 3].chunks_exact_mut(3).zip(src[i * 3..].chunks_exact(3)) {
-                d[r] = clamp8(i32::from(s[0]));
-                d[1] = clamp8(i32::from(s[1]));
-                d[2 - r] = clamp8(i32::from(s[2]));
-            }
-        }
-        ImageFormat::Rgb565 => {
-            let mut i = 0;
-            if HAVE_PIE && w >= 8 {
-                let n = w >> 3;
-                kernels::pack_rgb565(dst, src, n);
-                i = n << 3;
-            }
-            for (d, s) in dst[i * 2..w * 2].chunks_exact_mut(2).zip(src[i * 3..].chunks_exact(3)) {
-                let r = u16::from(clamp8(i32::from(s[0]))) >> 3;
-                let g = u16::from(clamp8(i32::from(s[1]))) >> 2;
-                let b = u16::from(clamp8(i32::from(s[2]))) >> 3;
-                d.copy_from_slice(&((r << 11) | (g << 5) | b).to_ne_bytes());
-            }
-        }
-        _ => unreachable!(),
     }
 }
 
@@ -736,24 +844,30 @@ impl OrientedResizer {
     }
 
     unsafe fn place_row(&self, y: usize, dst: *mut u8, stride: usize) {
-        let (w, h, bpp) = (self.core.dw as isize, self.core.dh as isize, (self.core.dst_format.bits() / 8) as isize);
-        let (y, s) = (y as isize, stride as isize);
-        let (at, step) = match self.orientation {
-            Orientation::None => (y * s, bpp),
-            Orientation::MirrorX => (y * s + (w - 1) * bpp, -bpp),
-            Orientation::Rot180 => ((h - 1 - y) * s + (w - 1) * bpp, -bpp),
-            Orientation::MirrorY => ((h - 1 - y) * s, bpp),
-            Orientation::Transpose => (y * bpp, s),
-            Orientation::Rot90 => ((h - 1 - y) * bpp, s),
-            Orientation::Transverse => ((w - 1) * s + (h - 1 - y) * bpp, -s),
-            Orientation::Rot270 => ((w - 1) * s + y * bpp, -s),
-        };
-        let mut d = unsafe { dst.offset(at) };
-        for px in self.row.chunks_exact(bpp as usize) {
-            unsafe {
-                ptr::copy_nonoverlapping(px.as_ptr(), d, bpp as usize);
-                d = d.offset(step);
-            }
+        let (w, h, bpp) = (self.core.dw, self.core.dh, self.core.dst_format.bits() / 8);
+        unsafe { place_row(self.orientation, w, h, bpp, &self.row, y, dst, stride) };
+    }
+}
+
+/// Row `y` of a `w` by `h` picture into its oriented place in `dst`.
+unsafe fn place_row(orientation: Orientation, w: usize, h: usize, bpp: usize, row: &[u8], y: usize, dst: *mut u8, stride: usize) {
+    let (w, h, bpp) = (w as isize, h as isize, bpp as isize);
+    let (y, s) = (y as isize, stride as isize);
+    let (at, step) = match orientation {
+        Orientation::None => (y * s, bpp),
+        Orientation::MirrorX => (y * s + (w - 1) * bpp, -bpp),
+        Orientation::Rot180 => ((h - 1 - y) * s + (w - 1) * bpp, -bpp),
+        Orientation::MirrorY => ((h - 1 - y) * s, bpp),
+        Orientation::Transpose => (y * bpp, s),
+        Orientation::Rot90 => ((h - 1 - y) * bpp, s),
+        Orientation::Transverse => ((w - 1) * s + (h - 1 - y) * bpp, -s),
+        Orientation::Rot270 => ((w - 1) * s + y * bpp, -s),
+    };
+    let mut d = unsafe { dst.offset(at) };
+    for px in row[..(w * bpp) as usize].chunks_exact(bpp as usize) {
+        unsafe {
+            ptr::copy_nonoverlapping(px.as_ptr(), d, bpp as usize);
+            d = d.offset(step);
         }
     }
 }
@@ -790,6 +904,198 @@ impl OrientedFinished {
     }
 }
 
+/// Resizes a decoder's YCbCr planes as they are sampled, each on its own, and
+/// turns them into the output format only at the end. Places rows like
+/// `OrientedResizer`, into the whole destination.
+pub struct PlanarResizer {
+    layout: PlaneLayout,
+    orientation: Orientation,
+    format: ImageFormat,
+    dw: usize,
+    dh: usize,
+    luma: Core,
+    chroma: ChromaScaler,
+    lumas: VecDeque<(usize, Buffer), Caps>,
+    chromas: VecDeque<(usize, Buffer, Buffer), Caps>,
+    spare: Vec<Buffer, Caps>,
+    luma_made: usize,
+    chroma_made: usize,
+    luma_in: usize,
+    chroma_in: usize,
+    placed: usize,
+    row: Buffer,
+    caps: Option<Caps>,
+}
+
+// The SIMD colour conversion reads past the end of a row.
+const ROW_SLACK: usize = 16;
+
+impl PlanarResizer {
+    /// `format` defaults to `Rgb888`.
+    pub fn new(layout: PlaneLayout, options: &ResizeOptions, orientation: Orientation) -> Result<Self> {
+        let (dw16, dh16) = unoriented_size(layout.width, layout.height, options, orientation)?;
+        let (dw, dh) = (usize::from(dw16), usize::from(dh16));
+        let format = options.format.unwrap_or(ImageFormat::Rgb888);
+        if !is_row_format(format) {
+            return Err(Error::Unsupported);
+        }
+        let luma = ImageInfo { width: layout.width, height: layout.height, format: ImageFormat::L8 };
+        let o = ResizeOptions { target_width: dw as u16, target_height: dh as u16, fit: Fit::Stretch, format: Some(ImageFormat::L8), caps: options.caps };
+        let size = (usize::from(layout.width), usize::from(layout.height));
+        let caps = options.caps.unwrap_or(Caps::DEFAULT);
+        Ok(Self {
+            layout,
+            orientation,
+            format,
+            dw,
+            dh,
+            luma: Core::new(luma, &o, Orientation::None)?,
+            chroma: ChromaScaler::new(size, layout.shift, (dw, dh), options.caps)?,
+            lumas: VecDeque::new_in(caps),
+            chromas: VecDeque::new_in(caps),
+            spare: Vec::new_in(caps),
+            luma_made: 0,
+            chroma_made: 0,
+            luma_in: 0,
+            chroma_in: 0,
+            placed: 0,
+            row: buffer(if orientation == Orientation::None { 0 } else { format.row_bytes(dw) }, options.caps)?,
+            caps: options.caps,
+        })
+    }
+
+    /// The size after orientation.
+    pub fn info(&self) -> ImageInfo {
+        let (w, h) = (self.dw as u16, self.dh as u16);
+        let (width, height) = if self.orientation.swaps_axes() { (h, w) } else { (w, h) };
+        ImageInfo { width, height, format: self.format }
+    }
+
+    fn check(&self, dst: &[u8], stride: usize) -> Result<()> {
+        let info = self.info();
+        let row_bytes = info.row_bytes();
+        if stride < row_bytes || dst.len() < (usize::from(info.height) - 1) * stride + row_bytes {
+            return Err(Error::InvalidArgument);
+        }
+        Ok(())
+    }
+
+    fn take(&mut self) -> Result<Buffer> {
+        match self.spare.pop() {
+            Some(b) => Ok(b),
+            None => buffer(self.dw + ROW_SLACK, self.caps),
+        }
+    }
+
+    fn push_luma(&mut self, row: &[u8]) -> Result<()> {
+        let mut ready = self.luma.push_row(row)?;
+        while ready > 0 {
+            ready -= 1;
+            let mut b = self.take()?;
+            if !self.luma.pop(&mut b) {
+                self.spare.push(b);
+                break;
+            }
+            self.lumas.push_back((self.luma_made, b));
+            self.luma_made += 1;
+        }
+        self.luma_in += 1;
+        Ok(())
+    }
+
+    fn push_chroma(&mut self, cb: &[u8], cr: &[u8]) -> Result<()> {
+        let (spare, chromas, made, caps, w) = (&mut self.spare, &mut self.chromas, &mut self.chroma_made, self.caps, self.dw + ROW_SLACK);
+        self.chroma.push([cb, cr], |cb, cr| {
+            let mut pair = [spare.pop(), spare.pop()];
+            for (b, row) in pair.iter_mut().zip([cb, cr]) {
+                let b = match b {
+                    Some(b) => b,
+                    None => b.insert(buffer(w, caps)?),
+                };
+                b[..row.len()].copy_from_slice(row);
+            }
+            let [Some(b), Some(r)] = pair else { unreachable!() };
+            chromas.push_back((*made, b, r));
+            *made += 1;
+            Ok(())
+        })?;
+        self.chroma_in += 1;
+        Ok(())
+    }
+
+    fn drain(&mut self, dst: &mut [u8], stride: usize) -> usize {
+        let mut placed = 0;
+        while let Some(&(y, _)) = self.lumas.front() {
+            let Some((k, cb, cr)) = self.chromas.front() else { break };
+            if *k != y {
+                break;
+            }
+            let (_, luma) = self.lumas.front().unwrap();
+            let (shift, ycc, format, w) = ((0, 0), self.layout.ycc, self.format, self.dw);
+            if self.orientation == Orientation::None {
+                store_ycc_row(luma, cb, cr, shift, ycc, &mut dst[y * stride..], format, w);
+            } else {
+                store_ycc_row(luma, cb, cr, shift, ycc, &mut self.row, format, w);
+                let bpp = format.bits() / 8;
+                unsafe { place_row(self.orientation, self.dw, self.dh, bpp, &self.row, y, dst.as_mut_ptr(), stride) };
+            }
+            let (_, luma) = self.lumas.pop_front().unwrap();
+            let (_, b, r) = self.chromas.pop_front().unwrap();
+            self.spare.extend([luma, b, r]);
+            placed += 1;
+        }
+        self.placed += placed;
+        placed
+    }
+
+    /// Takes the planes a decoder finished, in order, and places the rows they
+    /// complete. Returns how many.
+    pub fn push(&mut self, planes: &Planes, dst: &mut [u8], stride: usize) -> Result<usize> {
+        self.check(dst, stride)?;
+        let [y, cb, cr] = planes.planes;
+        if y.first != self.luma_in || cb.first != self.chroma_in || cr.first != cb.first || cr.count != cb.count {
+            return Err(Error::InvalidArgument);
+        }
+        let vs = self.layout.shift.1;
+        let mut placed = 0;
+        let mut next = y.first;
+        for c in cb.first..cb.end() {
+            while next < y.end() && next < (c + 1) << vs {
+                self.push_luma(y.row(next))?;
+                next += 1;
+                placed += self.drain(dst, stride);
+            }
+            self.push_chroma(cb.row(c), cr.row(c))?;
+            placed += self.drain(dst, stride);
+        }
+        while next < y.end() {
+            self.push_luma(y.row(next))?;
+            next += 1;
+            placed += self.drain(dst, stride);
+        }
+        Ok(placed)
+    }
+
+    /// Ends the input and places the last rows. Returns how many, or `Decode`
+    /// when the planes stopped short of the picture.
+    pub fn finish(mut self, dst: &mut [u8], stride: usize) -> Result<usize> {
+        self.check(dst, stride)?;
+        let ready = self.luma.finish();
+        for _ in 0..ready {
+            let mut b = self.take()?;
+            if self.luma.pop(&mut b) {
+                self.lumas.push_back((self.luma_made, b));
+                self.luma_made += 1;
+            }
+        }
+        let placed = self.drain(dst, stride);
+        if self.placed != self.dh {
+            return Err(Error::Decode);
+        }
+        Ok(placed)
+    }
+}
+
 /// Every remaining row of an opened decoder into one new picture. Open the
 /// decoder with a matching target so that it can downscale while it decodes.
 pub fn resize_decoder(decoder: &mut Decoder, options: &ResizeOptions, orientation: Orientation) -> Result<ImageBuf<Caps>> {
@@ -808,7 +1114,12 @@ pub fn resize_decoder(decoder: &mut Decoder, options: &ResizeOptions, orientatio
 }
 
 /// `resize_decoder` into the caller's memory. A stride of 0 is tight packing.
+/// A decoder with YCbCr planes is resized in them, so its chroma stays
+/// subsampled until it is converted, once per output pixel.
 pub fn resize_decoder_into(decoder: &mut Decoder, dst: &mut [u8], dst_stride: usize, options: &ResizeOptions, orientation: Orientation) -> Result<ImageInfo> {
+    if let Some(layout) = decoder.plane_layout() {
+        return resize_planes_into(decoder, layout, dst, dst_stride, options, orientation);
+    }
     let info = decoder.info();
     let mut r = OrientedResizer::new(info, options, orientation)?;
     let out = r.info();
@@ -835,6 +1146,18 @@ pub fn resize_decoder_into(decoder: &mut Decoder, dst: &mut [u8], dst_stride: us
     if done != rows {
         return Err(Error::Decode);
     }
+    Ok(out)
+}
+
+fn resize_planes_into(decoder: &mut Decoder, layout: PlaneLayout, dst: &mut [u8], dst_stride: usize, options: &ResizeOptions, orientation: Orientation) -> Result<ImageInfo> {
+    let options = ResizeOptions { format: options.format.or(Some(decoder.info().format)), ..*options };
+    let mut r = PlanarResizer::new(layout, &options, orientation)?;
+    let out = r.info();
+    let stride = if dst_stride == 0 { out.row_bytes() } else { dst_stride };
+    while let Some(planes) = decoder.next_planes()? {
+        r.push(&planes, dst, stride)?;
+    }
+    r.finish(dst, stride)?;
     Ok(out)
 }
 

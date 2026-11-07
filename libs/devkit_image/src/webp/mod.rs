@@ -11,6 +11,8 @@ use alloc::boxed::Box;
 use idf::heap::Caps;
 
 use crate::mem::{Buffer, buffer};
+use crate::pixel::{Store, Ycc, out_format, store_row, with_store};
+use crate::planes::{PlaneLayout, Planes};
 use crate::{DecodeOptions, Error, ImageFormat, ImageInfo, Result, Stream};
 use lossless::Vp8l;
 use lossy::Vp8;
@@ -332,6 +334,10 @@ pub struct WebpDecoder<'a> {
     frame_w: u32,
     frame_h: u32,
     row: u32,
+    format: ImageFormat,
+    /// A lossy row before its alpha is laid over white, for a format other
+    /// than `Rgb888`.
+    rgb: Option<Buffer>,
 }
 
 impl<'a> WebpDecoder<'a> {
@@ -386,6 +392,8 @@ impl<'a> WebpDecoder<'a> {
             None
         };
 
+        let format = out_format(ImageFormat::Rgb888, options.format)?;
+        let rgb = if alpha.is_some() && format != ImageFormat::Rgb888 { Some(buffer(frame_w as usize * 3, caps)?) } else { None };
         Ok(Self {
             src,
             codec,
@@ -398,44 +406,72 @@ impl<'a> WebpDecoder<'a> {
             frame_w,
             frame_h,
             row: 0,
+            format,
+            rgb,
         })
     }
 
     pub fn info(&self) -> ImageInfo {
-        ImageInfo { width: self.width, height: self.height, format: ImageFormat::Rgb888 }
+        ImageInfo { width: self.width, height: self.height, format: self.format }
     }
 
-    fn frame_row(&mut self, out: &mut [u8], y: u32) -> Result<()> {
+    fn frame_row<S: Store>(&mut self, out: &mut [u8], y: u32) -> Result<()> {
         let src = &mut self.src;
         match &mut self.codec {
             Codec::Lossless { vp8l, argb } => {
                 vp8l.next_row(src, argb)?;
-                for (o, &p) in out.chunks_exact_mut(3).zip(argb.iter()) {
+                for (o, &p) in out.chunks_exact_mut(S::BYTES).zip(argb.iter()) {
                     let (a, r, g, b) = ((p >> 24) as u8, (p >> 16) as u8, (p >> 8) as u8, p as u8);
                     if self.has_alpha {
-                        o[0] = over_white(r, a);
-                        o[1] = over_white(g, a);
-                        o[2] = over_white(b, a);
+                        S::rgb(o, over_white(r, a), over_white(g, a), over_white(b, a));
                     } else {
-                        o[0] = r;
-                        o[1] = g;
-                        o[2] = b;
+                        S::rgb(o, r, g, b);
                     }
                 }
             }
             Codec::Lossy(vp8) => {
-                vp8.next_row(src, out)?;
-                if let Some(alpha) = &mut self.alpha {
-                    alpha.next_row(src, y)?;
-                    for (o, &a) in out.chunks_exact_mut(3).zip(alpha.row.iter()) {
-                        o[0] = over_white(o[0], a);
-                        o[1] = over_white(o[1], a);
-                        o[2] = over_white(o[2], a);
-                    }
+                let Some(alpha) = &mut self.alpha else {
+                    return vp8.next_row(src, out, self.format);
+                };
+                let rgb = match &mut self.rgb {
+                    Some(rgb) => &mut rgb[..],
+                    None => &mut *out,
+                };
+                vp8.next_row(src, rgb, ImageFormat::Rgb888)?;
+                alpha.next_row(src, y)?;
+                for (o, &a) in rgb.chunks_exact_mut(3).zip(alpha.row.iter()) {
+                    o[0] = over_white(o[0], a);
+                    o[1] = over_white(o[1], a);
+                    o[2] = over_white(o[2], a);
+                }
+                if let Some(rgb) = &self.rgb {
+                    store_row(rgb, ImageFormat::Rgb888, out, self.format, self.frame_w as usize);
                 }
             }
         }
         Ok(())
+    }
+
+    /// The YCbCr planes of a lossy picture without alpha that fills its canvas.
+    pub fn plane_layout(&self) -> Option<PlaneLayout> {
+        let whole = self.frame_x == 0 && self.frame_y == 0 && self.frame_w == u32::from(self.width) && self.frame_h == u32::from(self.height);
+        if !matches!(self.codec, Codec::Lossy(_)) || self.alpha.is_some() || !whole {
+            return None;
+        }
+        Some(PlaneLayout { width: self.width, height: self.height, shift: (1, 1), ycc: Ycc::Vp8 })
+    }
+
+    /// The planes finished since the last call, or `None` at the end of the
+    /// image. Refuses with `InvalidState` once `next_row` has started.
+    pub fn next_planes(&mut self) -> Result<Option<Planes<'_>>> {
+        if self.plane_layout().is_none() {
+            return Err(Error::Unsupported);
+        }
+        if self.row != 0 {
+            return Err(Error::InvalidState);
+        }
+        let Codec::Lossy(vp8) = &mut self.codec else { unreachable!() };
+        Ok(vp8.next_planes(&mut self.src)?.map(|planes| Planes { planes }))
     }
 
     /// Writes a row and returns `true`; `false` at the end of the image.
@@ -449,13 +485,17 @@ impl<'a> WebpDecoder<'a> {
         }
         let y = self.row;
         let inside = y >= self.frame_y && y < self.frame_y + self.frame_h;
-        if !inside || self.frame_w != u32::from(self.width) {
-            dst[..row_bytes].fill(0xFF);
-        }
-        if inside {
-            let at = self.frame_x as usize * 3;
-            self.frame_row(&mut dst[at..at + self.frame_w as usize * 3], y - self.frame_y)?;
-        }
+        with_store!(self.format, S => {
+            if !inside || self.frame_w != u32::from(self.width) {
+                for o in dst[..row_bytes].chunks_exact_mut(S::BYTES) {
+                    S::rgb(o, 255, 255, 255);
+                }
+            }
+            if inside {
+                let at = self.frame_x as usize * S::BYTES;
+                self.frame_row::<S>(&mut dst[at..at + self.frame_w as usize * S::BYTES], y - self.frame_y)?;
+            }
+        });
         self.row += 1;
         Ok(true)
     }

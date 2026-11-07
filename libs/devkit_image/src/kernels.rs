@@ -7,11 +7,17 @@ use core::ptr;
 
 use devkit::A16;
 
+use crate::ImageFormat;
+
 mod p4 {
     unsafe extern "C" {
         pub fn imgf_k_prepare();
         pub fn imgf_k_ycc_rgb_h1(dst: *mut u8, y: *const u8, cb: *const u8, cr: *const u8, n16: i32);
         pub fn imgf_k_ycc_rgb_h0(dst: *mut u8, y: *const u8, cb: *const u8, cr: *const u8, n16: i32);
+        pub fn imgf_k_ycc_bgr_h1(dst: *mut u8, y: *const u8, cb: *const u8, cr: *const u8, n16: i32);
+        pub fn imgf_k_ycc_bgr_h0(dst: *mut u8, y: *const u8, cb: *const u8, cr: *const u8, n16: i32);
+        pub fn imgf_k_ycc_565_h1(dst: *mut u8, y: *const u8, cb: *const u8, cr: *const u8, n16: i32);
+        pub fn imgf_k_ycc_565_h0(dst: *mut u8, y: *const u8, cb: *const u8, cr: *const u8, n16: i32);
         pub fn imgf_k_idct(dst: *mut u8, stride: i32, dqc: *const i16, rowmask: i32, tab: *const i16);
         pub fn imgf_k_pack_bytes(dst: *mut u8, src: *const u16, n16: i32);
         pub fn imgf_k_pack_rgb565(dst: *mut u8, src: *const u16, n8: i32);
@@ -28,15 +34,21 @@ pub(crate) enum IdctSize {
 }
 
 /// `y`, `cb` and `cr` must stay valid 16 bytes past their last row: the
-/// kernel reads 16 chroma bytes per group.
-pub(crate) unsafe fn ycc_rgb(dst: *mut u8, y: *const u8, cb: *const u8, cr: *const u8, n16: usize, half: bool) {
+/// kernel reads 16 chroma bytes per group. `format` is `Rgb888`, `Bgr888` or
+/// `Rgb565`.
+pub(crate) unsafe fn ycc_rgb(dst: *mut u8, y: *const u8, cb: *const u8, cr: *const u8, n16: usize, half: bool, format: ImageFormat) {
+    let kernel = match (format, half) {
+        (ImageFormat::Rgb888, true) => p4::imgf_k_ycc_rgb_h1,
+        (ImageFormat::Rgb888, false) => p4::imgf_k_ycc_rgb_h0,
+        (ImageFormat::Bgr888, true) => p4::imgf_k_ycc_bgr_h1,
+        (ImageFormat::Bgr888, false) => p4::imgf_k_ycc_bgr_h0,
+        (ImageFormat::Rgb565, true) => p4::imgf_k_ycc_565_h1,
+        (ImageFormat::Rgb565, false) => p4::imgf_k_ycc_565_h0,
+        _ => unreachable!(),
+    };
     unsafe {
         p4::imgf_k_prepare();
-        if half {
-            p4::imgf_k_ycc_rgb_h1(dst, y, cb, cr, n16 as i32);
-        } else {
-            p4::imgf_k_ycc_rgb_h0(dst, y, cb, cr, n16 as i32);
-        }
+        kernel(dst, y, cb, cr, n16 as i32);
     }
 }
 

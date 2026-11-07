@@ -9,6 +9,7 @@ use devkit_compression::{self as compression, Inflate, Source, Window};
 use idf::heap::{self, Caps};
 
 use crate::mem::{Buffer, default_caps, small_buffer, state};
+use crate::pixel::{Store, out_format, store_row, with_store};
 use crate::stream::Reader;
 use crate::{DecodeOptions, Error, ImageFormat, ImageInfo, Result, Stream};
 
@@ -110,7 +111,7 @@ pub struct PngDecoder<'a> {
 unsafe impl devkit::Zeroable for Idat {}
 
 impl<'a> PngDecoder<'a> {
-    pub fn open(src: impl Stream + 'a, _options: &DecodeOptions) -> Result<Self> {
+    pub fn open(src: impl Stream + 'a, options: &DecodeOptions) -> Result<Self> {
         let src: Box<dyn Stream + 'a> = Box::try_new(src).map_err(|_| Error::OutOfMemory)?;
         let mut r = Reader::new(src)?;
 
@@ -219,7 +220,7 @@ impl<'a> PngDecoder<'a> {
             window,
             width: w as u16,
             height: h as u16,
-            format: if rgb { ImageFormat::Rgb888 } else { ImageFormat::L8 },
+            format: out_format(if rgb { ImageFormat::Rgb888 } else { ImageFormat::L8 }, options.format)?,
             bitdepth,
             colortype,
             rowbytes,
@@ -281,7 +282,7 @@ impl<'a> PngDecoder<'a> {
         }
     }
 
-    fn convert_row(&self, dst: &mut [u8]) {
+    fn convert_row<S: Store>(&self, dst: &mut [u8]) {
         let line = &self.cur;
         let w = usize::from(self.width);
         let depth = usize::from(self.bitdepth);
@@ -289,33 +290,30 @@ impl<'a> PngDecoder<'a> {
             let bitpos = x * depth;
             usize::from(line[bitpos >> 3] >> (8 - depth - (bitpos & 7))) & ((1 << depth) - 1)
         };
+        let out = dst[..w * S::BYTES].chunks_exact_mut(S::BYTES);
         match self.colortype {
             0 => {
                 let maxv = (1 << depth) - 1;
-                for (x, out) in dst[..w].iter_mut().enumerate() {
-                    *out = (sample(x) * 255 / maxv) as u8;
+                for (x, o) in out.enumerate() {
+                    S::gray(o, (sample(x) * 255 / maxv) as u8);
                 }
             }
-            2 => dst[..w * 3].copy_from_slice(&line[..w * 3]),
+            2 => store_row(line, ImageFormat::Rgb888, dst, self.format, w),
             3 => {
-                for (x, out) in dst[..w * 3].chunks_exact_mut(3).enumerate() {
+                for (x, o) in out.enumerate() {
                     let idx = sample(x).min(self.palette_count - 1);
                     let (p, a) = (&self.palette[idx], self.trns[idx]);
-                    out[0] = composite_white(p[0], a);
-                    out[1] = composite_white(p[1], a);
-                    out[2] = composite_white(p[2], a);
+                    S::rgb(o, composite_white(p[0], a), composite_white(p[1], a), composite_white(p[2], a));
                 }
             }
             4 => {
-                for (out, p) in dst[..w].iter_mut().zip(line.chunks_exact(2)) {
-                    *out = composite_white(p[0], p[1]);
+                for (o, p) in out.zip(line.chunks_exact(2)) {
+                    S::gray(o, composite_white(p[0], p[1]));
                 }
             }
             _ => {
-                for (out, p) in dst[..w * 3].chunks_exact_mut(3).zip(line.chunks_exact(4)) {
-                    out[0] = composite_white(p[0], p[3]);
-                    out[1] = composite_white(p[1], p[3]);
-                    out[2] = composite_white(p[2], p[3]);
+                for (o, p) in out.zip(line.chunks_exact(4)) {
+                    S::rgb(o, composite_white(p[0], p[3]), composite_white(p[1], p[3]), composite_white(p[2], p[3]));
                 }
             }
         }
@@ -336,7 +334,7 @@ impl<'a> PngDecoder<'a> {
             _ => return Err(Error::Truncated),
         }
         self.unfilter();
-        self.convert_row(dst);
+        with_store!(self.format, S => self.convert_row::<S>(dst));
         core::mem::swap(&mut self.prev, &mut self.cur);
         self.row += 1;
         Ok(true)

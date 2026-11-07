@@ -1482,3 +1482,255 @@ fn recolor_epd_lut() {
     assert!(near(out[1], 128, 4));
     assert_eq!(out[2], 255);
 }
+
+fn decode_rows(format: Format, bytes: &[u8], out: Option<ImageFormat>) -> (ImageInfo, Vec<u8>) {
+    let options = DecodeOptions { format: out, ..opts() };
+    let mut d = Decoder::open(format, SliceStream::new(bytes), &options).unwrap();
+    let info = d.info();
+    let mut rows = vec![0; info.row_bytes() * usize::from(info.height)];
+    for row in rows.chunks_exact_mut(info.row_bytes()) {
+        assert!(d.next_row(row).unwrap());
+    }
+    (info, rows)
+}
+
+#[test]
+fn every_decoder_writes_the_asked_format() {
+    use ImageFormat::{Bgr888, L8, Rgb565, Rgb888};
+    let cases = [
+        (Format::Jpeg, "kJpgRgbRed", true), (Format::Jpeg, "kJpgProgRgbRed", true), (Format::Jpeg, "kJpgGrayFlat", false),
+        (Format::Png, "kPngGrad16", false), (Format::Png, "kPngGray2x2", false), (Format::Png, "kPngPalette2x2", false),
+        (Format::Png, "kPngRgb2x2", false), (Format::Png, "kPngRgba2x2", false),
+        (Format::Bmp, "kBmp1", false), (Format::Bmp, "kBmp24", false), (Format::Bmp, "kBmp16", false), (Format::Bmp, "kBmpRle8", false),
+        (Format::Gif, "kGif", false), (Format::Gif, "kGifTransparent", false), (Format::Gif, "kGifOffset", false),
+        (Format::Tiff, "kTiffGray", false), (Format::Tiff, "kTiffRgb", false), (Format::Tiff, "kTiffPalette", false),
+        (Format::Tiff, "kTiffTiled", false), (Format::Tiff, "kTiffGrayAlpha", false),
+        (Format::Webp, "kWebpLossy", true), (Format::Webp, "kWebpAlpha", false), (Format::Webp, "kWebpLossless", false),
+        (Format::Webp, "kWebpLosslessAlpha", false), (Format::Webp, "kWebpAnimOffset", false),
+    ];
+    for (format, name, ycc) in cases {
+        let bytes = fixture(name);
+        let (native, rows) = decode_rows(format, &bytes, None);
+        let w = usize::from(native.width);
+        for out in [L8, Rgb888, Bgr888, Rgb565] {
+            if ycc && out == L8 && native.format != L8 {
+                continue;
+            }
+            let (info, got) = decode_rows(format, &bytes, Some(out));
+            assert_eq!(info, ImageInfo { format: out, ..native }, "{name} {out:?}");
+            let mut want = vec![0; got.len()];
+            for (src, dst) in rows.chunks_exact(native.row_bytes()).zip(want.chunks_exact_mut(info.row_bytes())) {
+                crate::pixel::store_row(src, native.format, dst, out, w);
+            }
+            assert_eq!(got, want, "{name} {out:?}");
+        }
+    }
+}
+
+#[test]
+fn jpeg_luma_out_of_color_is_the_y_plane() {
+    let bytes = fixture("kJpgRgbRed");
+    let (_, rgb) = decode_rows(Format::Jpeg, &bytes, None);
+    let (info, gray) = decode_rows(Format::Jpeg, &bytes, Some(ImageFormat::L8));
+    assert_eq!(info.format, ImageFormat::L8);
+    for (&l, p) in gray.iter().zip(rgb.chunks_exact(3)) {
+        let y = (77 * i32::from(p[0]) + 150 * i32::from(p[1]) + 29 * i32::from(p[2]) + 128) >> 8;
+        assert!(near(l, y, 2), "{l} {y}");
+    }
+}
+
+#[test]
+fn a_decoder_refuses_a_format_rows_cannot_take() {
+    let bytes = fixture("kPngRgb2x2");
+    let options = DecodeOptions { format: Some(ImageFormat::Argb8888), ..opts() };
+    assert_eq!(Decoder::open(Format::Png, SliceStream::new(&bytes), &options).err(), Some(Error::Unsupported));
+}
+
+fn scene(w: usize, h: usize) -> Vec<u8> {
+    let mut rgb = vec![0; w * h * 3];
+    for y in 0..h {
+        for x in 0..w {
+            let p = &mut rgb[(y * w + x) * 3..][..3];
+            let (dx, dy) = (x as i32 - w as i32 / 2, y as i32 - h as i32 / 3);
+            if dx * dx + dy * dy < (h as i32 / 4).pow(2) {
+                p.copy_from_slice(&[220, 40, 60]);
+            } else if (x / 9) % 2 == 0 && y > h * 2 / 3 {
+                p.copy_from_slice(&[30, 90, 200]);
+            } else {
+                p.copy_from_slice(&[(x * 255 / w) as u8, (y * 255 / h) as u8, 128]);
+            }
+        }
+    }
+    rgb
+}
+
+fn resize_rows_reference(bytes: &[u8], options: &ResizeOptions, orientation: Orientation) -> (ImageInfo, Vec<u8>) {
+    let mut d = devkit_image_open(bytes);
+    let info = d.info();
+    let mut r = OrientedResizer::new(info, options, orientation).unwrap();
+    let out = r.info();
+    let mut dst = vec![0; out.row_bytes() * usize::from(out.height)];
+    let mut row = vec![0; info.row_bytes()];
+    while d.next_row(&mut row).unwrap() {
+        let mut ready = r.push_row(&row).unwrap();
+        while ready.pop(&mut dst, out.row_bytes()).unwrap() {}
+    }
+    let mut last = r.finish();
+    while last.pop(&mut dst, out.row_bytes()).unwrap() {}
+    (out, dst)
+}
+
+fn devkit_image_open(bytes: &[u8]) -> Decoder<'_> {
+    crate::open(SliceStream::new(bytes), &opts()).unwrap()
+}
+
+fn psnr(a: &[u8], b: &[u8]) -> f64 {
+    let se: f64 = a.iter().zip(b).map(|(&x, &y)| (f64::from(x) - f64::from(y)).powi(2)).sum();
+    if se == 0.0 { f64::INFINITY } else { 10.0 * (255.0f64.powi(2) * a.len() as f64 / se).log10() }
+}
+
+/// PSNR of the RGB path and of the planar path against the source picture
+/// resized the same way.
+fn planar_against_truth(src: &[u8], w: usize, h: usize, bytes: &[u8], decode: &DecodeOptions, o: &ResizeOptions, orientation: Orientation) -> (f64, f64) {
+    let open = || Decoder::Jpeg(JpegDecoder::open(SliceStream::new(bytes), decode).unwrap());
+    let mut reference = open();
+    let info = reference.info();
+    let mut r = OrientedResizer::new(info, o, orientation).unwrap();
+    let out = r.info();
+    let mut rows = vec![0; out.row_bytes() * usize::from(out.height)];
+    let mut row = vec![0; info.row_bytes()];
+    while reference.next_row(&mut row).unwrap() {
+        let mut ready = r.push_row(&row).unwrap();
+        while ready.pop(&mut rows, out.row_bytes()).unwrap() {}
+    }
+    let mut last = r.finish();
+    while last.pop(&mut rows, out.row_bytes()).unwrap() {}
+    let mut planes = vec![0; rows.len()];
+    let mut d = open();
+    assert!(d.plane_layout().is_some());
+    assert_eq!(resize_decoder_into(&mut d, &mut planes, 0, o, orientation).unwrap(), out);
+    let mut truth = vec![0; rows.len()];
+    resize_buffer(src, info_of(w, h), w * 3, &mut truth, 0, o, orientation).unwrap();
+    (psnr(&truth, &rows), psnr(&truth, &planes))
+}
+
+fn info_of(w: usize, h: usize) -> ImageInfo {
+    ImageInfo { width: w as u16, height: h as u16, format: ImageFormat::Rgb888 }
+}
+
+#[test]
+fn planar_resize_is_as_good_as_resizing_rgb() {
+    let (w, h) = (203, 149);
+    let src = scene(w, h);
+    let cases = [
+        (100, 73, Orientation::None), (150, 110, Orientation::None), (61, 45, Orientation::Rot90),
+        (203, 149, Orientation::MirrorX), (31, 17, Orientation::Transverse), (300, 220, Orientation::None),
+        (120, 260, Orientation::Rot180),
+    ];
+    for subsampling in [Subsampling::S420, Subsampling::S422, Subsampling::S444] {
+        let bytes = jpeg_bytes(&src, w as u16, h as u16, ImageFormat::Rgb888, &JpegOptions { quality: 92, subsampling, caps: None });
+        for (tw, th, orientation) in cases {
+            let (rgb, planar) = planar_against_truth(&src, w, h, &bytes, &opts(), &target(tw, th), orientation);
+            assert!(planar >= rgb - 1.0 || planar >= 45.0, "{subsampling:?} {tw}x{th} {orientation:?}: rgb {rgb:.1} planar {planar:.1} dB");
+        }
+    }
+}
+
+#[test]
+fn planar_resize_follows_a_decode_time_downscale() {
+    let (w, h) = (203, 149);
+    let src = scene(w, h);
+    for subsampling in [Subsampling::S420, Subsampling::S422] {
+        let bytes = jpeg_bytes(&src, w as u16, h as u16, ImageFormat::Rgb888, &JpegOptions { quality: 92, subsampling, caps: None });
+        let decode = DecodeOptions { target_width: 50, target_height: 37, ..opts() };
+        let layout = Decoder::Jpeg(JpegDecoder::open(SliceStream::new(&bytes), &decode).unwrap()).plane_layout().unwrap();
+        assert!(usize::from(layout.chroma_width()) < 50 || usize::from(layout.chroma_height()) < 37);
+        let (rgb, planar) = planar_against_truth(&src, w, h, &bytes, &decode, &target(50, 37), Orientation::None);
+        assert!(planar >= rgb - 1.0, "{subsampling:?}: rgb {rgb:.1} planar {planar:.1} dB");
+    }
+}
+
+#[test]
+fn planar_resize_packs_every_format_alike() {
+    let (w, h) = (64, 48);
+    let bytes = jpeg_bytes(&scene(w, h), w as u16, h as u16, ImageFormat::Rgb888, &JpegOptions { quality: 90, ..Default::default() });
+    let run = |format| {
+        let o = ResizeOptions { format: Some(format), ..target(20, 15) };
+        let mut d = Decoder::Jpeg(jpeg(&bytes).unwrap());
+        resize_decoder(&mut d, &o, Orientation::None).unwrap()
+    };
+    let rgb = run(ImageFormat::Rgb888);
+    for format in [ImageFormat::Bgr888, ImageFormat::Rgb565] {
+        let got = run(format);
+        let mut want = vec![0; got.pixels().len()];
+        for (s, d) in rgb.pixels().chunks_exact(20 * 3).zip(want.chunks_exact_mut(got.stride_bytes())) {
+            crate::pixel::store_row(s, ImageFormat::Rgb888, d, format, 20);
+        }
+        assert_eq!(got.pixels(), &want[..], "{format:?}");
+    }
+    let gray = run(ImageFormat::L8);
+    assert_eq!((gray.width(), gray.height()), (20, 15));
+}
+
+#[test]
+fn webp_lossy_lends_every_plane_row_in_order() {
+    for name in ["kWebpLossy", "kWebpLossySimple", "kWebpLossyNoFilter", "kWebpLossyQ100", "kWebpLossyParts", "kWebpScene"] {
+        let bytes = fixture(name);
+        let mut d = devkit_image_open(&bytes);
+        let layout = d.plane_layout().unwrap();
+        let (mut y, mut c) = (0, 0);
+        while let Some(planes) = d.next_planes().unwrap() {
+            let [py, pu, pv] = planes.planes;
+            assert_eq!((py.first, pu.first, pv.first, pu.count), (y, c, c, pv.count), "{name}");
+            (y, c) = (py.end(), pu.end());
+        }
+        assert_eq!((y, c), (usize::from(layout.height), usize::from(layout.chroma_height())), "{name}");
+    }
+}
+
+#[test]
+fn webp_lossy_resizes_in_its_planes() {
+    let bytes = fixture("kWebpScene");
+    for (tw, th, orientation) in [(100, 73, Orientation::None), (61, 45, Orientation::Rot270), (31, 17, Orientation::MirrorY)] {
+        let o = target(tw, th);
+        let (info, want) = resize_rows_reference(&bytes, &o, orientation);
+        let mut d = devkit_image_open(&bytes);
+        assert!(d.plane_layout().is_some());
+        let mut got = vec![0; want.len()];
+        assert_eq!(resize_decoder_into(&mut d, &mut got, 0, &o, orientation).unwrap(), info);
+        let db = psnr(&want, &got);
+        assert!(db >= 38.0, "{tw}x{th} {orientation:?}: {db:.1} dB");
+    }
+}
+
+#[test]
+fn webp_planes_need_a_whole_opaque_lossy_picture() {
+    for name in ["kWebpAlpha", "kWebpLossless", "kWebpAnimOffset"] {
+        assert!(devkit_image_open(&fixture(name)).plane_layout().is_none(), "{name}");
+    }
+    let bytes = fixture("kWebpLossy");
+    let mut d = devkit_image_open(&bytes);
+    let mut row = vec![0; d.info().row_bytes()];
+    assert!(d.next_row(&mut row).unwrap());
+    assert_eq!(d.next_planes().err(), Some(Error::InvalidState));
+}
+
+#[test]
+fn planar_resize_reads_a_progressive_jpeg() {
+    let bytes = fixture("kJpgProgRgbRed");
+    let mut d = Decoder::Jpeg(jpeg(&bytes).unwrap());
+    let out = resize_decoder(&mut d, &target(8, 8), Orientation::None).unwrap();
+    for p in out.pixels().chunks_exact(3) {
+        check_red(p);
+    }
+}
+
+#[test]
+fn next_planes_refuses_the_middle_of_a_band() {
+    let (w, h) = (32, 32);
+    let bytes = jpeg_bytes(&scene(w, h), w as u16, h as u16, ImageFormat::Rgb888, &JpegOptions::default());
+    let mut d = Decoder::Jpeg(jpeg(&bytes).unwrap());
+    let mut row = vec![0; w * 3];
+    assert!(d.next_row(&mut row).unwrap());
+    assert_eq!(d.next_planes().err(), Some(Error::InvalidState));
+}

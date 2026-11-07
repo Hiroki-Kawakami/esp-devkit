@@ -52,6 +52,20 @@ def pattern(w, h, alpha=False):
     return image
 
 
+def scene(w, h):
+    """Smooth areas with a disc and stripes: chroma detail as photos have it."""
+    def at(x, y):
+        dx, dy = x - w // 2, y - h // 3
+        if dx * dx + dy * dy < (h // 4) ** 2:
+            return (220, 40, 60)
+        if (x // 9) % 2 == 0 and y > h * 2 // 3:
+            return (30, 90, 200)
+        return (x * 255 // w, y * 255 // h, 128)
+    image = Image.new("RGB", (w, h))
+    image.putdata([at(x, y) for y in range(h) for x in range(w)])
+    return image
+
+
 def indexed(w, h, colors):
     image = Image.new("RGB", (w, h))
     image.putdata([((i * 37) & 255, (i * 91) & 255, (i * 13 + 5) & 255)
@@ -332,6 +346,7 @@ def far_vp8l(w, h):
 
 
 emit_case("WebpLossy", cwebp(pattern(37, 29), "-q", "75"))
+emit_case("WebpScene", cwebp(scene(203, 149), "-q", "90"))
 emit_case("WebpLossySimple", cwebp(pattern(37, 29), "-q", "75", "-nostrong", "-f", "80"))
 emit_case("WebpLossyNoFilter", cwebp(pattern(37, 29), "-q", "60", "-f", "0", "-segments", "1"))
 emit_case("WebpLossyQ100", cwebp(pattern(21, 18), "-q", "100", "-sharpness", "4"))

@@ -14,7 +14,9 @@ use idf::heap::Caps;
 
 use super::{Cursor, Source};
 use crate::mem::{Buffer, buffer, state};
-use crate::{Error, Result};
+use crate::pixel::{Store, vp8_rgb, with_store};
+use crate::planes::PlaneRows;
+use crate::{Error, ImageFormat, Result};
 use tables::{AC_TABLE, BMODE_PROBS, COEFF_PROBS, COEFF_UPDATE_PROBS, DC_TABLE};
 
 const BPS: usize = 32;
@@ -252,6 +254,7 @@ pub(crate) struct Vp8 {
     y_final: usize,
     uv_final: usize,
     out_y: usize,
+    out_uv: usize,
 }
 
 fn clip(v: i32, max: i32) -> usize {
@@ -734,32 +737,16 @@ unsafe fn edge(mut p: *mut u8, step: isize, along: isize, size: usize, thresh: i
     }
 }
 
-#[inline(always)]
-fn clip_rgb(v: i32) -> u8 {
-    if v & !16383 == 0 {
-        (v >> 6) as u8
-    } else if v < 0 {
-        0
-    } else {
-        255
-    }
-}
-
-#[inline(always)]
-unsafe fn yuv_to_rgb(y: i32, u: i32, v: i32, rgb: *mut u8) {
-    let luma = (y * 19077) >> 8;
-    unsafe {
-        *rgb = clip_rgb(luma + ((v * 26149) >> 8) - 14234);
-        *rgb.add(1) = clip_rgb(luma - ((u * 6419) >> 8) - ((v * 13320) >> 8) + 8708);
-        *rgb.add(2) = clip_rgb(luma + ((u * 33050) >> 8) - 17685);
-    }
-}
-
-unsafe fn upsample(y: *const u8, nu: *const u8, nv: *const u8, fu: *const u8, fv: *const u8, dst: *mut u8, len: usize) {
+/// `dst` holds `len` pixels.
+unsafe fn upsample<S: Store>(y: *const u8, nu: *const u8, nv: *const u8, fu: *const u8, fv: *const u8, dst: &mut [u8], len: usize) {
+    let mut put = |x: usize, l: i32, u: i32, v: i32| {
+        let (r, g, b) = vp8_rgb(l, u, v);
+        S::rgb(unsafe { dst.get_unchecked_mut(x * S::BYTES..(x + 1) * S::BYTES) }, r, g, b);
+    };
     unsafe {
         let at = |p: *const u8, i: usize| i32::from(*p.add(i));
         let (mut tl_u, mut tl_v, mut l_u, mut l_v) = (at(nu, 0), at(nv, 0), at(fu, 0), at(fv, 0));
-        yuv_to_rgb(at(y, 0), (3 * tl_u + l_u + 2) >> 2, (3 * tl_v + l_v + 2) >> 2, dst);
+        put(0, at(y, 0), (3 * tl_u + l_u + 2) >> 2, (3 * tl_v + l_v + 2) >> 2);
         for x in 1..=(len - 1) >> 1 {
             let (t_u, t_v, u, v) = (at(nu, x), at(nv, x), at(fu, x), at(fv, x));
             let avg_u = tl_u + t_u + l_u + u + 8;
@@ -768,12 +755,12 @@ unsafe fn upsample(y: *const u8, nu: *const u8, nv: *const u8, fu: *const u8, fv
             let d12_v = (avg_v + 2 * (t_v + l_v)) >> 3;
             let d03_u = (avg_u + 2 * (tl_u + u)) >> 3;
             let d03_v = (avg_v + 2 * (tl_v + v)) >> 3;
-            yuv_to_rgb(at(y, 2 * x - 1), (d12_u + tl_u) >> 1, (d12_v + tl_v) >> 1, dst.add((2 * x - 1) * 3));
-            yuv_to_rgb(at(y, 2 * x), (d03_u + t_u) >> 1, (d03_v + t_v) >> 1, dst.add(2 * x * 3));
+            put(2 * x - 1, at(y, 2 * x - 1), (d12_u + tl_u) >> 1, (d12_v + tl_v) >> 1);
+            put(2 * x, at(y, 2 * x), (d03_u + t_u) >> 1, (d03_v + t_v) >> 1);
             (tl_u, tl_v, l_u, l_v) = (t_u, t_v, u, v);
         }
         if len & 1 == 0 {
-            yuv_to_rgb(at(y, len - 1), (3 * tl_u + l_u + 2) >> 2, (3 * tl_v + l_v + 2) >> 2, dst.add((len - 1) * 3));
+            put(len - 1, at(y, len - 1), (3 * tl_u + l_u + 2) >> 2, (3 * tl_v + l_v + 2) >> 2);
         }
     }
 }
@@ -842,6 +829,7 @@ impl Vp8 {
             y_final: 0,
             uv_final: 0,
             out_y: 0,
+            out_uv: 0,
         };
         d.parse_header(src, pos + 10 + part0_len, pos + len, caps)?;
         for part in d.parts[..d.num_parts].iter_mut().flatten() {
@@ -1357,10 +1345,34 @@ impl Vp8 {
         if far < (self.height as usize + 1) >> 1 && far > near { far } else { near }
     }
 
-    pub(crate) fn next_row(&mut self, src: &mut Source, rgb: &mut [u8]) -> Result<()> {
+    /// The Y, U and V rows finished since the last call, `None` at the end.
+    pub(crate) fn next_planes(&mut self, src: &mut Source) -> Result<Option<[PlaneRows<'_>; 3]>> {
+        let (h, ch) = (self.height as usize, (self.height as usize + 1) >> 1);
+        if self.out_y >= h && self.out_uv >= ch {
+            return Ok(None);
+        }
+        if self.mb_y >= self.mb_h {
+            return Err(Error::InvalidState);
+        }
+        self.decode_mb_row(src)?;
+        let (y0, y1) = (self.out_y, self.y_final.min(h));
+        let (c0, c1) = (self.out_uv, self.uv_final.min(ch));
+        (self.out_y, self.out_uv) = (y1, c1);
+        let base_y = (self.mb_y - 1) * 16;
+        let base_uv = (self.mb_y - 1) * 8;
+        let (ys, uvs) = (self.y_stride, self.uv_stride);
+        let (yo, co) = ((y0 + CACHE_ABOVE - base_y) * ys, (c0 + CACHE_ABOVE - base_uv) * uvs);
+        Ok(Some([
+            PlaneRows { data: &self.cache_y[yo..], stride: ys, first: y0, count: y1 - y0 },
+            PlaneRows { data: &self.cache_u[co..], stride: uvs, first: c0, count: c1 - c0 },
+            PlaneRows { data: &self.cache_v[co..], stride: uvs, first: c0, count: c1 - c0 },
+        ]))
+    }
+
+    pub(crate) fn next_row(&mut self, src: &mut Source, out: &mut [u8], format: ImageFormat) -> Result<()> {
         let y = self.out_y;
         let (height, width) = (self.height as usize, self.width as usize);
-        if rgb.len() < width * 3 {
+        if out.len() < format.row_bytes(width) {
             return Err(Error::InvalidArgument);
         }
         while y >= self.y_final || self.chroma_needed(y) >= self.uv_final {
@@ -1385,17 +1397,17 @@ impl Vp8 {
         let n_off = (near + CACHE_ABOVE - base_uv) * uvs;
         let f_off = (far + CACHE_ABOVE - base_uv) * uvs;
         let y_off = (y + CACHE_ABOVE - base_y) * self.y_stride;
-        unsafe {
-            upsample(
+        with_store!(format, S => unsafe {
+            upsample::<S>(
                 self.cache_y[y_off..].as_ptr(),
                 self.cache_u[n_off..].as_ptr(),
                 self.cache_v[n_off..].as_ptr(),
                 self.cache_u[f_off..].as_ptr(),
                 self.cache_v[f_off..].as_ptr(),
-                rgb.as_mut_ptr(),
+                out,
                 width,
-            );
-        }
+            )
+        });
         self.out_y += 1;
         Ok(())
     }
