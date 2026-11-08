@@ -82,8 +82,8 @@ way; `None` on a board without one.
 one.
 
 - `mount(path, config)` mounts the card's FAT file system at `path`, which
-  `idf::fs` then reaches; `unmount` and `is_mounted` follow. `MountConfig`
-  defaults to 5 open files at the board's speed.
+  `idf::fs` then reaches; `unmount`, `is_mounted` and `space` (total and free
+  bytes) follow. `MountConfig` defaults to 5 open files at the board's speed.
 - On boards whose SDMMC controller also serves another slot, the board owns the
   controller and the card is one of its users.
 - The simulator maps the mount point onto a host directory:

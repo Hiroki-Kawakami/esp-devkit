@@ -22,10 +22,17 @@ pub struct MountConfig {
     pub psram_bounce_buffer: bool,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Space {
+    pub total: u64,
+    pub free: u64,
+}
+
 pub(crate) trait Driver: Send + 'static {
     fn mount(&mut self, path: &CStr, config: &MountConfig) -> Result<()>;
     fn unmount(&mut self) -> Result<()>;
     fn is_mounted(&self) -> bool;
+    fn space(&self) -> Result<Space>;
 }
 
 /// The card slot, shared by every task.
@@ -53,6 +60,11 @@ impl Sd {
 
     pub fn is_mounted(&self) -> bool {
         self.0.lock().is_mounted()
+    }
+
+    /// Bytes on the mounted card; `INVALID_STATE` while it is not mounted.
+    pub fn space(&self) -> Result<Space> {
+        self.0.lock().space()
     }
 }
 

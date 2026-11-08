@@ -27,7 +27,7 @@ if(ESP_PLATFORM)
             "--blocklist-function=sdmmc_ll_(enable_bus_clock|reset_register|enable_sdio_pll|select_clk_source|set_clock_div|init_phase_delay|set_din_delay_phase)")
     endif()
 else()
-    set(bindgen_headers "simulator/sim_psram.h" "simulator/path_redirect.h" "stdlib.h" "unistd.h" "sys/socket.h")
+    set(bindgen_headers "simulator/sim_psram.h" "simulator/path_redirect.h" "stdlib.h" "unistd.h" "sys/socket.h" "sys/statvfs.h")
 endif()
 idf_component_register(
     SRCS ${srcs}

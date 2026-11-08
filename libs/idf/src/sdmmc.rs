@@ -151,6 +151,13 @@ impl FatMount {
         Ok(Self { path: path.into(), card })
     }
 
+    /// Total and free bytes.
+    pub fn info(&self) -> Result<(u64, u64)> {
+        let (mut total, mut free) = (0, 0);
+        Error::check(unsafe { sys::esp_vfs_fat_info(self.path.as_ptr(), &mut total, &mut free) })?;
+        Ok((total, free))
+    }
+
     pub fn unmount(self) -> Result<()> {
         let mount = mem::ManuallyDrop::new(self);
         let path = unsafe { ptr::read(&mount.path) };

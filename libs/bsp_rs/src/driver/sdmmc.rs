@@ -14,7 +14,7 @@ use idf::sdmmc::{self, Command, FatConfig, FatMount, LdoPower, SlotPins};
 use idf::sync::{OnceLock, Semaphore};
 use idf::{Error, Result, sys};
 
-use crate::sd::{Driver, MountConfig};
+use crate::sd::{Driver, MountConfig, Space};
 
 const TAG: &CStr = c"sdmmc";
 
@@ -224,5 +224,11 @@ impl Driver for SdmmcCard {
 
     fn is_mounted(&self) -> bool {
         self.mounted.is_some()
+    }
+
+    fn space(&self) -> Result<Space> {
+        let mounted = self.mounted.as_ref().ok_or(Error::INVALID_STATE)?;
+        let (total, free) = mounted.fat.info()?;
+        Ok(Space { total, free })
     }
 }
