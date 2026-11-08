@@ -834,3 +834,27 @@ A new IDF target needs its Rust target in `_devkit_rust_triple`
 (`tools/rust/rust.cmake`) and, if new, in the `targets` list of `nix/rust.nix`.
 The Rust target's float ABI must match IDF's `-mabi` (ilp32f on P4/S31, ilp32
 on C6).
+
+## On the device
+
+The device targets have 32-bit atomics only: `AtomicU64` and `AtomicI64` do
+not exist there, while host tests have them, so such code passes its tests and
+fails the device build.
+
+`Box::pin(expr)` builds the future in the caller's frame and then moves it to
+the heap. To keep a large future off the caller's stack, build it inside an
+out-of-line function:
+
+```rust
+#[inline(never)]
+fn boxed<F: Future>(make: impl FnOnce() -> F) -> Pin<Box<F>> {
+    Box::pin(make())
+}
+```
+
+To find what a function takes from its task's stack, read its prologue in the
+disassembly. On ESP32-S3 `entry a1, N` gives the frame exactly. On RISC-V a
+frame up to 2 KB is one `addi sp, sp, -N`; a larger one loads the size into a
+register first and subtracts it, so a search for `addi sp` alone misses the
+largest frames. For the size of a type, load the ELF in gdb and run
+`set language rust` then `print sizeof(<type>)`.

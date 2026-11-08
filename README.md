@@ -63,3 +63,5 @@ files.
   Nix-built image of the devShell's IDF environment.
 - [Rust](docs/rust.md) — Rust crates inside IDF components without Cargo, the
   pinned toolchain and what to check when upgrading it.
+- [ESP32-P4](docs/esp32p4.md) — what the chip's CPU, PIE, caches, PPA and JPEG
+  engine do to code and data paths, with measurements.
