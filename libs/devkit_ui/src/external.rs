@@ -102,6 +102,17 @@ pub(crate) struct Core {
 unsafe impl Send for Picture {}
 unsafe impl Sync for Picture {}
 
+/// A finger held by a surface, in the coordinates of `ExternalFrame::area`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct TouchPoint {
+    /// The controller's track id.
+    pub id: u8,
+    pub x: i16,
+    pub y: i16,
+}
+
+type TouchCallback = Box<dyn FnMut(&[TouchPoint], u32) + Send>;
+
 #[derive(Default)]
 struct State {
     link: Option<Link>,
@@ -120,6 +131,7 @@ struct State {
     notified: bool,
     pending: Rect,
     on_refresh: Option<Box<dyn FnMut(Rect) + Send>>,
+    on_touch: Option<TouchCallback>,
 }
 
 struct Inner {
@@ -159,6 +171,26 @@ impl ExternalSurface {
     /// before the next `begin` count as one.
     pub fn set_on_refresh(&self, callback: impl FnMut(Rect) + Send + 'static) {
         self.0.state.lock().on_refresh = Some(Box::new(callback));
+    }
+
+    /// The fingers that landed on the surface rather than on UI over it, with
+    /// every sample while one is down and once more with none after the last
+    /// lifts, on the UI task; with the ms since boot it was sampled at. A
+    /// finger stays the surface's wherever it moves until it lifts. Under
+    /// `Policy::Exclusive` every finger is the surface's.
+    pub fn set_on_touch(&self, callback: impl FnMut(&[TouchPoint], u32) + Send + 'static) {
+        self.0.state.lock().on_touch = Some(Box::new(callback));
+    }
+
+    pub(crate) fn touched(&self, points: &[TouchPoint], sampled_ms: u32) {
+        let callback = self.0.state.lock().on_touch.take();
+        if let Some(mut callback) = callback {
+            callback(points, sampled_ms);
+            let mut state = self.0.state.lock();
+            if state.on_touch.is_none() {
+                state.on_touch = Some(callback);
+            }
+        }
     }
 
     /// Where to write the next frame; `None` while no node shows the surface.

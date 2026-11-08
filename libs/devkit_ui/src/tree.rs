@@ -27,7 +27,7 @@ use crate::component::{Animation, AnyHost, EventMap, Hook, Host, Property, Rende
 use crate::element::{BuildContext, Content, Drag, Element};
 use crate::gesture::{Gestures, Tracker};
 use crate::id::Id;
-use crate::external::ExternalSurface;
+use crate::external::{ExternalSurface, Policy, TouchPoint};
 use crate::keyboard::{InputKind, KeyboardMode, KeyboardPanel};
 use crate::erased::Erased;
 use crate::motion::{Clock, Motion, MotionKind};
@@ -116,6 +116,7 @@ pub(crate) struct Contact {
     pub(crate) scroller: NodeIndex,
     drag: NodeIndex,
     pub(crate) gesture: NodeIndex,
+    surface: NodeIndex,
     /// Nothing nearer to the finger takes a pan.
     pub(crate) pan: bool,
     pub(crate) dragging: bool,
@@ -132,9 +133,10 @@ pub(crate) struct Hit {
     scroller: NodeIndex,
     drag: NodeIndex,
     gesture: NodeIndex,
+    surface: NodeIndex,
 }
 
-const NO_HIT: Hit = Hit { tap: NONE, scroller: NONE, drag: NONE, gesture: NONE };
+const NO_HIT: Hit = Hit { tap: NONE, scroller: NONE, drag: NONE, gesture: NONE, surface: NONE };
 
 /// A scroller moving by itself: thrown, or springing back to `anchor` or to
 /// the end it is past.
@@ -291,6 +293,11 @@ pub(crate) struct Tree {
     pub(crate) damage: Vec<Rect>,
     pub(crate) contacts: Vec<Contact>,
     pub(crate) trackers: Vec<Tracker>,
+    /// What the fingers on a surface were last reported to, until it hears
+    /// they all lifted.
+    touched: Option<ExternalSurface>,
+    /// During a hit test, something drawn over the point was passed.
+    covered: Cell<bool>,
 }
 
 pub(crate) fn shadow_extent(style: &Style) -> i16 {
@@ -360,6 +367,8 @@ impl Tree {
             format: ImageFormat::Rgb565,
             contacts: Vec::new(),
             trackers: Vec::new(),
+            touched: None,
+            covered: Cell::new(false),
         };
         tree.root = tree.alloc_node(Node::new(NodeContent::Box, 0, tree.caps));
         let nav = tree.new_navigator(TypeId::of::<Root>(), 0);
@@ -506,7 +515,7 @@ impl Tree {
             self.set_pressed(contact.drag, false);
             self.send_drag(contact.drag, contact.last, true);
             let contact = &mut self.contacts[index];
-            (contact.tap, contact.scroller, contact.drag, contact.gesture) = (NONE, NONE, NONE, NONE);
+            (contact.tap, contact.scroller, contact.drag, contact.gesture, contact.surface) = (NONE, NONE, NONE, NONE, NONE);
             (contact.passive, contact.dragging) = (true, false);
         }
         self.trackers.clear();
@@ -744,6 +753,9 @@ impl Tree {
             }
             if contact.drag == id {
                 contact.drag = NONE;
+            }
+            if contact.surface == id {
+                contact.surface = NONE;
             }
         }
         self.forget_gestures(id);
@@ -2103,6 +2115,7 @@ impl Tree {
         }
         let [pad_left, pad_top, _, _] = node.style.padding;
         let mut found = match &node.content {
+            NodeContent::External(_) if inside && !self.covered.get() => Some(Hit { surface: id, ..NO_HIT }),
             NodeContent::Collection(list) => list.items.iter().rev().find_map(|&(index, item)| {
                 let (px, py) = list.grid.place(index as usize);
                 self.hit(item, left + px, top + py - list.offset, x, y)
@@ -2116,7 +2129,7 @@ impl Tree {
             let scrollable = matches!(node.content, NodeContent::Scroll(_) | NodeContent::Collection(_));
             if let Some(hit) = &mut found {
                 let panned = hit.gesture != NONE && self.gestures_of(hit.gesture).contains(Gestures::PAN);
-                if hit.scroller == NONE && scrollable && !panned {
+                if hit.scroller == NONE && hit.surface == NONE && scrollable && !panned {
                     hit.scroller = id;
                 }
             } else if node.drag.is_some() {
@@ -2136,7 +2149,15 @@ impl Tree {
         if found.is_none() && self.covers(id) {
             found = Some(Hit { tap: id, ..NO_HIT });
         }
+        if inside && found.is_none() && (self.paints(id) || matches!(node.content, NodeContent::Text(_) | NodeContent::Image { .. } | NodeContent::Canvas(_) | NodeContent::Progress(_))) {
+            self.covered.set(true);
+        }
         found
+    }
+
+    fn hit_at(&self, x: i16, y: i16) -> Option<Hit> {
+        self.covered.set(false);
+        self.hit(self.root, 0, 0, i32::from(x), i32::from(y))
     }
 
     fn hit_children(&self, id: NodeIndex, dx: i32, dy: i32, x: i32, y: i32) -> Option<Hit> {
@@ -2173,11 +2194,41 @@ impl Tree {
                 None => self.press(track, p, now_ms),
             }
         }
+        self.report_surface(now_ms);
+    }
+
+    fn report_surface(&mut self, now_ms: u32) {
+        let mut points = Vec::new();
+        let mut surface = None;
+        for contact in self.contacts.iter().filter(|c| c.surface != NONE) {
+            if let NodeContent::External(s) = &self.nodes[contact.surface as usize].content {
+                surface.get_or_insert_with(|| s.clone());
+                points.push(TouchPoint { id: contact.track, x: contact.last.0, y: contact.last.1 });
+            }
+        }
+        match surface {
+            Some(surface) => {
+                surface.touched(&points, now_ms);
+                self.touched = Some(surface);
+            }
+            None => {
+                if let Some(surface) = self.touched.take() {
+                    surface.touched(&[], now_ms);
+                }
+            }
+        }
+    }
+
+    fn exclusive_surface(&self) -> bool {
+        self.external != NONE && matches!(&self.nodes[self.external as usize].content, NodeContent::External(s) if s.policy() == Policy::Exclusive)
     }
 
     fn press(&mut self, track: u8, p: (i16, i16), now_ms: u32) {
-        let hit = self.hit(self.root, 0, 0, i32::from(p.0), i32::from(p.1));
-        let hit = hit.unwrap_or(NO_HIT);
+        let hit = if self.exclusive_surface() {
+            Hit { surface: self.external, ..NO_HIT }
+        } else {
+            self.hit_at(p.0, p.1).unwrap_or(NO_HIT)
+        };
         let mut gesture = hit.gesture;
         let contact = Contact {
             track,
@@ -2189,7 +2240,8 @@ impl Tree {
             scroller: NONE,
             drag: NONE,
             gesture,
-            pan: hit.scroller == NONE && hit.drag == NONE,
+            surface: NONE,
+            pan: hit.scroller == NONE && hit.drag == NONE && hit.surface == NONE,
             dragging: false,
             position: 0.0,
             velocity: 0.0,
@@ -2214,7 +2266,7 @@ impl Tree {
         self.set_pressed(hit.drag, true);
         self.send_drag(hit.drag, p, false);
         self.gesture_pressed(gesture, track, p, now_ms);
-        self.contacts.push(Contact { passive, tap: hit.tap, scroller: hit.scroller, drag: hit.drag, gesture, position, ..contact });
+        self.contacts.push(Contact { passive, tap: hit.tap, scroller: hit.scroller, drag: hit.drag, gesture, surface: hit.surface, position, ..contact });
     }
 
     fn contact_moved(&mut self, index: usize, p: (i16, i16), now_ms: u32) {
@@ -2448,7 +2500,7 @@ impl Tree {
         }
         let r = self.nodes[id as usize].screen;
         let (x, y) = (r.x + r.w / 2, r.y + r.h / 2);
-        let hit = self.hit(self.root, 0, 0, i32::from(x), i32::from(y));
+        let hit = self.hit_at(x, y);
         match hit {
             Some(hit) if hit.tap == id => Ok((x, y)),
             Some(hit) if hit.tap != NONE => Err(format!("{name} is covered")),

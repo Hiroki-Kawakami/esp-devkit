@@ -3223,6 +3223,44 @@ fn a_surface_keeps_to_the_row_grid_and_sees_what_lies_over_it() {
     assert_eq!(overlap_of(&tree, hole), Some(Rect::new(10, 40, 50, 20)));
 }
 
+fn record_touches(video: &ExternalSurface) -> alloc::sync::Arc<idf::sync::Mutex<Vec<Vec<TouchPoint>>>> {
+    let log = alloc::sync::Arc::new(idf::sync::Mutex::new(Vec::new()));
+    let sink = log.clone();
+    video.set_on_touch(move |points, _| sink.lock().push(points.to_vec()));
+    log
+}
+
+#[test]
+fn a_surface_follows_the_fingers_that_land_on_it_until_they_lift() {
+    let video = ExternalSurface::new().unwrap();
+    let log = record_touches(&video);
+    let mut tree = Tree::new(Player { video, menu: false }, SCREEN, Caps::INTERNAL, theme());
+    run(&mut tree);
+    let open = tree.tap_point("open").unwrap();
+    tree.touch(&[(1, open), (2, (20, 60))], 0);
+    tree.touch(&[(1, open), (2, (25, 10))], 10);
+    tree.touch(&[(1, open)], 20);
+    tree.touch(&[], 30);
+    let at = |id, x, y| TouchPoint { id, x, y };
+    assert_eq!(*log.lock(), [alloc::vec![at(2, 20, 60)], alloc::vec![at(2, 25, 10)], alloc::vec![]]);
+}
+
+#[test]
+fn ui_over_a_surface_keeps_its_fingers_unless_the_surface_is_exclusive() {
+    let video = ExternalSurface::new().unwrap();
+    let log = record_touches(&video);
+    let mut tree = Tree::new(Player { video: video.clone(), menu: false }, SCREEN, Caps::INTERNAL, theme());
+    run(&mut tree);
+    tap(&mut tree, "open");
+    run(&mut tree);
+    let menu = rect_of(&tree, "menu");
+    tap_at(&mut tree, (menu.x + menu.w / 2, menu.y + menu.h / 2));
+    assert!(log.lock().is_empty());
+    video.set_policy(Policy::Exclusive);
+    tap(&mut tree, "open");
+    assert_eq!(log.lock().len(), 2);
+}
+
 #[test]
 fn the_opaque_core_of_an_overlay_leaves_its_rounded_corners_and_margins_out() {
     let (width, height) = (12usize, 10usize);
