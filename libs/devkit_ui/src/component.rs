@@ -145,6 +145,17 @@ pub enum ScrollTarget {
     Index(usize),
 }
 
+/// Where a `scroll` or `list` is, as `on_scroll` tells it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ScrollPosition {
+    /// Below 0 past the start, above `extent - viewport` past the end.
+    pub offset: i32,
+    /// How tall what scrolls is.
+    pub extent: i32,
+    /// How tall the scroller is.
+    pub viewport: i16,
+}
+
 /// The end a `scroll` or `list` starts at, and stays at while its content or
 /// size changes if it was there.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]

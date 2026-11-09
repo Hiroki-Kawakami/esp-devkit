@@ -62,8 +62,11 @@ app.run();
   an `ImageBuf` decoded on another task. The node keeps its own `Arc`, so the
   pixels live while it shows them, and a different `Arc` repaints it; the
   pixels of a shared one must not change.
-- `on_scroll` reports a scroller's offset as it moves, below 0 or above the end
-  while it is stretched past one. `scroll_border(id)` shows a divider under a
+- `on_scroll` reports a `ScrollPosition` as a scroller moves, and after a
+  layout that changed how tall it or its content is: the offset, below 0 or
+  above the end while it is stretched past one, with the `extent` and
+  `viewport` of the same layout, so `offset >= extent - viewport` is at the
+  end. A move made by a layout comes the next frame. `scroll_border(id)` shows a divider under a
   node while the scroller with that id is past its start, without a message
   or a rebuild.
 - A scroller dragged past an end stretches and springs back, and a fling into

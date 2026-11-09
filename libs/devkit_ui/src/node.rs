@@ -308,6 +308,8 @@ pub(crate) struct Node {
     pub(crate) anchored: Option<Box<Anchored>>,
     /// At its end as of the last move, before content changed it.
     pub(crate) pinned: bool,
+    /// The extent and viewport `on_scroll` last told.
+    pub(crate) scroll_told: Option<(i32, i16)>,
     pub(crate) pull: Option<Pull>,
     pub(crate) gestures: Option<GestureMap>,
     pub(crate) size: Option<SizeMap>,
@@ -375,6 +377,7 @@ impl Node {
             anchor: ScrollEdge::Start,
             anchored: None,
             pinned: false,
+            scroll_told: None,
             pull: None,
             gestures: None,
             size: None,

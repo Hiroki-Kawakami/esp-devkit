@@ -17,7 +17,7 @@ use devkit_gfx::{Align as TextAlign, Color, Corners, Elide, FontChain, Image, Im
 
 use crate::bump::Bump;
 use crate::popover::Anchored;
-use crate::component::{AnyHost, Child, Component, EventMap, Host, Screen, ScrollEdge, call_event_map, screen_host};
+use crate::component::{AnyHost, Child, Component, EventMap, Host, Screen, ScrollEdge, ScrollPosition, call_event_map, screen_host};
 use crate::erased::Erased;
 use crate::id::Id;
 use crate::task::{TaskElement, TaskSpec, This};
@@ -163,12 +163,12 @@ unsafe fn call_drag_map<M: Copy>(function: *const (), drag: Drag) -> Erased {
 #[derive(Clone, Copy)]
 pub(crate) struct ScrollMap {
     pub(crate) function: *const (),
-    pub(crate) call: unsafe fn(*const (), i32) -> Erased,
+    pub(crate) call: unsafe fn(*const (), ScrollPosition) -> Erased,
 }
 
-unsafe fn call_scroll_map<M: Copy>(function: *const (), offset: i32) -> Erased {
-    let function: fn(i32) -> M = unsafe { core::mem::transmute(function) };
-    Erased::new(function(offset))
+unsafe fn call_scroll_map<M: Copy>(function: *const (), position: ScrollPosition) -> Erased {
+    let function: fn(ScrollPosition) -> M = unsafe { core::mem::transmute(function) };
+    Erased::new(function(position))
 }
 
 type ItemFn<C> = for<'r> fn(&'r C, usize, &'r Ui<<C as Component>::Msg>) -> Element<'r, <C as Component>::Msg>;
@@ -398,10 +398,10 @@ impl<'a, M: Copy> Element<'a, M> {
         self
     }
 
-    /// On a `scroll` or `list`: the offset, every time it moves. Comes as often
-    /// as frames do, so rebuild only for what changes the view. Past the start
-    /// it is negative, past the end above the end.
-    pub fn on_scroll(mut self, on_scroll: fn(i32) -> M) -> Self {
+    /// On a `scroll` or `list`: where it is, every time it moves, and after a
+    /// layout that changed how tall it or its content is. Comes as often as
+    /// frames do, so rebuild only for what changes the view.
+    pub fn on_scroll(mut self, on_scroll: fn(ScrollPosition) -> M) -> Self {
         self.on_scroll = Some(ScrollMap { function: on_scroll as *const (), call: call_scroll_map::<M> });
         self
     }

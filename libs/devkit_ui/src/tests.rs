@@ -781,22 +781,22 @@ fn popups_stay_above_the_keyboard() {
 }
 
 struct Scroller {
-    offsets: &'static core::cell::RefCell<Vec<i32>>,
+    offsets: &'static core::cell::RefCell<Vec<ScrollPosition>>,
 }
 
 impl Screen for Scroller {}
 
 impl Component for Scroller {
-    type Msg = i32;
+    type Msg = ScrollPosition;
 
-    fn update(&mut self, msg: i32, _cx: &mut Cx<Self>) {
+    fn update(&mut self, msg: ScrollPosition, _cx: &mut Cx<Self>) {
         self.offsets.borrow_mut().push(msg);
     }
 
-    fn view<'a>(&'a self, ui: &'a Ui<i32>) -> Element<'a, i32> {
+    fn view<'a>(&'a self, ui: &'a Ui<ScrollPosition>) -> Element<'a, ScrollPosition> {
         ui.column([
             ui.column([]).height(80).scroll_border(id!("content")).id(id!("bar")),
-            ui.scroll(ui.column([ui.column([]).height(2000)])).grow(1).on_scroll(|offset| offset).id(id!("content")),
+            ui.scroll(ui.column([ui.column([]).height(2000)])).grow(1).on_scroll(|position| position).id(id!("content")),
         ])
     }
 }
@@ -819,11 +819,12 @@ fn a_scroll_reports_every_move_and_shows_the_border_only_away_from_the_start() {
     assert!(first.iter().any(|r| r.intersect(&bar).h > 0), "{first:?}");
     let second = drag(&mut tree, 240, 32);
     assert!(second.iter().all(|r| r.intersect(&bar).h == 0), "{second:?}");
-    assert_eq!(offsets.borrow().len(), 2);
+    assert_eq!(offsets.borrow()[0], ScrollPosition { offset: 0, extent: 2000, viewport: 520 }, "told once laid out");
+    assert_eq!(offsets.borrow().len(), 3);
     let back = drag(&mut tree, 600, 48);
     assert!(!tree.scrolled_away(owner, id!("content")));
     assert!(back.iter().any(|r| r.intersect(&bar).h > 0), "{back:?}");
-    assert!(*offsets.borrow().last().unwrap() < 0, "past the start, as it shows");
+    assert!(offsets.borrow().last().unwrap().offset < 0, "past the start, as it shows");
     tree.touch(&[], 64);
 }
 
@@ -981,6 +982,61 @@ fn an_end_anchor_starts_there_and_follows_only_while_there() {
     assert_eq!(log_offset(&tree), 1100);
     log_send(&mut tree, LogMsg::Add(2));
     assert_eq!(log_offset(&tree), 1200, "back at the end, it follows again");
+}
+
+struct Tail {
+    count: usize,
+    anchor: ScrollEdge,
+    told: &'static core::cell::RefCell<Vec<ScrollPosition>>,
+}
+
+#[derive(Clone, Copy)]
+enum TailMsg {
+    Add,
+    Told(ScrollPosition),
+}
+
+impl Screen for Tail {}
+
+impl Component for Tail {
+    type Msg = TailMsg;
+
+    fn update(&mut self, msg: TailMsg, cx: &mut Cx<Self>) {
+        match msg {
+            TailMsg::Add => {
+                self.count += 5;
+                cx.rebuild();
+            }
+            TailMsg::Told(position) => self.told.borrow_mut().push(position),
+        }
+    }
+
+    fn view<'a>(&'a self, ui: &'a Ui<TailMsg>) -> Element<'a, TailMsg> {
+        ui.column([ui.collection(self.count, CollectionLayout::List { row_height: 50 }, tail_row).height(400).scroll_anchor(self.anchor).on_scroll(TailMsg::Told).id(id!("tail"))])
+    }
+}
+
+fn tail_row<'a>(_: &'a Tail, _: usize, ui: &'a Ui<TailMsg>) -> Element<'a, TailMsg> {
+    ui.column([]).height(50)
+}
+
+#[test]
+fn a_growing_list_tells_its_extent_with_the_offset_that_goes_with_it() {
+    for (anchor, offset) in [(ScrollEdge::End, 850), (ScrollEdge::Start, 0)] {
+        let told = Box::leak(Box::new(core::cell::RefCell::new(Vec::new())));
+        let mut tree = Tree::new(Tail { count: 20, anchor, told }, SCREEN, Caps::INTERNAL, theme());
+        run(&mut tree);
+        assert_eq!(told.borrow().last(), Some(&ScrollPosition { offset: offset.min(600), extent: 1000, viewport: 400 }));
+        let count = told.borrow().len();
+        tree.post(tree.root_id, Erased::new(TailMsg::Add));
+        run(&mut tree);
+        run(&mut tree);
+        assert_eq!(told.borrow().len(), count + 1, "{anchor:?}: once per change");
+        assert_eq!(told.borrow().last(), Some(&ScrollPosition { offset, extent: 1250, viewport: 400 }));
+        run(&mut tree);
+        run(&mut tree);
+        assert_eq!(told.borrow().len(), count + 1, "{anchor:?}: nothing changed, nothing told");
+    }
 }
 
 #[test]

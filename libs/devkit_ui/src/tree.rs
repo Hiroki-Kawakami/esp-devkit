@@ -23,7 +23,7 @@ use idf::sync::OnceLock;
 
 use crate::app::Link;
 use crate::bump::Bump;
-use crate::component::{Animation, AnyHost, EventMap, Hook, Host, Property, RenderRequest, Requests, Screen, ScrollEdge, ScrollTarget, screen_host};
+use crate::component::{Animation, AnyHost, EventMap, Hook, Host, Property, RenderRequest, Requests, Screen, ScrollEdge, ScrollPosition, ScrollTarget, screen_host};
 use crate::element::{BuildContext, Content, Drag, Element};
 use crate::gesture::{Gestures, Tracker};
 use crate::id::Id;
@@ -233,6 +233,7 @@ pub(crate) struct Tree {
     pub(crate) slots: Vec<Slot>,
     collections: Vec<NodeIndex>,
     canvases: Vec<NodeIndex>,
+    scrolls: Vec<NodeIndex>,
     tasks: Vec<NodeTask>,
     pub(crate) local: Rc<Local>,
     deferred: Vec<Deferred>,
@@ -358,6 +359,7 @@ impl Tree {
             source: State::empty(),
             damage: Vec::new(),
             canvases: Vec::new(),
+            scrolls: Vec::new(),
             external: NONE,
             external_split: Cell::new(0),
             zoom_split: Cell::new((NONE, 0)),
@@ -723,6 +725,7 @@ impl Tree {
                 self.collections.retain(|l| *l != id);
             }
             NodeContent::Canvas(_) => self.canvases.retain(|c| *c != id),
+            NodeContent::Scroll(_) => self.scrolls.retain(|s| *s != id),
             NodeContent::External(_) if self.external == id => self.external = NONE,
             NodeContent::Navigator(_) => self.navigators.retain(|n| *n != id),
             NodeContent::Child(slot) => {
@@ -1220,7 +1223,10 @@ impl Tree {
                     }
                 }
             }
-            Content::Scroll => self.nodes[id as usize].pinned = element.anchor == ScrollEdge::End,
+            Content::Scroll => {
+                self.scrolls.push(id);
+                self.nodes[id as usize].pinned = element.anchor == ScrollEdge::End;
+            }
             Content::Navigator { key, initial, .. } => {
                 self.navigators.push(id);
                 if !self.restore_navigator(id, key)
@@ -1454,7 +1460,8 @@ impl Tree {
             self.sync_collection(self.collections[i]);
         }
         self.sync_screen(self.root, 0, 0, self.area, false);
-        if self.report_sizes() {
+        let sized = self.report_sizes();
+        if self.report_scrolls() | sized {
             self.update();
             return;
         }
@@ -1631,6 +1638,36 @@ impl Tree {
                 self.queue.push_back((node.owner, msg, None));
                 reported = true;
             }
+        }
+        reported
+    }
+
+    fn scroll_position(&self, id: NodeIndex) -> ScrollPosition {
+        let node = &self.nodes[id as usize];
+        let extent = match &node.content {
+            NodeContent::Scroll(s) => s.content,
+            NodeContent::Collection(l) => l.grid.height(l.count),
+            _ => 0,
+        };
+        ScrollPosition { offset: node.scroll_offset().unwrap_or(0), extent, viewport: node.rect.h }
+    }
+
+    /// Tells the scrollers whose content or size a layout changed.
+    fn report_scrolls(&mut self) -> bool {
+        let mut reported = false;
+        for i in 0..self.collections.len() + self.scrolls.len() {
+            let id = if i < self.collections.len() { self.collections[i] } else { self.scrolls[i - self.collections.len()] };
+            let position = self.scroll_position(id);
+            let node = &mut self.nodes[id as usize];
+            let Some(map) = node.on_scroll else { continue };
+            let told = Some((position.extent, position.viewport));
+            if node.scroll_told == told {
+                continue;
+            }
+            node.scroll_told = told;
+            let msg = unsafe { (map.call)(map.function, position) };
+            self.queue.push_back((node.owner, msg, None));
+            reported = true;
         }
         reported
     }
@@ -1920,12 +1957,7 @@ impl Tree {
     fn bounds(&self, id: NodeIndex) -> Bounds {
         let node = &self.nodes[id as usize];
         let span = i32::from(node.rect.h);
-        let content = match &node.content {
-            NodeContent::Scroll(s) => s.content,
-            NodeContent::Collection(l) => l.grid.height(l.count),
-            _ => 0,
-        };
-        let end = (content - span).max(0);
+        let end = (self.scroll_position(id).extent - span).max(0);
         let start = node.pull.filter(|p| p.refreshing).map_or(0, |p| -i32::from(p.height));
         let pull = node.pull.filter(|p| !p.refreshing).map_or(0, |p| p.height);
         let bounce = node.bounce && end > 0;
@@ -2066,11 +2098,13 @@ impl Tree {
 
     /// Tells what follows `id`, whose offset has just left `before`.
     pub(crate) fn scroll_moved(&mut self, id: NodeIndex, before: i32) {
-        let node = &self.nodes[id as usize];
-        let offset = node.scroll_offset().unwrap_or(0);
+        let position = self.scroll_position(id);
+        let node = &mut self.nodes[id as usize];
+        let offset = position.offset;
         let (owner, name) = (node.owner, node.id);
         if let Some(map) = node.on_scroll {
-            let msg = unsafe { (map.call)(map.function, offset) };
+            node.scroll_told = Some((position.extent, position.viewport));
+            let msg = unsafe { (map.call)(map.function, position) };
             self.queue.push_back((owner, msg, None));
         }
         let Some(name) = name.filter(|_| (before > 0) != (offset > 0)) else { return };
