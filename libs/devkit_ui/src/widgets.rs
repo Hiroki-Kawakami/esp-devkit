@@ -28,13 +28,16 @@ const PART_STATES: State = State::from_bits_retain(State::PRESSED.bits() | State
 
 /// `style` is usually a field of `ui.theme().widgets.button`.
 pub fn button<'a, M: Copy>(ui: &'a Ui<M>, label: &'a str, style: &'static StateStyle, on_tap: M) -> Element<'a, M> {
+    button_from(ui.row([button_label(ui, label)]), style, on_tap)
+}
+
+pub fn button_from<'a, M: Copy>(element: Element<'a, M>, style: &'static StateStyle, on_tap: M) -> Element<'a, M> {
+    element.style(style).align(Align::Center).justify(Justify::Center).role(Role::Button).on_tap(on_tap)
+}
+
+pub fn button_label<'a, M: Copy>(ui: &'a Ui<M>, label: &'a str) -> Element<'a, M> {
     let theme = ui.theme();
-    ui.row([ui.text(theme.fonts.body, label).style(theme.widgets.button.label)])
-        .style(style)
-        .align(Align::Center)
-        .justify(Justify::Center)
-        .role(Role::Button)
-        .on_tap(on_tap)
+    ui.text(theme.fonts.body, label).style(theme.widgets.button.label)
 }
 
 pub fn icon_button<'a, M: Copy>(ui: &'a Ui<M>, icon: Icon, on_tap: M) -> Element<'a, M> {

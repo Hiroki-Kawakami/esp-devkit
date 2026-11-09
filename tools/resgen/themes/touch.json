@@ -140,6 +140,7 @@
       "root": {
         "height": 72,
         "padding_x": "widgets.unit.padding",
+        "gap": "widgets.unit.gap",
         "radius": "widgets.unit.radius",
         "states": {
           "disabled": "vars.dimmed"
