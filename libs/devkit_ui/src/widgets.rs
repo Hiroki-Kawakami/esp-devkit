@@ -304,13 +304,16 @@ pub fn menu_divider<'a, M: Copy>(ui: &'a Ui<M>) -> Element<'a, M> {
 /// A dialog for a screen on the `Overlay`, centered in what the insets leave,
 /// the keyboard included. `children` stack in it as they are.
 pub fn modal<'a, M: Copy>(ui: &'a Ui<M>, children: impl Children<'a, M>) -> Element<'a, M> {
+    modal_from(ui, ui.column(children).width(ui.theme().widgets.modal.width))
+}
+
+/// A `modal` whose panel is `element`, as wide as it is.
+pub fn modal_from<'a, M: Copy>(ui: &'a Ui<M>, element: Element<'a, M>) -> Element<'a, M> {
     let t = &ui.theme().widgets.modal;
     let (width, insets) = (ui.screen_size().0, ui.insets());
     let room = width - insets.left - insets.right - t.margin * 2;
-    let panel = ui
-        .column(children)
+    let panel = element
         .style(t.panel)
-        .width(t.width)
         .max_width(room)
         .appear(Presence::fade().offset(0, 24).ms(150))
         .disappear(Presence::fade().ms(100))
