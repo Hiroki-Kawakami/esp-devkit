@@ -53,6 +53,16 @@ mod flags {
     pub(super) const O_TRUNC: c_int = 0o1000;
 }
 
+#[cfg(target_os = "macos")]
+fn mtime(info: &sys::stat) -> i64 {
+    info.st_mtimespec.tv_sec as i64
+}
+
+#[cfg(not(target_os = "macos"))]
+fn mtime(info: &sys::stat) -> i64 {
+    info.st_mtim.tv_sec as i64
+}
+
 fn check(ret: c_int) -> Result<()> {
     if ret == 0 { Ok(()) } else { Err(Error::FAIL) }
 }
@@ -186,6 +196,7 @@ impl Drop for File {
 pub struct Metadata {
     len: u64,
     dir: bool,
+    modified: i64,
 }
 
 impl Metadata {
@@ -200,13 +211,18 @@ impl Metadata {
     pub fn is_file(&self) -> bool {
         !self.dir
     }
+
+    /// Seconds since 1970.
+    pub fn modified(&self) -> i64 {
+        self.modified
+    }
 }
 
 pub fn metadata(path: &CStr) -> Result<Metadata> {
     let mut info = MaybeUninit::<sys::stat>::uninit();
     check(unsafe { sys::stat(path.as_ptr(), info.as_mut_ptr()) })?;
     let info = unsafe { info.assume_init() };
-    Ok(Metadata { len: info.st_size as u64, dir: u32::from(info.st_mode) & S_IFMT == S_IFDIR })
+    Ok(Metadata { len: info.st_size as u64, dir: u32::from(info.st_mode) & S_IFMT == S_IFDIR, modified: mtime(&info) })
 }
 
 pub fn remove_file(path: &CStr) -> Result<()> {
@@ -331,6 +347,8 @@ mod tests {
         f.write_all(b"new").unwrap();
         drop(f);
         assert_eq!(metadata(&name).unwrap().len(), 3);
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+        assert!((metadata(&name).unwrap().modified() - now).abs() < 60);
 
         rename(&name, &moved_name).unwrap();
         assert!(metadata(&name).is_err());

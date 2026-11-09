@@ -201,6 +201,26 @@ impl Inflate {
     /// Reads the zlib header of a stream. Calling it again starts the next
     /// stream.
     pub fn start(&mut self, src: &mut dyn Source) -> Result<()> {
+        self.reset();
+        let mut input = Input::new(src, 0);
+        let (Some(cmf), Some(flg)) = (input.byte()?, input.byte()?) else {
+            return Err(Error::Truncated);
+        };
+        let (cmf, flg) = (u32::from(cmf), u32::from(flg));
+        if cmf & 0x0F != 8 || ((cmf << 8) | flg) % 31 != 0 || flg & 0x20 != 0 {
+            return Err(Error::Corrupt);
+        }
+        self.started = true;
+        Ok(())
+    }
+
+    /// Starts a bare DEFLATE stream, one without the zlib header.
+    pub fn start_raw(&mut self) {
+        self.reset();
+        self.started = true;
+    }
+
+    fn reset(&mut self) {
         self.bitbuf = 0;
         self.bitcnt = 0;
         self.wpos = 0;
@@ -214,17 +234,6 @@ impl Inflate {
         self.stored = false;
         self.ended = false;
         self.failed = None;
-
-        let mut input = Input::new(src, 0);
-        let (Some(cmf), Some(flg)) = (input.byte()?, input.byte()?) else {
-            return Err(Error::Truncated);
-        };
-        let (cmf, flg) = (u32::from(cmf), u32::from(flg));
-        if cmf & 0x0F != 8 || ((cmf << 8) | flg) % 31 != 0 || flg & 0x20 != 0 {
-            return Err(Error::Corrupt);
-        }
-        self.started = true;
-        Ok(())
     }
 
     /// Fills `out`; fewer bytes than asked means the stream ended. `window` is

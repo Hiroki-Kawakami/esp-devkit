@@ -107,6 +107,18 @@ fn inflate_reads_from_a_slice_and_restarts() {
 }
 
 #[test]
+fn inflate_reads_a_bare_stream() {
+    let data = fixture("zlib_runs.bin");
+    let mut z = zeroed::<Inflate>();
+    let mut window = zeroed::<Window>();
+    let mut src = &data[2..];
+    z.start_raw();
+    let mut out = vec![0; 6000];
+    assert_eq!(z.read(&mut src, &mut window, &mut out), Ok(5000));
+    assert_eq!(&out[..5000], runs(5000));
+}
+
+#[test]
 fn inflate_rejects_a_bad_header() {
     let mut bad = fixture("zlib_runs.bin");
     bad[1] ^= 1;

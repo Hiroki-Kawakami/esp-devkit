@@ -566,8 +566,9 @@ fs::rename(c"/sdcard/a.tmp", c"/sdcard/a.bin")?;
   it. `read` and `write` may move less than asked; `read` returning 0 is the
   end of the file. `sync` writes buffered data through. Closed on drop.
 - `metadata`, `create_dir`, `remove_file`, `remove_dir` and `rename` complete
-  the set; `read_dir` skips `.` and `..`. Failures are `FAIL`, without the
-  reason.
+  the set; `Metadata` holds the size, whether it is a directory and the
+  modification time in seconds since 1970. `read_dir` skips `.` and `..`.
+  Failures are `FAIL`, without the reason.
 
 `idf::heap::Caps` is the `MALLOC_CAP_*` bitflags and is itself a
 `core::alloc::Allocator` over `heap_caps_*`:
