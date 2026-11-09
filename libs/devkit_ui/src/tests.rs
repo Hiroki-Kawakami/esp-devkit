@@ -4450,6 +4450,21 @@ fn the_scrim_keeps_touches_from_below_and_sends_what_the_screen_asks() {
 }
 
 #[test]
+fn a_tap_on_what_the_overlay_screen_draws_is_not_a_scrim_tap() {
+    let (mut tree, taps) = card_tree(theme());
+    tap(&mut tree, "open");
+    settle(&mut tree);
+    let card = rect_of(&tree, "card");
+    tap_at(&mut tree, (card.x + card.w / 2, card.y + card.h / 2));
+    settle(&mut tree);
+    assert!(tree.find(id!("card")).is_some(), "the card's own background");
+    tap_at(&mut tree, (10, 10));
+    settle(&mut tree);
+    assert!(tree.find(id!("card")).is_none(), "the scrim");
+    assert_eq!(taps.load(Relaxed), 0);
+}
+
+#[test]
 fn a_push_on_the_overlay_replaces_what_shows_at_once() {
     let (mut tree, _) = card_tree(theme());
     tap(&mut tree, "open");

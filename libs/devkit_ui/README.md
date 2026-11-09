@@ -255,6 +255,7 @@ app.run();
 - `Overlay` holds one screen over a scrim, `widgets.overlay.scrim`. The scrim
   fades with the first node in the screen that has a presence, and keeps
   touches from what is below; `Screen::scrim_tap` says what a tap on it sends.
+  A tap on what the screen draws, a panel's background included, is not one.
   A push replaces what shows at once, and a pop empties the overlay once the
   screen's `.disappear` ends. A scrim with alpha 0 draws and damages nothing,
   for a panel that should not repaint.

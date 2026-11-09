@@ -2181,7 +2181,7 @@ impl Tree {
             }
         }
         if found.is_none() && self.covers(id) {
-            found = Some(Hit { tap: id, ..NO_HIT });
+            found = Some(if self.covered.get() { NO_HIT } else { Hit { tap: id, ..NO_HIT } });
         }
         if inside && found.is_none() && (self.paints(id) || matches!(node.content, NodeContent::Text(_) | NodeContent::Image { .. } | NodeContent::Canvas(_) | NodeContent::Progress(_))) {
             self.covered.set(true);
