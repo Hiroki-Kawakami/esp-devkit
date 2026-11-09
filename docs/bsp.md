@@ -65,11 +65,15 @@ points as if the controller had reported them, without waking `wait_interrupt`.
 
 ## RTC
 
-`board.rtc` is a battery-backed clock in local wall-clock time, shared the same
-way; `None` on a board without one.
+`board.rtc` is a battery-backed clock holding UTC, shared the same way; `None`
+on a board without one.
 
+- `init` sets the system time from the clock while it is valid, and leaves it
+  unset otherwise. Apps read the system time (`idf::time::unix_time`).
+- `rtc::sync(seconds)` sets the system time, and the clock when the board has
+  one, to seconds since 1970 UTC.
 - `now` and `set` take a `DateTime`; the weekday comes from the date, and
-  `seconds` / `from_seconds` convert to seconds since 1970 on the same clock.
+  `seconds` / `from_seconds` convert to seconds since 1970.
   `set` refuses a date that does not exist or that the chip cannot hold.
 - `is_valid` is `false` once the clock lost power, until the next `set`.
 - `start_timer(period)` raises the chip's interrupt and expiry flag every

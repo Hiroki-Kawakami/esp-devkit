@@ -20,8 +20,8 @@ pub const ENV_PSRAM_SIZE: &CStr = c"SIM_PSRAM_SIZE";
 /// with 0 or 1 for the flags.
 pub const ENV_POWER: &CStr = c"SIM_POWER";
 
-/// The clock the firmware starts with, as `<seconds> <valid>`: local wall-clock
-/// seconds since 1970 and 0 or 1.
+/// The clock the firmware starts with, as `<seconds> <valid>`: seconds since
+/// 1970 UTC and 0 or 1.
 pub const ENV_RTC: &CStr = c"SIM_RTC";
 
 pub fn parse_rtc(value: &str) -> Option<(i64, bool)> {
@@ -95,8 +95,7 @@ pub enum Event {
     Imu { accel: [f32; 3], gyro: [f32; 3] },
     /// Host to firmware: battery level 0..=100, external power, battery in.
     Power { level: u8, external: bool, battery: bool },
-    /// Firmware to host: the clock was set, to local wall-clock seconds since
-    /// 1970.
+    /// Firmware to host: the clock was set, to seconds since 1970 UTC.
     Rtc { seconds: i64, valid: bool },
 }
 

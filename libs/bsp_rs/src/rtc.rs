@@ -4,14 +4,17 @@
  */
 
 use alloc::boxed::Box;
+use core::ffi::CStr;
 use core::time::Duration;
 
+use idf::log::error;
 use idf::sync::{Mutex, OnceLock};
 use idf::{Error, Result};
 
+const TAG: &CStr = c"rtc";
 const SECONDS_PER_DAY: i64 = 86_400;
 
-/// Local wall-clock time, without a time zone.
+/// A calendar date and time, without a time zone.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct DateTime {
     pub year: u16,
@@ -125,7 +128,7 @@ pub(crate) trait Driver: Send + 'static {
     }
 }
 
-/// A battery-backed clock, shared by every task.
+/// A battery-backed clock holding UTC, shared by every task.
 pub struct Rtc(Mutex<Box<dyn Driver>>);
 
 impl Rtc {
@@ -169,8 +172,29 @@ impl Rtc {
 
 static RTC: OnceLock<Rtc> = OnceLock::new();
 
+/// Also sets the system time from the clock while it is valid.
 pub(crate) fn start(driver: impl Driver) -> Result<&'static Rtc> {
-    Ok(RTC.get_or_init(|| Rtc(Mutex::new(Box::new(driver) as Box<dyn Driver>))))
+    let rtc = RTC.get_or_init(|| Rtc(Mutex::new(Box::new(driver) as Box<dyn Driver>)));
+    match rtc.is_valid().and_then(|valid| Ok(valid.then(|| rtc.now()).transpose()?)) {
+        Ok(Some(now)) => {
+            if let Err(err) = idf::time::set_unix_time(now.seconds()) {
+                error!(TAG, "set system time: {err}");
+            }
+        }
+        Ok(None) => {}
+        Err(err) => error!(TAG, "read: {err}"),
+    }
+    Ok(rtc)
+}
+
+/// Sets the system time, and the board's clock when it has one, to `seconds`
+/// since 1970 UTC.
+pub fn sync(seconds: i64) -> Result<()> {
+    idf::time::set_unix_time(seconds)?;
+    match RTC.get() {
+        Some(rtc) => rtc.set(&DateTime::from_seconds(seconds)),
+        None => Ok(()),
+    }
 }
 
 #[cfg(test)]

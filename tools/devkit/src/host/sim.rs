@@ -108,17 +108,14 @@ pub struct Device {
     usb_session: Mutex<Option<OwnedFd>>,
 }
 
-// The simulated RTC as an offset from the host's local wall clock.
+// The simulated RTC as an offset from the host clock.
 struct Clock {
     offset: i64,
     valid: bool,
 }
 
-fn local_seconds() -> i64 {
-    let now = unsafe { libc::time(std::ptr::null_mut()) };
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    unsafe { libc::localtime_r(&now, &mut tm) };
-    now + tm.tm_gmtoff
+fn host_seconds() -> i64 {
+    unsafe { libc::time(std::ptr::null_mut()) }
 }
 
 impl Device {
@@ -204,7 +201,7 @@ impl Device {
             .env(ENV_PSRAM_SIZE.to_str().unwrap(), self.psram.len.to_string())
             .env(ENV_RTC.to_str().unwrap(), {
                 let clock = self.clock.lock().unwrap();
-                format!("{} {}", local_seconds() + clock.offset, u8::from(clock.valid))
+                format!("{} {}", host_seconds() + clock.offset, u8::from(clock.valid))
             })
             .env(ENV_POWER.to_str().unwrap(), {
                 let Supply { level, external, battery } = self.supply();
@@ -334,7 +331,7 @@ impl Device {
                     }
                 }
                 Some(Event::Rtc { seconds, valid }) => {
-                    *self.clock.lock().unwrap() = Clock { offset: seconds - local_seconds(), valid };
+                    *self.clock.lock().unwrap() = Clock { offset: seconds - host_seconds(), valid };
                 }
                 Some(Event::AudioMute { mute }) => {
                     self.muted.store(mute, Ordering::Relaxed);

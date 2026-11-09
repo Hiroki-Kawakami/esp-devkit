@@ -509,7 +509,11 @@ info!(TAG, "fps={fps:.1}");
 - In the simulator, idf_compat prints up to Info, without colors.
 
 `idf::time::Instant` is `std::time::Instant` over `esp_timer_get_time()`, with
-microsecond resolution, plus `since_boot()`. `idf::system::restart()` calls
+microsecond resolution, plus `since_boot()`. `idf::time::unix_time()` is the
+system time in seconds since 1970 UTC, counting from boot until
+`set_unix_time`; `set_utc_offset(minutes)` sets the zone local times and FAT
+file times use. In the simulator neither touches the host's clock or zone.
+`idf::system::restart()` calls
 `esp_restart()`; in the simulator it exits with status 0.
 `idf::system::CORE_COUNT` is `CONFIG_FREERTOS_NUMBER_OF_CORES` and `core_id()`
 the core running the caller, which an unpinned task may leave right after the

@@ -30,6 +30,6 @@ endif()
 devkit_rust_crate(ROOT "src/lib.rs" TESTS
     BINDGEN_HEADERS "esp_app_desc.h" "esp_err.h" "esp_heap_caps.h" "multi_heap.h" "esp_system.h" "esp_random.h" "esp_mac.h" "esp_timer.h"
                     "freertos/FreeRTOS.h" "freertos/portmacro.h" "freertos/task.h" "freertos/queue.h"
-                    "freertos/semphr.h" "freertos/idf_additions.h" "unistd.h" "sys/stat.h" "dirent.h"
+                    "freertos/semphr.h" "freertos/idf_additions.h" "unistd.h" "sys/stat.h" "sys/time.h" "dirent.h"
                     "nvs.h" "nvs_flash.h" "esp_partition.h" "freertos/timers.h" "executor_shim.h"
                     ${log_headers} ${target_headers} ${driver_headers})

@@ -15,7 +15,7 @@ replaced by an emulator without changing the host.
 - The window's Rotation turns the simulated device clockwise: the IMU reports
   that resting pose, so orientation tracking follows it. `--headless` stays
   upright; the `imu` script command overrides it.
-- The RTC runs on the host's local clock with the offset the firmware last set,
+- The RTC runs on the host clock with the offset the firmware last set,
   kept across restarts. `SIMULATOR_RTC_INVALID=1` in the host's environment
   starts it invalid. It has no timer.
 - Power sets the battery level, external power and whether a battery is in.
@@ -39,7 +39,7 @@ The host starts the firmware with:
 | `SIM_HOST_FD` | inherited Unix stream socket for events |
 | `SIM_PSRAM_PATH` | file to map as the PSRAM region |
 | `SIM_PSRAM_SIZE` | its size in bytes |
-| `SIM_RTC` | the clock to start with: local wall-clock seconds since 1970, then 1 or 0 for valid |
+| `SIM_RTC` | the clock to start with: seconds since 1970 UTC, then 1 or 0 for valid |
 | `SIM_POWER` | the power state to start with: `<level> <external> <battery>`, flags as 0 or 1 |
 | `SIM_NET_FD` | inherited Unix datagram socket, one Ethernet frame per datagram |
 | `SIM_USB_FD` | inherited Unix datagram socket, one plugged-in USB device per datagram |
@@ -113,7 +113,7 @@ compiled into the firmware and `tools/devkit`. Byte 0 is the tag, fields follow 
 | `AudioClose` | firmware → host | stream id |
 | `AudioMute` | firmware → host | play as silence, keeping time; outlives streams |
 | `AudioPlayed` | host → firmware | stream id, bytes played so far; the firmware's writes pace on it |
-| `Rtc` | firmware → host | the clock was set: local wall-clock seconds since 1970, valid |
+| `Rtc` | firmware → host | the clock was set: seconds since 1970 UTC, valid |
 | `Power` | host → firmware | battery level 0..=100, external power, battery in; sent at `Hello` and on every change |
 | `Imu` | host → firmware | accel and gyro in panel axes; sent at `Hello` and when the window's rotation changes |
 
