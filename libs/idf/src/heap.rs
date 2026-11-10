@@ -10,6 +10,7 @@ use core::ptr::{self, NonNull};
 
 use devkit::Zeroable;
 
+use crate::sync::Mutex;
 use crate::{Error, sys};
 
 // HEAP_HAS_EXEC_HEAP has no prompt and is absent from sdkconfig, and so unknown
@@ -49,6 +50,7 @@ pub use caps::Caps;
 const MALLOC_ALIGN: usize = 4;
 #[cfg(not(target_os = "none"))]
 const MALLOC_ALIGN: usize = 16;
+const REGION_ALIGN: usize = 64;
 
 fn dangling(layout: Layout) -> NonNull<[u8]> {
     let p = unsafe { NonNull::new_unchecked(ptr::without_provenance_mut(layout.align())) };
@@ -137,6 +139,61 @@ pub fn try_vec<T>(capacity: usize, caps: Caps) -> crate::Result<Vec<T, Caps>> {
     Ok(v)
 }
 
+/// A heap of its own over one block of `Caps` memory, so what is kept there for
+/// long never splits the general heap. Allocate through `&Region`; every block
+/// must be freed before the region is dropped.
+pub struct Region {
+    start: NonNull<u8>,
+    heap: Mutex<Heap>,
+}
+
+struct Heap(sys::multi_heap_handle_t);
+
+unsafe impl Send for Heap {}
+unsafe impl Send for Region {}
+unsafe impl Sync for Region {}
+
+impl Region {
+    pub fn new(bytes: usize, caps: Caps) -> crate::Result<Self> {
+        let start = NonNull::new(unsafe { sys::heap_caps_aligned_alloc(REGION_ALIGN, bytes, caps.bits()) }.cast::<u8>()).ok_or(Error::NO_MEM)?;
+        let heap = unsafe { sys::multi_heap_register(start.as_ptr().cast(), bytes) };
+        if heap.is_null() {
+            unsafe { sys::heap_caps_free(start.as_ptr().cast()) };
+            return Err(Error::INVALID_SIZE);
+        }
+        Ok(Self { start, heap: Mutex::new(Heap(heap)) })
+    }
+
+    pub fn info(&self) -> Info {
+        let mut i: sys::multi_heap_info_t = unsafe { core::mem::zeroed() };
+        unsafe { sys::multi_heap_get_info(self.heap.lock().0, &mut i) };
+        Info::from(i)
+    }
+}
+
+impl Drop for Region {
+    fn drop(&mut self) {
+        unsafe { sys::heap_caps_free(self.start.as_ptr().cast()) }
+    }
+}
+
+// multi_heap takes no lock of its own on a heap it did not make.
+unsafe impl Allocator for &Region {
+    fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+        if layout.size() == 0 {
+            return Ok(dangling(layout));
+        }
+        let p = unsafe { sys::multi_heap_aligned_alloc(self.heap.lock().0, layout.size(), layout.align()) };
+        block(p, layout.size())
+    }
+
+    unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
+        if layout.size() != 0 {
+            unsafe { sys::multi_heap_free(self.heap.lock().0, ptr.as_ptr().cast()) }
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub struct Info {
     pub total_free_bytes: usize,
@@ -167,20 +224,26 @@ pub fn total_size(caps: Caps) -> usize {
 pub fn info(caps: Caps) -> Info {
     let mut i: sys::multi_heap_info_t = unsafe { core::mem::zeroed() };
     unsafe { sys::heap_caps_get_info(&mut i, caps.bits()) };
-    Info {
-        total_free_bytes: i.total_free_bytes,
-        total_allocated_bytes: i.total_allocated_bytes,
-        largest_free_block: i.largest_free_block,
-        minimum_free_bytes: i.minimum_free_bytes,
-        allocated_blocks: i.allocated_blocks,
-        free_blocks: i.free_blocks,
-        total_blocks: i.total_blocks,
+    Info::from(i)
+}
+
+impl From<sys::multi_heap_info_t> for Info {
+    fn from(i: sys::multi_heap_info_t) -> Self {
+        Self {
+            total_free_bytes: i.total_free_bytes,
+            total_allocated_bytes: i.total_allocated_bytes,
+            largest_free_block: i.largest_free_block,
+            minimum_free_bytes: i.minimum_free_bytes,
+            allocated_blocks: i.allocated_blocks,
+            free_blocks: i.free_blocks,
+            total_blocks: i.total_blocks,
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Caps, free_size, info, largest_free_block, try_vec, zeroed_box, zeroed_slice};
+    use super::{Caps, Region, free_size, info, largest_free_block, try_vec, zeroed_box, zeroed_slice};
     use core::alloc::{Allocator, Layout};
 
     #[repr(C, align(64))]
@@ -257,6 +320,23 @@ mod tests {
         assert_eq!(Caps::SPIRAM.bits(), 1 << 10);
         assert_eq!(Caps::INTERNAL.bits(), 1 << 11);
         assert_eq!(Caps::SPIRAM_NO_ENC.bits(), 1 << 21);
+    }
+
+    #[test]
+    fn region_allocates_inside_and_runs_out() {
+        let region = Region::new(64 * 1024, Caps::SPIRAM).unwrap();
+        let first: Vec<u8, &Region> = Vec::with_capacity_in(40 * 1024, &region);
+        let line = Box::new_in(Line([1; 64]), &region);
+        assert_eq!(&*line as *const Line as usize % 64, 0);
+        assert!(Vec::<u8, &Region>::new_in(&region).try_reserve_exact(40 * 1024).is_err());
+        drop(first);
+        let mut again: Vec<u8, &Region> = Vec::new_in(&region);
+        again.try_reserve_exact(40 * 1024).unwrap();
+        again.extend((0..40 * 1024).map(|i| i as u8));
+        assert_eq!(again[1000], 1000u32 as u8);
+        assert_eq!(region.info().allocated_blocks, 2);
+        drop((again, line));
+        assert_eq!(region.info().allocated_blocks, 0);
     }
 
     #[test]

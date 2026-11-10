@@ -69,6 +69,11 @@ impl FontChain {
         self.ascent + self.descent
     }
 
+    /// From the top of the line box to the baseline.
+    pub const fn ascent(&self) -> i16 {
+        self.ascent
+    }
+
     pub fn has(&self, c: char) -> bool {
         self.resolve(c as u32).is_some()
     }
