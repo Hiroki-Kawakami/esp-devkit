@@ -33,18 +33,20 @@ while decoder.next_row(&mut row)? {
 }
 ```
 
-**`Stream::seek` is optional**, because three formats store their rows out of
+**`Stream::seek` is optional**, because two formats store their pixels out of
 order: a TIFF's directory and strips may be anywhere in the file (libtiff puts the
-directory last), an ordinary BMP is stored bottom-up, and a lossy WebP keeps the
-modes of every macroblock in one partition and their coefficients in up to eight
-others, with its ALPH plane in a chunk of its own before them. Reading the file
-into memory instead would cost a whole encoded picture of PSRAM; seeking costs one
-window refill per jump. A bottom-up BMP is read back in chunks of rows from the
-end, so the reader is not refilled for every row; a WebP reads each partition
-through a window of its own. On a stream whose `can_seek` is `false`, a TIFF, a
-bottom-up BMP and a lossy WebP return `Error::Unsupported`; everything else still
+directory last), and a lossy WebP keeps the modes of every macroblock in one
+partition and their coefficients in up to eight others, with its ALPH plane in a
+chunk of its own before them. Reading the file into memory instead would cost a
+whole encoded picture of PSRAM; seeking costs one window refill per jump. A WebP
+reads each partition through a window of its own. On a stream whose `can_seek` is
+`false`, a TIFF and a lossy WebP return `Error::Unsupported`; everything else still
 works. A source that fails reads as the end of the stream, so the decoder reports
 `Truncated`.
+
+**An ordinary BMP comes out bottom-up**, in the order it is stored, so it reads
+straight through without a seek. `Decoder::bottom_up` says so, and
+`resize_decoder` places such rows upright; a caller of `next_row` turns them itself.
 
 **WebP output matches libwebp byte for byte**, including its fancy chroma upsampling
 and its YUV to RGB arithmetic, which is what lets the host tests hold it to Pillow's

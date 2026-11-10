@@ -228,11 +228,18 @@ fn decode_c(format: Format, data: &[u8], tw: u16, th: u16, row: &mut [u8], keep:
 fn decode_rust(format: Format, data: &[u8], options: &DecodeOptions, row: &mut [u8], keep: bool) -> Result<u32, String> {
     let mut d = Decoder::open(format, SliceStream::new(data), options).map_err(|e| format!("open {e}"))?;
     let bytes = d.info().row_bytes();
+    let bottom_up = d.bottom_up();
     let mut hash = FNV_SEED;
+    let mut rows = Vec::new();
     while d.next_row(row).map_err(|e| format!("decode {e}"))? {
-        if keep {
+        if keep && bottom_up {
+            rows.extend_from_slice(&row[..bytes]);
+        } else if keep {
             hash = fnv(hash, &row[..bytes]);
         }
+    }
+    for stored in rows.rchunks_exact(bytes.max(1)) {
+        hash = fnv(hash, stored);
     }
     Ok(hash)
 }

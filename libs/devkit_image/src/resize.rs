@@ -51,6 +51,20 @@ impl Orientation {
     pub const fn swaps_axes(self) -> bool {
         matches!(self, Self::Transpose | Self::Rot90 | Self::Transverse | Self::Rot270)
     }
+
+    /// `MirrorY` followed by `self`.
+    pub const fn after_mirror_y(self) -> Self {
+        match self {
+            Self::None => Self::MirrorY,
+            Self::MirrorX => Self::Rot180,
+            Self::Rot180 => Self::MirrorX,
+            Self::MirrorY => Self::None,
+            Self::Transpose => Self::Rot90,
+            Self::Rot90 => Self::Transpose,
+            Self::Transverse => Self::Rot270,
+            Self::Rot270 => Self::Transverse,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Default, Debug)]
@@ -1121,6 +1135,7 @@ pub fn resize_decoder_into(decoder: &mut Decoder, dst: &mut [u8], dst_stride: us
         return resize_planes_into(decoder, layout, dst, dst_stride, options, orientation);
     }
     let info = decoder.info();
+    let orientation = if decoder.bottom_up() { orientation.after_mirror_y() } else { orientation };
     let mut r = OrientedResizer::new(info, options, orientation)?;
     let out = r.info();
     let stride = if dst_stride == 0 { out.row_bytes() } else { dst_stride };

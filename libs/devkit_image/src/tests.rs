@@ -212,6 +212,9 @@ fn jpeg_decode_time_downscale() {
     let mut d = JpegDecoder::open(SliceStream::new(&bytes), &o).unwrap();
     let w = d.info().width;
     assert!((16..64).contains(&w));
+    let full = JpegDecoder::open(SliceStream::new(&bytes), &opts()).unwrap().info();
+    assert_eq!(d.source_size(), (full.width, full.height));
+    assert!(full.width > w);
     let mut row = [0; 64];
     assert!(d.next_row(&mut row).unwrap());
     assert!(near(row[0], 100, 6));
@@ -391,7 +394,9 @@ fn like_pillow(format: Format, name: &str, pixel: ImageFormat, tol: i32) {
     assert_eq!(d.info(), ImageInfo { width: w as u16, height: h as u16, format: pixel }, "{name}");
     let stride = pixel.row_bytes(w);
     let mut row = vec![0; stride.max(1)];
-    for y in 0..h {
+    let bottom_up = d.bottom_up();
+    for n in 0..h {
+        let y = if bottom_up { h - 1 - n } else { n };
         assert_eq!(d.next_row(&mut row), Ok(true), "{name} row {y}");
         for i in 0..stride {
             assert!(near(row[i], i32::from(pixels[y * stride + i]), tol), "{name} row {y} byte {i}");
@@ -542,7 +547,8 @@ fn wide_bmp(w: usize, h: usize, top_down: bool) -> Vec<u8> {
 
 fn wide_bmp_rows(d: &mut BmpDecoder, w: usize, h: usize) {
     let mut row = vec![0; w * 3];
-    for y in 0..h {
+    for n in 0..h {
+        let y = if d.bottom_up() { h - 1 - n } else { n };
         assert_eq!(d.next_row(&mut row), Ok(true));
         for x in 0..w {
             assert_eq!(row[3 * x], (y * 9) as u8);
@@ -564,19 +570,38 @@ fn bmp_chunks() {
 
 #[test]
 fn bmp_without_seek() {
-    let b = wide_bmp(3001, 13, true);
-    let mut d = BmpDecoder::open(OneByte(&b), &opts()).unwrap();
-    wide_bmp_rows(&mut d, 3001, 13);
-    let b = wide_bmp(3001, 13, false);
-    assert!(matches!(BmpDecoder::open(OneByte(&b), &opts()), Err(Error::Unsupported)));
+    for top_down in [false, true] {
+        let b = wide_bmp(3001, 13, top_down);
+        let mut d = BmpDecoder::open(OneByte(&b), &opts()).unwrap();
+        assert_eq!(d.bottom_up(), !top_down);
+        wide_bmp_rows(&mut d, 3001, 13);
+    }
+}
+
+#[test]
+fn bmp_bottom_up_resizes_upright() {
+    let (w, h) = (37, 23);
+    let top_down = wide_bmp(w, h, true);
+    let bottom_up = wide_bmp(w, h, false);
+    for orientation in [Orientation::None, Orientation::MirrorX, Orientation::Rot180, Orientation::MirrorY, Orientation::Transpose, Orientation::Rot90, Orientation::Transverse, Orientation::Rot270] {
+        let mut want = Decoder::Bmp(BmpDecoder::open(SliceStream::new(&top_down), &opts()).unwrap());
+        let mut got = Decoder::Bmp(BmpDecoder::open(OneByte(&bottom_up), &opts()).unwrap());
+        assert!(got.bottom_up());
+        let whole = ResizeOptions { fit: Fit::Contain, ..Default::default() };
+        let want = resize_decoder(&mut want, &whole, orientation).unwrap();
+        let got = resize_decoder(&mut got, &whole, orientation).unwrap();
+        assert_eq!(got.pixels(), want.pixels(), "{orientation:?}");
+    }
 }
 
 #[test]
 fn bmp_truncated() {
     let bytes = fixture("kBmp24");
-    let (w, _) = fixture_size("kBmp24");
+    let (w, h) = fixture_size("kBmp24");
     let mut d = BmpDecoder::open(SliceStream::new(&bytes[..bytes.len() - 20]), &opts()).unwrap();
     let mut row = vec![0; w * 3];
+    let rows = (0..h).take_while(|_| d.next_row(&mut row) == Ok(true)).count();
+    assert!(rows < h);
     assert_eq!(d.next_row(&mut row), Err(Error::Truncated));
 }
 

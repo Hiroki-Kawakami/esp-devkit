@@ -532,6 +532,11 @@ impl<'a> JpegDecoder<'a> {
         ImageInfo { width: self.width, height: self.height, format: self.format }
     }
 
+    /// The frame's size before the decode-time downscale.
+    pub fn source_size(&self) -> (u16, u16) {
+        (self.w as u16, self.h as u16)
+    }
+
     fn parse_sof(&mut self, progressive: bool) -> Result<()> {
         self.progressive = progressive;
         let r = &mut self.r;

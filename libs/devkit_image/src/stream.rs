@@ -175,10 +175,6 @@ impl<'a> Reader<'a> {
         Ok(Self { src, buf: buffer(WINDOW_BYTES, None)?, len: 0, pos: 0, end: 0 })
     }
 
-    pub(crate) fn can_seek(&self) -> bool {
-        self.src.can_seek()
-    }
-
     // A failing source reads as the end of the stream: the decoders then report
     // the picture as cut short.
     #[cold]

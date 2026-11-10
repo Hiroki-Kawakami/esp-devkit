@@ -149,8 +149,29 @@ impl<'a> Decoder<'a> {
         each!(self, d => d.info())
     }
 
+    /// The picture's size in the file, which `info` is a downscale of when a
+    /// target was asked for.
+    pub fn source_size(&self) -> (u16, u16) {
+        match self {
+            Self::Jpeg(d) => d.source_size(),
+            _ => {
+                let info = self.info();
+                (info.width, info.height)
+            }
+        }
+    }
+
+    /// Whether `next_row` starts from the bottom row. `resize_decoder` turns
+    /// such a picture upright.
+    pub fn bottom_up(&self) -> bool {
+        match self {
+            Self::Bmp(d) => d.bottom_up(),
+            _ => false,
+        }
+    }
+
     /// Writes one row, `info().row_bytes()` long, and returns `true`; `false` at
-    /// the end of the image.
+    /// the end of the image, or past its top when `bottom_up`.
     pub fn next_row(&mut self, dst: &mut [u8]) -> Result<bool> {
         each!(self, d => d.next_row(dst))
     }

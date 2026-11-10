@@ -54,8 +54,8 @@ fn le32(p: &[u8]) -> u32 {
 }
 
 /// BMP: the core, Windows and V4/V5 headers, 1 to 32 bpp, RLE and bitfields.
-/// Rows are stored bottom-up in an ordinary BMP, and read back in chunks from the
-/// end, which takes a stream that can seek.
+/// Rows come out in the order they are stored, bottom-up in an ordinary BMP:
+/// see `bottom_up`.
 pub struct BmpDecoder<'a> {
     r: Reader<'a>,
     caps: Option<Caps>,
@@ -203,9 +203,6 @@ impl<'a> BmpDecoder<'a> {
         if compression == BI_RLE8 || compression == BI_RLE4 {
             return Ok(d);
         }
-        if bottom_up && !d.r.can_seek() {
-            return Err(Error::Unsupported);
-        }
         d.chunk_rows = (CHUNK_BYTES / stride).clamp(1, h as usize);
         d.chunk = Some(buffer(d.chunk_rows * stride, options.caps)?);
         Ok(d)
@@ -213,6 +210,10 @@ impl<'a> BmpDecoder<'a> {
 
     pub fn info(&self) -> ImageInfo {
         ImageInfo { width: self.width, height: self.height, format: self.format }
+    }
+
+    pub fn bottom_up(&self) -> bool {
+        self.bottom_up
     }
 
     fn put_index<S: Store>(&self, dst: &mut [u8], idx: usize) {
@@ -255,16 +256,8 @@ impl<'a> BmpDecoder<'a> {
         }
     }
 
-    fn load_chunk(&mut self, stored: usize) -> bool {
-        let h = usize::from(self.height);
-        let mut first = stored;
-        let mut count = self.chunk_rows;
-        if self.bottom_up {
-            first = (stored + 1).saturating_sub(count);
-            count = stored - first + 1;
-        } else if first + count > h {
-            count = h - first;
-        }
+    fn load_chunk(&mut self, first: usize) -> bool {
+        let count = self.chunk_rows.min(usize::from(self.height) - first);
         let at = self.data_offset + first * self.stride;
         if !self.r.seek(at) {
             return false;
@@ -353,7 +346,7 @@ impl<'a> BmpDecoder<'a> {
         if self.row >= h {
             return Ok(false);
         }
-        let stored = if self.bottom_up { h - 1 - self.row } else { self.row };
+        let stored = self.row;
 
         if self.compression == BI_RLE8 || self.compression == BI_RLE4 {
             if self.indices.is_none() {
