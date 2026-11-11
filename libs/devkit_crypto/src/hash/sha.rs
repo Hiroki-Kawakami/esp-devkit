@@ -11,6 +11,10 @@ use crate::psa::{self, sys};
 // mbedTLS does not promise that an operation survives being moved.
 struct Op(Box<sys::psa_hash_operation_t>);
 
+// The ESP SHA driver's context is a heap block the operation owns; the
+// accelerator is locked per call, so the operation is not tied to a task.
+unsafe impl Send for Op {}
+
 impl Op {
     fn new(alg: u32) -> Self {
         psa::init();

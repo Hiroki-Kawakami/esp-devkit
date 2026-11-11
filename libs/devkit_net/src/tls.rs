@@ -4,12 +4,16 @@
  */
 
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::time::Duration;
 
 use devkit_crypto::tls::{ClientConfig, Connection};
+use idf::sync::Mutex;
 
 use crate::tcp_socket::{blocking, blocking_timeout};
-use crate::{Error, Result, Shutdown, TcpStream};
+use crate::{Error, Result, Shutdown, TcpReader, TcpStream, TcpWriter};
+
+const STAGE: usize = 16 * 1024;
 
 /// A TLS 1.3 client connection over a [`TcpStream`].
 pub struct TlsStream {
@@ -101,6 +105,14 @@ impl TlsStream {
         self.tcp.shutdown(Shutdown::Write)
     }
 
+    /// The halves may be used from different tasks. Dropping the writer
+    /// sends FIN without close_notify; the connection closes when both are gone.
+    pub fn split(self) -> (TlsReader, TlsWriter) {
+        let (reader, writer) = self.tcp.split();
+        let shared = Arc::new(Shared { conn: Mutex::new(self.conn), tx: Mutex::new(Tx { tcp: writer, buf: Vec::new() }) });
+        (TlsReader { shared: shared.clone(), tcp: reader, stage: Vec::new(), pos: 0 }, TlsWriter { shared })
+    }
+
     async fn flush(&mut self) -> Result<()> {
         while !self.conn.pending_tx().is_empty() {
             let n = self.tcp.write_async(self.conn.pending_tx()).await?;
@@ -116,5 +128,125 @@ impl TlsStream {
         self.flush().await?;
         processed.map_err(Error::Tls)?;
         Ok(n > 0)
+    }
+}
+
+struct Tx {
+    tcp: TcpWriter,
+    buf: Vec<u8>,
+}
+
+struct Shared {
+    conn: Mutex<Connection>,
+    tx: Mutex<Tx>,
+}
+
+impl Shared {
+    /// Bytes leave `pending_tx` only under `tx`, so they go out in order.
+    async fn flush(&self) -> Result<()> {
+        let mut tx = self.tx.lock_async().await;
+        loop {
+            {
+                let mut conn = self.conn.lock();
+                let pending = conn.pending_tx();
+                if pending.is_empty() {
+                    return Ok(());
+                }
+                tx.buf.clear();
+                tx.buf.try_reserve(pending.len()).map_err(|_| Error::NoMemory)?;
+                tx.buf.extend_from_slice(pending);
+                let n = pending.len();
+                conn.consume_tx(n);
+            }
+            let Tx { tcp, buf } = &mut *tx;
+            tcp.write_all_async(buf).await?;
+        }
+    }
+
+    fn has_pending_tx(&self) -> bool {
+        !self.conn.lock().pending_tx().is_empty()
+    }
+}
+
+pub struct TlsReader {
+    shared: Arc<Shared>,
+    tcp: TcpReader,
+    stage: Vec<u8>,
+    pos: usize,
+}
+
+impl TlsReader {
+    pub fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
+        blocking(self.read_async(buf))
+    }
+
+    pub fn read_timeout(&mut self, buf: &mut [u8], timeout: Duration) -> Result<usize> {
+        blocking_timeout(timeout, self.read_async(buf))
+    }
+
+    pub async fn read_async(&mut self, buf: &mut [u8]) -> Result<usize> {
+        loop {
+            let (n, closed, stuck) = {
+                let mut conn = self.shared.conn.lock();
+                while self.pos < self.stage.len() {
+                    let fed = conn.receive(&self.stage[self.pos..]).map_err(Error::Tls)?;
+                    if fed == 0 {
+                        break;
+                    }
+                    self.pos += fed;
+                }
+                let n = conn.read(buf).map_err(Error::Tls)?;
+                (n, conn.peer_closed(), self.pos < self.stage.len())
+            };
+            if self.shared.has_pending_tx() {
+                self.shared.flush().await?;
+            }
+            if n > 0 || buf.is_empty() || closed {
+                return Ok(n);
+            }
+            if stuck {
+                return Err(Error::ConnectionAborted);
+            }
+            if self.stage.capacity() < STAGE {
+                self.stage.try_reserve_exact(STAGE).map_err(|_| Error::NoMemory)?;
+            }
+            self.stage.resize(STAGE, 0);
+            let got = self.tcp.read_async(&mut self.stage).await;
+            let got = got.inspect_err(|_| self.stage.clear())?;
+            self.stage.truncate(got);
+            self.pos = 0;
+            if got == 0 {
+                return Err(Error::ConnectionAborted);
+            }
+        }
+    }
+}
+
+pub struct TlsWriter {
+    shared: Arc<Shared>,
+}
+
+impl TlsWriter {
+    pub fn write_all(&mut self, buf: &[u8]) -> Result<()> {
+        blocking(self.write_all_async(buf))
+    }
+
+    pub async fn write_all_async(&mut self, buf: &[u8]) -> Result<()> {
+        for chunk in buf.chunks(16 * 1024) {
+            self.shared.conn.lock().write(chunk).map_err(Error::Tls)?;
+            self.shared.flush().await?;
+        }
+        Ok(())
+    }
+
+    /// Sends close_notify, then FIN.
+    pub fn shutdown(&mut self) -> Result<()> {
+        blocking(self.shutdown_async())
+    }
+
+    pub async fn shutdown_async(&mut self) -> Result<()> {
+        self.shared.conn.lock().close();
+        self.shared.flush().await?;
+        self.shared.tx.lock_async().await.tcp.shutdown()
     }
 }

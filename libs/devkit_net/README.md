@@ -28,7 +28,7 @@ stream.write_all(b"hello")?;
 | `wifi` | `Wifi` (start, stop, connect, disconnect, scan, RSSI, power save, state), the `WifiDriver` trait and `register_wifi` |
 | `wifi_manager` | saved networks, joining them by itself, the Wi-Fi on/off switch |
 | `udp_socket`, `tcp_socket` | `UdpSocket`, `TcpListener`, `TcpStream` and its split halves, with their builders |
-| `tls` | `TlsStream`: a `devkit_crypto` TLS 1.3 client connection over a `TcpStream` |
+| `tls` | `TlsStream`: a `devkit_crypto` TLS 1.3 client connection over a `TcpStream`, and its split halves |
 | `link` | the `Link` trait a network interface implements, `LinkRx` and `RxFrame` |
 | `stack` | the sans-IO `Stack` that does all protocol work |
 | `net` | the stack's task, the lock around the `Stack`, and the wakeups between them |
@@ -140,7 +140,9 @@ already in use, as STARTTLS does. `read` returns `Ok(0)` after the server's
 close_notify; a stream that ends without one fails with `ConnectionAborted`,
 since its data may be cut short. `shutdown` sends close_notify, then FIN. TLS
 failures come back as `Error::Tls`. `connection()` gives the ALPN protocol, the
-server's certificates and exported keying material.
+server's certificates and exported keying material. After the handshake a
+`TlsStream` splits into a `TlsReader` and a `TlsWriter` that may live on
+different tasks, as a `TcpStream` does.
 
 ```rust
 let config = Arc::new(ClientConfig::new(Verify::WebPki(TrustStore::default_bundle()?)));

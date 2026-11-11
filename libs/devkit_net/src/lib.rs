@@ -48,7 +48,7 @@ pub use net::{Config, Ipv4Mode};
 pub use stack::{IfaceId, IfaceStats, Ipv4Config, Stack};
 pub use tcp_socket::{Shutdown, TcpBuilder, TcpListener, TcpReader, TcpStream, TcpWriter};
 pub use time::Instant;
-pub use tls::TlsStream;
+pub use tls::{TlsReader, TlsStream, TlsWriter};
 pub use udp_socket::{UdpBuilder, UdpSocket};
 pub use wifi::{
     Auth, BoxFuture, ConnectError, DisconnectReason, PowerSave, ScanRecord, Security, StaConfig, Wifi, WifiDriver,
