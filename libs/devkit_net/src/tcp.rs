@@ -223,6 +223,8 @@ pub(crate) struct Tcb {
     /// From an ICMP error; reported if the connection times out.
     soft_error: Option<Error>,
     rx: Ring,
+    /// How much `rx` holds before a reader waiting for more is woken.
+    rx_wanted: usize,
     tx: Ring,
     assembler: Assembler,
 
@@ -292,6 +294,7 @@ impl Tcb {
             error: None,
             soft_error: None,
             rx: Ring::new(buffers.rx, buffers.caps),
+            rx_wanted: 1,
             tx: Ring::new(buffers.tx, buffers.caps),
             assembler: Assembler::default(),
             iss,
@@ -363,8 +366,9 @@ impl Tcb {
 
     /// What the application may be waiting on.
     #[cfg_attr(CONFIG_DEVKIT_NET_IRAM_OPT, unsafe(link_section = ".iram1.devkit_net"))]
-    fn readiness(&self) -> (State, usize, usize, bool, bool) {
-        (self.state, self.rx.len(), self.tx.free(), self.fin_received, self.error.is_some())
+    fn readiness(&self) -> (State, bool, bool, usize, bool, bool) {
+        let held = self.rx.len();
+        (self.state, held > 0, held >= self.rx_wanted, self.tx.free(), self.fin_received, self.error.is_some())
     }
 
     fn on_syn(&mut self, seg: &Segment) {
@@ -601,8 +605,13 @@ impl Stack {
         self.woken.retain(|w| *w != SocketId::Listener(id));
     }
 
-    pub(crate) fn tcp_readable(&self, id: usize) -> bool {
-        self.tcp.tcbs[id].as_ref().is_none_or(|tcb| tcb.rx.len() > 0 || tcb.fin_received || tcb.state == State::Closed)
+    /// With `n` bytes held, or all `rx` holds at most, or once the
+    /// connection ends; until then arriving data wakes no one.
+    pub(crate) fn tcp_readable_at(&mut self, id: usize, n: usize) -> bool {
+        self.tcp.tcbs[id].as_mut().is_none_or(|tcb| {
+            tcb.rx_wanted = n.clamp(1, tcb.rx.capacity().max(1));
+            tcb.rx.len() >= tcb.rx_wanted || tcb.fin_received || tcb.state == State::Closed
+        })
     }
 
     /// Receives into `memory` from now on; before anything arrived, and of

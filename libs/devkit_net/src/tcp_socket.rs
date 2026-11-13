@@ -215,11 +215,11 @@ impl Conn {
         (local.into(), remote.into())
     }
 
-    async fn readable(&self) {
+    async fn readable(&self, n: usize) {
         if self.read_closed.load(Ordering::Relaxed) {
             return;
         }
-        wait_for(self.net, SocketId::Tcp(self.id), |inner, _| inner.stack.tcp_readable(self.id).then_some(())).await
+        wait_for(self.net, SocketId::Tcp(self.id), |inner, _| inner.stack.tcp_readable_at(self.id, n).then_some(())).await
     }
 
     async fn read(&self, buf: &mut [u8]) -> Result<usize> {
@@ -400,9 +400,10 @@ impl TcpReader {
         TcpReadLock { conn: &self.conn, inner: self.conn.net.lock_async().await }
     }
 
-    /// Until `TcpReadLock::try_read` has something to return.
-    pub async fn readable_async(&self) {
-        self.conn.readable().await
+    /// Until `TcpReadLock::try_read` has `n` bytes to return, as many as the
+    /// receive buffer holds at most, or the connection ends.
+    pub async fn readable_async(&self, n: usize) {
+        self.conn.readable(n).await
     }
 }
 

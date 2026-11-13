@@ -219,7 +219,7 @@ impl TlsReader {
                 match tcp.try_read(space) {
                     None => {
                         drop(tcp);
-                        Step::Wait
+                        Step::Wait(conn.rx_wanted())
                     }
                     Some(Ok(0)) => return Err(Error::ConnectionAborted),
                     Some(Ok(got)) => {
@@ -234,7 +234,7 @@ impl TlsReader {
             }
             match step {
                 Step::Read(processed) => processed.map_err(Error::Tls)?,
-                Step::Wait => self.tcp.readable_async().await,
+                Step::Wait(n) => self.tcp.readable_async(n).await,
             }
         }
     }
@@ -242,7 +242,7 @@ impl TlsReader {
 
 enum Step {
     Read(core::result::Result<(), devkit_crypto::Error>),
-    Wait,
+    Wait(usize),
 }
 
 pub struct TlsWriter {

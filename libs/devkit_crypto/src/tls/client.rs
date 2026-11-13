@@ -236,6 +236,11 @@ impl Connection {
         self.0.commit_rx(n)
     }
 
+    /// Bytes the record being received still lacks; at least 1.
+    pub fn rx_wanted(&self) -> usize {
+        self.0.rx_wanted()
+    }
+
     /// Copies in as much of `data` as fits; returns how much.
     pub fn receive(&mut self, data: &[u8]) -> Result<usize> {
         self.0.receive(data)
@@ -416,6 +421,14 @@ impl Inner {
     pub fn commit_rx(&mut self, n: usize) -> Result<()> {
         self.rx_len = (self.rx_len + n).min(RX_CAP);
         self.process()
+    }
+
+    fn rx_wanted(&self) -> usize {
+        if self.rx_len < HEADER {
+            return HEADER - self.rx_len;
+        }
+        let len = u16::from_be_bytes([self.rx[3], self.rx[4]]) as usize;
+        (HEADER + len).saturating_sub(self.rx_len).max(1)
     }
 
     pub fn receive(&mut self, data: &[u8]) -> Result<usize> {
