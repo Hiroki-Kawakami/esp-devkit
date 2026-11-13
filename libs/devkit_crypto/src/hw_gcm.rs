@@ -3,7 +3,7 @@
  * Copyright (c) 2026 Hiroki Kawakami
  *
  * AES-GCM on the AES accelerator, its DMA reading and writing the caller's
- * buffers in place.
+ * buffers where they are.
  */
 
 use core::alloc::{Allocator, Layout};
@@ -21,8 +21,11 @@ const LINE: usize = 64;
 const BLOCK: usize = 16;
 /// What one descriptor carries of the middle of a buffer, whole cache lines.
 const CHUNK: usize = 4032;
-/// Per direction: 64 KB of data, its two ends, the AAD and the lengths.
-const DESCS: usize = (64 * 1024usize).div_ceil(CHUNK) + 4;
+/// Pieces the input may come in.
+pub(crate) const PIECES: usize = 2;
+/// Per direction: 64 KB of data, the two ends of each piece, the AAD and the
+/// lengths.
+const DESCS: usize = (64 * 1024usize).div_ceil(CHUNK) + 2 * PIECES + 2;
 pub(crate) const AAD_MAX: usize = 64;
 
 const OWNER_DMA: u32 = 1 << 31;
@@ -46,7 +49,7 @@ struct Mem {
     output: [Desc; DESCS],
     aad: [u8; AAD_MAX],
     lengths: [u8; LINE],
-    in_ends: [[u8; 2 * LINE]; 2],
+    in_ends: [[u8; 2 * LINE]; 2 * PIECES],
     out_ends: [[u8; 2 * LINE]; 2],
 }
 
@@ -79,7 +82,8 @@ impl Gcm {
     /// Encrypts the first `len` bytes of `buf` in place and writes the tag
     /// after them; `None` when the accelerator cannot take them.
     pub fn seal(&self, nonce: &[u8; NONCE], aad: &[u8], buf: &mut [u8], len: usize) -> Option<Result<()>> {
-        let tag = match self.crypt(true, nonce, aad, buf.as_mut_ptr(), len)? {
+        let data = buf.as_mut_ptr();
+        let tag = match self.crypt(true, nonce, aad, &[(data, len)], data, len)? {
             Ok(tag) => tag,
             Err(err) => return Some(Err(err)),
         };
@@ -93,7 +97,8 @@ impl Gcm {
         let len = buf.len() - TAG;
         let mut expected = [0; TAG];
         expected.copy_from_slice(&buf[len..]);
-        let tag = match self.crypt(false, nonce, aad, buf.as_mut_ptr(), len)? {
+        let data = buf.as_mut_ptr();
+        let tag = match self.crypt(false, nonce, aad, &[(data, len)], data, len)? {
             Ok(tag) => tag,
             Err(err) => return Some(Err(err)),
         };
@@ -104,9 +109,32 @@ impl Gcm {
         Some(Ok(len))
     }
 
-    fn crypt(&self, encrypt: bool, nonce: &[u8; NONCE], aad: &[u8], data: *mut u8, len: usize) -> Option<Result<[u8; TAG]>> {
-        let capable = |p: *const u8| unsafe { sys::esp_ptr_dma_capable(p.cast()) };
-        if len == 0 || aad.len() > AAD_MAX || !capable(data) || !capable(data.wrapping_add(len - 1)) {
+    /// Decrypts the ciphertext in `input`, in pieces, into `out`, as long as
+    /// they are together; `None` when the accelerator cannot take them.
+    pub fn open_into(&self, nonce: &[u8; NONCE], aad: &[u8], input: &[&[u8]], tag: &[u8; TAG], out: &mut [u8]) -> Option<Result<()>> {
+        if input.len() > PIECES || input.iter().map(|p| p.len()).sum::<usize>() != out.len() {
+            return None;
+        }
+        let mut pieces = [(ptr::null_mut(), 0); PIECES];
+        for (to, from) in pieces.iter_mut().zip(input) {
+            *to = (from.as_ptr().cast_mut(), from.len());
+        }
+        let computed = match self.crypt(false, nonce, aad, &pieces[..input.len()], out.as_mut_ptr(), out.len())? {
+            Ok(tag) => tag,
+            Err(err) => return Some(Err(err)),
+        };
+        if !crate::ct::eq(&computed, tag) {
+            out.fill(0);
+            return Some(Err(Error::Verify));
+        }
+        Some(Ok(()))
+    }
+
+    /// `input`'s pieces, `len` bytes in all, through the accelerator into
+    /// `output`; `input` may be `output` itself.
+    fn crypt(&self, encrypt: bool, nonce: &[u8; NONCE], aad: &[u8], input: &[(*mut u8, usize)], output: *mut u8, len: usize) -> Option<Result<[u8; TAG]>> {
+        let capable = |(p, n): (*mut u8, usize)| n == 0 || unsafe { sys::esp_ptr_dma_capable(p.cast()) && sys::esp_ptr_dma_capable(p.add(n - 1).cast()) };
+        if len == 0 || aad.len() > AAD_MAX || !input.iter().all(|&p| capable(p)) || !capable((output, len)) {
             return None;
         }
         unsafe { sys::esp_aes_acquire_hardware() };
@@ -120,23 +148,30 @@ impl Gcm {
         m.lengths[..8].copy_from_slice(&(aad.len() as u64 * 8).to_be_bytes());
         m.lengths[8..16].copy_from_slice(&(len as u64 * 8).to_be_bytes());
 
-        let mut input = Chain::new(m.input.as_mut_ptr(), unsafe { &raw mut (*d).input }.cast());
-        let mut output = Chain::new(m.output.as_mut_ptr(), unsafe { &raw mut (*d).output }.cast());
-        let in_ends = ends(&mut m.in_ends, unsafe { &raw mut (*d).in_ends });
+        let mut chain = Chain::new(m.input.as_mut_ptr(), unsafe { &raw mut (*d).input }.cast());
+        let mut out = Chain::new(m.output.as_mut_ptr(), unsafe { &raw mut (*d).output }.cast());
+        let in_ends = unsafe { &raw mut (*d).in_ends }.cast::<[u8; 2 * LINE]>();
+        let mut built = aad.is_empty() || unsafe { chain.push(&raw mut (*d).aad as *mut u8, aad_len) };
+        for (i, &(data, n)) in input.iter().enumerate() {
+            let ends = [
+                (m.in_ends[2 * i].as_mut_ptr(), in_ends.wrapping_add(2 * i).cast()),
+                (m.in_ends[2 * i + 1].as_mut_ptr(), in_ends.wrapping_add(2 * i + 1).cast()),
+            ];
+            let last = i == input.len() - 1;
+            built = built && unsafe { chain.data(data, n, if last { pad } else { 0 }, ends, true) }.is_some();
+        }
+        built = built && unsafe { chain.push(&raw mut (*d).lengths as *mut u8, BLOCK) };
         let out_ends = ends(&mut m.out_ends, unsafe { &raw mut (*d).out_ends });
-        let built = unsafe {
-            (aad.is_empty() || input.push(&raw mut (*d).aad as *mut u8, aad_len))
-                && input.data(data, len, pad, in_ends, true).is_some()
-                && input.push(&raw mut (*d).lengths as *mut u8, BLOCK)
-        };
-        let split = unsafe { output.data(data, len, pad, out_ends, false) };
+        let split = unsafe { out.data(output, len, pad, out_ends, false) };
         let (true, Some(split)) = (built, split) else { return None };
-        input.finish();
-        output.finish();
+        chain.finish();
+        out.finish();
         fence(Ordering::SeqCst);
 
-        if let Err(err) = unsafe { cache::msync(data, len, Flags::C2M | Flags::UNALIGNED) } {
-            return Some(Err(Error::Psa(err.code())));
+        for &(data, n) in input.iter().chain([&(output, len)]) {
+            if let Err(err) = unsafe { cache::msync(data, n, Flags::C2M | Flags::UNALIGNED) } {
+                return Some(Err(Error::Psa(err.code())));
+            }
         }
         let mut tag = [0; TAG];
         unsafe {
@@ -153,8 +188,8 @@ impl Gcm {
             j0[BLOCK - 1] = 1;
             sys::aes_ll_gcm_set_j0(j0.as_ptr());
             let started = sys::esp_crypto_shared_gdma_start_axi_ahb(
-                input.dma.cast(),
-                output.dma.cast(),
+                chain.dma.cast(),
+                out.dma.cast(),
                 sys::crypto_dma_user_t_CRYPTO_DMA_USER_AES,
             );
             if started != 0 {
@@ -163,11 +198,11 @@ impl Gcm {
             sys::aes_hal_transform_dma_gcm_start(len.div_ceil(BLOCK));
             sys::aes_hal_wait_done();
             sys::esp_crypto_shared_gdma_done();
-            let _ = cache::msync(data.add(split.head), split.mid, Flags::M2C);
+            let _ = cache::msync(output.add(split.head), split.mid, Flags::M2C);
             sys::aes_hal_transform_dma_finish();
             sys::aes_hal_gcm_read_tag(tag.as_mut_ptr(), TAG);
-            ptr::copy_nonoverlapping(m.out_ends[0].as_ptr(), data, split.head);
-            ptr::copy_nonoverlapping(m.out_ends[1].as_ptr(), data.add(split.head + split.mid), split.tail);
+            ptr::copy_nonoverlapping(m.out_ends[0].as_ptr(), output, split.head);
+            ptr::copy_nonoverlapping(m.out_ends[1].as_ptr(), output.add(split.head + split.mid), split.tail);
         }
         Some(Ok(tag))
     }

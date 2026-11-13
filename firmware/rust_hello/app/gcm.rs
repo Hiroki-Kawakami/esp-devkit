@@ -60,6 +60,39 @@ fn check(aead: &Aead, internal: &mut [u8], psram: &mut [u8], len: usize, at: usi
     Ok(())
 }
 
+/// The ciphertext split in two at `cut`, decrypted from both pieces at once.
+fn check_into(aead: &Aead, internal: &mut [u8], psram: &mut [u8], len: usize, cut: usize) -> Result<(), String> {
+    let mut plain = alloc::vec![0u8; len];
+    devkit_crypto::rand::fill(&mut plain);
+    let nonce = [5; NONCE];
+    let aad = [23, 3, 3, 0, 0];
+    let base = internal.as_ptr().align_offset(64);
+    let sealed = seal(aead, &nonce, &aad, internal, base, &plain)?;
+    let (ct, tag) = sealed.split_at(len);
+    let tag: &[u8; TAG] = tag.try_into().unwrap();
+    let (lo, rest) = internal[base..].split_at_mut(len + 64 + 3);
+    let (a, b) = rest.split_at_mut(len + 64 + 7);
+    lo[..cut].copy_from_slice(&ct[..cut]);
+    a[..len - cut].copy_from_slice(&ct[cut..]);
+    let pieces = [&lo[..cut], &a[..len - cut]];
+    let out = &mut b[..len];
+    match aead.open_into(&nonce, &aad, &pieces, tag, out) {
+        Some(Ok(())) if out[..] == plain[..] => {}
+        Some(Ok(())) => return Err(format!("into {len}/{cut}: differs")),
+        other => return Err(format!("into {len}/{cut}: {:?}", other.map(|r| r.err()))),
+    }
+    let mut bad = *tag;
+    bad[0] ^= 1;
+    if !matches!(aead.open_into(&nonce, &aad, &pieces, &bad, out), Some(Err(_))) {
+        return Err(format!("into {len}/{cut}: tampered accepted"));
+    }
+    psram[..len].copy_from_slice(ct);
+    if aead.open_into(&nonce, &aad, &[&psram[..len]], tag, out).is_some() {
+        return Err(format!("into {len}: PSRAM taken"));
+    }
+    Ok(())
+}
+
 fn time(aead: &Aead, mem: &mut [u8], len: usize) -> Result<(u32, u32), String> {
     let nonce = [3; NONCE];
     let at = mem.as_ptr().align_offset(64) + 5;
@@ -109,6 +142,14 @@ fn run() -> Result<String, String> {
         }
     }
     let aead = Aead::new(Algorithm::Aes128Gcm, &[9; 16]).map_err(|e| format!("key: {e:?}"))?;
+    let mut internal = buffer(Caps::INTERNAL | Caps::DMA)?;
+    internal.resize(3 * (MAX + 256), 0);
+    for len in [1, 17, 63, 64, 1000, 4033, 16384 + 1] {
+        for cut in [0, 1, len / 3, len - 1, len] {
+            check_into(&aead, &mut internal, &mut psram, len, cut)?;
+            checked += 1;
+        }
+    }
     let mut out = format!("{checked} ok;");
     for len in [1024, 4096, 16384] {
         let (hs, ho) = time(&aead, &mut internal, len)?;

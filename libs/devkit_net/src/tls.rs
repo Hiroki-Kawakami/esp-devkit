@@ -14,7 +14,7 @@ use devkit_crypto::tls::{ClientConfig, Connection};
 use idf::sync::Mutex;
 
 use crate::tcp_socket::{blocking, blocking_timeout};
-use crate::{Error, Result, Shutdown, TcpReader, TcpStream, TcpWriter};
+use crate::{Error, Result, Shutdown, TcpReadLock, TcpReader, TcpStream, TcpWriter};
 
 /// A TLS 1.3 client connection over a [`TcpStream`].
 pub struct TlsStream {
@@ -215,26 +215,16 @@ impl TlsReader {
             // The stack is locked first and without blocking: a task waiting
             // for it on this executor may be handed the lock while this one
             // blocks.
-            let mut tcp = self.tcp.lock_async().await;
-            let step = {
-                let mut conn = self.shared.conn.lock();
-                let space = conn.rx_space();
-                if space.is_empty() {
-                    return Err(Error::ConnectionAborted);
-                }
-                match tcp.try_read(space) {
-                    None => {
-                        drop(tcp);
-                        Step::Wait(conn.rx_wanted())
-                    }
-                    Some(Ok(0)) => return Err(Error::ConnectionAborted),
-                    Some(Ok(got)) => {
-                        drop(tcp);
-                        Step::Read(conn.commit_rx(got))
-                    }
-                    Some(Err(err)) => return Err(err),
-                }
+            let tcp = self.tcp.lock_async().await;
+            let mut conn = self.shared.conn.lock();
+            #[cfg(all(target_os = "none", CONFIG_SOC_AES_SUPPORT_GCM, CONFIG_SOC_AES_GDMA))]
+            let step = match direct(tcp, &mut conn) {
+                Ok(step) => step?,
+                Err(tcp) => copied(tcp, &mut conn)?,
             };
+            #[cfg(not(all(target_os = "none", CONFIG_SOC_AES_SUPPORT_GCM, CONFIG_SOC_AES_GDMA)))]
+            let step = copied(tcp, &mut conn)?;
+            drop(conn);
             if self.shared.has_pending_tx() {
                 self.shared.flush().await?;
             }
@@ -249,6 +239,63 @@ impl TlsReader {
 enum Step {
     Read(core::result::Result<(), devkit_crypto::Error>),
     Wait(usize),
+}
+
+#[cfg(all(target_os = "none", CONFIG_SOC_AES_SUPPORT_GCM, CONFIG_SOC_AES_GDMA))]
+const RECORD_HEADER: usize = 5;
+
+#[cfg(all(target_os = "none", CONFIG_SOC_AES_SUPPORT_GCM, CONFIG_SOC_AES_GDMA))]
+/// The next record straight from the TCP ring, decrypted where it lies and
+/// then dropped from it; the lock back when it has to be copied out instead,
+/// as a record larger than the ring is.
+fn direct<'a>(mut tcp: TcpReadLock<'a>, conn: &mut Connection) -> core::result::Result<Result<Step>, TcpReadLock<'a>> {
+    if !conn.takes_records() {
+        return Err(tcp);
+    }
+    let (a, b) = tcp.held();
+    let held = a.len() + b.len();
+    let byte = |i: usize| if i < a.len() { a[i] } else { b[i - a.len()] };
+    let need = if held < RECORD_HEADER {
+        RECORD_HEADER
+    } else {
+        RECORD_HEADER + usize::from(u16::from_be_bytes([byte(3), byte(4)]))
+    };
+    if need > tcp.capacity() {
+        return Err(tcp);
+    }
+    if held < need {
+        return Ok(match tcp.end() {
+            None => Ok(Step::Wait(need)),
+            Some(Ok(())) => Err(Error::ConnectionAborted),
+            Some(Err(err)) => Err(err),
+        });
+    }
+    let first = need.min(a.len());
+    let record = [&a[..first], &b[..need - first]];
+    let pieces = if need > first { &record[..] } else { &record[..1] };
+    let Some(received) = conn.receive_record(pieces) else { return Err(tcp) };
+    tcp.discard(need);
+    Ok(Ok(Step::Read(received)))
+}
+
+/// What the TCP ring holds, copied into the record buffer as far as it goes.
+fn copied(mut tcp: TcpReadLock<'_>, conn: &mut Connection) -> Result<Step> {
+    let space = conn.rx_space();
+    if space.is_empty() {
+        return Err(Error::ConnectionAborted);
+    }
+    match tcp.try_read(space) {
+        None => {
+            drop(tcp);
+            Ok(Step::Wait(conn.rx_wanted()))
+        }
+        Some(Ok(0)) => Err(Error::ConnectionAborted),
+        Some(Ok(got)) => {
+            drop(tcp);
+            Ok(Step::Read(conn.commit_rx(got)))
+        }
+        Some(Err(err)) => Err(err),
+    }
 }
 
 pub struct TlsWriter {

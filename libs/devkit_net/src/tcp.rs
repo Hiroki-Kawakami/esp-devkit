@@ -724,6 +724,37 @@ impl Stack {
         })
     }
 
+    /// What `tcp_read` would return next, in at most two pieces.
+    pub(crate) fn tcp_held(&self, id: usize) -> (&[u8], &[u8]) {
+        self.tcp.tcbs[id].as_ref().map_or((&[], &[]), |tcb| tcb.rx.held())
+    }
+
+    pub(crate) fn tcp_rx_capacity(&self, id: usize) -> usize {
+        self.tcp.tcbs[id].as_ref().map_or(0, |tcb| tcb.rx.capacity())
+    }
+
+    /// `None` while more may arrive; otherwise how the stream from the peer
+    /// ended.
+    pub(crate) fn tcp_rx_end(&self, id: usize) -> Option<Result<()>> {
+        match self.tcp.tcbs[id].as_ref() {
+            None => Some(Ok(())),
+            Some(tcb) if tcb.fin_received => Some(Ok(())),
+            Some(tcb) if tcb.state == State::Closed => Some(tcb.error.map_or(Ok(()), Err)),
+            Some(_) => None,
+        }
+    }
+
+    /// Drops the first `n` bytes `tcp_held` showed, as reading them would.
+    pub(crate) fn tcp_discard(&mut self, id: usize, n: usize, now: Instant, tx: &mut Tx) {
+        self.with_tcb(id, |stack, tcb| {
+            tcb.rx.discard(n.min(tcb.rx.len()));
+            if tcb.state.synchronized() && tcb.window_grew() {
+                tcb.ack_now = true;
+                stack.tcp_output(tcb, now, tx);
+            }
+        })
+    }
+
     /// `None` when the send buffer is full.
     pub(crate) fn tcp_write(&mut self, id: usize, data: &[u8], now: Instant, tx: &mut Tx) -> Option<Result<usize>> {
         self.with_tcb(id, |stack, tcb| {

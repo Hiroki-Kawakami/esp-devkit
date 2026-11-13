@@ -120,4 +120,12 @@ impl Aead {
         })?;
         Ok(&mut buf[..out])
     }
+
+    #[cfg(all(target_os = "none", CONFIG_SOC_AES_SUPPORT_GCM, CONFIG_SOC_AES_GDMA))]
+    /// Decrypts the ciphertext in `input`, in pieces, into `out`, checked
+    /// against `tag`, on the accelerator; `None` when it cannot take these
+    /// buffers, and nothing was done.
+    pub fn open_into(&self, nonce: &[u8; NONCE], aad: &[u8], input: &[&[u8]], tag: &[u8; TAG], out: &mut [u8]) -> Option<Result<()>> {
+        self.hw.as_ref()?.open_into(nonce, aad, input, tag, out)
+    }
 }

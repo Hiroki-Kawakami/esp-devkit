@@ -421,6 +421,33 @@ pub struct TcpReadLock<'a> {
 }
 
 impl TcpReadLock<'_> {
+    /// What `try_read` would return next, in at most two pieces, without
+    /// taking it.
+    pub fn held(&self) -> (&[u8], &[u8]) {
+        self.inner.stack.tcp_held(self.conn.id)
+    }
+
+    /// The most `held` can show: the receive buffer's size.
+    pub fn capacity(&self) -> usize {
+        self.inner.stack.tcp_rx_capacity(self.conn.id)
+    }
+
+    /// `None` while more may arrive; otherwise how the stream from the peer
+    /// ended, cleanly or with the connection's error.
+    pub fn end(&self) -> Option<Result<()>> {
+        if self.conn.read_closed.load(Ordering::Relaxed) {
+            return Some(Ok(()));
+        }
+        self.inner.stack.tcp_rx_end(self.conn.id)
+    }
+
+    /// Drops the first `n` bytes `held` showed, as reading them would.
+    pub fn discard(&mut self, n: usize) {
+        let now = net::now();
+        let id = self.conn.id;
+        self.inner.with_tx(|stack, tx| stack.tcp_discard(id, n, now, tx));
+    }
+
     /// What has arrived, without waiting; `None` when nothing has.
     pub fn try_read(&mut self, buf: &mut [u8]) -> Option<Result<usize>> {
         if self.conn.read_closed.load(Ordering::Relaxed) || buf.is_empty() {

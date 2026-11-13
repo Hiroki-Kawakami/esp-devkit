@@ -242,6 +242,22 @@ impl Connection {
         self.0.rx_wanted()
     }
 
+#[cfg(all(target_os = "none", CONFIG_SOC_AES_SUPPORT_GCM, CONFIG_SOC_AES_GDMA))]
+    /// Whether `receive_record` may take the next record: nothing of it was
+    /// received through `rx_space`, and records come encrypted.
+    pub fn takes_records(&self) -> bool {
+        self.0.takes_records()
+    }
+
+#[cfg(all(target_os = "none", CONFIG_SOC_AES_SUPPORT_GCM, CONFIG_SOC_AES_GDMA))]
+    /// Takes one whole application data record, header first, in pieces as
+    /// it lies in the caller's buffer, decrypting it straight into the
+    /// receive buffer; `None` when it has to come through `rx_space`, with
+    /// nothing changed.
+    pub fn receive_record(&mut self, record: &[&[u8]]) -> Option<Result<()>> {
+        self.0.receive_record(record)
+    }
+
     /// Copies in as much of `data` as fits; returns how much.
     pub fn receive(&mut self, data: &[u8]) -> Result<usize> {
         self.0.receive(data)
@@ -435,6 +451,55 @@ impl Inner {
         }
         let len = u16::from_be_bytes([self.rx[3], self.rx[4]]) as usize;
         (HEADER + len).saturating_sub(self.rx_len).max(1)
+    }
+
+#[cfg(all(target_os = "none", CONFIG_SOC_AES_SUPPORT_GCM, CONFIG_SOC_AES_GDMA))]
+    fn takes_records(&self) -> bool {
+        self.failed.is_none() && !self.peer_closed && self.rx_len == 0 && self.app.0 == self.app.1 && self.read_cipher.is_some()
+    }
+
+#[cfg(all(target_os = "none", CONFIG_SOC_AES_SUPPORT_GCM, CONFIG_SOC_AES_GDMA))]
+    fn receive_record(&mut self, record: &[&[u8]]) -> Option<Result<()>> {
+        if !self.takes_records() || record.len() > 2 {
+            return None;
+        }
+        let mut bytes = record.iter().flat_map(|p| p.iter().copied());
+        let mut header = [0; HEADER];
+        header.iter_mut().zip(&mut bytes).for_each(|(h, b)| *h = b);
+        let len = u16::from_be_bytes([header[3], header[4]]) as usize;
+        let total: usize = record.iter().map(|p| p.len()).sum();
+        if header[0] != APPLICATION_DATA || len < TAG || len > MAX_CIPHER || total != HEADER + len {
+            return None;
+        }
+        let sealed = len - TAG;
+        let (mut ct, mut ct_count, mut at) = ([&[][..]; 2], 0, 0);
+        for piece in record {
+            let (lo, hi) = (at.max(HEADER), (at + piece.len()).min(HEADER + sealed));
+            if lo < hi {
+                ct[ct_count] = &piece[lo - at..hi - at];
+                ct_count += 1;
+            }
+            at += piece.len();
+        }
+        let mut tag = [0; TAG];
+        tag.iter_mut().zip(record.iter().flat_map(|p| p.iter().copied()).skip(HEADER + sealed)).for_each(|(t, b)| *t = b);
+        let cipher = self.read_cipher.as_mut()?;
+        let nonce = match cipher.nonce() {
+            Ok(nonce) => nonce,
+            Err(f) => return Some(Err(self.fail(f))),
+        };
+        match cipher.aead.open_into(&nonce, &header, &ct[..ct_count], &tag, &mut self.rx[HEADER..HEADER + sealed]) {
+            None => {
+                cipher.seq -= 1;
+                return None;
+            }
+            Some(Err(_)) => return Some(Err(self.fail(fatal(alert::BAD_RECORD_MAC)))),
+            Some(Ok(())) => {}
+        }
+        self.rx[..HEADER].copy_from_slice(&header);
+        self.rx_len = HEADER + len;
+        let handled = self.inner_type(sealed).and_then(|(ty, start, end)| self.handle(ty, start, end, HEADER + len));
+        Some(handled.map(|_| ()).map_err(|f| self.fail(f)))
     }
 
     pub fn receive(&mut self, data: &[u8]) -> Result<usize> {
@@ -686,16 +751,28 @@ impl Inner {
                 }
                 let nonce = cipher.nonce()?;
                 let (head, body) = self.rx[..end].split_at_mut(HEADER);
-                let plain = cipher.aead.open_in_place(&nonce, head, body).map_err(|_| fatal(alert::BAD_RECORD_MAC))?;
-                let Some(last) = plain.iter().rposition(|&b| b != 0) else {
-                    return Err(fatal(alert::UNEXPECTED_MESSAGE));
-                };
-                if last > MAX_PLAIN {
-                    return Err(fatal(alert::RECORD_OVERFLOW));
-                }
-                (plain[last], HEADER, HEADER + last)
+                let plain = cipher.aead.open_in_place(&nonce, head, body).map_err(|_| fatal(alert::BAD_RECORD_MAC))?.len();
+                self.inner_type(plain)?
             }
         };
+        self.handle(content_type, start, plain_end, end)
+    }
+
+    /// The content type at the end of `len` bytes of plaintext after the
+    /// header, and where the content before it lies.
+    fn inner_type(&self, len: usize) -> Step<(u8, usize, usize)> {
+        let plain = &self.rx[HEADER..HEADER + len];
+        let Some(last) = plain.iter().rposition(|&b| b != 0) else {
+            return Err(fatal(alert::UNEXPECTED_MESSAGE));
+        };
+        if last > MAX_PLAIN {
+            return Err(fatal(alert::RECORD_OVERFLOW));
+        }
+        Ok((plain[last], HEADER, HEADER + last))
+    }
+
+    /// The record that ends at `end`, its content at `start..plain_end`.
+    fn handle(&mut self, content_type: u8, start: usize, plain_end: usize, end: usize) -> Step<bool> {
         if content_type != HANDSHAKE && !self.handshake.is_empty() {
             return Err(fatal(alert::UNEXPECTED_MESSAGE));
         }

@@ -133,6 +133,16 @@ impl Ring {
         n
     }
 
+    /// What is held, oldest first, in at most two pieces.
+    pub fn held(&self) -> (&[u8], &[u8]) {
+        if self.len == 0 {
+            return (&[], &[]);
+        }
+        let data = self.data.bytes();
+        let first = self.len.min(data.len() - self.head);
+        (&data[self.head..self.head + first], &data[..self.len - first])
+    }
+
     pub fn discard(&mut self, n: usize) {
         if n > 0 {
             self.head = self.at(n);
