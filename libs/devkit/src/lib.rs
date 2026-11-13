@@ -10,18 +10,18 @@ extern crate alloc;
 
 mod align;
 mod bitflags;
+mod buffer_pool;
 mod byte_cursor;
 mod defer;
 pub mod executor;
 mod fmt_buf;
 pub mod math;
-mod static_lease;
 pub mod sync;
 mod zeroable;
 
 pub use align::A16;
+pub use buffer_pool::{BufferBytes, BufferLease, BufferPool};
 pub use byte_cursor::{ByteReader, ByteWriter, OutOfBounds};
 pub use defer::{Guard, guard};
 pub use fmt_buf::FmtBuf;
-pub use static_lease::{Lease, StaticLease};
 pub use zeroable::Zeroable;

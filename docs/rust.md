@@ -371,25 +371,29 @@ directly on the heap; implement it (`unsafe`) on plain structs.
   single-precision FPU.
 - `lrintf`, `lroundf` and `lround` return `i32`, whatever `long` is on the host.
 
-`StaticLease<T>` lends a `static` value to one owner at a time, e.g. a large
-internal-RAM buffer that subsystems hand over to each other:
+`BufferPool<T, N, P>` lends the bytes of a `T` in up to `N` pieces at a time,
+e.g. a large internal-RAM buffer that subsystems share. `BufferBytes<BYTES>` is
+a `T` on a 64-byte boundary; any other `AsMut<[u8]>` works too:
 
 ```rust
-#[repr(C, align(64))]
-struct SharedSram([u8; SHARED_SRAM_BYTES]);
+static SRAM: BufferPool<BufferBytes<SHARED_SRAM_BYTES>, 4, FreeRtos> = BufferPool::new(BufferBytes::new());
 
-static SRAM: StaticLease<SharedSram> = StaticLease::new(SharedSram([0; SHARED_SRAM_BYTES]));
-
-let mut lease = SRAM.take().ok_or(Busy)?;
-let (front, back) = lease.0.split_at_mut(SHARED_SRAM_BYTES / 2);
+let strips = SRAM.alloc(STRIP_BYTES, 64).ok_or(Busy)?;
+let ring = SRAM.alloc(RING_BYTES, 4).ok_or(Busy)?;
 ```
 
-- `take()` returns `None` while a `Lease` is alive and never waits. Dropping
-  the `Lease` returns the value; the next owner sees what was left in it.
-- Size and alignment come from `T`. A zero-initialized `static` lands in
-  `.bss`, which IDF places in internal RAM.
+- `alloc(len, align)` places the piece in the first gap that holds it, and
+  returns `None` without waiting when none does or `N` pieces are out.
+  Dropping the `BufferLease` returns its bytes; the next owner sees what was
+  left in them.
+- A `BufferLease` borrows its pool, so one from a `static` pool is
+  `BufferLease<'static>`. It is `DerefMut<Target = [u8]>`, which is how APIs
+  that take memory from any owner accept it.
+- The table of pieces sits outside `T`: `N` pieces fill it to the byte.
+- A zero-initialized `static` lands in `.bss`, which IDF places in internal
+  RAM.
 - Pointers passed to C from a lease are not tracked: C must be done with them
-  before the `Lease` is dropped.
+  before the `BufferLease` is dropped.
 
 `devkit::executor` runs futures on tasks the platform provides, behind two
 traits: `Park` (wait on the running task, wake it from anywhere, tick count) and

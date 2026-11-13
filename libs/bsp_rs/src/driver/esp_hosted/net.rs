@@ -25,6 +25,7 @@ use idf::time::Instant;
 use idf::{Error, Result, sys, thread};
 
 use super::ffi;
+use super::transport::RxBuf;
 use super::wire::If;
 use super::wifi;
 
@@ -96,10 +97,18 @@ impl Link for Sta {
 }
 
 /// On the transport rx task; `false` when no stack took the frame.
-pub(super) fn on_sta(frame: &[u8]) -> bool {
+pub(super) fn on_sta(frame: &[u8], held: Option<&'static RxBuf>) -> bool {
     let Some(rx) = LINK_RX.get() else { return false };
     unsafe fn release(ptr: NonNull<u8>, _: usize, _: usize) {
         unsafe { sys::heap_caps_free(ptr.as_ptr().cast()) };
+    }
+    unsafe fn unhold(_: NonNull<u8>, _: usize, buf: usize) {
+        unsafe { &*(buf as *const RxBuf) }.release();
+    }
+    if let (Some(buf), Some(ptr)) = (held, NonNull::new(frame.as_ptr().cast_mut())) {
+        buf.hold();
+        rx.deliver(unsafe { RxFrame::from_raw(ptr, frame.len(), buf as *const RxBuf as usize, unhold) });
+        return true;
     }
     let buf = unsafe { sys::heap_caps_malloc(frame.len(), sys::MALLOC_CAP_SPIRAM) }.cast::<u8>();
     let Some(buf) = NonNull::new(buf) else { return true };

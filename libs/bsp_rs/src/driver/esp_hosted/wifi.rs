@@ -86,10 +86,10 @@ pub(super) fn sta_started() -> bool {
     STA_STARTED.load(Ordering::Acquire)
 }
 
-pub(super) fn on_sta(frame: &[u8]) {
+pub(super) fn on_sta(frame: &[u8], buf: Option<&'static super::transport::RxBuf>) {
     let rx = STA_RX.load(Ordering::Acquire);
     if rx.is_null() {
-        super::net::on_sta(frame);
+        super::net::on_sta(frame, buf);
         return;
     }
     let rx: unsafe extern "C" fn(*mut c_void, u16, *mut c_void) -> EspErr = unsafe { mem::transmute(rx) };

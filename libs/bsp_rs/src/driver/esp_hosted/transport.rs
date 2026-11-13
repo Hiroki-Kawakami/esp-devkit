@@ -23,6 +23,7 @@ const TX_BUF_NUM: usize = 8;
 const CTRL_BUF_NUM: usize = 4;
 const CTRL_TOKENS: u32 = 2;
 const RX_STREAM_MAX: usize = 32 * 1024;
+const RX_BUF_NUM: usize = 4;
 const TASK_PRIORITY: u32 = 22;
 const TOKEN_POLL: Duration = Duration::from_micros(300);
 const INIT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -76,10 +77,34 @@ struct Started {
     rx: bool,
 }
 
+/// A receive buffer whose station frames may be kept past `Receivers::sta`:
+/// it is read into again once every `hold` has its `release`.
+pub(super) struct RxBuf {
+    ptr: *mut u8,
+    index: usize,
+    holds: AtomicU32,
+    free: Sender<usize>,
+}
+
+unsafe impl Sync for RxBuf {}
+
+impl RxBuf {
+    pub(super) fn hold(&self) {
+        self.holds.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(super) fn release(&self) {
+        if self.holds.fetch_sub(1, Ordering::AcqRel) == 1 {
+            let _ = self.free.try_send(self.index);
+        }
+    }
+}
+
 /// Where received packets go, on the transport's rx task.
 pub(super) trait Receivers: Sync {
     fn serial(&self, payload: &[u8], flags: u8);
-    fn sta(&self, frame: &[u8]);
+    /// `buf` is where `frame` lies, when it may be held past the call.
+    fn sta(&self, frame: &[u8], buf: Option<&'static RxBuf>);
     fn hci(&self, payload: &[u8]);
     fn test(&self, payload: &[u8]);
 }
@@ -307,7 +332,7 @@ impl Transport {
         self.ready_signal.give();
     }
 
-    fn dispatch_stream(&self, mut p: &[u8], log: &mut LogLine) {
+    fn dispatch_stream(&self, mut p: &[u8], buf: Option<&'static RxBuf>, log: &mut LogLine) {
         while p.len() >= wire::HEADER_LEN {
             let h = Header::read(p);
             let total = usize::from(h.offset) + usize::from(h.len);
@@ -321,7 +346,7 @@ impl Transport {
             }
             let payload = &p[wire::HEADER_LEN..total];
             match If::from_u8(h.if_type) {
-                Some(If::Sta) => self.receivers.sta(payload),
+                Some(If::Sta) => self.receivers.sta(payload, buf),
                 Some(If::Serial) => self.receivers.serial(payload, h.flags),
                 Some(If::Priv) => self.on_priv(payload),
                 Some(If::Test) => self.receivers.test(payload),
@@ -333,7 +358,10 @@ impl Transport {
         }
     }
 
-    fn rx_task(&'static self, mut buf: Box<[u8], Caps>) {
+    // Frames go up still in the buffer they were read into, so there are
+    // several; when every one is held, the spare is read into and its frames
+    // copied out instead.
+    fn rx_task(&'static self, bufs: &'static [RxBuf], free: Receiver<usize>, mut spare: Box<[u8], Caps>) {
         let mut log = LogLine::new();
         loop {
             if self.sdio.wait_int(None).is_err() {
@@ -358,13 +386,20 @@ impl Transport {
                 self.rx_bytes.store(st.pkt_len & PKT_LEN_MASK, Ordering::Relaxed);
                 continue;
             }
-            let result = unsafe { self.sdio.read(buf.as_mut_ptr(), len) };
-            self.rx_bytes.store((rx_bytes + len as u32) & PKT_LEN_MASK, Ordering::Relaxed);
-            if let Err(err) = result {
-                error!(TAG, "read {len}: {err}");
-                continue;
+            let lent = free.try_recv().map(|i| &bufs[i]);
+            let ptr = lent.map_or(spare.as_mut_ptr(), |b| b.ptr);
+            if let Some(b) = lent {
+                b.holds.store(1, Ordering::Relaxed);
             }
-            self.dispatch_stream(&buf[..len], &mut log);
+            let result = unsafe { self.sdio.read(ptr, len) };
+            self.rx_bytes.store((rx_bytes + len as u32) & PKT_LEN_MASK, Ordering::Relaxed);
+            match result {
+                Ok(()) => self.dispatch_stream(unsafe { core::slice::from_raw_parts(ptr, len) }, lent, &mut log),
+                Err(err) => error!(TAG, "read {len}: {err}"),
+            }
+            if let Some(b) = lent {
+                b.release();
+            }
         }
     }
 
@@ -395,12 +430,21 @@ impl Transport {
                 continue;
             }
             if !started.rx {
-                let buf = heap::zeroed_slice::<u8>(sdio::padded(RX_STREAM_MAX), Caps::SPIRAM | Caps::CACHE_ALIGNED)?;
+                let caps = Caps::SPIRAM | Caps::CACHE_ALIGNED;
+                let spare = heap::zeroed_slice::<u8>(sdio::padded(RX_STREAM_MAX), caps)?;
+                let (free_tx, free_rx) = channel(RX_BUF_NUM);
+                let mut bufs = alloc::vec::Vec::with_capacity(RX_BUF_NUM);
+                for index in 0..RX_BUF_NUM {
+                    let ptr = Box::leak(heap::zeroed_slice::<u8>(sdio::padded(RX_STREAM_MAX), caps)?).as_mut_ptr();
+                    bufs.push(RxBuf { ptr, index, holds: AtomicU32::new(0), free: free_tx.clone() });
+                    free_tx.send(index);
+                }
+                let bufs: &'static [RxBuf] = alloc::vec::Vec::leak(bufs);
                 thread::Builder::new()
                     .name("hosted_rx")
                     .stack_size(4096)
                     .priority(TASK_PRIORITY)
-                    .spawn(move || self.rx_task(buf))?;
+                    .spawn(move || self.rx_task(bufs, free_rx, spare))?;
                 started.rx = true;
             }
             if let Err(err) = self.sdio.notify(wire::H2S_OPEN_DATA_PATH) {

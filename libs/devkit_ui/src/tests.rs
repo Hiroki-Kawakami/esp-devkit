@@ -3657,23 +3657,16 @@ fn a_color_mode_swaps_the_palette_under_the_same_looks() {
 
 #[test]
 fn strips_give_back_the_lent_memory() {
-    use devkit::{Lease, StaticLease};
+    use devkit::{BufferBytes, BufferLease, BufferPool};
 
-    #[repr(C, align(64))]
-    struct Sram([u8; 1024]);
-    impl AsMut<[u8]> for Sram {
-        fn as_mut(&mut self) -> &mut [u8] {
-            &mut self.0
-        }
-    }
-    static SRAM: StaticLease<Sram> = StaticLease::new(Sram([0; 1024]));
+    static SRAM: BufferPool<BufferBytes<1024>, 1, idf::sync::FreeRtos> = BufferPool::new(BufferBytes::new());
 
-    let strips = Strips::new(SRAM.take().unwrap());
-    assert!(SRAM.take().is_none());
-    let lease = strips.into_inner::<Lease<'static, Sram>>().unwrap();
+    let strips = Strips::new(SRAM.alloc(1024, 64).unwrap());
+    assert!(SRAM.alloc(1, 1).is_none());
+    let lease = strips.into_inner::<BufferLease<'static>>().unwrap();
     drop(lease);
-    assert!(SRAM.take().is_some());
-    assert!(Strips::allocate(128, Caps::INTERNAL).unwrap().into_inner::<Lease<'static, Sram>>().is_none());
+    assert!(SRAM.alloc(1024, 64).is_some());
+    assert!(Strips::allocate(128, Caps::INTERNAL).unwrap().into_inner::<BufferLease<'static>>().is_none());
 }
 
 thread_local! {

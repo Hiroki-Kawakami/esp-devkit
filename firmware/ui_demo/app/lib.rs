@@ -26,11 +26,11 @@ use core::time::Duration;
 
 use bsp_rs::Board;
 use bsp_rs::display::{Display, ImageFormat};
-use devkit::StaticLease;
+use devkit::{BufferBytes, BufferPool};
 use devkit_ui::{App, AppConfig, AutoRotation, ColorMode, Rotation, SavedColorMode, StripSource, Strips, TextInput};
 use idf::heap::Caps;
 use idf::log::{error, info};
-use idf::sync::{Mutex, Semaphore};
+use idf::sync::{FreeRtos, Mutex, Semaphore};
 use idf::{system, thread};
 
 use bench::{Bench, Params, Present};
@@ -41,16 +41,7 @@ const TAG: &CStr = c"ui_demo";
 const SETTINGS_VALID: u32 = 0x5549_4445;
 const STRIP_BYTES: usize = 4 * 64 * 1024;
 
-#[repr(C, align(64))]
-struct SharedSram([u8; STRIP_BYTES]);
-
-impl AsMut<[u8]> for SharedSram {
-    fn as_mut(&mut self) -> &mut [u8] {
-        &mut self.0
-    }
-}
-
-static SRAM: StaticLease<SharedSram> = StaticLease::new(SharedSram([0; STRIP_BYTES]));
+static SRAM: BufferPool<BufferBytes<STRIP_BYTES>, 1, FreeRtos> = BufferPool::new(BufferBytes::new());
 
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -178,7 +169,7 @@ fn run_demo(board: &Board, display: &'static Display, settings: &Settings) {
     if settings.stack_psram {
         config.presenter.lane_stack_caps = Caps::SPIRAM;
     }
-    let Some(sram) = SRAM.take() else {
+    let Some(sram) = SRAM.alloc(STRIP_BYTES, 64) else {
         error!(TAG, "strips: taken");
         return;
     };
@@ -259,7 +250,7 @@ fn run_demo(board: &Board, display: &'static Display, settings: &Settings) {
 }
 
 fn run_bench(board: &Board, display: &'static Display) {
-    let Some(sram) = SRAM.take() else {
+    let Some(sram) = SRAM.alloc(STRIP_BYTES, 64) else {
         error!(TAG, "strips: taken");
         return;
     };

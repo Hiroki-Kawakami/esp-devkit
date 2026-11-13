@@ -46,7 +46,7 @@ pub use link::{Link, LinkInfo, LinkRx, Medium, RxFrame, TxError};
 pub use iface::{Interface, add_link, interfaces, start};
 pub use net::{Config, Ipv4Mode};
 pub use stack::{IfaceId, IfaceStats, Ipv4Config, Stack};
-pub use tcp_socket::{Shutdown, TcpBuilder, TcpListener, TcpReader, TcpStream, TcpWriter};
+pub use tcp_socket::{Shutdown, TcpBuilder, TcpListener, TcpReadLock, TcpReader, TcpStream, TcpWriter};
 pub use time::Instant;
 pub use tls::{TlsReader, TlsStream, TlsWriter};
 pub use udp_socket::{UdpBuilder, UdpSocket};

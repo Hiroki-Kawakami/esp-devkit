@@ -57,7 +57,7 @@ pub use rotation::{AutoRotation, Rotations};
 pub use plugin::{Plugin, PluginContext, PluginInit, SavedColorMode, Store, UiEvent};
 pub use popover::{Placement, Popover, PopoverAlign};
 pub use presence::{Edge, Presence};
-pub use presenter::{Config, PresentMode, Presenter, Stats, StripMemory, StripSource, Strips};
+pub use presenter::{Config, PresentMode, Presenter, Stats, StripSource, Strips};
 pub use task::{Task, This};
 pub use style::{Align, Animated, Bars, Dimension, Direction, Insets, Justify, Part, Prop, Role, ScreenStyle, Shadow, State, StateStyle, Style};
 pub use text_buffer::{TextBuffer, TextInput};

@@ -3,8 +3,10 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
+use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::ops::DerefMut;
 use core::time::Duration;
 
 use devkit_crypto::tls::{ClientConfig, Connection};
@@ -12,8 +14,6 @@ use idf::sync::Mutex;
 
 use crate::tcp_socket::{blocking, blocking_timeout};
 use crate::{Error, Result, Shutdown, TcpReader, TcpStream, TcpWriter};
-
-const STAGE: usize = 16 * 1024;
 
 /// A TLS 1.3 client connection over a [`TcpStream`].
 pub struct TlsStream {
@@ -40,6 +40,17 @@ impl TlsStream {
 
     pub async fn start_async(tcp: TcpStream, server_name: Option<&str>, config: Arc<ClientConfig>) -> Result<Self> {
         let conn = Connection::client(config, server_name).map_err(Error::Tls)?;
+        Self::handshake(tcp, conn).await
+    }
+
+    /// As `start_async`, receiving records in `rx`, which holds at least
+    /// `Connection::RX_BYTES`.
+    pub async fn start_in_async(tcp: TcpStream, server_name: Option<&str>, config: Arc<ClientConfig>, rx: Box<dyn DerefMut<Target = [u8]> + Send>) -> Result<Self> {
+        let conn = Connection::client_in(config, server_name, rx).map_err(Error::Tls)?;
+        Self::handshake(tcp, conn).await
+    }
+
+    async fn handshake(tcp: TcpStream, conn: Connection) -> Result<Self> {
         let mut stream = Self { tcp, conn };
         while stream.conn.is_handshaking() {
             stream.flush().await?;
@@ -110,7 +121,7 @@ impl TlsStream {
     pub fn split(self) -> (TlsReader, TlsWriter) {
         let (reader, writer) = self.tcp.split();
         let shared = Arc::new(Shared { conn: Mutex::new(self.conn), tx: Mutex::new(Tx { tcp: writer, buf: Vec::new() }) });
-        (TlsReader { shared: shared.clone(), tcp: reader, stage: Vec::new(), pos: 0 }, TlsWriter { shared })
+        (TlsReader { shared: shared.clone(), tcp: reader }, TlsWriter { shared })
     }
 
     async fn flush(&mut self) -> Result<()> {
@@ -171,8 +182,6 @@ impl Shared {
 pub struct TlsReader {
     shared: Arc<Shared>,
     tcp: TcpReader,
-    stage: Vec<u8>,
-    pos: usize,
 }
 
 impl TlsReader {
@@ -186,40 +195,54 @@ impl TlsReader {
 
     pub async fn read_async(&mut self, buf: &mut [u8]) -> Result<usize> {
         loop {
-            let (n, closed, stuck) = {
+            {
                 let mut conn = self.shared.conn.lock();
-                while self.pos < self.stage.len() {
-                    let fed = conn.receive(&self.stage[self.pos..]).map_err(Error::Tls)?;
-                    if fed == 0 {
-                        break;
-                    }
-                    self.pos += fed;
-                }
                 let n = conn.read(buf).map_err(Error::Tls)?;
-                (n, conn.peer_closed(), self.pos < self.stage.len())
+                if n > 0 || buf.is_empty() || conn.peer_closed() {
+                    drop(conn);
+                    if self.shared.has_pending_tx() {
+                        self.shared.flush().await?;
+                    }
+                    return Ok(n);
+                }
+            }
+            // The stack is locked first and without blocking: a task waiting
+            // for it on this executor may be handed the lock while this one
+            // blocks.
+            let mut tcp = self.tcp.lock_async().await;
+            let step = {
+                let mut conn = self.shared.conn.lock();
+                let space = conn.rx_space();
+                if space.is_empty() {
+                    return Err(Error::ConnectionAborted);
+                }
+                match tcp.try_read(space) {
+                    None => {
+                        drop(tcp);
+                        Step::Wait
+                    }
+                    Some(Ok(0)) => return Err(Error::ConnectionAborted),
+                    Some(Ok(got)) => {
+                        drop(tcp);
+                        Step::Read(conn.commit_rx(got))
+                    }
+                    Some(Err(err)) => return Err(err),
+                }
             };
             if self.shared.has_pending_tx() {
                 self.shared.flush().await?;
             }
-            if n > 0 || buf.is_empty() || closed {
-                return Ok(n);
-            }
-            if stuck {
-                return Err(Error::ConnectionAborted);
-            }
-            if self.stage.capacity() < STAGE {
-                self.stage.try_reserve_exact(STAGE).map_err(|_| Error::NoMemory)?;
-            }
-            self.stage.resize(STAGE, 0);
-            let got = self.tcp.read_async(&mut self.stage).await;
-            let got = got.inspect_err(|_| self.stage.clear())?;
-            self.stage.truncate(got);
-            self.pos = 0;
-            if got == 0 {
-                return Err(Error::ConnectionAborted);
+            match step {
+                Step::Read(processed) => processed.map_err(Error::Tls)?,
+                Step::Wait => self.tcp.readable_async().await,
             }
         }
     }
+}
+
+enum Step {
+    Read(core::result::Result<(), devkit_crypto::Error>),
+    Wait,
 }
 
 pub struct TlsWriter {

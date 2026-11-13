@@ -7,6 +7,7 @@ use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 use core::net::{Ipv4Addr, SocketAddrV4};
+use core::ops::DerefMut;
 use core::time::Duration;
 
 use devkit_crypto::mac::siphash;
@@ -598,6 +599,21 @@ impl Stack {
             }
         }
         self.woken.retain(|w| *w != SocketId::Listener(id));
+    }
+
+    pub(crate) fn tcp_readable(&self, id: usize) -> bool {
+        self.tcp.tcbs[id].as_ref().is_none_or(|tcb| tcb.rx.len() > 0 || tcb.fin_received || tcb.state == State::Closed)
+    }
+
+    /// Receives into `memory` from now on; before anything arrived, and of
+    /// the size the connection was made with.
+    pub(crate) fn tcp_give_rx(&mut self, id: usize, memory: Box<dyn DerefMut<Target = [u8]> + Send>) {
+        if let Some(tcb) = self.tcp.tcbs[id].as_mut()
+            && tcb.rx.len() == 0
+            && tcb.rx.capacity() == memory.len()
+        {
+            tcb.rx = Ring::given(memory);
+        }
     }
 
     pub(crate) fn tcp_connect(&mut self, remote: SocketAddrV4, buffers: Buffers, now: Instant, tx: &mut Tx) -> Result<usize> {

@@ -128,8 +128,8 @@ impl Receivers for Dispatch {
         }
     }
 
-    fn sta(&self, frame: &[u8]) {
-        wifi::on_sta(frame);
+    fn sta(&self, frame: &[u8], buf: Option<&'static transport::RxBuf>) {
+        wifi::on_sta(frame, buf);
     }
 
     fn hci(&self, payload: &[u8]) {

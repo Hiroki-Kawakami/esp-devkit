@@ -10,11 +10,11 @@ use core::alloc::Allocator;
 use core::any::Any;
 use core::cell::UnsafeCell;
 use core::ffi::CStr;
+use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use core::time::Duration;
 
 use bsp_rs::display::{self, Display, FrameBuffer, ImageFormat, Rotation};
-use devkit::Lease;
 use devkit_gfx::{Argb8888, Bgr888, ClipStore, Damage, DisplayList, GlyphCache, Pixel, Prepared, Rect, Rgb565, Size, Surface, draw, draw_from};
 use idf::heap::Caps;
 use idf::log::{error, warn};
@@ -104,23 +104,18 @@ pub struct Stats {
 #[derive(Clone, Copy)]
 struct Line([u8; 64]);
 
-/// Memory strips can be drawn in.
-pub trait StripMemory: Send + 'static {
-    fn bytes(&mut self) -> &mut [u8];
-}
+struct OwnedStrips(Vec<Line, Caps>);
 
-impl<T: AsMut<[u8]> + Send> StripMemory for Lease<'static, T> {
-    fn bytes(&mut self) -> &mut [u8] {
-        (**self).as_mut()
+impl Deref for OwnedStrips {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        unsafe { core::slice::from_raw_parts(self.0.as_ptr().cast(), self.0.len() * size_of::<Line>()) }
     }
 }
 
-struct OwnedStrips(Vec<Line, Caps>);
-
-impl StripMemory for OwnedStrips {
-    fn bytes(&mut self) -> &mut [u8] {
-        let bytes = self.0.len() * size_of::<Line>();
-        unsafe { core::slice::from_raw_parts_mut(self.0.as_mut_ptr().cast(), bytes) }
+impl DerefMut for OwnedStrips {
+    fn deref_mut(&mut self) -> &mut [u8] {
+        unsafe { core::slice::from_raw_parts_mut(self.0.as_mut_ptr().cast(), self.0.len() * size_of::<Line>()) }
     }
 }
 
@@ -137,16 +132,16 @@ trait AnyStrips: Send {
     fn into_any(self: Box<Self>) -> Box<dyn Any>;
 }
 
-impl<M: StripMemory> AnyStrips for M {
+impl<M: DerefMut<Target = [u8]> + Send + 'static> AnyStrips for M {
     fn into_any(self: Box<Self>) -> Box<dyn Any> {
         self
     }
 }
 
 impl Strips {
-    pub fn new<M: StripMemory>(memory: M) -> Self {
+    pub fn new<M: DerefMut<Target = [u8]> + Send + 'static>(memory: M) -> Self {
         let mut memory = Box::new(memory);
-        let bytes = memory.bytes();
+        let bytes = DerefMut::deref_mut(&mut *memory);
         let (ptr, len) = (bytes.as_mut_ptr(), bytes.len());
         Self { memory, ptr, len }
     }
@@ -161,7 +156,7 @@ impl Strips {
     }
 
     /// Gives back what `new` took, if it was an `M`.
-    pub fn into_inner<M: StripMemory>(self) -> Option<M> {
+    pub fn into_inner<M: DerefMut<Target = [u8]> + Send + 'static>(self) -> Option<M> {
         self.memory.into_any().downcast::<M>().ok().map(|m| *m)
     }
 

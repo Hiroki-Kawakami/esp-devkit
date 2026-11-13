@@ -3,22 +3,49 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
+use alloc::boxed::Box;
 use alloc::vec::Vec;
+use core::ops::DerefMut;
 
 use idf::heap::Caps;
 
-/// Bytes in a buffer that grows up to its capacity as they arrive. Offsets
-/// count from the oldest byte held.
+/// Bytes in a buffer that grows up to its capacity as they arrive, or in
+/// memory given at its full capacity. Offsets count from the oldest byte held.
 pub(crate) struct Ring {
-    data: Vec<u8, Caps>,
+    data: Storage,
     capacity: usize,
     head: usize,
     len: usize,
 }
 
+enum Storage {
+    Heap(Vec<u8, Caps>),
+    Given(Box<dyn DerefMut<Target = [u8]> + Send>),
+}
+
+impl Storage {
+    fn bytes(&self) -> &[u8] {
+        match self {
+            Self::Heap(v) => v,
+            Self::Given(g) => g,
+        }
+    }
+
+    fn bytes_mut(&mut self) -> &mut [u8] {
+        match self {
+            Self::Heap(v) => v,
+            Self::Given(g) => g,
+        }
+    }
+}
+
 impl Ring {
     pub fn new(capacity: usize, caps: Caps) -> Self {
-        Self { data: Vec::new_in(caps), capacity, head: 0, len: 0 }
+        Self { data: Storage::Heap(Vec::new_in(caps)), capacity, head: 0, len: 0 }
+    }
+
+    pub fn given(memory: Box<dyn DerefMut<Target = [u8]> + Send>) -> Self {
+        Self { capacity: memory.len(), data: Storage::Given(memory), head: 0, len: 0 }
     }
 
     pub fn capacity(&self) -> usize {
@@ -34,7 +61,7 @@ impl Ring {
     }
 
     fn at(&self, offset: usize) -> usize {
-        let cap = self.data.len();
+        let cap = self.data.bytes().len();
         let i = self.head + offset;
         if i >= cap { i - cap } else { i }
     }
@@ -42,16 +69,17 @@ impl Ring {
     /// Room for `end` bytes past the oldest; doubling, then exactly `end`
     /// when doubling does not fit in memory.
     fn reserve(&mut self, end: usize) -> bool {
-        let old = self.data.len();
+        let old = self.data.bytes().len();
         if end <= old {
             return true;
         }
+        let Storage::Heap(data) = &mut self.data else { return false };
         let doubled = (old * 2).max(end).min(self.capacity);
-        let Some(new) = [doubled, end].into_iter().find(|&n| self.data.try_reserve_exact(n - old).is_ok()) else {
+        let Some(new) = [doubled, end].into_iter().find(|&n| data.try_reserve_exact(n - old).is_ok()) else {
             return false;
         };
-        self.data.resize(new, 0);
-        self.data[..old].rotate_left(self.head);
+        data.resize(new, 0);
+        data[..old].rotate_left(self.head);
         self.head = 0;
         true
     }
@@ -66,11 +94,11 @@ impl Ring {
         if !self.reserve(self.len + offset + src.len()) {
             return false;
         }
-        let cap = self.data.len();
         let start = self.at(self.len + offset);
-        let first = src.len().min(cap - start);
-        self.data[start..start + first].copy_from_slice(&src[..first]);
-        self.data[..src.len() - first].copy_from_slice(&src[first..]);
+        let data = self.data.bytes_mut();
+        let first = src.len().min(data.len() - start);
+        data[start..start + first].copy_from_slice(&src[..first]);
+        data[..src.len() - first].copy_from_slice(&src[first..]);
         true
     }
 
@@ -83,7 +111,7 @@ impl Ring {
     pub fn push(&mut self, src: &[u8]) -> usize {
         let mut n = src.len().min(self.free());
         if !self.reserve(self.len + n) {
-            n = self.data.len() - self.len;
+            n = self.data.bytes().len() - self.len;
         }
         self.write_free(0, &src[..n]);
         self.commit(n);
@@ -96,11 +124,11 @@ impl Ring {
         if n == 0 {
             return 0;
         }
-        let cap = self.data.len();
         let start = self.at(offset);
-        let first = n.min(cap - start);
-        out[..first].copy_from_slice(&self.data[start..start + first]);
-        out[first..n].copy_from_slice(&self.data[..n - first]);
+        let data = self.data.bytes();
+        let first = n.min(data.len() - start);
+        out[..first].copy_from_slice(&data[start..start + first]);
+        out[first..n].copy_from_slice(&data[..n - first]);
         n
     }
 

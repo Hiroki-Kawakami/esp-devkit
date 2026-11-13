@@ -7,6 +7,7 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::ops::DerefMut;
 
 use devkit::ByteReader;
 use idf::heap::Caps;
@@ -196,7 +197,21 @@ impl Connection {
     /// Starts a handshake; the ClientHello is in `pending_tx`. `server_name`
     /// goes out as SNI when it is a DNS name and is what `Verify::WebPki` checks.
     pub fn client(config: Arc<ClientConfig>, server_name: Option<&str>) -> Result<Self> {
-        Ok(Self(Box::new(Inner::client(config, server_name)?)))
+        let mut rx = idf::heap::try_vec(RX_CAP, config.buffer_caps).map_err(|_| Error::NoMemory)?;
+        rx.resize(RX_CAP, 0);
+        Ok(Self(Box::new(Inner::client(config, server_name, RxBuf::Heap(rx))?)))
+    }
+
+    /// The receive buffer `client_in` needs.
+    pub const RX_BYTES: usize = RX_CAP;
+
+    /// As `client`, receiving in `rx` instead of `buffer_caps` memory; `rx`
+    /// holds at least `RX_BYTES`.
+    pub fn client_in(config: Arc<ClientConfig>, server_name: Option<&str>, rx: Box<dyn DerefMut<Target = [u8]> + Send>) -> Result<Self> {
+        if rx.len() < RX_CAP {
+            return Err(Error::NoMemory);
+        }
+        Ok(Self(Box::new(Inner::client(config, server_name, RxBuf::Given(rx))?)))
     }
 
     pub fn is_handshaking(&self) -> bool {
@@ -275,7 +290,7 @@ struct Inner {
     server_name: Option<String>,
     state: State,
     failed: Option<Error>,
-    rx: Vec<u8, Caps>,
+    rx: RxBuf,
     rx_len: usize,
     /// Decrypted application data within `rx`, and where its record ends.
     app: (usize, usize, usize),
@@ -305,13 +320,35 @@ struct Inner {
     closing: bool,
 }
 
+enum RxBuf {
+    Heap(Vec<u8, Caps>),
+    Given(Box<dyn DerefMut<Target = [u8]> + Send>),
+}
+
+impl core::ops::Deref for RxBuf {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        match self {
+            Self::Heap(v) => v,
+            Self::Given(g) => &g[..RX_CAP],
+        }
+    }
+}
+
+impl DerefMut for RxBuf {
+    fn deref_mut(&mut self) -> &mut [u8] {
+        match self {
+            Self::Heap(v) => v,
+            Self::Given(g) => &mut g[..RX_CAP],
+        }
+    }
+}
+
 impl Inner {
-    pub fn client(config: Arc<ClientConfig>, server_name: Option<&str>) -> Result<Self> {
+    fn client(config: Arc<ClientConfig>, server_name: Option<&str>, rx: RxBuf) -> Result<Self> {
         if config.cipher_suites.is_empty() || config.groups.is_empty() {
             return Err(Error::HandshakeFailure);
         }
-        let mut rx = idf::heap::try_vec(RX_CAP, config.buffer_caps).map_err(|_| Error::NoMemory)?;
-        rx.resize(RX_CAP, 0);
         let mut session_id = [0; 32];
         let mut random = [0; 32];
         rand::fill(&mut session_id);

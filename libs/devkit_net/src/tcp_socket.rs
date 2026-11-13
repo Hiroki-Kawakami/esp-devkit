@@ -3,17 +3,20 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
+use alloc::boxed::Box;
 use alloc::sync::Arc;
 use core::future::Future;
 use core::net::{SocketAddr, SocketAddrV4};
+use core::ops::DerefMut;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 
 use idf::executor;
 use idf::heap::Caps;
+use idf::sync::MutexGuard;
 
 use crate::addr::{self, ToSocketAddrs};
-use crate::net::{self, Net, wait_for};
+use crate::net::{self, Inner, Net, wait_for};
 use crate::stack::SocketId;
 use crate::tcp::Buffers;
 use crate::{Error, Result};
@@ -42,12 +45,21 @@ pub enum Shutdown {
     Both,
 }
 
-#[derive(Clone, Copy, Default, Debug)]
+#[derive(Default, Debug)]
 pub struct TcpBuilder {
     rx_buffer: Option<usize>,
     tx_buffer: Option<usize>,
     caps: Option<Caps>,
     backlog: Option<usize>,
+    rx_memory: Option<RxMemory>,
+}
+
+struct RxMemory(Box<dyn DerefMut<Target = [u8]> + Send>);
+
+impl core::fmt::Debug for RxMemory {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "RxMemory({} bytes)", self.0.len())
+    }
 }
 
 impl TcpBuilder {
@@ -59,6 +71,15 @@ impl TcpBuilder {
 
     pub fn tx_buffer(mut self, bytes: usize) -> Self {
         self.tx_buffer = Some(bytes);
+        self
+    }
+
+    /// A connection's receive buffer, sized to `memory` and kept there instead
+    /// of the heap; a listener ignores it. Only the first address tried gets
+    /// it.
+    pub fn rx_memory(mut self, memory: Box<dyn DerefMut<Target = [u8]> + Send>) -> Self {
+        self.rx_buffer = Some(memory.len());
+        self.rx_memory = Some(RxMemory(memory));
         self
     }
 
@@ -108,7 +129,7 @@ impl TcpBuilder {
         self.connect_in(net::global()?, addr).await
     }
 
-    pub(crate) async fn connect_in(self, net: &'static Net, addr: impl ToSocketAddrs) -> Result<TcpStream> {
+    pub(crate) async fn connect_in(mut self, net: &'static Net, addr: impl ToSocketAddrs) -> Result<TcpStream> {
         let mut last = Error::InvalidInput;
         for addr in addr::resolve(net, addr.target()?).await? {
             match self.connect_to(net, addr).await {
@@ -119,11 +140,18 @@ impl TcpBuilder {
         Err(last)
     }
 
-    pub(crate) async fn connect_to(self, net: &'static Net, addr: SocketAddr) -> Result<TcpStream> {
+    pub(crate) async fn connect_to(&mut self, net: &'static Net, addr: SocketAddr) -> Result<TcpStream> {
         let addr = v4(addr)?;
         let buffers = self.buffers(net);
         let now = net::now();
-        let id = net.lock_async().await.with_tx(|stack, tx| stack.tcp_connect(addr, buffers, now, tx))?;
+        let memory = self.rx_memory.take();
+        let id = net.lock_async().await.with_tx(|stack, tx| {
+            let id = stack.tcp_connect(addr, buffers, now, tx)?;
+            if let Some(memory) = memory {
+                stack.tcp_give_rx(id, memory.0);
+            }
+            Ok::<_, Error>(id)
+        })?;
         let conn = Arc::new(Conn { net, id, read_closed: AtomicBool::new(false) });
         wait_for(net, SocketId::Tcp(id), |inner, _| inner.stack.tcp_connected(id)).await?;
         Ok(TcpStream { conn })
@@ -185,6 +213,13 @@ impl Conn {
     fn addrs(&self) -> (SocketAddr, SocketAddr) {
         let (local, remote) = self.net.lock().stack.tcp_addrs(self.id);
         (local.into(), remote.into())
+    }
+
+    async fn readable(&self) {
+        if self.read_closed.load(Ordering::Relaxed) {
+            return;
+        }
+        wait_for(self.net, SocketId::Tcp(self.id), |inner, _| inner.stack.tcp_readable(self.id).then_some(())).await
     }
 
     async fn read(&self, buf: &mut [u8]) -> Result<usize> {
@@ -357,6 +392,35 @@ impl TcpReader {
 
     pub async fn read_async(&self, buf: &mut [u8]) -> Result<usize> {
         self.conn.read(buf).await
+    }
+
+    /// Locks the stack for `TcpReadLock::try_read`, waiting as a future does
+    /// rather than blocking the task.
+    pub async fn lock_async(&self) -> TcpReadLock<'_> {
+        TcpReadLock { conn: &self.conn, inner: self.conn.net.lock_async().await }
+    }
+
+    /// Until `TcpReadLock::try_read` has something to return.
+    pub async fn readable_async(&self) {
+        self.conn.readable().await
+    }
+}
+
+/// The stack, locked for reading from one connection.
+pub struct TcpReadLock<'a> {
+    conn: &'a Conn,
+    inner: MutexGuard<'a, Inner>,
+}
+
+impl TcpReadLock<'_> {
+    /// What has arrived, without waiting; `None` when nothing has.
+    pub fn try_read(&mut self, buf: &mut [u8]) -> Option<Result<usize>> {
+        if self.conn.read_closed.load(Ordering::Relaxed) || buf.is_empty() {
+            return Some(Ok(0));
+        }
+        let now = net::now();
+        let id = self.conn.id;
+        self.inner.with_tx(|stack, tx| stack.tcp_read(id, buf, now, tx))
     }
 }
 
