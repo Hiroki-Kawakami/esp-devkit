@@ -3,8 +3,10 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
+use alloc::vec::Vec;
 use core::future::Future;
 use core::marker::PhantomData;
+use core::ops::Deref;
 use core::pin::Pin;
 use core::task::{Context, Poll};
 use core::time::Duration;
@@ -136,10 +138,28 @@ pub(crate) enum Output {
     Strips(Layout),
 }
 
+/// The header through the start of its scan, in one piece.
+pub(crate) enum Head<'a> {
+    Lent(&'a [u8]),
+    Joined(Vec<u8>),
+}
+
+impl Deref for Head<'_> {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        match self {
+            Head::Lent(head) => head,
+            Head::Joined(head) => head,
+        }
+    }
+}
+
 pub(crate) struct Frame<'a> {
     pub header: Header,
     pub config: DecodeConfig,
-    pub data: &'a [u8],
+    #[cfg_attr(not(target_os = "none"), allow(dead_code))]
+    pub head: Head<'a>,
+    pub data: &'a [&'a [u8]],
     pub output: Output,
     pub chain: Option<Chain>,
     pub row_bytes: usize,
@@ -162,21 +182,22 @@ impl Decoder {
         self.timeout = timeout;
     }
 
-    fn frame<'a>(&self, data: &'a [u8], output: impl FnOnce(&Header, usize) -> Result<Output>) -> Result<Frame<'a>> {
-        let header = Header::parse(data)?;
+    fn frame<'a>(&self, data: &'a [&'a [u8]], output: impl FnOnce(&Header, usize) -> Result<Output>) -> Result<Frame<'a>> {
+        let (header, head) = head(data)?;
         let gray = header.sampling == Sampling::Gray;
         if gray != (self.config.format == ImageFormat::L8) {
             return Err(Error::NOT_SUPPORTED);
         }
         let row_bytes = self.config.format.row_bytes(usize::from(header.padded_width));
         let output = output(&header, row_bytes)?;
-        Ok(Frame { header, config: self.config, data, output, chain: None, row_bytes, timeout: self.timeout })
+        Ok(Frame { header, config: self.config, head, data, output, chain: None, row_bytes, timeout: self.timeout })
     }
 
     /// The whole picture into `target`, from its top left: not turned, in the
     /// configured format, `padded_width` wide in stride and at least
-    /// `padded_height` tall.
-    pub fn decode<'a>(&'a mut self, data: &'a [u8], target: &'a mut Target<'_>) -> Result<Decode<'a>> {
+    /// `padded_height` tall. `data` is the file in as many pieces as it is
+    /// held in.
+    pub fn decode<'a>(&'a mut self, data: &'a [&'a [u8]], target: &'a mut Target<'_>) -> Result<Decode<'a>> {
         let frame = self.frame(data, |h, row_bytes| {
             let fits = target.rotation() == Rotation::R0
                 && target.format() == self.config.format
@@ -194,7 +215,7 @@ impl Decoder {
     /// The picture a band of rows at a time, through one or two buffers of
     /// `BUFFER_ALIGN`-aligned memory the 2D-DMA reaches. Rows are
     /// `padded_width` wide; strips are a multiple of 16 rows tall.
-    pub fn strips<'a, 'b: 'a>(&'a mut self, data: &'a [u8], buffers: &'a mut [&'b mut [u8]]) -> Result<Strips<'a>> {
+    pub fn strips<'a, 'b: 'a>(&'a mut self, data: &'a [&'a [u8]], buffers: &'a mut [&'b mut [u8]]) -> Result<Strips<'a>> {
         let frame = self.strip_frame(data, buffers)?;
         let header = frame.header;
         let Output::Strips(layout) = frame.output else { return Err(Error::INVALID_STATE) };
@@ -207,7 +228,7 @@ impl Decoder {
     /// row, or it is `INVALID_ARG`.
     pub fn render<'a, 'b: 'a>(
         &'a mut self,
-        data: &'a [u8],
+        data: &'a [&'a [u8]],
         buffers: &'a mut [&'b mut [u8]],
         transform: &Transform,
         target: &'a mut Target<'_>,
@@ -254,7 +275,7 @@ impl Decoder {
         Ok(Render { session: Some(backend::Session::new(frame)?), _borrow: PhantomData })
     }
 
-    fn strip_frame<'a>(&self, data: &'a [u8], buffers: &mut [&mut [u8]]) -> Result<Frame<'a>> {
+    fn strip_frame<'a>(&self, data: &'a [&'a [u8]], buffers: &mut [&mut [u8]]) -> Result<Frame<'a>> {
         if buffers.is_empty() || buffers.len() > MAX_STRIP_BUFFERS {
             return Err(Error::INVALID_ARG);
         }
@@ -279,6 +300,25 @@ impl Decoder {
             Ok(Output::Strips(Layout { buffers: ptrs, count, rows, strip_count }))
         })
     }
+}
+
+/// The header out of the pieces, joined only when the first ends inside it.
+fn head<'a>(data: &'a [&'a [u8]]) -> Result<(Header, Head<'a>)> {
+    let first = data.first().copied().unwrap_or_default();
+    match header::parse(first, None) {
+        Ok(header) => return Ok((header, Head::Lent(first))),
+        Err(err) if data.len() < 2 => return Err(err),
+        Err(_) => {}
+    }
+    let mut joined = Vec::new();
+    for part in data {
+        joined.try_reserve(part.len()).map_err(|_| Error::NO_MEM)?;
+        joined.extend_from_slice(part);
+        if let Ok(header) = header::parse(&joined, None) {
+            return Ok((header, Head::Joined(joined)));
+        }
+    }
+    Err(Error::INVALID_ARG)
 }
 
 /// A picture being decoded. Await it or `wait` for it; dropping it stops the

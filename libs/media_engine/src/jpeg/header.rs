@@ -138,8 +138,9 @@ impl Reader<'_> {
 }
 
 impl Header {
-    pub fn parse(data: &[u8]) -> Result<Self> {
-        parse(data, None)
+    /// From the file in as many pieces as it is held in.
+    pub fn parse(data: &[&[u8]]) -> Result<Self> {
+        super::head(data).map(|(header, _)| header)
     }
 }
 

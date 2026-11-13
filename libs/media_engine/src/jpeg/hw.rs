@@ -4,6 +4,7 @@
  */
 
 use alloc::boxed::Box;
+use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 use core::ffi::{CStr, c_void};
 use core::future::Future;
@@ -23,7 +24,7 @@ use idf::time::Instant;
 use idf::{Error, Result};
 
 use super::header::{self, Header, Sampling, Tables};
-use super::{Chain, Frame, Layout, Output};
+use super::{Chain, Frame, Head, Layout, Output};
 use crate::dma::{self, Descriptor, Fields};
 use crate::ppa::{Hook, Node, YuvRange, YuvStandard};
 use crate::{sys, wait};
@@ -148,6 +149,9 @@ struct Codec {
     placeholder: *mut sys::dma2d_trans_t,
     trans: UnsafeCell<sys::dma2d_trans_config_t>,
     tx: Descriptor,
+    /// Input descriptors after `tx`, one per further piece of a file, kept
+    /// once made.
+    tx_more: UnsafeCell<Vec<Descriptor>>,
     rx: [Descriptor; RX_POOL],
     setup: UnsafeCell<Setup>,
     tables: UnsafeCell<Tables>,
@@ -188,6 +192,7 @@ impl Codec {
             placeholder: dma::internal(unsafe { sys::dma2d_get_trans_elm_size() }, 4)?.cast(),
             trans: UnsafeCell::new(unsafe { mem::zeroed() }),
             tx: Descriptor::new()?,
+            tx_more: UnsafeCell::new(Vec::new()),
             rx: [Descriptor::new()?, Descriptor::new()?, Descriptor::new()?],
             setup: UnsafeCell::new(Setup { sampling: Sampling::Gray, csc: 0, scramble: 0, full: None }),
             tables: UnsafeCell::new(Tables::new()),
@@ -196,6 +201,18 @@ impl Codec {
             nodes: [UnsafeCell::new(Node::new()), UnsafeCell::new(Node::new())],
             state: Spinlock::new(State::new()),
         })
+    }
+
+    /// The `i`th input descriptor, made the first time it is needed; only
+    /// while the codec is held.
+    unsafe fn input(&self, i: usize) -> Result<Descriptor> {
+        let Some(i) = i.checked_sub(1) else { return Ok(self.tx) };
+        let more = unsafe { &mut *self.tx_more.get() };
+        while more.len() <= i {
+            more.try_reserve(1).map_err(|_| Error::NO_MEM)?;
+            more.push(Descriptor::new()?);
+        }
+        Ok(more[i])
     }
 
     fn dev(&self) -> *mut sys::jpeg_dev_t {
@@ -433,8 +450,10 @@ pub(super) struct Session {
     format: ImageFormat,
     setup: Setup,
     hb: u32,
-    data: *const u8,
-    len: usize,
+    /// When the header was lent in one piece.
+    head: (*const u8, usize),
+    joined: Option<Vec<u8>>,
+    data: (*const &'static [u8], usize),
     output: Output,
     chain: Option<Chain>,
     row_bytes: usize,
@@ -486,8 +505,12 @@ impl Session {
             format,
             setup: Setup { sampling: frame.header.sampling, csc, scramble, full },
             hb,
-            data: frame.data.as_ptr(),
-            len: frame.data.len(),
+            head: (frame.head.as_ptr(), frame.head.len()),
+            joined: match frame.head {
+                Head::Joined(head) => Some(head),
+                Head::Lent(_) => None,
+            },
+            data: (frame.data.as_ptr().cast(), frame.data.len()),
             output: frame.output,
             chain: frame.chain,
             row_bytes: frame.row_bytes,
@@ -533,7 +556,11 @@ impl Session {
     fn program(&self, codec: &Codec) -> Result<()> {
         let h = &self.header;
         let t = unsafe { &mut *codec.tables.get() };
-        header::parse(unsafe { core::slice::from_raw_parts(self.data, self.len) }, Some(t))?;
+        let head = match &self.joined {
+            Some(head) => head,
+            None => unsafe { core::slice::from_raw_parts(self.head.0, self.head.1) },
+        };
+        header::parse(head, Some(t))?;
         let dev = codec.dev();
         let hal = codec.hal.get();
         unsafe {
@@ -570,21 +597,39 @@ impl Session {
         let codec = codec();
         codec.interrupt()?;
         self.program(codec)?;
-        let scan = self.header.scan;
-        let left = (self.len - scan) as u32;
-        let input = unsafe { self.data.add(scan) };
-        unsafe {
-            codec.tx.write(&Fields {
-                block: (left & 0x3FFF, left & 0x3FFF),
-                picture: (left >> 14, left >> 14),
-                at: (0, 0),
-                two_d: false,
-                multiple: false,
-                eof: false,
-                pbyte: 1,
-                buffer: input,
-            });
-            let _ = cache::msync(input, left as usize, Flags::C2M | Flags::UNALIGNED);
+        let data = unsafe { core::slice::from_raw_parts(self.data.0, self.data.1) };
+        let mut skip = self.header.scan;
+        let (mut count, mut last) = (0, None::<Descriptor>);
+        for part in data {
+            if skip >= part.len() {
+                skip -= part.len();
+                continue;
+            }
+            let input = &part[skip..];
+            skip = 0;
+            let left = input.len() as u32;
+            let d = unsafe { codec.input(count) }?;
+            count += 1;
+            unsafe {
+                d.write(&Fields {
+                    block: (left & 0x3FFF, left & 0x3FFF),
+                    picture: (left >> 14, left >> 14),
+                    at: (0, 0),
+                    two_d: false,
+                    multiple: false,
+                    eof: false,
+                    pbyte: 1,
+                    buffer: input.as_ptr(),
+                });
+                if let Some(prev) = last {
+                    prev.link(Some(&d));
+                }
+                let _ = cache::msync(input.as_ptr(), input.len(), Flags::C2M | Flags::UNALIGNED);
+            }
+            last = Some(d);
+        }
+        if last.is_none() {
+            return Err(Error::INVALID_ARG);
         }
         let (strips, strip_count, linked) = match self.output {
             Output::Whole(ptr, len) => {

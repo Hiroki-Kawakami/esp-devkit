@@ -45,6 +45,7 @@ ppa.fill(&Fill { rect, color }, &mut target, &mut slot)?.wait()?;
 
 ```rust
 let mut dec = Decoder::new(&DecodeConfig { format: ImageFormat::Rgb565, yuv })?;
+let data = [&file[..]];                          // or the pieces it arrived in
 let header = Header::parse(&data)?;              // padded_width x padded_height is what it writes
 dec.decode(&data, &mut target)?.await?;          // or .wait()?
 
@@ -54,6 +55,9 @@ while let Some(strip) = strips.next().await? {   // or next_blocking()?
 }
 ```
 
+- The file comes as a list of pieces, read in order without being joined:
+  the 2D-DMA reads one descriptor per piece. Only a header that runs past
+  the first piece is joined, into a copy of its own.
 - Baseline JPEGs, gray or 4:4:4, 4:2:2 and 4:2:0 colour. A colour picture
   comes out as `Rgb888`, `Bgr888` or `Rgb565`, a gray one as `L8`; anything
   else is `NOT_SUPPORTED`. `yuv` picks studio or full range (what JFIF files

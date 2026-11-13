@@ -52,7 +52,15 @@ fn convert(src: &[u8], dst: &mut [u8], format: ImageFormat, gray: bool) {
 impl Session {
     pub(super) fn new(frame: Frame<'_>) -> Result<Self> {
         let h = &frame.header;
-        let mut decoder = JpegDecoder::open(SliceStream::new(frame.data), &DecodeOptions::default()).map_err(|_| Error::INVALID_ARG)?;
+        let joined;
+        let data = match frame.data {
+            [one] => one,
+            parts => {
+                joined = parts.concat();
+                &joined[..]
+            }
+        };
+        let mut decoder = JpegDecoder::open(SliceStream::new(data), &DecodeOptions::default()).map_err(|_| Error::INVALID_ARG)?;
         let info = decoder.info();
         let gray = info.format == ImageFormat::L8;
         let mut row = vec![0u8; info.row_bytes()];

@@ -51,7 +51,7 @@ fn picture(name: &'static str, w: usize, h: usize, subsampling: Subsampling) -> 
         error!(TAG, "{name}: encode: {err:?}");
         return None;
     }
-    let header = match Header::parse(&data) {
+    let header = match Header::parse(&[&data]) {
         Ok(h) => h,
         Err(err) => {
             error!(TAG, "{name}: header: {err}");
@@ -94,12 +94,13 @@ fn config(format: ImageFormat) -> DecodeConfig {
 fn whole(dec: &mut Decoder, p: &Picture, format: ImageFormat, out: &mut [u8]) -> idf::Result<()> {
     let size = Size::new(p.header.padded_width, p.header.padded_height);
     let mut target = Target::new(out, format, size, usize::from(p.header.padded_width)).ok_or(idf::Error::INVALID_ARG)?;
-    dec.decode(&p.data, &mut target)?.wait()
+    dec.decode(&[&p.data], &mut target)?.wait()
 }
 
 /// The checksum of the strips laid end to end.
 fn strips(dec: &mut Decoder, p: &Picture, buffers: &mut [&mut [u8]]) -> idf::Result<u32> {
-    let mut strips = dec.strips(&p.data, buffers)?;
+    let data = [&p.data[..]];
+    let mut strips = dec.strips(&data, buffers)?;
     let mut h = FNV_SEED;
     while let Some(strip) = strips.next_blocking()? {
         h = fnv_from(h, &strip.pixels()[..usize::from(strip.padded_rows()) * strip.stride_bytes()]);
@@ -108,7 +109,8 @@ fn strips(dec: &mut Decoder, p: &Picture, buffers: &mut [&mut [u8]]) -> idf::Res
 }
 
 fn released(dec: &mut Decoder, p: &Picture, buffers: &mut [&mut [u8]]) -> idf::Result<()> {
-    let mut strips = dec.strips(&p.data, buffers)?;
+    let data = [&p.data[..]];
+    let mut strips = dec.strips(&data, buffers)?;
     while strips.next_blocking()?.is_some() {}
     Ok(())
 }
