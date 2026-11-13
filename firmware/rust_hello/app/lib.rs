@@ -22,6 +22,7 @@ use idf::system::{CORE_COUNT, core_id};
 use idf::thread::{self, Builder};
 use idf::time::Instant;
 
+mod gcm;
 mod net;
 mod netbench;
 

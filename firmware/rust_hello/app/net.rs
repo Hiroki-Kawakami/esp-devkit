@@ -527,6 +527,7 @@ pub fn register_commands() {
         Ok(None)
     });
     harness_rs::register("cpu", cpu_command);
+    harness_rs::register("gcm", crate::gcm::command);
     harness_rs::register("udpflood", flood_command);
     harness_rs::register("diag", diag_command);
     #[cfg(CONFIG_SOC_WIFI_SUPPORTED)]

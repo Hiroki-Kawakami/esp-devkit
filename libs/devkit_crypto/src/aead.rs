@@ -37,6 +37,8 @@ pub struct Aead {
     key: Key,
     alg: u32,
     algorithm: Algorithm,
+    #[cfg(all(target_os = "none", CONFIG_SOC_AES_SUPPORT_GCM, CONFIG_SOC_AES_GDMA))]
+    hw: Option<crate::hw_gcm::Gcm>,
 }
 
 impl Aead {
@@ -46,7 +48,13 @@ impl Aead {
         }
         let (ty, alg) = algorithm.psa();
         let policy = Policy { ty, bits: key.len() * 8, usage: psa::USAGE_ENCRYPT | psa::USAGE_DECRYPT, alg, alg2: 0 };
-        Ok(Self { key: Key::import(&policy, key)?, alg, algorithm })
+        Ok(Self {
+            key: Key::import(&policy, key)?,
+            alg,
+            algorithm,
+            #[cfg(all(target_os = "none", CONFIG_SOC_AES_SUPPORT_GCM, CONFIG_SOC_AES_GDMA))]
+            hw: (algorithm != Algorithm::ChaCha20Poly1305).then(|| crate::hw_gcm::Gcm::new(key).ok()).flatten(),
+        })
     }
 
     pub fn algorithm(&self) -> Algorithm {
@@ -60,6 +68,10 @@ impl Aead {
     pub fn seal_in_place(&self, nonce: &[u8; NONCE], aad: &[u8], buf: &mut [u8], len: usize) -> Result<()> {
         if buf.len() < len + TAG {
             return Err(Error::InvalidLength);
+        }
+        #[cfg(all(target_os = "none", CONFIG_SOC_AES_SUPPORT_GCM, CONFIG_SOC_AES_GDMA))]
+        if let Some(sealed) = self.hw.as_ref().and_then(|hw| hw.seal(nonce, aad, buf, len)) {
+            return sealed;
         }
         let mut out = 0;
         let ptr = buf.as_mut_ptr();
@@ -84,6 +96,10 @@ impl Aead {
     pub fn open_in_place<'a>(&self, nonce: &[u8; NONCE], aad: &[u8], buf: &'a mut [u8]) -> Result<&'a mut [u8]> {
         if buf.len() < TAG {
             return Err(Error::InvalidLength);
+        }
+        #[cfg(all(target_os = "none", CONFIG_SOC_AES_SUPPORT_GCM, CONFIG_SOC_AES_GDMA))]
+        if let Some(opened) = self.hw.as_ref().and_then(|hw| hw.open(nonce, aad, buf)) {
+            return opened.map(|n| &mut buf[..n]);
         }
         let mut out = 0;
         let ptr = buf.as_mut_ptr();

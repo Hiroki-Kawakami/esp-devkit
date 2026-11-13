@@ -1,8 +1,16 @@
 # Cryptography: hashes, MACs, KDFs, ciphers, AEADs, key agreement, signatures,
 # X.509 and TLS 1.3.
 set(requires devkit idf rust_rt)
+set(headers "psa/crypto.h")
+set(options "")
 if(ESP_PLATFORM)
     list(APPEND requires mbedtls)
+    if(CONFIG_SOC_AES_SUPPORT_GCM AND CONFIG_SOC_AES_GDMA)
+        list(APPEND requires esp_hal_security esp_hw_support)
+        list(APPEND headers "aes/esp_aes.h" "hal/aes_hal.h" "hal/aes_ll.h" "esp_crypto_shared_gdma.h" "esp_memory_utils.h")
+        # Shadowed by macros that only work inside PERIPH_RCC_ATOMIC().
+        set(options "--blocklist-function=(aes_ll_enable_bus_clock|aes_ll_reset_register|esp_ptr_in_tcm)")
+    endif()
 endif()
 idf_component_register(SRCS "/dev/null" PRIV_REQUIRES ${requires})
 if(NOT ESP_PLATFORM)
@@ -35,5 +43,5 @@ elseif(CONFIG_DEVKIT_CRYPTO_CA_BUNDLE_PARTITION)
 endif()
 file(CONFIGURE OUTPUT "${out_dir}/ca_bundle.rs" CONTENT "${bundle_rs}" @ONLY)
 
-devkit_rust_crate(ROOT "src/lib.rs" TESTS OPT_LEVEL 2 BINDGEN_HEADERS "psa/crypto.h"
+devkit_rust_crate(ROOT "src/lib.rs" TESTS OPT_LEVEL 2 BINDGEN_HEADERS ${headers} BINDGEN_OPTIONS ${options}
     DEPENDS "${out_dir}/ca_bundle.rs" ${bundle_depends})

@@ -19,6 +19,8 @@ pub mod ecdsa;
 pub mod ed25519;
 mod error;
 pub mod hash;
+#[cfg(all(target_os = "none", CONFIG_SOC_AES_SUPPORT_GCM, CONFIG_SOC_AES_GDMA))]
+mod hw_gcm;
 pub mod kdf;
 pub mod mac;
 mod psa;
