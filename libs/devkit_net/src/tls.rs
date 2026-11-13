@@ -6,6 +6,7 @@
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::mem::MaybeUninit;
 use core::ops::DerefMut;
 use core::time::Duration;
 
@@ -194,10 +195,15 @@ impl TlsReader {
     }
 
     pub async fn read_async(&mut self, buf: &mut [u8]) -> Result<usize> {
+        self.read_uninit_async(crate::ring::uninit(buf)).await
+    }
+
+    /// As `read_async`, filling `buf` without it being initialized first.
+    pub async fn read_uninit_async(&mut self, buf: &mut [MaybeUninit<u8>]) -> Result<usize> {
         loop {
             {
                 let mut conn = self.shared.conn.lock();
-                let n = conn.read(buf).map_err(Error::Tls)?;
+                let n = conn.read_uninit(buf).map_err(Error::Tls)?;
                 if n > 0 || buf.is_empty() || conn.peer_closed() {
                     drop(conn);
                     if self.shared.has_pending_tx() {

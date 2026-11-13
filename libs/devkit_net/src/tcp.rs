@@ -6,6 +6,7 @@
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
+use core::mem::MaybeUninit;
 use core::net::{Ipv4Addr, SocketAddrV4};
 use core::ops::DerefMut;
 use core::time::Duration;
@@ -703,7 +704,7 @@ impl Stack {
 
     /// `None` when nothing can be read yet; `Ok(0)` at the end of the stream.
     #[cfg_attr(CONFIG_DEVKIT_NET_IRAM_OPT, unsafe(link_section = ".iram1.devkit_net"))]
-    pub(crate) fn tcp_read(&mut self, id: usize, buf: &mut [u8], now: Instant, tx: &mut Tx) -> Option<Result<usize>> {
+    pub(crate) fn tcp_read(&mut self, id: usize, buf: &mut [MaybeUninit<u8>], now: Instant, tx: &mut Tx) -> Option<Result<usize>> {
         self.with_tcb(id, |stack, tcb| {
             if tcb.rx.len() > 0 {
                 let n = tcb.rx.pop(buf.len().min(tcb.rx.len()), buf);
@@ -1250,7 +1251,7 @@ impl Stack {
                 out[20..24].copy_from_slice(&[2, 4, (mss >> 8) as u8, mss as u8]);
                 out[24..28].copy_from_slice(&if offer_scale { [1, 3, 3, scale] } else { [1, 1, 1, 1] });
             }
-            data.read_at(offset, &mut out[header..]);
+            data.read_at(offset, crate::ring::uninit(&mut out[header..]));
             finish(out, src, *remote.ip());
         });
         if result == Err(Error::WouldBlock) {

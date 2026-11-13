@@ -60,7 +60,7 @@ fn write(net: &mut Wires, end: End, id: usize, data: &[u8]) -> Option<crate::Res
 
 fn read(net: &mut Wires, end: End, id: usize, len: usize) -> Option<crate::Result<Vec<u8>>> {
     let mut buf = vec![0; len];
-    let r = net.with(end.0, |stack, now, tx| stack.tcp_read(id, &mut buf, now, tx))?;
+    let r = net.with(end.0, |stack, now, tx| stack.tcp_read(id, crate::ring::uninit(&mut buf), now, tx))?;
     Some(r.map(|n| buf[..n].to_vec()))
 }
 

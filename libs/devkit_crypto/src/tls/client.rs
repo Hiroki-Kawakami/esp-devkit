@@ -7,6 +7,7 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::mem::MaybeUninit;
 use core::ops::DerefMut;
 
 use devkit::ByteReader;
@@ -249,6 +250,11 @@ impl Connection {
     /// Application data received so far; 0 when there is none yet, or none
     /// will come (`peer_closed`).
     pub fn read(&mut self, out: &mut [u8]) -> Result<usize> {
+        self.0.read(unsafe { &mut *(out as *mut [u8] as *mut [MaybeUninit<u8>]) })
+    }
+
+    /// As `read`, filling `out` without it being initialized first.
+    pub fn read_uninit(&mut self, out: &mut [MaybeUninit<u8>]) -> Result<usize> {
         self.0.read(out)
     }
 
@@ -439,7 +445,7 @@ impl Inner {
         Ok(n)
     }
 
-    pub fn read(&mut self, out: &mut [u8]) -> Result<usize> {
+    fn read(&mut self, out: &mut [MaybeUninit<u8>]) -> Result<usize> {
         if self.app.0 == self.app.1 {
             self.process()?;
         }
@@ -450,7 +456,7 @@ impl Inner {
         }
         let (start, end, _) = self.app;
         let n = out.len().min(end - start);
-        out[..n].copy_from_slice(&self.rx[start..start + n]);
+        out[..n].write_copy_of_slice(&self.rx[start..start + n]);
         self.app.0 += n;
         if self.app.0 == self.app.1 {
             self.drop_record(self.app.2);

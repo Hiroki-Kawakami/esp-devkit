@@ -5,6 +5,7 @@
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
+use core::mem::MaybeUninit;
 use core::ops::DerefMut;
 
 use idf::heap::Caps;
@@ -119,7 +120,7 @@ impl Ring {
     }
 
     /// Copies held bytes from `offset` into `out`, as many as there are.
-    pub fn read_at(&self, offset: usize, out: &mut [u8]) -> usize {
+    pub fn read_at(&self, offset: usize, out: &mut [MaybeUninit<u8>]) -> usize {
         let n = out.len().min(self.len.saturating_sub(offset));
         if n == 0 {
             return 0;
@@ -127,8 +128,8 @@ impl Ring {
         let start = self.at(offset);
         let data = self.data.bytes();
         let first = n.min(data.len() - start);
-        out[..first].copy_from_slice(&data[start..start + first]);
-        out[first..n].copy_from_slice(&data[..n - first]);
+        out[..first].write_copy_of_slice(&data[start..start + first]);
+        out[first..n].write_copy_of_slice(&data[..n - first]);
         n
     }
 
@@ -140,10 +141,15 @@ impl Ring {
     }
 
     /// Takes `n` bytes and copies as many of them as fit into `out`.
-    pub fn pop(&mut self, n: usize, out: &mut [u8]) -> usize {
+    pub fn pop(&mut self, n: usize, out: &mut [MaybeUninit<u8>]) -> usize {
         let copy = n.min(out.len());
         let copied = self.read_at(0, &mut out[..copy]);
         self.discard(n);
         copied
     }
+}
+
+/// For writers that only ever store initialized bytes.
+pub(crate) fn uninit(buf: &mut [u8]) -> &mut [MaybeUninit<u8>] {
+    unsafe { &mut *(buf as *mut [u8] as *mut [MaybeUninit<u8>]) }
 }

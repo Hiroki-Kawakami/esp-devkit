@@ -159,7 +159,7 @@ impl Stack {
             return Some(Err(error));
         }
         let (from, len) = socket.queue.pop_front()?;
-        Some(Ok((socket.rx.pop(len, buf), from)))
+        Some(Ok((socket.rx.pop(len, crate::ring::uninit(buf)), from)))
     }
 
     /// Only connected sockets hear of errors (RFC 1122 4.1.3.3 leaves the

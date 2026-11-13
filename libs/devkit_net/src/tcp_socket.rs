@@ -6,6 +6,7 @@
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use core::future::Future;
+use core::mem::MaybeUninit;
 use core::net::{SocketAddr, SocketAddrV4};
 use core::ops::DerefMut;
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -16,6 +17,7 @@ use idf::heap::Caps;
 use idf::sync::MutexGuard;
 
 use crate::addr::{self, ToSocketAddrs};
+use crate::ring::uninit;
 use crate::net::{self, Inner, Net, wait_for};
 use crate::stack::SocketId;
 use crate::tcp::Buffers;
@@ -222,7 +224,7 @@ impl Conn {
         wait_for(self.net, SocketId::Tcp(self.id), |inner, _| inner.stack.tcp_readable_at(self.id, n).then_some(())).await
     }
 
-    async fn read(&self, buf: &mut [u8]) -> Result<usize> {
+    async fn read(&self, buf: &mut [MaybeUninit<u8>]) -> Result<usize> {
         if self.read_closed.load(Ordering::Relaxed) || buf.is_empty() {
             return Ok(0);
         }
@@ -319,14 +321,19 @@ impl TcpStream {
 
     /// `Ok(0)` once the peer has closed its side.
     pub fn read(&self, buf: &mut [u8]) -> Result<usize> {
-        blocking(self.conn.read(buf))
+        blocking(self.conn.read(uninit(buf)))
     }
 
     pub fn read_timeout(&self, buf: &mut [u8], timeout: Duration) -> Result<usize> {
-        blocking_timeout(timeout, self.conn.read(buf))
+        blocking_timeout(timeout, self.conn.read(uninit(buf)))
     }
 
     pub async fn read_async(&self, buf: &mut [u8]) -> Result<usize> {
+        self.conn.read(uninit(buf)).await
+    }
+
+    /// As `read_async`, filling `buf` without it being initialized first.
+    pub async fn read_uninit_async(&self, buf: &mut [MaybeUninit<u8>]) -> Result<usize> {
         self.conn.read(buf).await
     }
 
@@ -383,15 +390,15 @@ impl TcpReader {
     }
 
     pub fn read(&self, buf: &mut [u8]) -> Result<usize> {
-        blocking(self.conn.read(buf))
+        blocking(self.conn.read(uninit(buf)))
     }
 
     pub fn read_timeout(&self, buf: &mut [u8], timeout: Duration) -> Result<usize> {
-        blocking_timeout(timeout, self.conn.read(buf))
+        blocking_timeout(timeout, self.conn.read(uninit(buf)))
     }
 
     pub async fn read_async(&self, buf: &mut [u8]) -> Result<usize> {
-        self.conn.read(buf).await
+        self.conn.read(uninit(buf)).await
     }
 
     /// Locks the stack for `TcpReadLock::try_read`, waiting as a future does
@@ -421,7 +428,7 @@ impl TcpReadLock<'_> {
         }
         let now = net::now();
         let id = self.conn.id;
-        self.inner.with_tx(|stack, tx| stack.tcp_read(id, buf, now, tx))
+        self.inner.with_tx(|stack, tx| stack.tcp_read(id, uninit(buf), now, tx))
     }
 }
 
