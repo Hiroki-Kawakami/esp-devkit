@@ -40,7 +40,8 @@ struct Definition {
 }
 
 /// `fonts` names entries of `font`, several making a chain; a bundled base also
-/// defines them, in its own `font`. `icons` maps a name of `Icons` to an SVG.
+/// defines them, in its own `font`. `icons` maps a name of `Icons`, or any other
+/// name keys and styles refer to, to an SVG.
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 struct ThemeEntry {
@@ -178,7 +179,7 @@ struct ImageEntry {
 /// A theme after merging its base, ready for code generation.
 struct Theme {
     fonts: BTreeMap<String, Vec<String>>,
-    /// Each name of `Icons`, with the font it went to and its own symbol.
+    /// Each icon of the theme, with the font it went to and its own symbol.
     icons: BTreeMap<String, (String, String)>,
     light: BTreeMap<String, String>,
     dark: Option<BTreeMap<String, String>>,
@@ -291,6 +292,7 @@ struct Resolver<'a> {
     symbol: String,
     root: Value,
     colors: &'a BTreeMap<String, String>,
+    icons: &'a IconMap,
     styles: BTreeMap<String, String>,
     used_vars: BTreeSet<String>,
     used_fonts: BTreeSet<String>,
@@ -328,7 +330,7 @@ impl Resolver<'_> {
             return Ok(Token::Color(format!("colors::{}", color.to_uppercase())));
         }
         if let Some(icon) = text.strip_prefix("icon.") {
-            if !THEME_ICONS.contains(&icon) {
+            if !self.icons.contains_key(icon) {
                 return Err(self.error(path, format!("no icon {icon}")));
             }
             return Ok(Token::Icon(icon.to_string()));
@@ -501,7 +503,7 @@ impl Resolver<'_> {
         if key.icon.is_some() && key.label.is_some() {
             return Err(error(self, "needs at most one of 'icon' or 'label'"));
         }
-        if key.icon.as_deref().is_some_and(|icon| !THEME_ICONS.contains(&icon)) {
+        if key.icon.as_deref().is_some_and(|icon| !self.icons.contains_key(icon)) {
             return Err(error(self, "no such icon"));
         }
         let layer = key.action.as_deref().and_then(|action| action.strip_prefix("layer."));
@@ -795,6 +797,7 @@ fn merge_themes(definition: &mut Definition, base: &Path, fonts_dir: &Path) -> R
             symbol: name.to_uppercase(),
             root: json!({ "vars": merged.vars, "widgets": merged.widgets }),
             colors: &light,
+            icons: &merged.icons,
             styles: BTreeMap::new(),
             used_vars: BTreeSet::new(),
             used_fonts: BTreeSet::new(),
@@ -853,14 +856,21 @@ fn merge_themes(definition: &mut Definition, base: &Path, fonts_dir: &Path) -> R
             fonts.insert(slot.to_string(), chain);
         }
 
+        for icon in THEME_ICONS {
+            if !merged.icons.contains_key(icon) {
+                return Err(format!("theme.{name}.icons.{icon}: missing"));
+            }
+        }
         let mut sets: BTreeMap<u16, IconMap> = BTreeMap::new();
         let mut icons = BTreeMap::new();
-        for icon in THEME_ICONS {
-            let file = merged.icons.get(icon).ok_or_else(|| format!("theme.{name}.icons.{icon}: missing"))?;
+        for (icon, file) in &merged.icons {
+            if !is_ident(icon) {
+                return Err(format!("theme.{name}.icons.{icon}: not an identifier"));
+            }
             let size = merged.icon_size.get(icon).copied().unwrap_or(DEFAULT_ICON_SIZE);
             let symbol = format!("{lower}_{icon}");
             sets.entry(size).or_default().insert(symbol.clone(), file.clone());
-            icons.insert(icon.to_string(), (format!("{lower}_icons_{size}"), symbol));
+            icons.insert(icon.clone(), (format!("{lower}_icons_{size}"), symbol));
         }
         for (size, set) in sets {
             files.extend(set.values().map(PathBuf::from));
@@ -882,6 +892,9 @@ fn merge_themes(definition: &mut Definition, base: &Path, fonts_dir: &Path) -> R
     if let Some((_, first)) = themes.first_key_value() {
         for (name, theme) in &themes {
             check_same_colors(&format!("theme.{name}.colors.light"), &first.light, &theme.light)?;
+            if let Some(icon) = first.icons.keys().chain(theme.icons.keys()).find(|icon| !first.icons.contains_key(*icon) || !theme.icons.contains_key(*icon)) {
+                return Err(format!("theme.{name}.icons.{icon}: every theme needs the same icons"));
+            }
         }
     }
     Ok((themes, files))

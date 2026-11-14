@@ -330,7 +330,8 @@ let config = AppConfig::new(&resources::TOUCH);
   in only if the theme still uses them.
 - `icons` maps the names of `Icons` to SVG files, and `icon_size` their sizes in
   pixels, 40 by default. Icons of one size share a font, and a replaced file is
-  left out.
+  left out. Any other name adds an icon for keys and `icon.x`; every theme has
+  the same names.
 - `colors` has `light` and optionally `dark`, each names as `#rrggbb` or
   `#rrggbbaa`. The names of `Palette` are required, and any other name adds a
   color, `resources::colors::MUTED` for `muted`. `light` and `dark` of every
@@ -431,7 +432,7 @@ let config = AppConfig::new(&resources::TOUCH);
 
   | field | is |
   |---|---|
-  | `icon` | a name of `Icons` |
+  | `icon` | an icon of the theme |
   | `label` | text on the key; with no `icon` or `label` the key is blank |
   | `action` | a `TextInput` value to send, or `layer.x` to change to the layer with that `id` |
   | `once` | of `layer.x`: back to the previous layer after one character |
