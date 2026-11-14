@@ -20,6 +20,7 @@ pub mod pipeline;
 mod pixel;
 mod planes;
 mod png;
+mod qr;
 mod raw_encode;
 mod recolor;
 mod resize;
@@ -42,6 +43,7 @@ pub use jpeg_encode::{JpegEncoder, JpegOptions, Subsampling, jpeg_buffer_upper_b
 pub use mem::{Buffer, default_caps, internal_caps};
 pub use planes::{PlaneLayout, Planes};
 pub use png::PngDecoder;
+pub use qr::{Ecc, QrOptions, qr_image};
 pub use raw_encode::{RawEncoder, RawFormat};
 pub use recolor::{GammaIn, GammaOut, Luma, Recolor, RecolorOptions};
 pub use resize::{

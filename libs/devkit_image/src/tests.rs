@@ -1759,3 +1759,123 @@ fn next_planes_refuses_the_middle_of_a_band() {
     assert!(d.next_row(&mut row).unwrap());
     assert_eq!(d.next_planes().err(), Some(Error::InvalidState));
 }
+
+fn qr_rows(qr: &qr::QrCode) -> Vec<String> {
+    (0..qr.size).map(|y| (0..qr.size).map(|x| if qr.dark(x, y) { '#' } else { '.' }).collect()).collect()
+}
+
+#[test]
+fn qr_matches_reference() {
+    let hello = [
+        "#######.##....#######",
+        "#.....#.#..#..#.....#",
+        "#.###.#.#..##.#.###.#",
+        "#.###.#.#.....#.###.#",
+        "#.###.#.#.#...#.###.#",
+        "#.....#...#...#.....#",
+        "#######.#.#.#.#######",
+        "........#............",
+        ".##.#.##....#.#.#####",
+        ".#......####....#...#",
+        "..##.###.##...#.##...",
+        ".##.##.#..##.#.#.###.",
+        "#...#.#.#.###.###.#.#",
+        "........##.#..#...#.#",
+        "#######.#.#....#.##..",
+        "#.....#..#.##.##.#...",
+        "#.###.#.#.#...#######",
+        "#.###.#..#.#.#.#...#.",
+        "#.###.#.#..#.###.#..#",
+        "#.....#.#.####...#.##",
+        "#######....#.###....#",
+    ];
+    let qr = qr::QrCode::encode(b"HELLO WORLD", Ecc::Q, None).unwrap();
+    assert_eq!((qr.version, qr.mask), (1, 0));
+    assert_eq!(qr_rows(&qr), hello);
+
+    let url = [
+        "#######.###.#..###....#######",
+        "#.....#..##.###.###.#.#.....#",
+        "#.###.#.###.#.######..#.###.#",
+        "#.###.#...###.#..##...#.###.#",
+        "#.###.#..#..####..#...#.###.#",
+        "#.....#.##.#...#.#....#.....#",
+        "#######.#.#.#.#.#.#.#.#######",
+        ".........##...###.#.#........",
+        "#.#...##..##.##....##..#..#.#",
+        "#.#..#.#####.##..#.#####...##",
+        "...##.#...###..#.###.##.###.#",
+        "..####...##..#....###..###...",
+        "..##.##..#...#.##...#.##....#",
+        "#.##.#.#........#.##..##...##",
+        "##..###......##.##.#....#...#",
+        "#..#.#..#..#..###...#........",
+        ".###.##.#..####...#.#.##....#",
+        "..####.#..#.###..####.##..###",
+        "##.##.##.#.#...#...#..####..#",
+        "..#.##.#..##.#....####..#....",
+        "###.######.###.##...######.#.",
+        "........##..#...###.#...###.#",
+        "#######.#....##.###.#.#.#...#",
+        "#.....#..#..#.###..##...#...#",
+        "#.###.#...#.###.#.########...",
+        "#.###.#...###.#..####..#####.",
+        "#.###.#.##.....#.#.###..#..##",
+        "#.....#..#.##.....#.####.#...",
+        "#######.##..#.##..#.##..##..#",
+    ];
+    let qr = qr::QrCode::encode(b"https://example.com/devkit?x=1", Ecc::M, None).unwrap();
+    assert_eq!((qr.version, qr.mask), (3, 1));
+    assert_eq!(qr_rows(&qr), url);
+}
+
+#[test]
+fn qr_picks_the_smallest_version() {
+    let version = |data: &[u8], ecc| qr::QrCode::encode(data, ecc, Some(0)).map(|q| q.version);
+    assert_eq!(version(&[b'a'; 17], Ecc::L), Ok(1));
+    assert_eq!(version(&[b'a'; 18], Ecc::L), Ok(2));
+    assert_eq!(version(&[b'7'; 41], Ecc::L), Ok(1));
+    assert_eq!(version(&[b'7'; 42], Ecc::L), Ok(2));
+    assert_eq!(version(&[b'A'; 25], Ecc::L), Ok(1));
+    assert_eq!(version(&[b'A'; 26], Ecc::L), Ok(2));
+    assert_eq!(version(&[b'a'; 7], Ecc::H), Ok(1));
+    assert_eq!(version(&[b'a'; 8], Ecc::H), Ok(2));
+    assert_eq!(version(&[b'a'; 2953], Ecc::L), Ok(40));
+    assert_eq!(version(&[b'a'; 2954], Ecc::L).err(), Some(Error::TooLarge));
+    assert_eq!(qr::QrCode::encode(b"a", Ecc::L, Some(8)).err(), Some(Error::InvalidArgument));
+}
+
+#[test]
+fn qr_reed_solomon_leaves_no_remainder() {
+    let mut divisor = [0; 30];
+    let mut rem = [0; 30];
+    let mut zero = [0; 30];
+    for n in [7, 10, 17, 30] {
+        qr::rs_divisor(&mut divisor[..n]);
+        let mut block: Vec<u8> = (0..40u8).map(|i| i.wrapping_mul(37) ^ 0x5a).collect();
+        qr::rs_remainder(&block, &divisor[..n], &mut rem[..n]);
+        block.extend_from_slice(&rem[..n]);
+        qr::rs_remainder(&block, &divisor[..n], &mut zero[..n]);
+        assert!(zero[..n].iter().all(|&b| b == 0), "degree {n}");
+    }
+}
+
+#[test]
+fn qr_image_scales_modules_inside_the_border() {
+    let options = QrOptions { ecc: Ecc::Q, scale: 3, border: 2, caps: None };
+    let image = qr_image(b"HELLO WORLD", &options).unwrap();
+    let qr = qr::QrCode::encode(b"HELLO WORLD", Ecc::Q, None).unwrap();
+    let side = (21 + 2 * 2) * 3;
+    assert_eq!((image.format(), image.width(), image.height()), (ImageFormat::A8, side, side));
+    let pixels = image.pixels();
+    for y in 0..usize::from(side) {
+        for x in 0..usize::from(side) {
+            let (mx, my) = ((x / 3).wrapping_sub(2), (y / 3).wrapping_sub(2));
+            let dark = mx < 21 && my < 21 && qr.dark(mx, my);
+            assert_eq!(pixels[y * usize::from(side) + x], if dark { 0xff } else { 0 }, "{x},{y}");
+        }
+    }
+    assert_eq!(qr_image(b"a", &QrOptions { scale: 0, ..options }).err(), Some(Error::InvalidArgument));
+    assert_eq!(qr_image(&[b'a'; 2953], &QrOptions { scale: 400, ..options }).err(), Some(Error::TooLarge));
+}
+
