@@ -214,6 +214,30 @@ impl<S: Sample> Inner<S> {
         self.writable.give();
     }
 
+    fn skip(&self, frames: usize, fade: usize) -> usize {
+        let (channels, capacity) = (self.channels, self.capacity);
+        let mut state = self.state.lock();
+        let frames = frames.min(state.count.saturating_sub(fade));
+        if frames == 0 {
+            return 0;
+        }
+        let head = state.head;
+        // Backwards: with `fade` above `frames` the faded-out frames overlap the ones written.
+        for i in (0..fade).rev() {
+            let from = (head + i) % capacity * channels;
+            let to = (head + frames + i) % capacity * channels;
+            let (out, into) = ((fade - i) as i64, i as i64);
+            for c in 0..channels {
+                let mixed = i64::from(state.buf[from + c].load()) * out + i64::from(state.buf[to + c].load()) * into;
+                state.buf[to + c] = S::store(mixed / fade as i64);
+            }
+        }
+        state.head = (head + frames) % capacity;
+        state.count -= frames;
+        self.writable.give();
+        frames
+    }
+
     fn abort(&self) {
         self.state.lock().aborted = true;
         self.readable.give();
@@ -264,6 +288,13 @@ impl<S: Sample> Reader<S> {
 
     pub fn flush(&self) {
         self.0.flush();
+    }
+
+    /// Drops `frames` from the head, crossfading over the `fade` frames after
+    /// them, unlike `flush` keeping the prefill state and the generation.
+    /// Leaves at least `fade` frames queued; returns the frames dropped.
+    pub fn skip(&self, frames: usize, fade: usize) -> usize {
+        self.0.skip(frames, fade)
     }
 
     pub fn abort(&self) {

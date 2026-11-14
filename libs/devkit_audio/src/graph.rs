@@ -137,6 +137,7 @@ trait FifoOut: Send {
     fn level(&self) -> usize;
     fn primed(&self) -> bool;
     fn generation(&self) -> u32;
+    fn skip(&self, frames: usize, fade: usize) -> usize;
 }
 
 impl<S: Sample> FifoOut for Reader<S> {
@@ -154,6 +155,10 @@ impl<S: Sample> FifoOut for Reader<S> {
 
     fn generation(&self) -> u32 {
         Reader::generation(self)
+    }
+
+    fn skip(&self, frames: usize, fade: usize) -> usize {
+        Reader::skip(self, frames, fade)
     }
 }
 
@@ -641,9 +646,15 @@ impl Graph<'_> {
             d.drift.reset();
             let _ = d.control.set_adjust(0.0);
         }
-        if primed {
-            let ppm = d.drift.update(level, elapsed);
-            let _ = d.control.set_adjust(ppm);
+        if !primed {
+            return;
+        }
+        let ppm = d.drift.update(level, elapsed);
+        let _ = d.control.set_adjust(ppm);
+        let (skip, fade) = (d.drift.take_skip(), d.drift.skip_fade_frames());
+        if skip != 0 {
+            let Kind::Fifo { output, .. } = &self.nodes[fifo].kind else { return };
+            output.skip(skip, fade);
         }
     }
 

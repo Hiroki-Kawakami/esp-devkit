@@ -21,6 +21,11 @@ pub struct DriftConfig {
     pub max_ppm: f32,
     /// Level low-pass time constant; 0 = 500.
     pub smoothing_ms: u32,
+    /// A smoothed level further than this above the target is cut back to the
+    /// target at once; 0 = never.
+    pub skip_threshold_frames: usize,
+    /// Frames a cut crossfades over.
+    pub skip_fade_frames: usize,
 }
 
 /// PI controller from a buffer fill level to a resampler adjustment in ppm.
@@ -31,6 +36,7 @@ pub struct Drift {
     integral: f32,
     ppm: f32,
     started: bool,
+    skip: usize,
 }
 
 fn or_default(value: f32, default: f32) -> f32 {
@@ -46,7 +52,7 @@ impl Drift {
             smoothing_ms: if config.smoothing_ms == 0 { DEFAULT_SMOOTHING_MS } else { config.smoothing_ms },
             ..*config
         };
-        Self { config, level_ms: 0.0, integral: 0.0, ppm: 0.0, started: false }
+        Self { config, level_ms: 0.0, integral: 0.0, ppm: 0.0, started: false, skip: 0 }
     }
 
     pub fn reset(&mut self) {
@@ -54,10 +60,21 @@ impl Drift {
         self.integral = 0.0;
         self.ppm = 0.0;
         self.started = false;
+        self.skip = 0;
     }
 
     pub fn ppm(&self) -> f32 {
         self.ppm
+    }
+
+    /// Frames the last `update` asked to cut from the buffer, once. The drift
+    /// already counts them as gone.
+    pub fn take_skip(&mut self) -> usize {
+        core::mem::take(&mut self.skip)
+    }
+
+    pub fn skip_fade_frames(&self) -> usize {
+        self.config.skip_fade_frames
     }
 
     /// `elapsed_frames`: frames the level's consumer took since the last update.
@@ -73,7 +90,13 @@ impl Drift {
             self.level_ms = level_ms;
             self.started = true;
         }
-        let error_ms = self.level_ms - c.target_frames as f32 * ms_per_frame;
+        let target_ms = c.target_frames as f32 * ms_per_frame;
+        let threshold_ms = c.skip_threshold_frames as f32 * ms_per_frame;
+        if c.skip_threshold_frames != 0 && self.level_ms - target_ms > threshold_ms && level > c.target_frames {
+            self.skip = level - c.target_frames;
+            self.level_ms = target_ms;
+        }
+        let error_ms = self.level_ms - target_ms;
         self.integral = (self.integral + c.ki * error_ms * elapsed_ms * 1e-3).clamp(-c.max_ppm, c.max_ppm);
         self.ppm = (c.kp * error_ms + self.integral).clamp(-c.max_ppm, c.max_ppm);
         self.ppm

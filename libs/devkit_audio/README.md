@@ -72,7 +72,9 @@ loop {
 
 A resampler given a drift steers its ratio from the fill level of the FIFO
 upstream of it. The drift holds while that FIFO is filling to its prefill, and
-starts over after `flush`.
+starts over after `flush`. A drift with a skip threshold also cuts a level that
+jumped far above the target back to it, through the FIFO's `skip`, keeping the
+rate it has learned.
 
 ## Codecs
 

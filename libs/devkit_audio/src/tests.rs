@@ -450,6 +450,55 @@ fn drift_absorbs_clock_offset() {
 }
 
 #[test]
+fn fifo_skip_crossfades() {
+    let (mut w, mut r) = fifo_of(16, 4, Underrun::Silence, Overrun::Block);
+    w.write(&[10, 20, 30, 40, 50, 60, 70, 80]).unwrap();
+    let generation = r.generation();
+    assert_eq!(r.skip(2, 4), 2);
+    assert_eq!(r.level(), 6);
+    let mut out = [0i16; 6];
+    r.read(&mut out).unwrap();
+    assert_eq!(out, [10, 25, 40, 55, 70, 80], "fades from the head into the frames after the cut");
+    w.write(&[1, 2, 3, 4, 5, 6]).unwrap();
+    assert_eq!(r.skip(100, 4), 2, "leaves the fade queued");
+    assert_eq!(r.level(), 4);
+    assert_eq!(r.skip(1, 4), 0);
+    assert!(r.primed());
+    assert_eq!(r.generation(), generation, "keeps the generation");
+}
+
+#[test]
+fn drift_cuts_a_jump() {
+    let rate = 48000;
+    let (mut w, r) = fifo_of(48000, 960, Underrun::Silence, Overrun::DropOldest);
+    let (rs, _) = resampler(ResamplerKind::Cubic, rate, rate, 1);
+    let config = DriftConfig { sample_rate: rate, target_frames: 960, skip_threshold_frames: 1920, skip_fade_frames: 240, ..Default::default() };
+    let drift = Drift::new(&config);
+    let mut g = GraphBuilder::new(&GraphConfig { max_frames: 480, caps: Caps::DEFAULT });
+    let fn_ = g.add_fifo(r);
+    let rn = g.add_resampler(fn_, rs, Some(drift));
+    let mut g = g.build().unwrap();
+
+    let mut block = vec![0i16; 9600];
+    let (mut produced, mut written, mut settled, mut level) = (0f64, 0usize, 0f32, 0usize);
+    for i in 0..12100 {
+        if i == 12000 {
+            settled = g.drift_ppm(rn).unwrap();
+            assert!((settled - 150.0).abs() < 15.0, "drift settles on the clock offset");
+        }
+        let extra = if i == 12000 { 8000 } else { 0 };
+        produced += 480.0 * 1.00015;
+        let n = produced as usize - written;
+        w.write(&block[..n + extra]).unwrap();
+        written += n;
+        level = w.level();
+        g.read(rn, &mut block[..480]).unwrap();
+    }
+    assert!(level.abs_diff(960) < 200, "jump cut back to the target ({level})");
+    assert!((g.drift_ppm(rn).unwrap() - settled).abs() < 50.0, "the learned rate survives the cut");
+}
+
+#[test]
 fn adpcm_roundtrip() {
     let cfg = AdpcmConfig { channels: 2, block_align: 1024 };
     let spb = cfg.block_frames();
