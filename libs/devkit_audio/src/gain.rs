@@ -9,7 +9,7 @@ use core::marker::PhantomData;
 use devkit::math::lrintf;
 use idf::heap::Caps;
 
-use crate::sample::check_channels;
+use crate::sample::{check_channels, mulh, mulh_scale, shift_sat};
 use crate::sync::Shared;
 use crate::{Error, Format, Result, Sample};
 
@@ -17,7 +17,6 @@ pub const GAIN_MAX: f32 = 127.0;
 
 const GAIN_Q: u32 = 24;
 const GAIN_UNITY: i32 = 1 << GAIN_Q;
-const GAIN_HALF: i64 = 1 << (GAIN_Q - 1);
 
 #[derive(Clone, Copy, Debug)]
 pub struct GainConfig {
@@ -50,6 +49,7 @@ pub struct Gain<S: Sample> {
     target_q: i32,
     step_q: i32,
     fade_remaining: u32,
+    scale: (u32, i32),
     _sample: PhantomData<S>,
 }
 
@@ -84,6 +84,7 @@ impl<S: Sample> Gain<S> {
             target_q: q,
             step_q: 0,
             fade_remaining: 0,
+            scale: mulh_scale(q, GAIN_Q),
             _sample: PhantomData,
         };
         Ok((gain, GainControl { shared }))
@@ -123,6 +124,7 @@ impl<S: Sample> Gain<S> {
             self.fade_remaining = frames;
             self.step_q = (target_q - self.current_q) / frames as i32;
         }
+        self.scale = mulh_scale(self.current_q.max(target_q), GAIN_Q);
     }
 
     pub fn process(&mut self, input: &[S], output: &mut [S]) {
@@ -147,7 +149,7 @@ impl<S: Sample> Gain<S> {
     // Monomorphized here, so the loop builds at this crate's level and not at
     // the caller's.
     unsafe fn run(&mut self, input: *const S, output: *mut S, samples: usize) {
-        let fade = Fade { channels: self.channels, g: self.current_q, remaining: self.fade_remaining, step: self.step_q, target: self.target_q };
+        let fade = Fade { channels: self.channels, g: self.current_q, remaining: self.fade_remaining, step: self.step_q, target: self.target_q, scale: self.scale };
         let (g, remaining) = unsafe {
             match S::FORMAT {
                 Format::S16 => run_s16(fade, input.cast(), output.cast(), samples),
@@ -166,6 +168,7 @@ struct Fade {
     remaining: u32,
     step: i32,
     target: i32,
+    scale: (u32, i32),
 }
 
 #[inline(never)]
@@ -181,6 +184,7 @@ unsafe fn run_s32(fade: Fade, input: *const i32, output: *mut i32, samples: usiz
 #[inline(always)]
 unsafe fn run<S: Sample>(fade: Fade, input: *const S, output: *mut S, samples: usize) -> (i32, u32) {
     let channels = fade.channels;
+    let (n, shift) = fade.scale;
     let mut g = fade.g;
     let mut remaining = fade.remaining;
     for f in 0..samples / channels {
@@ -191,10 +195,11 @@ unsafe fn run<S: Sample>(fade: Fade, input: *const S, output: *mut S, samples: u
                 g = fade.target;
             }
         }
+        let m = g << n;
         for ch in 0..channels {
             let i = f * channels + ch;
-            let x = i64::from(unsafe { *input.add(i) }.load());
-            unsafe { *output.add(i) = S::store((x * i64::from(g) + GAIN_HALF) >> GAIN_Q) };
+            let x = unsafe { *input.add(i) }.load();
+            unsafe { *output.add(i) = S::store32(shift_sat(mulh(x, m), shift)) };
         }
     }
     (g, remaining)

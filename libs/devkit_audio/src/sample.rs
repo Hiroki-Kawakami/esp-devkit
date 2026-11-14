@@ -85,6 +85,8 @@ pub trait Sample: Copy + Default + PartialEq + Send + Sync + Zeroable + 'static 
     fn load(self) -> i32;
     /// From a working value, rounded and saturated.
     fn store(v: i64) -> Self;
+    /// [`Self::store`] of a working value already in 32 bits.
+    fn store32(v: i32) -> Self;
     fn pcm(data: &[Self]) -> Pcm<'_>;
     fn pcm_mut(data: &mut [Self]) -> PcmMut<'_>;
     fn from_pcm(pcm: Pcm<'_>) -> Option<&[Self]>;
@@ -102,6 +104,11 @@ impl Sample for i16 {
     #[inline(always)]
     fn store(v: i64) -> Self {
         ((v + (1 << (S16_SHIFT - 1))) >> S16_SHIFT).clamp(i64::from(i16::MIN), i64::from(i16::MAX)) as i16
+    }
+
+    #[inline(always)]
+    fn store32(v: i32) -> Self {
+        (((v >> (S16_SHIFT - 1)) + 1) >> 1).clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
     }
 
     fn pcm(data: &[Self]) -> Pcm<'_> {
@@ -140,6 +147,11 @@ impl Sample for i32 {
         sat32(v)
     }
 
+    #[inline(always)]
+    fn store32(v: i32) -> Self {
+        v
+    }
+
     fn pcm(data: &[Self]) -> Pcm<'_> {
         Pcm::S32(data)
     }
@@ -161,6 +173,49 @@ impl Sample for i32 {
             PcmMut::S16(_) => None,
         }
     }
+}
+
+/// The high word of `a * b`: one `mulh` on RV32.
+#[inline(always)]
+pub(crate) fn mulh(a: i32, b: i32) -> i32 {
+    ((i64::from(a) * i64::from(b)) >> 32) as i32
+}
+
+/// [`mulh`] rounded to nearest: exact products stay exact and the rest carry
+/// no bias.
+#[inline(always)]
+pub(crate) fn mulh_round(a: i32, b: i32) -> i32 {
+    mulh(a, b).wrapping_add((a.wrapping_mul(b) as u32 >> 31) as i32)
+}
+
+/// `v * 2^shift`, saturating when `shift` is positive and rounding when it is
+/// negative.
+#[inline(always)]
+pub(crate) fn shift_sat(v: i32, shift: i32) -> i32 {
+    if shift > 0 {
+        if v > i32::MAX >> shift {
+            i32::MAX
+        } else if v < i32::MIN >> shift {
+            i32::MIN
+        } else {
+            v << shift
+        }
+    } else if shift == 0 {
+        v
+    } else {
+        let s = -shift;
+        ((v >> (s - 1)) + 1) >> 1
+    }
+}
+
+/// A Q`q` coefficient as a `mulh` multiplier and the shift that brings the
+/// product back to the input's scale, over every coefficient that shares it.
+pub(crate) fn mulh_scale(max_abs: i32, q: u32) -> (u32, i32) {
+    if max_abs == 0 {
+        return (0, 0);
+    }
+    let n = (max_abs as u32).leading_zeros() - 1;
+    (n, 32 - q as i32 - n as i32)
 }
 
 #[inline(always)]

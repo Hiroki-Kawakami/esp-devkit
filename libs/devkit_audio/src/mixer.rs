@@ -10,13 +10,12 @@ use core::marker::PhantomData;
 use devkit::math::lrintf;
 use idf::heap::{self, Caps};
 
-use crate::sample::{Format, check_channels};
+use crate::sample::{Format, check_channels, mulh, mulh_scale, shift_sat};
 use crate::sync::Shared;
 use crate::{Error, MAX_CHANNELS, Result, Sample};
 
 const MIX_Q: u32 = 24;
 const MIX_UNITY: i32 = 1 << MIX_Q;
-const MIX_HALF: i64 = 1 << (MIX_Q - 1);
 const MIX_MAX: f32 = 127.0;
 
 #[derive(Clone, Copy, Debug)]
@@ -29,6 +28,7 @@ pub struct MixerConfig<'a> {
 struct Input {
     channels: usize,
     active: Vec<i32, Caps>,
+    scaled: Vec<i32, Caps>,
     identity: bool,
 }
 
@@ -41,6 +41,7 @@ pub struct Mixer<S: Sample> {
     out_channels: usize,
     inputs: Vec<Input, Caps>,
     sources: Vec<usize, Caps>,
+    shift: i32,
     _sample: PhantomData<S>,
 }
 
@@ -92,14 +93,17 @@ impl<S: Sample> Mixer<S> {
             default_matrix(&mut m, out_channels, channels);
             let mut active = heap::try_vec(count, caps)?;
             active.extend_from_slice(&m);
+            let mut scaled = heap::try_vec(count, caps)?;
+            scaled.resize(count, 0);
             let identity = is_identity(&m, out_channels, channels);
-            inputs.push(Input { channels, active, identity });
+            inputs.push(Input { channels, active, scaled, identity });
             pending.push(m);
         }
         let mut sources = heap::try_vec(inputs.len(), caps)?;
         sources.resize(inputs.len(), 0);
         let shared = Shared::new(pending, caps)?;
-        let mixer = Self { shared: shared.clone(), out_channels, inputs, sources, _sample: PhantomData };
+        let mut mixer = Self { shared: shared.clone(), out_channels, inputs, sources, shift: 0, _sample: PhantomData };
+        mixer.rescale();
         Ok((mixer, MixerControl { shared, out_channels }))
     }
 
@@ -121,6 +125,19 @@ impl<S: Sample> Mixer<S> {
             input.active.copy_from_slice(m);
             input.identity = is_identity(m, self.out_channels, input.channels);
         }
+        drop(pending);
+        self.rescale();
+    }
+
+    fn rescale(&mut self) {
+        let max = self.inputs.iter().flat_map(|input| input.active.iter()).map(|c| c.unsigned_abs()).max().unwrap_or(0);
+        let (n, shift) = mulh_scale(max as i32, MIX_Q);
+        for input in &mut self.inputs {
+            for (s, &c) in input.scaled.iter_mut().zip(&input.active) {
+                *s = c << n;
+            }
+        }
+        self.shift = shift;
     }
 
     fn frames(&self, inputs: &[Option<&[S]>], output: &[S]) -> usize {
@@ -187,44 +204,61 @@ impl<S: Sample> Mixer<S> {
             *s = input(n).map_or(0, |p| p as usize);
         }
         match S::FORMAT {
-            Format::S16 => unsafe { run_s16(&self.inputs, &self.sources, self.out_channels, output.cast(), frames) },
-            Format::S32 => unsafe { run_s32(&self.inputs, &self.sources, self.out_channels, output.cast(), frames) },
+            Format::S16 => unsafe { run_s16(&self.inputs, &self.sources, self.out_channels, self.shift, output.cast(), frames) },
+            Format::S32 => unsafe { run_s32(&self.inputs, &self.sources, self.out_channels, self.shift, output.cast(), frames) },
         }
     }
 }
 
 #[inline(never)]
-unsafe fn run_s16(inputs: &[Input], sources: &[usize], out_ch: usize, output: *mut i16, frames: usize) {
-    unsafe { mix(inputs, sources, out_ch, output, frames) }
+unsafe fn run_s16(inputs: &[Input], sources: &[usize], out_ch: usize, shift: i32, output: *mut i16, frames: usize) {
+    unsafe { mix(inputs, sources, out_ch, shift, output, frames) }
 }
 
 #[inline(never)]
-unsafe fn run_s32(inputs: &[Input], sources: &[usize], out_ch: usize, output: *mut i32, frames: usize) {
-    unsafe { mix(inputs, sources, out_ch, output, frames) }
+unsafe fn run_s32(inputs: &[Input], sources: &[usize], out_ch: usize, shift: i32, output: *mut i32, frames: usize) {
+    unsafe { mix(inputs, sources, out_ch, shift, output, frames) }
 }
 
+// Sums wrap rather than saturate before the shift; a mix only gets there far
+// beyond the S32 headroom.
 #[inline(always)]
-unsafe fn mix<S: Sample>(inputs: &[Input], sources: &[usize], out_ch: usize, output: *mut S, frames: usize) {
+unsafe fn mix<S: Sample>(inputs: &[Input], sources: &[usize], out_ch: usize, shift: i32, output: *mut S, frames: usize) {
+    if let ([mi], [source]) = (inputs, sources)
+        && mi.channels == 2
+        && out_ch == 2
+        && *source != 0
+    {
+        let p = *source as *const S;
+        let [m00, m01, m10, m11] = [mi.scaled[0], mi.scaled[1], mi.scaled[2], mi.scaled[3]];
+        for f in 0..frames {
+            let (l, r) = unsafe { ((*p.add(2 * f)).load(), (*p.add(2 * f + 1)).load()) };
+            let a = mulh(l, m00).wrapping_add(mulh(r, m01));
+            let b = mulh(l, m10).wrapping_add(mulh(r, m11));
+            unsafe {
+                *output.add(2 * f) = S::store32(shift_sat(a, shift));
+                *output.add(2 * f + 1) = S::store32(shift_sat(b, shift));
+            }
+        }
+        return;
+    }
     for f in 0..frames {
-        let mut acc = [0i64; MAX_CHANNELS as usize];
+        let mut acc = [0i32; MAX_CHANNELS as usize];
         for (mi, &source) in inputs.iter().zip(sources) {
             if source == 0 {
                 continue;
             }
-            let p = source as *const S;
             let in_ch = mi.channels;
-            let mut x = [0i32; MAX_CHANNELS as usize];
-            for (i, v) in x[..in_ch].iter_mut().enumerate() {
-                *v = unsafe { *p.add(f * in_ch + i) }.load();
-            }
+            let p = unsafe { (source as *const S).add(f * in_ch) };
+            let m = mi.scaled.as_ptr();
             for (o, a) in acc[..out_ch].iter_mut().enumerate() {
                 for i in 0..in_ch {
-                    *a += i64::from(mi.active[o * in_ch + i]) * i64::from(x[i]);
+                    *a = a.wrapping_add(mulh(unsafe { *p.add(i) }.load(), unsafe { *m.add(o * in_ch + i) }));
                 }
             }
         }
         for (o, a) in acc[..out_ch].iter().enumerate() {
-            unsafe { *output.add(f * out_ch + o) = S::store((a + MIX_HALF) >> MIX_Q) };
+            unsafe { *output.add(f * out_ch + o) = S::store32(shift_sat(*a, shift)) };
         }
     }
 }

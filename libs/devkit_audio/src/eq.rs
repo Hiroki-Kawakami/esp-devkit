@@ -9,16 +9,20 @@ use core::f32::consts::PI;
 use core::marker::PhantomData;
 
 use devkit::Zeroable;
-use devkit::math::{cosf, lrintf, powf, sinf, sqrtf};
+use devkit::math::{cosf, powf, sinf, sqrtf};
 use idf::heap::{self, Caps};
 
 use crate::sample::check_channels;
 use crate::sync::Shared;
-use crate::{Error, Format, Result, Sample, sample::sat32};
+use crate::sample::mulh_round;
+use crate::{Error, Format, Result, Sample};
 
 const DEFAULT_MAX_STAGES: usize = 8;
-const COEFF_Q: u32 = 28;
-const COEFF_HALF: i64 = 1 << (COEFF_Q - 1);
+/// Working values run this many bits up inside the chain: a stage wraps past
+/// 24 dB over the S32 full scale. Inputs clamp at 6 dB over it.
+const SHIFT: u32 = 4;
+const IN_LIMIT: i32 = 1 << 24;
+const MAX_FRAC: i32 = 24;
 
 /// Normalised to `a0 = 1`.
 #[derive(Clone, Copy, PartialEq, Debug, Default)]
@@ -93,32 +97,85 @@ impl Biquad {
     }
 }
 
+// Direct form I in 32 bits as y = 2·y1 - y2 + b0·(x - 2·x1 + x2) + c1·x1 + c2·x2
+// + d1·y1 + d2·y2 rather than with a1 and a2: for a low-frequency stage the large
+// parts stay exact and the small terms keep `frac` bits to the next sample;
+// rounded straight, it drifts and sticks tens of dB above the S16 LSB.
 #[derive(Clone, Copy, Default)]
 struct BiquadQ {
     b0: i32,
-    b1: i32,
-    b2: i32,
-    a1: i32,
-    a2: i32,
+    c1: i32,
+    c2: i32,
+    d1: i32,
+    d2: i32,
+    coarse: u32,
+    fine: u32,
+    frac: u32,
 }
 
 #[derive(Clone, Copy, Default)]
 struct State {
-    z1: i64,
-    z2: i64,
+    x1: i32,
+    x2: i32,
+    y1: i32,
+    y2: i32,
+    r: i32,
 }
 
 unsafe impl Zeroable for BiquadQ {}
 unsafe impl Zeroable for State {}
 
-fn coeff_to_q(c: f32) -> i32 {
-    let v = c * (1u32 << COEFF_Q) as f32;
-    if v >= 2147483647.0 {
-        i32::MAX
-    } else if v <= -2147483648.0 {
-        i32::MIN
-    } else {
-        lrintf(v)
+/// The smallest `e` with `v < 2^e`.
+fn exponent(v: f64) -> i32 {
+    let mut e = 0;
+    let mut p = 1.0;
+    while v >= p {
+        p *= 2.0;
+        e += 1;
+    }
+    while e > -64 && v < p * 0.5 {
+        p *= 0.5;
+        e -= 1;
+    }
+    e
+}
+
+fn pow2(e: i32) -> f64 {
+    let mut p = 1.0;
+    for _ in 0..e.unsigned_abs() {
+        p = if e > 0 { p * 2.0 } else { p * 0.5 };
+    }
+    p
+}
+
+fn to_q(c: f64, e: i32) -> i32 {
+    let v = c * pow2(e);
+    let v = if v >= 0.0 { v + 0.5 } else { v - 0.5 };
+    (v as i64).clamp(-(i32::MAX as i64), i32::MAX as i64) as i32
+}
+
+impl BiquadQ {
+    fn new(b: &Biquad) -> Self {
+        let (b0, b1, b2, a1, a2) = (f64::from(b.b0), f64::from(b.b1), f64::from(b.b2), f64::from(b.a1), f64::from(b.a2));
+        let fine = [b1 + 2.0 * b0, b2 - b0, -(a1 + 2.0), 1.0 - a2];
+        let e = exponent(b0.abs()).max(-1);
+        let max = fine.iter().fold(0.0f64, |m, c| m.max(c.abs()));
+        let (fine_shift, frac, scale) = if max == 0.0 {
+            (0, 0, 0)
+        } else {
+            let e = exponent(max);
+            if e >= -1 { (1 + e, 0, 31 - e) } else { (0, (-1 - e).min(MAX_FRAC), 32 + (-1 - e).min(MAX_FRAC)) }
+        };
+        Self {
+            b0: to_q(b0, 31 - e),
+            c1: to_q(fine[0], scale),
+            c2: to_q(fine[1], scale),
+            d1: to_q(fine[2], scale),
+            d2: to_q(fine[3], scale),
+            coarse: (1 + e) as u32,
+            fine: fine_shift as u32,
+            frac: frac as u32,
+        }
     }
 }
 
@@ -254,33 +311,73 @@ impl<S: Sample> Eq<S> {
 
 #[inline(never)]
 unsafe fn run_s16(stages: &[BiquadQ], states: *mut State, channels: usize, input: *const i16, output: *mut i16, samples: usize) {
-    unsafe { run(stages, states, channels, input, output, samples) }
-}
-
-#[inline(never)]
-unsafe fn run_s32(stages: &[BiquadQ], states: *mut State, channels: usize, input: *const i32, output: *mut i32, samples: usize) {
-    unsafe { run(stages, states, channels, input, output, samples) }
-}
-
-#[inline(always)]
-unsafe fn run<S: Sample>(stages: &[BiquadQ], states: *mut State, channels: usize, input: *const S, output: *mut S, samples: usize) {
     for f in 0..samples / channels {
         for ch in 0..channels {
             let i = f * channels + ch;
             unsafe {
-                let mut x = (*input.add(i)).load();
+                let mut x = load(*input.add(i));
                 for (s, b) in stages.iter().enumerate() {
-                    let z = &mut *states.add(s * channels + ch);
-                    let acc = i64::from(b.b0) * i64::from(x) + z.z1;
-                    let y = sat32((acc + COEFF_HALF) >> COEFF_Q);
-                    z.z1 = i64::from(b.b1) * i64::from(x) - i64::from(b.a1) * i64::from(y) + z.z2;
-                    z.z2 = i64::from(b.b2) * i64::from(x) - i64::from(b.a2) * i64::from(y);
-                    x = y;
+                    x = step(b, &mut *states.add(s * channels + ch), x);
                 }
-                *output.add(i) = S::store(i64::from(x));
+                *output.add(i) = store(x);
             }
         }
     }
+}
+
+// Stage by stage through `output`, which holds the shifted values in between,
+// so that each stage keeps its coefficients and state in registers.
+#[inline(never)]
+unsafe fn run_s32(stages: &[BiquadQ], states: *mut State, channels: usize, input: *const i32, output: *mut i32, samples: usize) {
+    let frames = samples / channels;
+    let last = stages.len() - 1;
+    for ch in 0..channels {
+        for (s, b) in stages.iter().enumerate() {
+            let b = *b;
+            let state = unsafe { &mut *states.add(s * channels + ch) };
+            let mut z = *state;
+            let src = if s == 0 { input } else { output.cast_const() };
+            for f in 0..frames {
+                let i = f * channels + ch;
+                unsafe {
+                    let x = *src.add(i);
+                    let x = if s == 0 { load(x) } else { x };
+                    let y = step(&b, &mut z, x);
+                    *output.add(i) = if s == last { store(y) } else { y };
+                }
+            }
+            *state = z;
+        }
+    }
+}
+
+#[inline(always)]
+fn load<S: Sample>(x: S) -> i32 {
+    x.load().clamp(-IN_LIMIT, IN_LIMIT) << SHIFT
+}
+
+#[inline(always)]
+fn store<S: Sample>(y: i32) -> S {
+    S::store32(((y >> (SHIFT - 1)) + 1) >> 1)
+}
+
+#[inline(always)]
+fn step(b: &BiquadQ, z: &mut State, x: i32) -> i32 {
+    let diff = x.wrapping_sub(z.x1.wrapping_mul(2)).wrapping_add(z.x2);
+    let coarse = mulh_round(diff, b.b0) << b.coarse;
+    let fine = mulh_round(z.x1, b.c1)
+        .wrapping_add(mulh_round(z.x2, b.c2))
+        .wrapping_add(mulh_round(z.y1, b.d1))
+        .wrapping_add(mulh_round(z.y2, b.d2));
+    let acc = (fine << b.fine).wrapping_add(z.r);
+    let q = acc >> b.frac;
+    z.r = acc.wrapping_sub(q << b.frac);
+    let y = z.y1.wrapping_mul(2).wrapping_sub(z.y2).wrapping_add(coarse).wrapping_add(q);
+    z.x2 = z.x1;
+    z.x1 = x;
+    z.y2 = z.y1;
+    z.y1 = y;
+    y
 }
 
 impl EqControl {
@@ -290,13 +387,7 @@ impl EqControl {
                 return Err(Error::InvalidSize);
             }
             for (q, b) in p.biquads.iter_mut().zip(biquads) {
-                *q = BiquadQ {
-                    b0: coeff_to_q(b.b0),
-                    b1: coeff_to_q(b.b1),
-                    b2: coeff_to_q(b.b2),
-                    a1: coeff_to_q(b.a1),
-                    a2: coeff_to_q(b.a2),
-                };
+                *q = BiquadQ::new(b);
             }
             p.stages = biquads.len();
             Ok(())

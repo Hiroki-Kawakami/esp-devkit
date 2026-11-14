@@ -154,6 +154,55 @@ fn eq_filters() {
     assert_eq!(e16.reconfig(9).err(), Some(Error::InvalidArg));
 }
 
+#[test]
+fn eq_tracks_float() {
+    let fs = 48000;
+    let stages = [
+        Biquad::highpass(fs, 50.0, 0.707),
+        Biquad::low_shelf(fs, 150.0, 0.707, 10.0),
+        Biquad::peaking(fs, 1000.0, 0.8, -4.0),
+        Biquad::peaking(fs, 2500.0, 1.0, -3.0),
+    ];
+    let (mut e, ctl) = eq::<i32>(1);
+    ctl.set_biquads(&stages).unwrap();
+    let n = 2 * fs as usize;
+    let input: Vec<i32> = (0..n)
+        .map(|i| {
+            let t = i as f64 / f64::from(fs);
+            if i >= fs as usize {
+                return 0;
+            }
+            let v = 0.08 * (2.0 * PI * 40.0 * t).sin() + 0.08 * (2.0 * PI * 300.0 * t).sin() + 0.04 * (2.0 * PI * 5000.0 * t).sin() + 0.01;
+            (v * f64::from(1 << 23)).round() as i32
+        })
+        .collect();
+    let mut out = vec![0i32; n];
+    e.process(&input, &mut out);
+    let mut z = [[0f64; 4]; 4];
+    let mut worst = 0f64;
+    for (i, &v) in input.iter().enumerate() {
+        let mut x = f64::from(v);
+        for (b, z) in stages.iter().zip(z.iter_mut()) {
+            let (b0, b1, b2, a1, a2) = (f64::from(b.b0), f64::from(b.b1), f64::from(b.b2), f64::from(b.a1), f64::from(b.a2));
+            let y = b0 * x + b1 * z[0] + b2 * z[1] - a1 * z[2] - a2 * z[3];
+            *z = [x, z[0], y, z[2]];
+            x = y;
+        }
+        worst = worst.max((f64::from(out[i]) - x).abs());
+    }
+    let worst_db = 20.0 * (worst / f64::from(1 << 23)).log10();
+    let tail = out[n - 1000..].iter().map(|v| v.abs()).max().unwrap();
+    assert!(worst_db < -85.0, "error {worst_db:.1} dBFS");
+    let (mut st, sctl) = eq::<i32>(2);
+    sctl.set_biquads(&stages).unwrap();
+    let mut both: Vec<i32> = input.iter().flat_map(|&v| [v, -v]).collect();
+    for chunk in both.chunks_mut(512) {
+        st.process_in_place(chunk);
+    }
+    assert!(both.chunks_exact(2).zip(&out).all(|(f, &o)| f[0] == o), "in place, chunked and interleaved");
+    assert!(tail <= 16, "a silent input settles under the S16 LSB, not {tail}");
+}
+
 fn gain(rate: u32, channels: u8, g: f32) -> (Gain<i16>, crate::gain::GainControl) {
     Gain::new(&GainConfig { channels, sample_rate: rate, gain: g, caps: Caps::DEFAULT }).unwrap()
 }
