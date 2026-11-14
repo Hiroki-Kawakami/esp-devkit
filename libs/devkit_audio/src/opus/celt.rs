@@ -6,8 +6,8 @@
 use alloc::boxed::Box;
 use core::ptr;
 
-use devkit::Zeroable;
-use devkit::math::lrintf;
+use devkit_core::Zeroable;
+use devkit_core::math::lrintf;
 use idf::heap::{self, Caps};
 
 use super::bands::{BITRES, Bands, Pvq, anti_collapse, exp2, lcg, renormalise};

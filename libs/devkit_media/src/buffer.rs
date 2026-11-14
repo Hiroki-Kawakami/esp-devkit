@@ -743,7 +743,7 @@ impl Drop for View {
 #[derive(Clone, Copy)]
 struct Line([u8; READ_ALIGNMENT]);
 
-unsafe impl devkit::Zeroable for Line {}
+unsafe impl devkit_core::Zeroable for Line {}
 
 pub struct Aligned {
     lines: Box<[Line], Caps>,

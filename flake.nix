@@ -116,17 +116,17 @@
           src = lib.fileset.toSource {
             root = ./.;
             fileset = lib.fileset.unions [
-              ./tools/devkit/Cargo.toml
-              ./tools/devkit/Cargo.lock
-              ./tools/devkit/src
-              ./tools/devkit/assets
+              ./tools/devkit_cli/Cargo.toml
+              ./tools/devkit_cli/Cargo.lock
+              ./tools/devkit_cli/src
+              ./tools/devkit_cli/assets
               ./libs/bsp_rs/src/sim/protocol.rs
               ./libs/usb_host_rs/src/usbip.rs
             ];
           };
-          cargoRoot = "tools/devkit";
-          buildAndTestSubdir = "tools/devkit";
-          cargoLock.lockFile = ./tools/devkit/Cargo.lock;
+          cargoRoot = "tools/devkit_cli";
+          buildAndTestSubdir = "tools/devkit_cli";
+          cargoLock.lockFile = ./tools/devkit_cli/Cargo.lock;
           nativeBuildInputs = [ pkgs.pkg-config ];
           buildInputs = [ pkgs.libslirp ] ++ lib.optionals pkgs.stdenv.isLinux [ pkgs.alsa-lib ];
         };

@@ -2,7 +2,7 @@
 set(srcs "/dev/null")
 set(headers "")
 set(include_dirs "")
-set(requires devkit idf rust_rt)
+set(requires devkit_core idf rust_rt)
 if(NOT ESP_PLATFORM)
     set(srcs "src/sim/fd.c")
     set(headers "stdlib.h" "sys/socket.h" "unistd.h" "fd.h")

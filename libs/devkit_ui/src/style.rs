@@ -89,7 +89,7 @@ impl Role {
     }
 }
 
-devkit::bitflags! {
+devkit_core::bitflags! {
     /// What a node is going through, in rising weight: where styles of two
     /// states set the same value, the greater bits win. The framework sets
     /// `PRESSED`, `HOVERED` and `FOCUSED` without a rebuild; views pass the others.
@@ -104,7 +104,7 @@ devkit::bitflags! {
     }
 }
 
-devkit::bitflags! {
+devkit_core::bitflags! {
     /// What a style eases to when it changes. `COLOR` is the background, the
     /// foreground and the border; `POSITION` is where layout puts the node in
     /// its parent.

@@ -108,7 +108,7 @@ pub struct PngDecoder<'a> {
     filtered: Buffer,
 }
 
-unsafe impl devkit::Zeroable for Idat {}
+unsafe impl devkit_core::Zeroable for Idat {}
 
 impl<'a> PngDecoder<'a> {
     pub fn open(src: impl Stream + 'a, options: &DecodeOptions) -> Result<Self> {

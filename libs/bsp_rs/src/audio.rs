@@ -9,7 +9,7 @@ use core::ffi::CStr;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 
-use devkit::math::powf;
+use devkit_core::math::powf;
 use devkit_audio::convert::{self, PcmLayout};
 use devkit_audio::eq::{Biquad, Eq, EqConfig, EqControl};
 use devkit_audio::gain::{Gain, GainConfig, GainControl};

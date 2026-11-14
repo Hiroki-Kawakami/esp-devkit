@@ -3,7 +3,7 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
-use devkit::Zeroable;
+use devkit_core::Zeroable;
 
 /// Upper bound on the channels of every module.
 pub const MAX_CHANNELS: u8 = 8;

@@ -6,7 +6,7 @@
 use alloc::vec::Vec;
 use core::ptr;
 
-use devkit::Zeroable;
+use devkit_core::Zeroable;
 use idf::heap::Caps;
 
 use super::{Cursor, Source};

@@ -1,6 +1,6 @@
 # Cryptography: hashes, MACs, KDFs, ciphers, AEADs, key agreement, signatures,
 # X.509 and TLS 1.3.
-set(requires devkit idf rust_rt)
+set(requires devkit_core idf rust_rt)
 set(headers "psa/crypto.h")
 set(options "")
 if(ESP_PLATFORM)

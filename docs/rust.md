@@ -119,7 +119,7 @@ if(IDF_TARGET STREQUAL "esp32p4")
     set(srcs "src/kernels_p4.S")
     set(have_pie true)
 endif()
-idf_component_register(SRCS ${srcs} PRIV_REQUIRES devkit idf rust_rt)
+idf_component_register(SRCS ${srcs} PRIV_REQUIRES devkit_core idf rust_rt)
 devkit_rust_out_dir(out_dir)
 file(CONFIGURE OUTPUT "${out_dir}/pie.rs" CONTENT "pub(crate) const HAVE_PIE: bool = ${have_pie};\n" @ONLY)
 devkit_rust_crate(ROOT "src/lib.rs" TESTS OPT_LEVEL 2)
@@ -256,14 +256,14 @@ and loads it without.
 
 ## Crates
 
-### `devkit` (`libs/devkit`)
+### `devkit_core` (`libs/devkit_core`)
 
 IDF-independent utilities, `core` only.
 
 `bitflags!` declares a flags type with a subset of the bitflags 2.x syntax:
 
 ```rust
-devkit::bitflags! {
+devkit_core::bitflags! {
     pub struct Caps: u32 {
         const DMA = ffi::MALLOC_CAP_DMA;
         const INTERNAL = ffi::MALLOC_CAP_INTERNAL;
@@ -298,8 +298,8 @@ scope and cannot be cancelled.
 
 ```rust
 pub fn open() -> Result<Sensor, EspError> {
-    let bus = devkit::guard(new_bus()?, |b| unsafe { ffi::i2c_del_master_bus(b); });
-    let dev = devkit::guard(add_device(*bus)?, |d| unsafe { ffi::i2c_master_bus_rm_device(d); });
+    let bus = devkit_core::guard(new_bus()?, |b| unsafe { ffi::i2c_del_master_bus(b); });
+    let dev = devkit_core::guard(add_device(*bus)?, |d| unsafe { ffi::i2c_master_bus_rm_device(d); });
     check(unsafe { ffi::sensor_reset(*dev) })?;
     Ok(Sensor { bus: Guard::into_inner(bus), dev: Guard::into_inner(dev) })
 }
@@ -359,7 +359,7 @@ send(w.written());
 type whose all-zero bytes are valid, which `idf::heap` needs to build one
 directly on the heap; implement it (`unsafe`) on plain structs.
 
-`devkit::math` is the C math library, which `core` leaves out: `sinf`, `cosf`,
+`devkit_core::math` is the C math library, which `core` leaves out: `sinf`, `cosf`,
 `powf`, `log2f`, `ldexpf`, `sqrtf`, `floorf`, `ceilf`, `roundf`, `lrintf`,
 `lroundf`, and `sin`, `cos`, `pow`, `log2`, `atan2`, `sqrt`, `floor`, `round`,
 `lround`. `abs` and `copysign` are methods in `core`.
@@ -395,7 +395,7 @@ let ring = SRAM.alloc(RING_BYTES, 4).ok_or(Busy)?;
 - Pointers passed to C from a lease are not tracked: C must be done with them
   before the `BufferLease` is dropped.
 
-`devkit::executor` runs futures on tasks the platform provides, behind two
+`devkit_core::executor` runs futures on tasks the platform provides, behind two
 traits: `Park` (wait on the running task, wake it from anywhere, tick count) and
 `CriticalSection` (keeps out other tasks, cores and interrupts). `idf` provides
 them for FreeRTOS.
@@ -437,7 +437,7 @@ local.run();
   (`recv().await`, `try_recv`) and any number of `Sender`s: `try_send` never
   waits, `send(v).await` waits for room in turn. `signal` and `try_send` work
   from interrupts as long as the waiting waker clones without allocating, as
-  devkit's do: they wake a copy and leave the stored waker in place. Once the
+  devkit_core's do: they wake a copy and leave the stored waker in place. Once the
   `Receiver` is dropped, `is_closed()` is true, `try_send` gives the value
   back and `send(v).await` returns at once, dropping it; `recv()` still waits
   with every sender gone.
@@ -446,7 +446,7 @@ local.run();
   that can stop early, and the `Receiver` is a future that gives
   `Err(Closed)` once the `Sender` is dropped without sending.
 
-`devkit::sync` has `Mutex` and `RwLock` over a `Platform` (the calling task,
+`devkit_core::sync` has `Mutex` and `RwLock` over a `Platform` (the calling task,
 its priority, park/unpark, a clock, a critical section); `idf::sync` fixes it
 to FreeRTOS.
 
@@ -641,7 +641,7 @@ let frames = h.join();
   rounding applies to every timeout in `idf::sync`. `yield_now()` is
   `vTaskDelay(0)`.
 
-`idf::sync` has `devkit::sync`'s `Mutex` and `RwLock` on FreeRTOS, and wraps
+`idf::sync` has `devkit_core::sync`'s `Mutex` and `RwLock` on FreeRTOS, and wraps
 FreeRTOS queue objects (`Semaphore`, `channel`), created in `new` (`try_new`
 returns `NO_MEM` instead of panicking). In a `static`, wrap those in
 `LazyLock`:
@@ -685,7 +685,7 @@ let cfg = CONFIG.get_or_try_init(load_config)?;
   switch themselves when they wake a higher-priority task. The other methods
   must not be called from an ISR.
 
-`idf::executor` runs `devkit::executor` on FreeRTOS tasks:
+`idf::executor` runs `devkit_core::executor` on FreeRTOS tasks:
 
 ```rust
 let local = thread::Builder::new().name("ui").priority(4).spawn_local_executor(|local| {

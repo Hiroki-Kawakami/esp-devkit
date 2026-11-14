@@ -69,8 +69,8 @@ impl fmt::Display for Error {
     }
 }
 
-impl From<devkit::OutOfBounds> for Error {
-    fn from(_: devkit::OutOfBounds) -> Self {
+impl From<devkit_core::OutOfBounds> for Error {
+    fn from(_: devkit_core::OutOfBounds) -> Self {
         Error::Decode
     }
 }

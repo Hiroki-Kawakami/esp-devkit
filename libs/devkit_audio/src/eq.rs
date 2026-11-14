@@ -8,8 +8,8 @@ use alloc::vec::Vec;
 use core::f32::consts::PI;
 use core::marker::PhantomData;
 
-use devkit::Zeroable;
-use devkit::math::{cosf, powf, sinf, sqrtf};
+use devkit_core::Zeroable;
+use devkit_core::math::{cosf, powf, sinf, sqrtf};
 use idf::heap::{self, Caps};
 
 use crate::sample::check_channels;

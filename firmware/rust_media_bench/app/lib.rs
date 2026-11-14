@@ -75,7 +75,7 @@ fn serve(name: &'static CStr, data: &'static [u8]) -> File {
 fn arena_memory() -> &'static mut [u8] {
     #[repr(C, align(64))]
     struct Line([u8; 64]);
-    unsafe impl devkit::Zeroable for Line {}
+    unsafe impl devkit_core::Zeroable for Line {}
     let lines = heap::zeroed_slice::<Line>(ARENA_BYTES / 64, Caps::SPIRAM).expect("arena");
     let lines: &'static mut [Line] = alloc::boxed::Box::leak(lines);
     unsafe { slice::from_raw_parts_mut(lines.as_mut_ptr().cast(), ARENA_BYTES) }

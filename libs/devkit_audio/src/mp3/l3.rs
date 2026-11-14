@@ -3,7 +3,7 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
-use devkit::A16;
+use devkit_core::A16;
 
 use super::kernels::{self, split};
 use super::tables::*;

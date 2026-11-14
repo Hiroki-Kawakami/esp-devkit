@@ -1,7 +1,7 @@
 # Times devkit_compression against compression_framework on the same streams.
 idf_component_register(
     SRCS "/dev/null"
-    PRIV_REQUIRES compression_framework devkit devkit_compression idf rust_rt)
+    PRIV_REQUIRES compression_framework devkit_core devkit_compression idf rust_rt)
 
 if(NOT DEFINED PYTHON)
     set(PYTHON python3)

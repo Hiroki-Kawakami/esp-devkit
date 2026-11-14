@@ -6,7 +6,7 @@ with controls beside it, and feeds it input. The firmware
 process only sees a PSRAM region and an event socket, so it could later be
 replaced by an emulator without changing the host.
 
-- The window shows the panel inside the device's outline (`tools/devkit/assets`,
+- The window shows the panel inside the device's outline (`tools/devkit_cli/assets`,
   SVG in panel-pixel units), fitted to the window or at a fixed 25–100 %, with
   the controls and the firmware log on the right.
 - `--headless` opens no window; the host still supervises the firmware and
@@ -99,7 +99,7 @@ addressed already. Without the variable no device ever appears.
 
 
 Fixed 64-byte records, defined once in `libs/bsp_rs/src/sim/protocol.rs` and
-compiled into the firmware and `tools/devkit`. Byte 0 is the tag, fields follow little-endian.
+compiled into the firmware and `tools/devkit_cli`. Byte 0 is the tag, fields follow little-endian.
 
 | event | direction | fields |
 |---|---|---|

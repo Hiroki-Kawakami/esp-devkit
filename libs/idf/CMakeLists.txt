@@ -4,7 +4,7 @@ idf_component_register(
     PRIV_INCLUDE_DIRS "src"
     REQUIRES esp_app_format esp_common esp_system esp_timer freertos heap log nvs_flash esp_driver_i2c esp_driver_gpio
              esp_driver_ledc esp_driver_i2s esp_partition esp_driver_sdmmc esp_hw_support esp_lcd esp_mm sdmmc fatfs vfs
-    PRIV_REQUIRES devkit hal rust_rt)
+    PRIV_REQUIRES devkit_core hal rust_rt)
 if(ESP_PLATFORM)
     set(log_headers "esp_log.h" "esp_log_config.h" "esp_log_level.h" "esp_log_timestamp.h"
                     "esp_log_write.h")

@@ -138,7 +138,7 @@ impl Gcm {
             return None;
         }
         unsafe { sys::esp_aes_acquire_hardware() };
-        let _held = devkit::guard((), |()| unsafe { sys::esp_aes_release_hardware() });
+        let _held = devkit_core::guard((), |()| unsafe { sys::esp_aes_release_hardware() });
         let (m, d) = unsafe { (&mut *self.cpu, self.dma.as_ptr()) };
         let pad = (BLOCK - len % BLOCK) % BLOCK;
 

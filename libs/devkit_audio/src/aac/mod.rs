@@ -14,7 +14,7 @@ mod tables;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
-use devkit::A16;
+use devkit_core::A16;
 use idf::heap::{self, Caps};
 
 use crate::bits::Bits;

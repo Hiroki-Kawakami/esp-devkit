@@ -5,7 +5,7 @@
 
 use core::fmt::Write;
 
-use devkit::FmtBuf;
+use devkit_core::FmtBuf;
 
 use crate::buffer::Aligned;
 

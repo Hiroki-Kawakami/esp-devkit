@@ -6,7 +6,7 @@
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
-use devkit::Zeroable;
+use devkit_core::Zeroable;
 use devkit_compression::{self as compression, Inflate, Lzw, LzwOptions, LzwWork, Source, Window};
 use idf::heap::{self, Caps};
 

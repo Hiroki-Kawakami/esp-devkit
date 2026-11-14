@@ -1,5 +1,5 @@
 # Checks media_engine against the IDF drivers and jpeg_decode_enhanced on the same pictures.
-set(requires devkit devkit_gfx devkit_image idf media_engine rust_rt)
+set(requires devkit_core devkit_gfx devkit_image idf media_engine rust_rt)
 if(ESP_PLATFORM)
     list(APPEND requires esp_driver_ppa freertos jpeg_decode_enhanced)
     set(headers "jpeg_decode_enhanced.h" "jpeg_ppa_pipeline.h")

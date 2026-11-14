@@ -33,7 +33,7 @@ idf_component_register(
     SRCS ${srcs}
     PRIV_INCLUDE_DIRS ${priv_include_dirs}
     REQUIRES devkit_audio devkit_gfx idf
-    PRIV_REQUIRES devkit devkit_net rust_rt ${target_requires})
+    PRIV_REQUIRES devkit_core devkit_net rust_rt ${target_requires})
 
 set(depends "")
 if(CONFIG_BSP_RS_DRIVER_ESP_HOSTED)

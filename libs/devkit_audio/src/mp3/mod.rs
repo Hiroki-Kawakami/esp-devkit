@@ -10,7 +10,7 @@ mod tables;
 
 use alloc::boxed::Box;
 
-use devkit::{A16, Zeroable};
+use devkit_core::{A16, Zeroable};
 use idf::heap::{self, Caps};
 
 use crate::{Decoder, Error, Format, PcmMut, Result};

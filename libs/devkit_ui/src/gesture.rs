@@ -13,7 +13,7 @@ const LONG_PRESS_MS: u32 = 500;
 const SWIPE_MS: u32 = 400;
 const SWIPE_MIN: i32 = 64;
 
-devkit::bitflags! {
+devkit_core::bitflags! {
     /// What a node recognizes, reported through one handler.
     #[derive(Default)]
     pub struct Gestures: u8 {

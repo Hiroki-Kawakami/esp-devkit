@@ -10,7 +10,7 @@ use core::marker::PhantomData;
 use core::slice;
 use core::sync::atomic::{AtomicI32, Ordering};
 
-use devkit::math::{ceilf, lrintf, sinf, sqrtf};
+use devkit_core::math::{ceilf, lrintf, sinf, sqrtf};
 use idf::heap::{self, Caps};
 
 use crate::sample::{Format, check_channels};

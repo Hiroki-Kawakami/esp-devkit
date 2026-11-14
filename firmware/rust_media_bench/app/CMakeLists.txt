@@ -5,7 +5,7 @@ endif()
 idf_component_register(
     SRCS "bench_files.c"
     INCLUDE_DIRS "."
-    PRIV_REQUIRES devkit devkit_media idf media_framework rust_rt ${vfs})
+    PRIV_REQUIRES devkit_core devkit_media idf media_framework rust_rt ${vfs})
 
 if(NOT DEFINED PYTHON)
     set(PYTHON python3)

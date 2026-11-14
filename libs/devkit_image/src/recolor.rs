@@ -3,7 +3,7 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
-use devkit::math::{lroundf, powf};
+use devkit_core::math::{lroundf, powf};
 
 use crate::{Error, ImageFormat, Result};
 

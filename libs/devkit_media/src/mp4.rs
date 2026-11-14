@@ -8,7 +8,7 @@ use alloc::vec::Vec;
 use core::ffi::CStr;
 use core::f64::consts::PI;
 
-use devkit::math;
+use devkit_core::math;
 use idf::log::{info, warn};
 
 use crate::alac;

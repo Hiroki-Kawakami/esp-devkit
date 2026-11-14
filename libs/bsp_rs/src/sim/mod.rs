@@ -3,7 +3,7 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
-// Shared with tools/devkit, which uses the parts this side does not.
+// Shared with tools/devkit_cli, which uses the parts this side does not.
 #[allow(dead_code)]
 pub(crate) mod protocol;
 pub(crate) mod audio;

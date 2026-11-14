@@ -7,7 +7,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::ffi::CStr;
 
-use devkit::math;
+use devkit_core::math;
 use idf::heap::{self, Caps};
 use idf::log::{info, warn};
 

@@ -19,7 +19,7 @@ use bsp_rs::audio::{Audio, Format, Pcm, SampleFormat, SpeakerMode};
 use bsp_rs::display::{Display, FrameBuffer, ImageFormat};
 use bsp_rs::power::{Battery, Charge, Power};
 use bsp_rs::sd::MountConfig;
-use devkit::math::sinf;
+use devkit_core::math::sinf;
 use bsp_rs::touch::{Point, Touch};
 use idf::fs;
 use idf::log::{error, info};

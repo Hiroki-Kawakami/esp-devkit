@@ -3,7 +3,7 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
-use devkit::math::{ldexpf, lrintf, sqrtf};
+use devkit_core::math::{ldexpf, lrintf, sqrtf};
 
 use super::tables::*;
 use super::{AAC_HCB_SF, Chan, Dec, EIGHT_SHORT, FRAME_LEN, Ics, MAX_SFB, huff};

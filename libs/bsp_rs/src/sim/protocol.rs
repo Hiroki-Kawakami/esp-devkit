@@ -3,7 +3,7 @@
  * Copyright (c) 2026 Hiroki Kawakami
  *
  * Events between the debug host and a simulator firmware; compiled into both
- * this crate and tools/devkit. See docs/simulator.md.
+ * this crate and tools/devkit_cli. See docs/simulator.md.
  */
 
 pub const VERSION: u32 = 6;

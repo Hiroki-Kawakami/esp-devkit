@@ -8,7 +8,7 @@ use core::ffi::CStr;
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use core::time::Duration;
 
-use devkit::math::{atan2, lroundf, sqrtf};
+use devkit_core::math::{atan2, lroundf, sqrtf};
 use idf::log::warn;
 use idf::sync::{Mutex, OnceLock};
 use idf::time::Instant;

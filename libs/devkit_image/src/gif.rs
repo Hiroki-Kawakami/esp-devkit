@@ -5,7 +5,7 @@
 
 use alloc::boxed::Box;
 
-use devkit::Zeroable;
+use devkit_core::Zeroable;
 use devkit_compression::{self as compression, Error as CompressionError, Lzw, LzwOptions, LzwWork, Source};
 use idf::heap::{self, Caps};
 

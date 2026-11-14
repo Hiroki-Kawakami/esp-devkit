@@ -3,7 +3,7 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
-use devkit::Zeroable;
+use devkit_core::Zeroable;
 
 use crate::bits::Input;
 use crate::{Error, Result, Source};

@@ -9,7 +9,7 @@
 use alloc::vec::Vec;
 use core::task::{Context, Poll};
 
-use devkit::math::floorf;
+use devkit_core::math::floorf;
 use devkit_gfx::{Color, ImageFormat, Rotation};
 use idf::{Error, Result};
 

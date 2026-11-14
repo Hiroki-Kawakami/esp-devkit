@@ -111,7 +111,7 @@ impl Rect {
     }
 }
 
-devkit::bitflags! {
+devkit_core::bitflags! {
     /// Which corners of a box are rounded. The default is all of them.
     pub struct Corners: u8 {
         const TOP_LEFT = 1 << 0;
@@ -132,7 +132,7 @@ impl Default for Corners {
     }
 }
 
-devkit::bitflags! {
+devkit_core::bitflags! {
     /// Which sides of a box a border runs along. The default is all of them.
     pub struct Sides: u8 {
         const LEFT = 1 << 0;

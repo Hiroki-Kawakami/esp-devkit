@@ -5,8 +5,8 @@
 
 use alloc::boxed::Box;
 
-use devkit::Zeroable;
-use devkit::math::lround;
+use devkit_core::Zeroable;
+use devkit_core::math::lround;
 use idf::heap::Caps;
 
 use crate::mem::{Buffer, buffer, internal_buffer, state};

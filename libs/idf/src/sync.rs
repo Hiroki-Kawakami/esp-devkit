@@ -91,7 +91,7 @@ impl Drop for Queue {
     }
 }
 
-/// The FreeRTOS side of `devkit::sync`; spins only while the holder runs on
+/// The FreeRTOS side of `devkit_core::sync`; spins only while the holder runs on
 /// another core. A task that waited on a lock must end through `thread`, which
 /// lets the lock's last wakeup reach it first.
 pub struct FreeRtos;
@@ -104,7 +104,7 @@ pub(crate) fn wait_unparks() {
     }
 }
 
-impl devkit::sync::Platform for FreeRtos {
+impl devkit_core::sync::Platform for FreeRtos {
     fn current() -> usize {
         unsafe { sys::xTaskGetCurrentTaskHandle() as usize }
     }
@@ -160,14 +160,14 @@ impl devkit::sync::Platform for FreeRtos {
     }
 }
 
-pub type Mutex<T> = devkit::sync::Mutex<T, FreeRtos>;
-pub type MutexGuard<'a, T> = devkit::sync::MutexGuard<'a, T, FreeRtos>;
-pub type MutexLock<'a, T> = devkit::sync::MutexLock<'a, T, FreeRtos>;
-pub type RwLock<T> = devkit::sync::RwLock<T, FreeRtos>;
-pub type RwLockReadGuard<'a, T> = devkit::sync::RwLockReadGuard<'a, T, FreeRtos>;
-pub type RwLockWriteGuard<'a, T> = devkit::sync::RwLockWriteGuard<'a, T, FreeRtos>;
-pub type RwLockRead<'a, T> = devkit::sync::RwLockRead<'a, T, FreeRtos>;
-pub type RwLockWrite<'a, T> = devkit::sync::RwLockWrite<'a, T, FreeRtos>;
+pub type Mutex<T> = devkit_core::sync::Mutex<T, FreeRtos>;
+pub type MutexGuard<'a, T> = devkit_core::sync::MutexGuard<'a, T, FreeRtos>;
+pub type MutexLock<'a, T> = devkit_core::sync::MutexLock<'a, T, FreeRtos>;
+pub type RwLock<T> = devkit_core::sync::RwLock<T, FreeRtos>;
+pub type RwLockReadGuard<'a, T> = devkit_core::sync::RwLockReadGuard<'a, T, FreeRtos>;
+pub type RwLockWriteGuard<'a, T> = devkit_core::sync::RwLockWriteGuard<'a, T, FreeRtos>;
+pub type RwLockRead<'a, T> = devkit_core::sync::RwLockRead<'a, T, FreeRtos>;
+pub type RwLockWrite<'a, T> = devkit_core::sync::RwLockWrite<'a, T, FreeRtos>;
 
 pub struct Semaphore {
     queue: Queue,

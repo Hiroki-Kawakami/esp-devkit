@@ -5,8 +5,8 @@
 
 use alloc::boxed::Box;
 
-use devkit::math::{floor, ldexpf, log2, pow};
-use devkit::{A16, Zeroable};
+use devkit_core::math::{floor, ldexpf, log2, pow};
+use devkit_core::{A16, Zeroable};
 use idf::heap::{self, Caps};
 
 use super::filterbank::filterbank;

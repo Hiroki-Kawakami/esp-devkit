@@ -7,7 +7,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::ptr;
 
-use devkit::{A16, Zeroable};
+use devkit_core::{A16, Zeroable};
 use idf::heap::{self, Caps};
 
 use crate::mem::{Buffer, buffer, internal_buffer, state};

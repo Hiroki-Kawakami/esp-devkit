@@ -3,8 +3,8 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
-use devkit::Zeroable;
-use devkit::math::sqrtf;
+use devkit_core::Zeroable;
+use devkit_core::math::sqrtf;
 
 use super::rc::{Rc, ilog};
 use super::silk_tables::*;

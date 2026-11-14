@@ -5,7 +5,7 @@
 
 use core::ptr;
 
-use devkit::A16;
+use devkit_core::A16;
 
 use crate::ImageFormat;
 

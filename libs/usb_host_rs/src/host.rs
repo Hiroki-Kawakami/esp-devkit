@@ -154,7 +154,7 @@ async fn enumerate_once(second_reset: bool) -> Result<Device> {
         address: 0,
         speed,
     })?;
-    let ep0 = devkit::guard(ep0, |pipe| backend().pipe_free(pipe));
+    let ep0 = devkit_core::guard(ep0, |pipe| backend().pipe_free(pipe));
     let buf = Buffer::new(ENUM_BUFFER_BYTES, Caps::DMA | Caps::INTERNAL)?;
 
     let (buf, n) = get_descriptor(*ep0, buf, desc::DEVICE, 0, 0, 8, "device descriptor (8)").await?;
@@ -196,7 +196,7 @@ async fn enumerate_once(second_reset: bool) -> Result<Device> {
     control(*ep0, Setup::set_configuration(value), buf, "SET_CONFIGURATION").await?;
 
     let inner = DeviceInner::new(address, speed, descriptor, config, manufacturer, product, serial, *ep0);
-    devkit::Guard::into_inner(ep0);
+    devkit_core::Guard::into_inner(ep0);
     Ok(Device(Arc::new(inner)))
 }
 

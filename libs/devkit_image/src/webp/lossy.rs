@@ -9,7 +9,7 @@ mod tables;
 use alloc::boxed::Box;
 use core::ptr;
 
-use devkit::{A16, Zeroable};
+use devkit_core::{A16, Zeroable};
 use idf::heap::Caps;
 
 use super::{Cursor, Source};

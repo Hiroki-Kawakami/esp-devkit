@@ -2,7 +2,7 @@
 set(srcs "/dev/null")
 set(headers "")
 set(options "")
-set(priv_requires devkit rust_rt)
+set(priv_requires devkit_core rust_rt)
 if(NOT ESP_PLATFORM)
     list(APPEND priv_requires devkit_image)
 endif()

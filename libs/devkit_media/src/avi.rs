@@ -8,7 +8,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::ffi::CStr;
 
-use devkit::ByteReader;
+use devkit_core::ByteReader;
 use idf::heap::{self, Caps};
 use idf::log::{info, warn};
 

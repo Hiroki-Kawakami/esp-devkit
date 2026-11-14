@@ -97,7 +97,7 @@ fn hw() -> *mut ffi::sdmmc_dev_t {
     &raw mut ffi::SDMMC
 }
 
-unsafe impl devkit::Zeroable for ffi::sdmmc_desc_t {}
+unsafe impl devkit_core::Zeroable for ffi::sdmmc_desc_t {}
 
 fn ticks(d: Duration) -> u32 {
     (d.as_millis() as u64 * sdkconfig::CONFIG_FREERTOS_HZ as u64 / 1000) as u32 + 1

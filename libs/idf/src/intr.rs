@@ -8,7 +8,7 @@ use core::ptr;
 
 use crate::{Error, Result, sys};
 
-devkit::bitflags! {
+devkit_core::bitflags! {
     pub struct Flags: u32 {
         const LEVEL1 = sys::ESP_INTR_FLAG_LEVEL1;
         const LEVEL2 = sys::ESP_INTR_FLAG_LEVEL2;

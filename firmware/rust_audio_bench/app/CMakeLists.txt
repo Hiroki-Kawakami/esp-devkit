@@ -1,7 +1,7 @@
 # Times devkit_audio against audio_framework on the same clips.
 idf_component_register(
     SRCS "/dev/null"
-    PRIV_REQUIRES audio_framework devkit devkit_audio idf rust_rt)
+    PRIV_REQUIRES audio_framework devkit_core devkit_audio idf rust_rt)
 
 if(NOT DEFINED ENV{AUDIO_BENCH_CLIPS})
     message(FATAL_ERROR "AUDIO_BENCH_CLIPS must name a directory from app/make_clips.py")

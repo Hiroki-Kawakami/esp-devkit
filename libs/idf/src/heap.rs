@@ -8,7 +8,7 @@ use alloc::vec::Vec;
 use core::alloc::{AllocError, Allocator, Layout};
 use core::ptr::{self, NonNull};
 
-use devkit::Zeroable;
+use devkit_core::Zeroable;
 
 use crate::sync::Mutex;
 use crate::{Error, sys};
@@ -19,7 +19,7 @@ use crate::{Error, sys};
 mod caps {
     use crate::sys;
 
-    devkit::bitflags! {
+    devkit_core::bitflags! {
         pub struct Caps: u32 {
             #[cfg(CONFIG_HEAP_HAS_EXEC_HEAP)]
             const EXEC = sys::MALLOC_CAP_EXEC;
@@ -293,7 +293,7 @@ mod tests {
     fn zeroed_box_skips_the_stack() {
         let b = zeroed_box::<[u32; 1 << 20]>(Caps::SPIRAM).unwrap();
         assert!(b.iter().all(|&w| w == 0));
-        let s = zeroed_slice::<devkit::A16<[i16; 8]>>(5, Caps::INTERNAL).unwrap();
+        let s = zeroed_slice::<devkit_core::A16<[i16; 8]>>(5, Caps::INTERNAL).unwrap();
         assert_eq!(s.len(), 5);
         assert_eq!(s.as_ptr() as usize % 16, 0);
         assert!(s.iter().all(|a| a.0 == [0; 8]));

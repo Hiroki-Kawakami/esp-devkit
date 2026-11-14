@@ -5,8 +5,8 @@
 
 use core::mem::MaybeUninit;
 
-use devkit::Zeroable;
-use devkit::math::{lrintf, sqrtf};
+use devkit_core::Zeroable;
+use devkit_core::math::{lrintf, sqrtf};
 
 use super::sbr::{Ch, HF_ADJ, MAX_BANDS, MAX_ENV, Sbr, XLOW_SLOTS};
 

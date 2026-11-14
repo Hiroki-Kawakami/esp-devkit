@@ -5,7 +5,7 @@
 
 use alloc::boxed::Box;
 
-use devkit::{A16, Zeroable};
+use devkit_core::{A16, Zeroable};
 use idf::heap::{self, Caps};
 
 use super::tables::*;

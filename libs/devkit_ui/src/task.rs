@@ -11,7 +11,7 @@ use core::future::Future;
 use core::marker::PhantomData;
 use core::ptr;
 
-use devkit::executor::Park;
+use devkit_core::executor::Park;
 use idf::executor::{CRITICAL, JoinHandle, LocalExecutor};
 use idf::log::error;
 

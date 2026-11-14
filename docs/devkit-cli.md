@@ -2,7 +2,7 @@
 
 `devkit` builds, flashes and runs a firmware project's targets, and talks to
 the firmware while it runs. It is on `PATH` in the dev shell (`nix develop`),
-built from `tools/devkit` as the flake's `devkit` package.
+built from `tools/devkit_cli` as the flake's `devkit` package.
 
 ```sh
 cd firmware/tab5_rs
@@ -165,7 +165,7 @@ client, with or without a terminal:
   the base64. One stored in flash is `devkit idf coredump-info`.
 
 These come from esp_idf_monitor; check them after an ESP-IDF update
-(`tools/devkit/src/host/decode.rs`):
+(`tools/devkit_cli/src/host/decode.rs`):
 
 | marker | esp_idf_monitor source |
 |---|---|
@@ -179,4 +179,4 @@ These come from esp_idf_monitor; check them after an ESP-IDF update
 
 - The firmware's own harness protocol does not depend on the host: the same
   lines typed into `idf.py monitor` work.
-- Working on `devkit` itself: `cargo run --manifest-path tools/devkit/Cargo.toml -- <args>`.
+- Working on `devkit` itself: `cargo run --manifest-path tools/devkit_cli/Cargo.toml -- <args>`.

@@ -3657,7 +3657,7 @@ fn a_color_mode_swaps_the_palette_under_the_same_looks() {
 
 #[test]
 fn strips_give_back_the_lent_memory() {
-    use devkit::{BufferBytes, BufferLease, BufferPool};
+    use devkit_core::{BufferBytes, BufferLease, BufferPool};
 
     static SRAM: BufferPool<BufferBytes<1024>, 1, idf::sync::FreeRtos> = BufferPool::new(BufferBytes::new());
 

@@ -28,7 +28,7 @@ set(DEVKIT_DEVICE_COMPONENTS
     libs/audio_framework
     libs/bsp_rs
     libs/compression_framework
-    libs/devkit
+    libs/devkit_core
     libs/devkit_audio
     libs/devkit_compression
     libs/devkit_crypto
@@ -62,7 +62,7 @@ set(DEVKIT_SIMULATOR_COMPONENTS
     libs/audio_framework
     libs/bsp_rs
     libs/compression_framework
-    libs/devkit
+    libs/devkit_core
     libs/devkit_audio
     libs/devkit_compression
     libs/devkit_crypto

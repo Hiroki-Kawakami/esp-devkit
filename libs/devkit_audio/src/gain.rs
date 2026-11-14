@@ -6,7 +6,7 @@
 use alloc::sync::Arc;
 use core::marker::PhantomData;
 
-use devkit::math::lrintf;
+use devkit_core::math::lrintf;
 use idf::heap::Caps;
 
 use crate::sample::{check_channels, mulh, mulh_scale, shift_sat};

@@ -7,7 +7,7 @@ use alloc::string::String;
 use core::ffi::{CStr, c_int};
 use core::fmt::{self, Write};
 
-use devkit::FmtBuf;
+use devkit_core::FmtBuf;
 
 use crate::sys;
 

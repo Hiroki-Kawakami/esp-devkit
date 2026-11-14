@@ -8,7 +8,7 @@ use crate::Result;
 #[cfg(target_os = "none")]
 use crate::{Error, sys};
 
-devkit::bitflags! {
+devkit_core::bitflags! {
     /// `ESP_CACHE_MSYNC_FLAG_*`.
     pub struct Flags: u32 {
         const INVALIDATE = 1 << 0;

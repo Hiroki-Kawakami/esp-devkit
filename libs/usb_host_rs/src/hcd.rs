@@ -156,7 +156,7 @@ pub(crate) async fn run(pipe: PipeId, request: Arc<Request>) -> (Buffer, Result<
     if let Err(err) = backend().submit(pipe, request.clone()) {
         return (request.take_buffer(), Err(err));
     }
-    let pending = devkit::guard((), |()| backend().cancel(pipe, &request));
+    let pending = devkit_core::guard((), |()| backend().cancel(pipe, &request));
     let result = request.wait().await;
     core::mem::forget(pending);
     backend().finished(&request);

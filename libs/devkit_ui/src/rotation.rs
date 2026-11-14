@@ -17,7 +17,7 @@ use crate::plugin::{Plugin, PluginContext, PluginInit, Store};
 const KEY_ROTATION: Key<u8> = Key::new(c"rotation");
 const KEY_LOCKED: Key<u8> = Key::new(c"locked");
 
-devkit::bitflags! {
+devkit_core::bitflags! {
     /// The turns a screen can be shown at. `R0` to `R270` are the panel's own,
     /// so which of them is upright differs by board; `PORTRAIT` and `LANDSCAPE`
     /// mean the shape on any board. `CURRENT` keeps the turn the screen found.

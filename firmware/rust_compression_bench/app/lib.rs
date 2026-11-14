@@ -18,7 +18,7 @@ use core::ffi::{CStr, c_void};
 use core::ptr;
 use core::time::Duration;
 
-use devkit::Zeroable;
+use devkit_core::Zeroable;
 use devkit_compression::{Inflate, Lzw, LzwOptions, LzwWork, Window};
 use idf::heap::{self, Caps};
 use idf::log::{error, info};

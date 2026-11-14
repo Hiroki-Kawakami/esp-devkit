@@ -3,7 +3,7 @@
  * Copyright (c) 2026 Hiroki Kawakami
  *
  * USB/IP messages, big-endian on the wire; compiled into both this crate and
- * tools/devkit.
+ * tools/devkit_cli.
  */
 
 pub const VERSION: u16 = 0x0111;

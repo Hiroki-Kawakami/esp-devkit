@@ -1,7 +1,7 @@
 # Times devkit_image against image_framework on the same pictures.
 idf_component_register(
     SRCS "/dev/null"
-    PRIV_REQUIRES devkit devkit_image idf image_framework rust_rt)
+    PRIV_REQUIRES devkit_core devkit_image idf image_framework rust_rt)
 
 if(NOT DEFINED PYTHON)
     set(PYTHON python3)

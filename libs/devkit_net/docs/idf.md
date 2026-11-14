@@ -80,4 +80,4 @@ A new devkit_net Kconfig symbol reaches an existing `sdkconfig` only after
 - The Wi-Fi coprocessor (esp_hosted) driver is in `libs/bsp_rs/src/driver/esp_hosted`
   and registers itself with `register_wifi`; its IDF dependencies are its own.
 - The simulator's network needs libslirp in the devkit host
-  (`tools/devkit/src/host/net.rs`, `flake.nix`), not in the firmware.
+  (`tools/devkit_cli/src/host/net.rs`, `flake.nix`), not in the firmware.

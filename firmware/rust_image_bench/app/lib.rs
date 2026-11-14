@@ -118,7 +118,7 @@ fn psnr(a: &[u8], b: &[u8]) -> f64 {
     if se == 0.0 {
         return f64::INFINITY;
     }
-    10.0 * devkit::math::log2(255.0 * 255.0 * a.len() as f64 / se) / devkit::math::log2(10.0)
+    10.0 * devkit_core::math::log2(255.0 * 255.0 * a.len() as f64 / se) / devkit_core::math::log2(10.0)
 }
 
 fn report_rust(name: &str, rust: Result<Run, String>, pixels: usize) {

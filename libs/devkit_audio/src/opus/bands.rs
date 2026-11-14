@@ -5,7 +5,7 @@
 
 use alloc::boxed::Box;
 
-use devkit::math::{floorf, ldexpf, lrintf, sqrtf};
+use devkit_core::math::{floorf, ldexpf, lrintf, sqrtf};
 use idf::heap::{self, Caps};
 
 use super::rc::{Rc, ilog};

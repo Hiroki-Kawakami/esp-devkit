@@ -4,7 +4,7 @@
  */
 
 use crate::{Error, Inflate, Lzw, LzwOptions, LzwWork, Result, Source, WINDOW_BYTES, Window};
-use devkit::Zeroable;
+use devkit_core::Zeroable;
 
 const GIF8: LzwOptions = LzwOptions { literal_bits: 8, msb_first: false, early_change: false };
 const GIF2: LzwOptions = LzwOptions { literal_bits: 2, msb_first: false, early_change: false };

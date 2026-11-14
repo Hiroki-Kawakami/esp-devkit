@@ -6,7 +6,7 @@
 use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 use core::time::Duration;
 
-use devkit::executor::Park;
+use devkit_core::executor::Park;
 use idf::executor::TaskPark;
 use idf::time::Instant;
 

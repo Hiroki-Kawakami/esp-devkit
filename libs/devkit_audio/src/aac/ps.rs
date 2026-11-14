@@ -3,8 +3,8 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
-use devkit::math::lrintf;
-use devkit::{A16, Zeroable};
+use devkit_core::math::lrintf;
+use devkit_core::{A16, Zeroable};
 
 use super::kernels::{ps_allpass, ps_gain, ps_mix, ps_mix_real, ps_unzip, ps_zip};
 use super::sbr_hf::to_fixed;

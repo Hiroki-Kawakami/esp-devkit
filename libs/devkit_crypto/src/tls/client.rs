@@ -10,7 +10,7 @@ use alloc::vec::Vec;
 use core::mem::MaybeUninit;
 use core::ops::DerefMut;
 
-use devkit::ByteReader;
+use devkit_core::ByteReader;
 use idf::heap::Caps;
 
 use super::schedule::{HashKind, Secret, Transcript};

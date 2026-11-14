@@ -26,7 +26,7 @@ use core::time::Duration;
 
 use bsp_rs::Board;
 use bsp_rs::display::{Display, ImageFormat};
-use devkit::{BufferBytes, BufferPool};
+use devkit_core::{BufferBytes, BufferPool};
 use devkit_ui::{App, AppConfig, AutoRotation, ColorMode, Rotation, SavedColorMode, StripSource, Strips, TextInput};
 use idf::heap::Caps;
 use idf::log::{error, info};
