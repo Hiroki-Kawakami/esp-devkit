@@ -15,8 +15,6 @@
         toolchains = import ./nix/toolchains.nix { inherit pkgs system; };
         rust = import ./nix/rust.nix { inherit pkgs system; inherit (toolchains) clangLibs; };
         pythonEnv = (import ./nix/python-env.nix { inherit pkgs; }).pythonEnv;
-        # tools/resgen; kept off PATH so it never shadows the IDF python3.
-        resgenPython = pkgs.python3.withPackages (ps: [ ps.freetype-py ps.pillow ps.resvg-py ps.fonttools ]);
 
         # Flake git inputs fetch every submodule with its full history (gigabytes); fetchgit takes depth 1.
         esp-idf-src = pkgs.fetchgit {
@@ -73,7 +71,6 @@
           IDF_COMPONENT_MANAGER = "1";
           ESP_IDF_VERSION = "6.1";
           ESP_ROM_ELF_DIR = "${toolchains.romElfs}/";  # trailing slash required
-          RESGEN_PYTHON = "${resgenPython}/bin/python3";
           DEVKIT_CA_BUNDLE = "${caBundle}";
         };
 
@@ -86,7 +83,7 @@
               pkgs.gnugrep
               pkgs.gnused
               pkgs.gawk
-              devkit
+              resgen
             ] ++ extraPackages;
             env = idfEnv // {
               PATH = "${idfPath}:${lib.makeBinPath packages}";
@@ -124,7 +121,6 @@
               ./tools/devkit/src
               ./tools/devkit/assets
               ./libs/bsp_rs/src/sim/protocol.rs
-              ./libs/devkit_gfx/src/format.rs
               ./libs/usb_host_rs/src/usbip.rs
             ];
           };
@@ -132,12 +128,31 @@
           buildAndTestSubdir = "tools/devkit";
           cargoLock.lockFile = ./tools/devkit/Cargo.lock;
           nativeBuildInputs = [ pkgs.pkg-config ];
-          buildInputs = [ pkgs.freetype pkgs.libslirp ] ++ lib.optionals pkgs.stdenv.isLinux [ pkgs.alsa-lib ];
+          buildInputs = [ pkgs.libslirp ] ++ lib.optionals pkgs.stdenv.isLinux [ pkgs.alsa-lib ];
+        };
+        resgen = pkgs.rustPlatform.buildRustPackage {
+          pname = "devkit-resgen";
+          version = "0.1.0";
+          src = lib.fileset.toSource {
+            root = ./.;
+            fileset = lib.fileset.unions [
+              ./tools/devkit_resgen/Cargo.toml
+              ./tools/devkit_resgen/Cargo.lock
+              ./tools/devkit_resgen/src
+              ./libs/devkit_gfx/src/format.rs
+            ];
+          };
+          cargoRoot = "tools/devkit_resgen";
+          buildAndTestSubdir = "tools/devkit_resgen";
+          cargoLock.lockFile = ./tools/devkit_resgen/Cargo.lock;
+          nativeBuildInputs = [ pkgs.pkg-config ];
+          buildInputs = [ pkgs.freetype ];
         };
       in {
         lib = { inherit mkFwImage; };
 
         packages.devkit = devkit;
+        packages.resgen = resgen;
 
         devShells.default = pkgs.mkShell {
           packages = idfPackages ++ [
@@ -151,6 +166,7 @@
             pkgs.pkg-config
             # esp-devkit CLI (docs/devkit-cli.md); cargo for working on it
             devkit
+            resgen
             pkgs.cargo
             # Editor language server for the Rust crates (docs/rust.md)
             pkgs.rust-analyzer

@@ -18,7 +18,7 @@
 # implicit project(Project) that locks in the wrong (host default) toolchain.
 set(DEVKIT_ROOT ${CMAKE_CURRENT_LIST_DIR})
 
-include("${DEVKIT_ROOT}/tools/resgen/resgen.cmake")
+include("${DEVKIT_ROOT}/tools/devkit_resgen/resgen.cmake")
 include("${DEVKIT_ROOT}/tools/protogen/protogen.cmake")
 include("${DEVKIT_ROOT}/tools/rust/rust.cmake")
 

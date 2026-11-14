@@ -5,7 +5,6 @@
 set(UI_FRAMEWORK_SRCS
     "src/display_manager.cpp"
     "src/lvgl.cpp"
-    "src/packed_font.cpp"
     "src/screen_manager.cpp"
     "src/widgets/common/fonts.cpp"
     "src/widgets/common/grid.cpp"

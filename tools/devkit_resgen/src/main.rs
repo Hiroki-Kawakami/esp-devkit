@@ -6,10 +6,13 @@
  * Rust code that refers to them. See docs/resgen.md.
  */
 
+extern crate alloc;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::c_void;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 
 use freetype::{Library, face::LoadFlag};
 use resvg::tiny_skia::{FilterQuality, Pixmap, PixmapPaint, Transform};
@@ -1063,8 +1066,19 @@ fn write_if_changed(path: &Path, data: &[u8]) -> Result<(), String> {
     fs::write(path, data).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-pub fn command(args: &[String]) -> Result<(), String> {
-    const USAGE: &str = "usage: devkit resgen <inputs|index|entry> <definition> <fonts dir> <out> [entry]";
+fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match run(&args) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("devkit-resgen: {err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run(args: &[String]) -> Result<(), String> {
+    const USAGE: &str = "usage: devkit-resgen <inputs|index|entry> <definition> <fonts dir> <out> [entry]";
     let [action, definition, fonts_dir, out, rest @ ..] = args else { return Err(USAGE.into()) };
     let context = Context::load(Path::new(definition), Path::new(fonts_dir))?;
     let out = Path::new(out);
@@ -1415,7 +1429,7 @@ fn text_font(context: &Context, name: &str, entry: &FontEntry) -> Result<Vec<u8>
     }
     if !missing.is_empty() {
         let shown: Vec<String> = missing.iter().take(20).map(|cp| format!("U+{cp:04X}")).collect();
-        eprintln!("resgen: warning: {where_}: {} glyphs not in {}: {}", missing.len(), path.display(), shown.join(" "));
+        eprintln!("devkit-resgen: warning: {where_}: {} glyphs not in {}: {}", missing.len(), path.display(), shown.join(" "));
     }
 
     let size = face.size_metrics().ok_or_else(|| format!("{where_}: no size metrics"))?;

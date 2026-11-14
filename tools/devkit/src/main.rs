@@ -14,7 +14,6 @@ mod frame;
 mod host;
 mod project;
 mod protocol;
-mod resgen;
 mod tasks;
 mod usbip;
 mod view;
@@ -53,10 +52,7 @@ connected devices:
 running hosts (`run` and `monitor` start one):
   hosts                           list them
   cmd     [-t H] [--log] <line>...
-  script  [-t H] [--log] <file|->
-
-build steps (run from CMake):
-  resgen  <inputs|index|entry> <definition> <fonts dir> <out> [entry]";
+  script  [-t H] [--log] <file|->";
 
 struct Args {
     rest: Vec<OsString>,
@@ -123,7 +119,6 @@ fn run() -> Result<(), String> {
     let command = args.rest.remove(0).to_string_lossy().into_owned();
     match command.as_str() {
         "devices" => devices_command(&args.strings()),
-        "resgen" => resgen::command(&args.strings()),
         "hosts" => {
             let hosts = client::hosts();
             if hosts.is_empty() {

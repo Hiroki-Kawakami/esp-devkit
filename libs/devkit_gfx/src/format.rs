@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 Hiroki Kawakami
  *
- * Resource binaries, written by `devkit resgen` and read by this crate. Layout
+ * Resource binaries, written by `devkit-resgen` and read by this crate. Layout
  * in docs/resgen.md.
  */
 

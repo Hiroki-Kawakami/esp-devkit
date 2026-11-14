@@ -10,8 +10,6 @@
 #include "harness.h"
 #endif
 
-extern "C" __attribute__((weak)) void resgen_resources_init(void) {}
-
 lv_result_t lv_async_call(std::function<void()> fn) {
     auto *fn_ptr = new std::function<void()>(std::move(fn));
     auto result = lv_async_call([](void *arg) {
@@ -88,7 +86,6 @@ esp_err_t lvgl_port_init(const lvgl_port_cfg_t *cfg) {
     if (!cfg || cfg->task_affinity >= configNUM_CORES) return ESP_ERR_INVALID_ARG;
     if (s_wake) return ESP_ERR_INVALID_STATE;
 
-    resgen_resources_init();
     lv_init();
     lv_tick_set_cb(tick_ms);
 
@@ -128,7 +125,6 @@ static bool s_inited;
 
 esp_err_t lvgl_port_init(const lvgl_port_cfg_t *cfg) {
     (void)cfg;   // task/stack/affinity knobs are meaningless without an LVGL task
-    resgen_resources_init();
     lv_init();
     lv_tick_set_cb(SDL_GetTicks);
     lv_delay_set_cb(SDL_Delay);
