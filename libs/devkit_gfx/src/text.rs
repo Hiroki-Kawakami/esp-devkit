@@ -14,6 +14,14 @@ use crate::geom::Rect;
 const VOICED_MARK: u32 = 0x3099;
 const SEMI_VOICED_MARK: u32 = 0x309A;
 const FIRST_WIDE: u32 = 0x2E80;
+pub(crate) const TOFU: u32 = 1 << 31;
+
+const IGNORED: [(u32, u32); 19] = [
+    (0x0000, 0x001F), (0x007F, 0x009F), (0x00AD, 0x00AD), (0x034F, 0x034F), (0x061C, 0x061C), (0x115F, 0x1160),
+    (0x17B4, 0x17B5), (0x180B, 0x180F), (0x200B, 0x200F), (0x202A, 0x202E), (0x2060, 0x206F), (0x3164, 0x3164),
+    (0xFE00, 0xFE0F), (0xFEFF, 0xFEFF), (0xFFA0, 0xFFA0), (0xFFF0, 0xFFF8), (0x1BCA0, 0x1BCA3), (0x1D173, 0x1D17A),
+    (0xE0000, 0xE0FFF),
+];
 
 const VOICED: [(u32, u32); 48] = [
     (0x3046, 0x3094), (0x304B, 0x304C), (0x304D, 0x304E), (0x304F, 0x3050), (0x3051, 0x3052), (0x3053, 0x3054),
@@ -30,6 +38,27 @@ const SEMI_VOICED: [(u32, u32); 10] = [
     (0x306F, 0x3071), (0x3072, 0x3074), (0x3075, 0x3077), (0x3078, 0x307A), (0x307B, 0x307D), (0x30CF, 0x30D1),
     (0x30D2, 0x30D4), (0x30D5, 0x30D7), (0x30D8, 0x30DA), (0x30DB, 0x30DD),
 ];
+
+fn ignored(codepoint: u32) -> bool {
+    IGNORED.iter().any(|&(first, last)| (first..=last).contains(&codepoint))
+}
+
+pub(crate) fn tofu_size(font: &Font, glyph: u32) -> (u8, u8) {
+    ((glyph & !TOFU) as u8, (u32::from(font.px()) * 7 / 10).clamp(1, 255) as u8)
+}
+
+/// Writes the box's A8 mask, `tofu_size` with no padding.
+pub(crate) fn draw_tofu(font: &Font, glyph: u32, dst: &mut [u8]) {
+    let (width, height) = tofu_size(font, glyph);
+    let (width, height) = (usize::from(width), usize::from(height));
+    let stroke = usize::from(font.px() / 16).max(1);
+    for y in 0..height {
+        for x in 0..width {
+            let edge = x < stroke || x + stroke >= width || y < stroke || y + stroke >= height;
+            dst[y * width + x] = if edge { 255 } else { 0 };
+        }
+    }
+}
 
 fn compose(base: u32, mark: u32) -> u32 {
     let table: &[(u32, u32)] = if mark == VOICED_MARK { &VOICED } else { &SEMI_VOICED };
@@ -83,6 +112,15 @@ impl FontChain {
             let index = font.find(codepoint)?;
             Some((*font, index, font.glyph(index)))
         })
+    }
+
+    fn tofu(&self) -> (&'static Font, u32, GlyphRecord) {
+        let font = self.fonts[0];
+        let advance = self.resolve('0' as u32).map_or(font.px() * 8, |zero| zero.2.advance);
+        let width = (((advance + 8) >> 4).saturating_sub(2)).min(255) as u8;
+        let glyph = TOFU | u32::from(width);
+        let height = tofu_size(font, glyph).1;
+        (font, glyph, GlyphRecord { bitmap: 0, advance, width, height, ofs_x: 1, ofs_y: 0 })
     }
 }
 
@@ -190,7 +228,7 @@ enum Kind {
     Space,
     Wide,
     Other,
-    Missing,
+    Ignored,
 }
 
 /// One character as layout sees it, a composed kana with its mark.
@@ -246,8 +284,10 @@ impl Iterator for Units<'_> {
             {
                 codepoint = compose(codepoint, next as u32);
             }
-            let Some(glyph) = self.chain.resolve(codepoint) else {
-                return Some(Unit { byte, kind: Kind::Missing, advance: 0, glyph: None });
+            let glyph = match self.chain.resolve(codepoint) {
+                Some(glyph) => glyph,
+                None if ignored(codepoint) => return Some(Unit { byte, kind: Kind::Ignored, advance: 0, glyph: None }),
+                None => self.chain.tofu(),
             };
             let kind = if c == ' ' {
                 Kind::Space
@@ -433,7 +473,7 @@ impl<A: Allocator> TextRun<A> {
                     line.ink = 0;
                     continue;
                 }
-                Kind::Missing => continue,
+                Kind::Ignored => continue,
                 _ => {}
             }
             let space = unit.kind == Kind::Space;

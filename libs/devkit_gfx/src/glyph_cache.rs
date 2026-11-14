@@ -10,6 +10,7 @@ use core::alloc::Allocator;
 use core::ptr;
 
 use crate::font::Font;
+use crate::text::{TOFU, draw_tofu, tofu_size};
 
 const EMPTY: u16 = u16::MAX;
 const BYTES_PER_SLOT: usize = 128;
@@ -158,13 +159,23 @@ impl<A: Allocator + Clone> GlyphCache<A> {
             self.slots[slot].frame = self.frame;
             return Some(unsafe { self.data.as_ptr().add(self.slots[slot].offset as usize) });
         }
-        let record = font.glyph(glyph);
-        let len = usize::from(record.width) * usize::from(record.height);
+        let (width, height) = if glyph & TOFU != 0 {
+            tofu_size(font, glyph)
+        } else {
+            let record = font.glyph(glyph);
+            (record.width, record.height)
+        };
+        let len = usize::from(width) * usize::from(height);
         if self.count == self.slots.len() && !self.evict_oldest() {
             return None;
         }
         let offset = self.reserve(len)?;
-        font.decode(glyph, &mut self.data[offset..offset + len]);
+        let dst = &mut self.data[offset..offset + len];
+        if glyph & TOFU != 0 {
+            draw_tofu(font, glyph, dst);
+        } else {
+            font.decode(glyph, dst);
+        }
         self.decoded = self.decoded.wrapping_add(1);
 
         let at = (self.head + self.count) % self.slots.len();

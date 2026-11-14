@@ -743,6 +743,46 @@ fn decomposed_kana_compose() {
 }
 
 #[test]
+fn a_missing_character_is_a_box_as_wide_as_zero() {
+    let font = build_font(&[(SOLID, 8, 10, 160), ('0', 6, 10, 112)], true);
+    let chain = FontChain::new(Vec::leak(vec![font]));
+    let run = layout(&chain, "A\u{1F600}A", TextOptions { carets: true, ..TextOptions::default() });
+    let g = run.glyphs();
+    assert_eq!(g.len(), 3);
+    assert_eq!((g[1].x, g[1].w, g[1].h), (11, 5, 8));
+    assert_eq!(g[1].y + i16::from(g[1].h), g[0].y + i16::from(g[0].h) - 2);
+    assert_eq!(g[2].x, 17);
+    assert_eq!(run.caret(5), Some((17, 0)));
+
+    let run = layout(&test_chain(), "A\u{1F600}A", TextOptions::default());
+    assert_eq!((run.glyphs()[1].w, run.glyphs()[2].x), (4, 16));
+}
+
+#[test]
+fn ignorable_characters_take_no_space() {
+    let chain = test_chain();
+    let run = layout(&chain, "A\u{200B}\u{FE0F}\r\tA", TextOptions::default());
+    assert_eq!(run.glyphs().len(), 2);
+    assert_eq!(run.glyphs()[1].x, 10);
+}
+
+#[test]
+fn tofu_draws_an_outline() {
+    let chain = test_chain();
+    let run = layout(&chain, "\u{1F600}", TextOptions::default());
+    let g = run.glyphs()[0];
+    let mut cache = GlyphCache::new(256);
+    cache.begin_frame();
+    let mask = unsafe { core::slice::from_raw_parts(cache.get(g.font, g.glyph).unwrap(), usize::from(g.w) * usize::from(g.h)) };
+    let w = usize::from(g.w);
+    assert_eq!(mask[0], 255);
+    assert_eq!(mask[w - 1], 255);
+    assert_eq!(mask[w + 1], 0);
+    assert_eq!(mask[mask.len() - 1], 255);
+    assert_eq!(cache.decoded(), 1);
+}
+
+#[test]
 fn fallback_grows_the_line_box() {
     let first = build_font(&[(SOLID, 8, 10, 160)], true);
     let second = build_font(&[(WIDE, 12, 12, 256)], true);
