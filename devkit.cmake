@@ -49,6 +49,7 @@ set(DEVKIT_DEVICE_COMPONENTS
     libs/rust_rt
     libs/sensors
     libs/ui_framework
+    libs/unicode
     libs/usb_device
     libs/usb_host
     libs/usb_host_rs
@@ -82,6 +83,7 @@ set(DEVKIT_SIMULATOR_COMPONENTS
     libs/rust_rt
     libs/sensors
     libs/ui_framework
+    libs/unicode
     libs/usb_device
     libs/usb_host
     libs/usb_host_rs

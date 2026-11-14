@@ -11,8 +11,6 @@ use crate::font::Font;
 use crate::format::GlyphRecord;
 use crate::geom::Rect;
 
-const VOICED_MARK: u32 = 0x3099;
-const SEMI_VOICED_MARK: u32 = 0x309A;
 const FIRST_WIDE: u32 = 0x2E80;
 pub(crate) const TOFU: u32 = 1 << 31;
 
@@ -21,22 +19,6 @@ const IGNORED: [(u32, u32); 19] = [
     (0x17B4, 0x17B5), (0x180B, 0x180F), (0x200B, 0x200F), (0x202A, 0x202E), (0x2060, 0x206F), (0x3164, 0x3164),
     (0xFE00, 0xFE0F), (0xFEFF, 0xFEFF), (0xFFA0, 0xFFA0), (0xFFF0, 0xFFF8), (0x1BCA0, 0x1BCA3), (0x1D173, 0x1D17A),
     (0xE0000, 0xE0FFF),
-];
-
-const VOICED: [(u32, u32); 48] = [
-    (0x3046, 0x3094), (0x304B, 0x304C), (0x304D, 0x304E), (0x304F, 0x3050), (0x3051, 0x3052), (0x3053, 0x3054),
-    (0x3055, 0x3056), (0x3057, 0x3058), (0x3059, 0x305A), (0x305B, 0x305C), (0x305D, 0x305E), (0x305F, 0x3060),
-    (0x3061, 0x3062), (0x3064, 0x3065), (0x3066, 0x3067), (0x3068, 0x3069), (0x306F, 0x3070), (0x3072, 0x3073),
-    (0x3075, 0x3076), (0x3078, 0x3079), (0x307B, 0x307C), (0x309D, 0x309E), (0x30A6, 0x30F4), (0x30AB, 0x30AC),
-    (0x30AD, 0x30AE), (0x30AF, 0x30B0), (0x30B1, 0x30B2), (0x30B3, 0x30B4), (0x30B5, 0x30B6), (0x30B7, 0x30B8),
-    (0x30B9, 0x30BA), (0x30BB, 0x30BC), (0x30BD, 0x30BE), (0x30BF, 0x30C0), (0x30C1, 0x30C2), (0x30C4, 0x30C5),
-    (0x30C6, 0x30C7), (0x30C8, 0x30C9), (0x30CF, 0x30D0), (0x30D2, 0x30D3), (0x30D5, 0x30D6), (0x30D8, 0x30D9),
-    (0x30DB, 0x30DC), (0x30EF, 0x30F7), (0x30F0, 0x30F8), (0x30F1, 0x30F9), (0x30F2, 0x30FA), (0x30FD, 0x30FE),
-];
-
-const SEMI_VOICED: [(u32, u32); 10] = [
-    (0x306F, 0x3071), (0x3072, 0x3074), (0x3075, 0x3077), (0x3078, 0x307A), (0x307B, 0x307D), (0x30CF, 0x30D1),
-    (0x30D2, 0x30D4), (0x30D5, 0x30D7), (0x30D8, 0x30DA), (0x30DB, 0x30DD),
 ];
 
 fn ignored(codepoint: u32) -> bool {
@@ -58,11 +40,6 @@ pub(crate) fn draw_tofu(font: &Font, glyph: u32, dst: &mut [u8]) {
             dst[y * width + x] = if edge { 255 } else { 0 };
         }
     }
-}
-
-fn compose(base: u32, mark: u32) -> u32 {
-    let table: &[(u32, u32)] = if mark == VOICED_MARK { &VOICED } else { &SEMI_VOICED };
-    table.iter().find(|(b, _)| *b == base).map_or(base, |(_, composed)| *composed)
 }
 
 /// Fonts tried in order, for scripts or icons the first one lacks. The line box
@@ -271,18 +248,18 @@ impl Iterator for Units<'_> {
     fn next(&mut self) -> Option<Unit> {
         loop {
             let (byte, c) = self.chars.next()?;
-            let mut codepoint = c as u32;
-            if codepoint == VOICED_MARK || codepoint == SEMI_VOICED_MARK {
+            if unicode::is_kana_voicing_mark(c) {
                 continue;
             }
             let byte = byte as u32 + self.offset;
             if c == '\n' {
                 return Some(Unit { byte, kind: Kind::Newline, advance: 0, glyph: None });
             }
+            let mut codepoint = c as u32;
             if let Some(&(_, next)) = self.chars.peek()
-                && matches!(next as u32, VOICED_MARK | SEMI_VOICED_MARK)
+                && let Some(composed) = unicode::compose_kana(c, next)
             {
-                codepoint = compose(codepoint, next as u32);
+                codepoint = composed as u32;
             }
             let glyph = match self.chain.resolve(codepoint) {
                 Some(glyph) => glyph,
@@ -525,10 +502,49 @@ impl<A: Allocator> TextRun<A> {
         self.finish(&mut line, end, ink, chain, options, line_height);
         self.lines = line.number;
         self.height = line.top;
+        self.measure_bounds();
+        overflowed
+    }
+
+    fn measure_bounds(&mut self) {
         self.bounds = self.glyphs.iter().fold(Rect::default(), |bounds, g| {
             bounds.union(&Rect::new(g.x, g.y, i16::from(g.w), i16::from(g.h)))
         });
-        overflowed
+    }
+
+    /// Lays one line out on a grid of columns `cell` 1/16 px wide: each
+    /// `(column, span, c)` is centered in its `span` columns, whatever its own
+    /// advance, so a glyph wider than that overhangs its neighbors. Characters
+    /// are taken as they are, with no composition.
+    pub fn layout_cells(&mut self, chain: &FontChain, cells: impl IntoIterator<Item = (u16, u8, char)>, cell: i32) {
+        self.glyphs.clear();
+        self.carets.clear();
+        self.line_height = chain.line_height();
+        let mut end = 0;
+        for (column, span, c) in cells {
+            let (left, width) = (i32::from(column) * cell, i32::from(span) * cell);
+            end = end.max(left + width);
+            let (font, glyph, record) = match chain.resolve(c as u32) {
+                Some(glyph) => glyph,
+                None if ignored(c as u32) => continue,
+                None => chain.tofu(),
+            };
+            if record.width == 0 {
+                continue;
+            }
+            self.glyphs.push(PlacedGlyph {
+                font,
+                glyph,
+                x: px(left + (width - i32::from(record.advance)) / 2) + i16::from(record.ofs_x),
+                y: chain.ascent - (i16::from(record.height) + i16::from(record.ofs_y)),
+                w: record.width,
+                h: record.height,
+            });
+        }
+        self.width = px(end);
+        self.height = self.line_height;
+        self.lines = 1;
+        self.measure_bounds();
     }
 }
 

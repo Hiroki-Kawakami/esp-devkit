@@ -738,6 +738,11 @@ UI framework on `bsp_rs`; see its README.
 The chip's media accelerators (the 2D engine and the JPEG decoder) on IDF's
 HAL and 2D-DMA allocator; see its README.
 
+### `unicode` (`libs/unicode`)
+
+Unicode character properties: East_Asian_Width, General_Category and the kana
+compositions; see its README.
+
 ## Runtime (`libs/rust_rt`)
 
 - The allocator shim (`__rust_alloc` and friends) forwards to `malloc`/`free`,

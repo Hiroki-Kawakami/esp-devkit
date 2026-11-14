@@ -29,7 +29,10 @@ draw::<Rgb565, _, _>(&list, &prepared, &surface);
   the cache; `Prepared::missing` counts those that did not, which are not drawn.
 - A character no font of the chain has is a box as wide as the chain's `0`
   (half the size without one). Control characters and default-ignorable ones
-  (zero-width joiners, variation selectors, ...) take no space.
+  (zero-width joiners, variation selectors, ...) take no space. A kana followed
+  by U+3099/U+309A is drawn composed.
+- `TextRun::layout_cells` puts characters on a grid of fixed columns, each
+  centered in the columns it spans, whatever its own advance.
 - `CornerMask` and `ShadowMask` are generated once and never freed; keep them
   with the theme. `Op::Shadow` leaves the middle of its rectangle unpainted, so
   something opaque must cover it.

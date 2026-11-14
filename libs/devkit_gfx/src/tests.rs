@@ -733,6 +733,19 @@ fn text_aligns_within_the_width() {
 }
 
 #[test]
+fn cells_center_each_character_in_its_columns() {
+    let chain = test_chain();
+    let mut run = TextRun::new();
+    run.layout_cells(&chain, [(2, 1, SOLID), (3, 2, WIDE), (5, 1, ' '), (6, 1, '\u{200B}')], 200);
+    let g = run.glyphs();
+    assert_eq!(g.len(), 2);
+    assert_eq!(g[0].x, 26);
+    assert_eq!(g[1].x, 42);
+    assert_eq!(g[0].y, layout(&chain, "A", TextOptions::default()).glyphs()[0].y);
+    assert_eq!((run.width(), run.height(), run.lines()), (88, chain.line_height(), 1));
+}
+
+#[test]
 fn decomposed_kana_compose() {
     let font = build_font(&[('か', 8, 8, 160), ('が', 9, 8, 160), ('は', 8, 8, 160), ('ぱ', 7, 8, 160)], true);
     let chain = FontChain::new(Vec::leak(vec![font]));
