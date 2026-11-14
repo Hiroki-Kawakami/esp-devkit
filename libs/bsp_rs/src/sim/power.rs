@@ -13,7 +13,7 @@ use core::ffi::CStr;
 
 use super::protocol::{ENV_POWER, parse_power};
 use super::{Host, ffi};
-use crate::power::{self, BatteryState, Charge, Driver, PowerSource, PowerState};
+use crate::power::{self, Battery, BatteryState, Charge, Driver, PowerSource, PowerState};
 
 const EMPTY_MV: u32 = 6600;
 const FULL_MV: u32 = 8200;
@@ -57,17 +57,19 @@ impl Driver for SimPower {
     fn read(&self) -> Result<PowerState> {
         let word = self.state.load(Ordering::Relaxed);
         let external = word & EXTERNAL != 0;
-        let battery = (word & BATTERY != 0).then(|| {
+        let battery = if word & BATTERY != 0 {
             let level = (word & LEVEL_MASK) as u8;
             let mv = EMPTY_MV + u32::from(level) * (FULL_MV - EMPTY_MV) / 100;
-            BatteryState {
+            Battery::Present(BatteryState {
                 level: power::linear_level(mv, EMPTY_MV, FULL_MV),
                 voltage_mv: Some(mv),
                 charging: Some(external && level < 100 && self.charge.load(Ordering::Relaxed)),
-            }
-        });
+            })
+        } else {
+            Battery::Absent
+        };
         let source = if external { PowerSource::External } else { PowerSource::Battery };
-        Ok(PowerState { source: Some(source), battery })
+        Ok(PowerState { source, battery })
     }
 
     fn set_charge(&self, charge: Charge) -> Result<()> {

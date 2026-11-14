@@ -56,8 +56,9 @@ points as if the controller had reported them, without waking `wait_interrupt`.
 `board.power` is on every board, shared the same way.
 
 - `read` returns a `PowerState`: `source` is what the board runs on and
-  `battery` is `None` without one. A field the board cannot measure is `None`;
-  `level` is always there, a linear map of the voltage on most boards.
+  `battery` is `Absent` without one, both `Unknown` when the board cannot tell.
+  A `BatteryState` field the board cannot measure is `None`; `level` is always
+  there, a linear map of the voltage on most boards.
 - `off` cuts the power and returns only when it stays on, as external power
   holds some boards up; the audio output is back as it was then. `restart` is
   a soft reboot. Both silence the audio output first.

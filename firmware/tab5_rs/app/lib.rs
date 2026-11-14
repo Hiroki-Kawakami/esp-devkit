@@ -11,10 +11,13 @@ use core::ffi::CStr;
 use core::time::Duration;
 
 use alloc::boxed::Box;
+use alloc::format;
+use alloc::string::String;
 use alloc::vec::Vec;
 
 use bsp_rs::audio::{Audio, Format, Pcm, SampleFormat, SpeakerMode};
 use bsp_rs::display::{Display, FrameBuffer, ImageFormat};
+use bsp_rs::power::{Battery, Charge, Power};
 use bsp_rs::sd::MountConfig;
 use devkit::math::sinf;
 use bsp_rs::touch::{Point, Touch};
@@ -79,6 +82,9 @@ pub fn run() {
     if let Some(touch) = board.touch {
         trace_touches(display, touch);
     }
+    let power = board.power;
+    harness_rs::register("battery", move |_| battery(power));
+    harness_rs::register("chg", move |args| charge(power, args));
     if let Err(err) = harness_rs::start(&board) {
         error!(TAG, "harness: {err}");
     }
@@ -112,6 +118,26 @@ pub fn run() {
         Some(touch) => log_touches(touch),
         None => cycle(display),
     }
+}
+
+fn battery(power: &Power) -> Result<Option<String>, String> {
+    let state = power.read().map_err(|err| format!("{err}"))?;
+    let source = format!("source={:?}", state.source);
+    Ok(Some(match state.battery {
+        Battery::Unknown => format!("{source} battery=unknown"),
+        Battery::Absent => format!("{source} battery=absent"),
+        Battery::Present(b) => format!("{source} level={} mv={:?} charging={:?}", b.level, b.voltage_mv, b.charging),
+    }))
+}
+
+fn charge(power: &Power, args: &[&str]) -> Result<Option<String>, String> {
+    let charge = match args {
+        ["off"] => Charge::Off,
+        ["on"] => Charge::Normal,
+        ["fast"] => Charge::Fast,
+        _ => return Err("usage: chg off|on|fast".into()),
+    };
+    power.set_charge(charge).map(|()| None).map_err(|err| format!("{err}"))
 }
 
 fn play_tone(audio: &'static Audio) {

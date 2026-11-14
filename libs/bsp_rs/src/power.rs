@@ -12,6 +12,7 @@ use crate::audio::Audio;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PowerSource {
+    Unknown,
     Battery,
     External,
 }
@@ -27,11 +28,16 @@ pub struct BatteryState {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Battery {
+    Unknown,
+    Absent,
+    Present(BatteryState),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct PowerState {
-    /// `None` when the board cannot tell.
-    pub source: Option<PowerSource>,
-    /// `None` without a battery.
-    pub battery: Option<BatteryState>,
+    pub source: PowerSource,
+    pub battery: Battery,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -50,7 +56,7 @@ pub enum Switch {
 
 pub(crate) trait Driver: Send + Sync + 'static {
     fn read(&self) -> Result<PowerState> {
-        Ok(PowerState { source: None, battery: None })
+        Ok(PowerState { source: PowerSource::Unknown, battery: Battery::Unknown })
     }
 
     fn set_charge(&self, _charge: Charge) -> Result<()> {

@@ -5,7 +5,7 @@
 
 use idf::Result;
 
-use crate::power::{self, PowerSource, PowerState};
+use crate::power::{self, Battery, PowerSource, PowerState};
 use crate::{Absent, Board, Config};
 
 pub(crate) type Display = Absent;
@@ -15,7 +15,7 @@ struct UsbPower;
 
 impl power::Driver for UsbPower {
     fn read(&self) -> Result<PowerState> {
-        Ok(PowerState { source: Some(PowerSource::External), battery: None })
+        Ok(PowerState { source: PowerSource::External, battery: Battery::Absent })
     }
 }
 

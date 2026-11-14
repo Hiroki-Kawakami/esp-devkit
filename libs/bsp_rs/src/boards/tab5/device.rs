@@ -11,7 +11,7 @@ use idf::sync::{Mutex, OnceLock};
 use idf::{Error, Result, gpio, thread};
 
 use super::audio::AudioDriver;
-use super::power::{self as tab5_power, PowerDriver};
+use super::power::{self as tab5_power, BatteryProbe, PowerDriver};
 use super::{PANEL_SIZE, TAG, resolve_fb_num, resolve_pixel_format};
 use crate::audio::{self, Audio};
 use crate::devices::bmi270::{self, Bmi270};
@@ -97,9 +97,12 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
 
     let (mut pi4ioe1, pi4ioe2) =
         io_expanders_init(bus).inspect_err(|err| error!(TAG, "io expanders: {err}"))?;
-    reset_panel_and_touch(&mut pi4ioe1)?;
-    let pi4ioe1 = PI4IOE1.get_or_init(|| Mutex::new(pi4ioe1));
+    let probe = BatteryProbe::start(bus);
+    let reset = reset_panel_and_touch(&mut pi4ioe1);
     let pi4ioe2 = PI4IOE2.get_or_init(|| Mutex::new(pi4ioe2));
+    let power = PowerDriver::new(probe, pi4ioe2);
+    reset?;
+    let pi4ioe1 = PI4IOE1.get_or_init(|| Mutex::new(pi4ioe1));
 
     let display = panel_init(config, bus)?;
     let touch = touch_init(bus, &display);
@@ -109,7 +112,7 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
     let sd = sd_init();
     #[cfg(CONFIG_BSP_RS_DRIVER_ESP_HOSTED)]
     coprocessor_init();
-    let power = power::start(PowerDriver::new(bus, pi4ioe2), audio);
+    let power = power::start(power, audio);
     Ok(Board { audio, display: Some(DISPLAY.get_or_init(|| display::Display::new(display))), imu, power, rtc, sd, touch })
 }
 
@@ -133,7 +136,7 @@ fn io_expanders_init(bus: &'static MasterBus) -> Result<(Pi4io<'static>, Pi4io<'
     pi4ioe2[usize::from(tab5_power::PWROFF_PIN)] = PinConfig::output(false);
     pi4ioe2[usize::from(tab5_power::CHG_QC_EN_N_PIN)] = PinConfig::output(false);
     pi4ioe2[6] = PinConfig::input(); // CHG_STAT
-    pi4ioe2[usize::from(tab5_power::CHG_EN_PIN)] = PinConfig::output(true);
+    pi4ioe2[usize::from(tab5_power::CHG_EN_PIN)] = PinConfig::output(false);
     let pi4ioe2 = Pi4io::new(bus, PI4IOE2_ADDR, &pi4ioe2)?;
     Ok((pi4ioe1, pi4ioe2))
 }
