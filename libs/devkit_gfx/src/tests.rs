@@ -510,6 +510,31 @@ fn glyph_cache_keeps_a_frame_and_evicts_older_ones() {
 }
 
 #[test]
+fn glyph_cache_evicts_past_an_oldest_glyph_in_use() {
+    let glyphs: Vec<(char, u8, u8, u16)> = (0..64u32).map(|i| (char::from_u32(0x100 + i).unwrap(), 8, 8, 160)).collect();
+    let font = build_font(&glyphs, true);
+    let mut cache = GlyphCache::new(256);
+    cache.begin_frame();
+    for i in 0..4 {
+        cache.get(font, i).unwrap();
+    }
+    for round in 0..8u32 {
+        cache.begin_frame();
+        let held = cache.get(font, 0).unwrap();
+        let mut masks = vec![(0, held)];
+        for i in 0..3 {
+            let index = 1 + (round * 3 + i) % 63;
+            masks.push((index, cache.get(font, index).expect("an older glyph is free")));
+        }
+        for (index, mask) in masks {
+            let mut expected = [0u8; 64];
+            font.decode(index, &mut expected);
+            assert_eq!(unsafe { core::slice::from_raw_parts(mask, 64) }, expected);
+        }
+    }
+}
+
+#[test]
 fn prepare_reports_what_does_not_fit() {
     let chain = test_chain();
     let run = layout(&chain, "ABABABAB", TextOptions::default());

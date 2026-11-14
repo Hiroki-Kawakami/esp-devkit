@@ -20,10 +20,12 @@ struct Slot {
     font: *const Font,
     glyph: u32,
     offset: u32,
+    len: u32,
     frame: u32,
 }
 
-/// Decoded A8 glyph masks in a ring of `bytes`, oldest evicted first. A mask
+/// Decoded A8 glyph masks in a ring of `bytes`, the oldest not used in this
+/// frame evicted first. A mask
 /// stays valid until the next `begin_frame`; a frame's glyphs must fit the ring.
 pub struct GlyphCache<A: Allocator + Clone = Global> {
     data: Vec<u8, A>,
@@ -52,7 +54,7 @@ impl GlyphCache<Global> {
 impl<A: Allocator + Clone> GlyphCache<A> {
     pub fn new_in(bytes: usize, alloc: A) -> Self {
         let slot_count = (bytes / BYTES_PER_SLOT).clamp(16, EMPTY as usize / 2);
-        let empty = Slot { font: ptr::null(), glyph: 0, offset: 0, frame: 0 };
+        let empty = Slot { font: ptr::null(), glyph: 0, offset: 0, len: 0, frame: 0 };
         Self {
             data: vec::from_elem_in(0, bytes, alloc.clone()),
             slots: vec::from_elem_in(empty, slot_count, alloc.clone()),
@@ -94,13 +96,19 @@ impl<A: Allocator + Clone> GlyphCache<A> {
         }
     }
 
-    fn unindex(&mut self, slot: usize) {
+    fn index_of(&self, slot: usize) -> usize {
         let mask = self.mask();
-        let s = self.slots[slot];
+        let s = &self.slots[slot];
         let mut i = hash(s.font, s.glyph) & mask;
         while usize::from(self.index[i]) != slot {
             i = (i + 1) & mask;
         }
+        i
+    }
+
+    fn unindex(&mut self, slot: usize) {
+        let mask = self.mask();
+        let mut i = self.index_of(slot);
         // Backward shift, so probes never meet a hole.
         let mut next = (i + 1) & mask;
         while self.index[next] != EMPTY {
@@ -115,39 +123,51 @@ impl<A: Allocator + Clone> GlyphCache<A> {
         self.index[i] = EMPTY;
     }
 
-    fn evict_oldest(&mut self) -> bool {
-        if self.slots[self.head].frame == self.frame {
-            return false;
-        }
+    fn evict_oldest(&mut self) {
         self.unindex(self.head);
         self.head = (self.head + 1) % self.slots.len();
         self.count -= 1;
-        true
+    }
+
+    // The mask was handed out this frame and cannot move, so the ring skips
+    // over it and it becomes the newest.
+    fn requeue_oldest(&mut self) {
+        let s = self.slots[self.head];
+        let at = (self.head + self.count) % self.slots.len();
+        if at != self.head {
+            let i = self.index_of(self.head);
+            self.index[i] = at as u16;
+            self.slots[at] = s;
+        }
+        self.head = (self.head + 1) % self.slots.len();
+        self.write = (s.offset + s.len) as usize;
     }
 
     fn reserve(&mut self, len: usize) -> Option<usize> {
         if len > self.data.len() {
             return None;
         }
-        if self.write + len > self.data.len() {
-            while self.count > 0 && self.slots[self.head].offset as usize >= self.write {
-                if !self.evict_oldest() {
-                    return None;
-                }
-            }
-            self.write = 0;
-        }
-        while self.count > 0 {
-            let start = self.slots[self.head].offset as usize;
-            if start < self.write || start >= self.write + len {
+        let mut requeued = 0;
+        loop {
+            let blocked = self.count == self.slots.len()
+                || self.count > 0 && {
+                    let start = self.slots[self.head].offset as usize;
+                    if self.write + len > self.data.len() { start >= self.write || start < len } else { start >= self.write && start < self.write + len }
+                };
+            if !blocked {
                 break;
             }
-            if !self.evict_oldest() {
+            if self.slots[self.head].frame != self.frame {
+                self.evict_oldest();
+            } else if requeued < self.count {
+                self.requeue_oldest();
+                requeued += 1;
+            } else {
                 return None;
             }
         }
-        let offset = self.write;
-        self.write += len;
+        let offset = if self.write + len > self.data.len() { 0 } else { self.write };
+        self.write = offset + len;
         Some(offset)
     }
 
@@ -166,9 +186,6 @@ impl<A: Allocator + Clone> GlyphCache<A> {
             (record.width, record.height)
         };
         let len = usize::from(width) * usize::from(height);
-        if self.count == self.slots.len() && !self.evict_oldest() {
-            return None;
-        }
         let offset = self.reserve(len)?;
         let dst = &mut self.data[offset..offset + len];
         if glyph & TOFU != 0 {
@@ -179,7 +196,7 @@ impl<A: Allocator + Clone> GlyphCache<A> {
         self.decoded = self.decoded.wrapping_add(1);
 
         let at = (self.head + self.count) % self.slots.len();
-        self.slots[at] = Slot { font: key, glyph, offset: offset as u32, frame: self.frame };
+        self.slots[at] = Slot { font: key, glyph, offset: offset as u32, len: len as u32, frame: self.frame };
         self.count += 1;
         let mask = self.mask();
         let mut i = hash(key, glyph) & mask;
