@@ -408,8 +408,6 @@ rotation.set_locked(true);
 - A turn waits for a transition to end. Fingers on the screen act on nothing until
   they lift, flings stop, and an `ExternalSurface` is asked to write again, with
   `frame.rotation` and `frame.area` new from the next frame.
-- A strip buffer must hold 16 rows of the longer side; otherwise the turn is
-  refused and logged.
 
 ## Plugins
 
@@ -604,8 +602,8 @@ decoder.start(cx.take_strips().and_then(Strips::into_inner::<BufferLease<'static
   brings the memory given up, with nothing drawing in it any more. From another
   task `Handle::set_strips` does the same and blocks; it cannot be called from
   the UI task. Before `run`, use `App::set_strips`.
-- Memory is split into two buffers per lane, and each must hold 16 rows of the
-  logical width.
+- Memory is split into two buffers per lane, and each must hold a 16x16 block.
+  Rows that do not fit a buffer whole are drawn in narrower pieces.
 
 ## Presenter
 

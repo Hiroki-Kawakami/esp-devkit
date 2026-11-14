@@ -552,7 +552,7 @@ impl<C: Screen> AppState<C> {
             return;
         }
         if !self.presenter.fits_display(&request.display, &request.strips, request.lanes) {
-            error!(TAG, "render mode: strips hold no 16 rows in {:?}", request.display.pixel_format);
+            error!(TAG, "render mode: strips hold no 16x16 block in {:?}", request.display.pixel_format);
             self.tree.render_done(slot, request.reply, request.strips);
             return;
         }

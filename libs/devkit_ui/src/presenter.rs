@@ -307,17 +307,43 @@ fn area(display: &Display, rotation: Rotation) -> Rect {
     }
 }
 
-fn holds_rows(display: &Display, format: ImageFormat, rotation: Rotation, buffer_bytes: usize) -> bool {
-    let stride = format.row_bytes(area(display, rotation).w as usize);
-    if buffer_bytes < stride * ROW_GRID as usize {
-        error!(TAG, "strips of {buffer_bytes} bytes hold no 16 rows of {stride}");
+fn holds_block(format: ImageFormat, buffer_bytes: usize) -> bool {
+    if buffer_bytes < format.row_bytes(ROW_GRID as usize) * ROW_GRID as usize {
+        error!(TAG, "strips of {buffer_bytes} bytes hold no 16x16 block of {format:?}");
         return false;
     }
     true
 }
 
+/// Strips of `area` row by row from the top, split across where 16 rows of
+/// its width do not fit one buffer.
+fn cut(area: Rect, format: ImageFormat, buffer_bytes: usize, out: &mut Vec<Rect, Caps>) -> Result<()> {
+    if area.is_empty() {
+        return Ok(());
+    }
+    let widest = (buffer_bytes / (format.row_bytes(1) * ROW_GRID as usize)).min(i16::MAX as usize) as i16;
+    if widest == 0 {
+        return Err(Error::INVALID_SIZE);
+    }
+    let columns = (area.w + widest - 1) / widest;
+    let w = (area.w + columns - 1) / columns;
+    let rows = (buffer_bytes / format.row_bytes(w as usize)).min(i16::MAX as usize) as i16 / ROW_GRID * ROW_GRID;
+    let mut y = area.y;
+    while y < area.bottom() {
+        let h = rows.min(area.bottom() - y);
+        let mut x = area.x;
+        while x < area.right() {
+            let tile = w.min(area.right() - x);
+            out.push(Rect::new(x, y, tile, h));
+            x += tile;
+        }
+        y += h;
+    }
+    Ok(())
+}
+
 impl Presenter {
-    /// Refused when a strip buffer cannot hold 16 rows of the logical width.
+    /// Refused when a strip buffer cannot hold a 16x16 block.
     pub fn new(display: &'static Display, config: Config) -> Result<Self> {
         if !(1..=MAX_LANES).contains(&config.lanes) {
             return Err(Error::INVALID_ARG);
@@ -327,7 +353,7 @@ impl Presenter {
             StripSource::Given(strips) => strips,
         };
         let (_, buffer_bytes) = strips.buffers(config.lanes);
-        if !holds_rows(display, display.pixel_format(), config.rotation, buffer_bytes) {
+        if !holds_block(display.pixel_format(), buffer_bytes) {
             return Err(Error::INVALID_SIZE);
         }
         let shared = Arc::new(Shared {
@@ -456,7 +482,7 @@ impl Presenter {
 
     /// Draws in `strips` from the next frame on, with `lanes` lanes, and returns
     /// the memory used so far: nothing draws in it any more. Refused, handing
-    /// `strips` back, when a buffer cannot hold 16 rows of the logical width.
+    /// `strips` back, when a buffer cannot hold a 16x16 block.
     pub fn set_strips(&mut self, strips: Strips, lanes: usize) -> core::result::Result<Strips, Strips> {
         let Some(buffer_bytes) = self.fit(&strips, lanes, self.display.pixel_format()) else {
             return Err(strips);
@@ -471,7 +497,7 @@ impl Presenter {
             return None;
         }
         let (_, buffer_bytes) = strips.buffers(lanes);
-        holds_rows(self.display, format, self.rotation, buffer_bytes).then_some(buffer_bytes)
+        holds_block(format, buffer_bytes).then_some(buffer_bytes)
     }
 
     fn format_after(&self, config: &display::Config) -> ImageFormat {
@@ -490,9 +516,9 @@ impl Presenter {
     }
 
     /// `Display::reconfigure`, then `set_strips`, and everything is repainted.
-    /// Refused without touching the display when the strips would not hold 16
-    /// rows; when the display fails, `strips` come back too. Nothing else may
-    /// use the display or its framebuffers meanwhile.
+    /// Refused without touching the display when the strips would not hold a
+    /// 16x16 block; when the display fails, `strips` come back too. Nothing
+    /// else may use the display or its framebuffers meanwhile.
     pub unsafe fn set_display(&mut self, config: &display::Config, strips: Strips, lanes: usize) -> core::result::Result<Strips, Strips> {
         let Some(buffer_bytes) = self.fit(&strips, lanes, self.format_after(config)) else {
             return Err(strips);
@@ -514,11 +540,7 @@ impl Presenter {
     }
 
     /// Turns the picture from the next frame on, which repaints everything.
-    /// Refused when a buffer cannot hold 16 rows of the new logical width.
     pub fn set_rotation(&mut self, rotation: Rotation) -> Result<()> {
-        if !holds_rows(self.display, self.display.pixel_format(), rotation, self.buffer_bytes) {
-            return Err(Error::INVALID_SIZE);
-        }
         self.rotation = rotation;
         self.reset()
     }
@@ -617,17 +639,7 @@ impl Presenter {
         job.strips.clear();
         let hole = self.hole.unwrap_or_default();
         for area in self.damage[target].regions().iter().flat_map(|r| r.subtract(&hole)) {
-            let stride = fb.format().row_bytes(area.w as usize);
-            let rows = (self.buffer_bytes / stride).min(i16::MAX as usize) as i16 / ROW_GRID * ROW_GRID;
-            if rows == 0 {
-                return Err(Error::INVALID_SIZE);
-            }
-            let mut y = area.y;
-            while y < area.bottom() {
-                let h = rows.min(area.bottom() - y);
-                job.strips.push(Rect::new(area.x, y, area.w, h));
-                y += h;
-            }
+            cut(area, fb.format(), self.buffer_bytes, &mut job.strips)?;
         }
         stats.strips = job.strips.len() as u32;
         shared.next.store(0, Ordering::Relaxed);
