@@ -18,6 +18,11 @@ pub const GLYPH_SIZE: usize = 12;
 pub const GLYPH_COMPRESSED: u32 = 1 << 31;
 pub const GLYPH_OFFSET_MASK: u32 = GLYPH_COMPRESSED - 1;
 pub const FONT_PREFILTER: u8 = 1;
+pub const PARTITION_MAGIC: [u8; 4] = *b"DKRP";
+pub const PARTITION_HEADER_SIZE: usize = 44;
+/// Where the first resource of a partition image starts, and the alignment of
+/// every one.
+pub const PARTITION_ALIGN: usize = 64;
 /// The decoder reads a 24 bit window, so glyph data ends with this many zeros.
 pub const FONT_DATA_SLACK: usize = 2;
 

@@ -88,6 +88,13 @@ impl Mapping {
     pub fn as_slice(&self) -> &[u8] {
         unsafe { core::slice::from_raw_parts(self.ptr, self.len) }
     }
+
+    /// Keeps the data mapped for the rest of the run.
+    pub fn leak(self) -> &'static [u8] {
+        let data = unsafe { core::slice::from_raw_parts(self.ptr, self.len) };
+        core::mem::forget(self);
+        data
+    }
 }
 
 impl Drop for Mapping {

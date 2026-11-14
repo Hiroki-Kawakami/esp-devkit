@@ -23,6 +23,8 @@ let icon: char = resources::icons::FOLDER;
 - Every entry becomes a `static` named in upper case, a `devkit_gfx::Font` or
   `devkit_gfx::Image`, embedded with `include_bytes!` at 64 byte alignment. A
   binary that does not parse fails the build. The crate needs `devkit_gfx`.
+  An entry with `partition` is kept out of the app instead; see
+  [Partitions](#partitions).
 - `icons` has one `char` per icon name, shared by every icon font.
 - `devkit-resgen` is the flake's `resgen` package, on `PATH` in the devShell and
   in `mkFwImage`.
@@ -33,7 +35,8 @@ let icon: char = resources::icons::FOLDER;
   files and the bundled theme files; the JSON, those theme files and the tool
   are `CMAKE_CONFIGURE_DEPENDS`.
 - Each font/image is its own custom command, so Ninja runs them in parallel and
-  an SVG edit only regenerates the fonts that use it.
+  an SVG edit only regenerates the fonts that use it. `devkit-resgen partition`
+  then packs each partition's entries.
 - Outputs are only written when their content changes.
 - The commands carry the absolute path of the `devkit-resgen` found on `PATH`,
   so a change to the tool reruns every entry.
@@ -76,13 +79,51 @@ Font keys:
 | `glyph_file` | a file listing the characters to include, `#` lines ignored, or `@name` for a list bundled in `tools/devkit_resgen/fonts` (`@jp_glyphs`); unioned with `glyph` |
 | `variation` | variable-font axis values, e.g. `{"wght": 700}`; omitted axes use the font default |
 | `compress` | `false` stores every glyph raw. Default `true` (RLE per glyph, raw when that is smaller) |
+| `partition` | label of the data partition that holds the font instead of the app |
 
 Fonts have no fallback of their own; chains are built at runtime with
 `FontChain`.
 
 Image keys: `file` (PNG) and `format` are required. `format` is one of
 `RGB565`, `BGR888`, `ARGB8888`, `A8`, `L8`. `width`/`height`: neither keeps the
-source size, one scales the other by aspect ratio, both stretch.
+source size, one scales the other by aspect ratio, both stretch. `partition` is
+as for fonts.
+
+## Partitions
+
+Entries with `partition` go into an image of that partition rather than the
+app, for resources too large for it:
+
+```json
+"jp_24": { "size": 24, "font": "@noto-sans-jp", "bpp": 2, "glyph_file": "@jp_glyphs", "partition": "resources" }
+```
+
+```csv
+resources, data, undefined, , 4M,
+```
+
+```rust
+resources::mount();
+```
+
+- A label is 1 to 15 letters, digits and `_`. Every label in use needs a
+  partition of that name, or the configure fails; an image larger than the
+  partition fails the build.
+- The image is registered with `esp_partition_register_target(...
+  FLASH_IN_PROJECT)`, so `idf.py flash` and `<label>-flash` write it;
+  `idf.py app-flash` does not.
+- A font of a partition is a `Font` made by `Font::deferred`: its metrics are in
+  the app, so `FontChain`s and themes take it as any other, and it has no glyph
+  until `mount()`. An image is a `devkit_gfx::DeferredImage`, whose `get()` is
+  `None` until then.
+- `mount()` maps every partition for the rest of the run and binds its
+  resources. It returns false, after an error log, when a partition is missing
+  or its header differs from the one the firmware was built with (the image of
+  another build, or one never written); its resources stay empty, and the rest
+  of the firmware is unaffected. Call it before drawing.
+- The mapping costs flash MMU pages for the whole image.
+- In the simulator the partition is the build's image itself.
+- The crate also needs `idf`.
 
 ## Icon fonts
 
@@ -294,3 +335,8 @@ reads a 24 bit window.
 
 An image is a 20 byte header (`DKIM`, version, format, size, stride in pixels,
 data length), with the pixels at offset 64.
+
+A partition image is a 44 byte header (`DKRP`, version, two zero bytes, the
+image length, the SHA-256 of everything after the first 64 bytes), then its
+entries' binaries, fonts then images in name order, each starting on 64 bytes. The firmware keeps
+the first 64 bytes and the offset and length of each entry.

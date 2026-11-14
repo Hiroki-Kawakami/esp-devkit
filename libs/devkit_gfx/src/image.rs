@@ -9,6 +9,7 @@ use core::ptr::NonNull;
 use core::slice;
 
 use crate::format::{IMAGE_DATA_OFFSET, ImageFormat, ImageHeader};
+use crate::slot::ResourceSlot;
 
 #[derive(Clone, Copy)]
 pub struct Image<'a> {
@@ -32,6 +33,35 @@ impl Image<'static> {
             stride: header.stride as usize,
             pixels,
         }
+    }
+}
+
+/// An image resource whose binary a `ResourceSlot` receives at run time.
+pub struct DeferredImage {
+    header: ImageHeader,
+    slot: &'static ResourceSlot,
+}
+
+impl DeferredImage {
+    /// `header` is the start of the binary `slot` receives.
+    pub const fn new(header: &[u8], slot: &'static ResourceSlot) -> Self {
+        let Some(header) = ImageHeader::read(header) else { panic!("not an image resource") };
+        Self { header, slot }
+    }
+
+    pub const fn width(&self) -> u16 {
+        self.header.width
+    }
+
+    pub const fn height(&self) -> u16 {
+        self.header.height
+    }
+
+    /// None until the slot is bound.
+    pub fn get(&self) -> Option<Image<'static>> {
+        let data = self.slot.get()?;
+        let h = &self.header;
+        Some(Image { format: h.format, width: h.width, height: h.height, stride: h.stride as usize, pixels: &data[IMAGE_DATA_OFFSET..] })
     }
 }
 

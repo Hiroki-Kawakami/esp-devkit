@@ -4,9 +4,15 @@
  */
 
 use crate::format::{FONT_DATA_SLACK, FONT_PREFILTER, FontHeader, GLYPH_COMPRESSED, GLYPH_OFFSET_MASK, GLYPH_SIZE, GlyphRecord, LevelReader};
+use crate::slot::ResourceSlot;
+
+enum Data {
+    Static(&'static [u8]),
+    Slot(&'static ResourceSlot),
+}
 
 pub struct Font {
-    data: &'static [u8],
+    data: Data,
     header: FontHeader,
 }
 
@@ -15,7 +21,21 @@ impl Font {
     /// is not one.
     pub const fn parse(data: &'static [u8]) -> Self {
         let Some(header) = FontHeader::read(data) else { panic!("not a font resource") };
-        Self { data, header }
+        Self { data: Data::Static(data), header }
+    }
+
+    /// A font whose binary `slot` receives at run time; `header` is the start
+    /// of that binary. Until then the metrics are there but no glyph is.
+    pub const fn deferred(header: &[u8], slot: &'static ResourceSlot) -> Self {
+        let Some(header) = FontHeader::read(header) else { panic!("not a font resource") };
+        Self { data: Data::Slot(slot), header }
+    }
+
+    fn bytes(&self) -> &'static [u8] {
+        match self.data {
+            Data::Static(data) => data,
+            Data::Slot(slot) => slot.get().unwrap_or(&[]),
+        }
     }
 
     pub const fn px(&self) -> u16 {
@@ -42,7 +62,11 @@ impl Font {
     }
 
     pub(crate) fn find(&self, codepoint: u32) -> Option<u32> {
-        let table = &self.data[self.header.codepoints as usize..];
+        let data = self.bytes();
+        if data.is_empty() {
+            return None;
+        }
+        let table = &data[self.header.codepoints as usize..];
         let at = |i: usize| {
             let p = &table[i * 4..i * 4 + 4];
             u32::from_le_bytes([p[0], p[1], p[2], p[3]])
@@ -61,7 +85,7 @@ impl Font {
 
     pub(crate) fn glyph(&self, index: u32) -> GlyphRecord {
         let at = self.header.glyphs as usize + index as usize * GLYPH_SIZE;
-        GlyphRecord::read(&self.data[at..at + GLYPH_SIZE])
+        GlyphRecord::read(&self.bytes()[at..at + GLYPH_SIZE])
     }
 
     /// Writes the glyph's A8 mask, `width` x `height` with no padding.
@@ -72,7 +96,7 @@ impl Font {
         let end = self.header.data as usize + self.header.data_len as usize;
         debug_assert!(end - start >= FONT_DATA_SLACK);
         let bpp = self.header.bpp;
-        let mut reader = LevelReader::new(&self.data[start..end], bpp, compressed);
+        let mut reader = LevelReader::new(&self.bytes()[start..end], bpp, compressed);
         let prefilter = compressed && self.header.flags & FONT_PREFILTER != 0;
         let max = (1u32 << bpp) - 1;
         let width = usize::from(glyph.width);

@@ -30,6 +30,7 @@ use format::{FontHeader, GlyphRecord, ImageFormat, ImageHeader};
 const ICON_FIRST: u32 = 0xE000;
 const ICON_LAST: u32 = 0xEFFF;
 const BIN_DIR: &str = "resgen";
+const PARTITION_LABEL_MAX: usize = 15;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -150,6 +151,7 @@ struct FontEntry {
     variation: BTreeMap<String, f64>,
     #[serde(default = "default_compress")]
     compress: bool,
+    partition: Option<String>,
 }
 
 type IconMap = BTreeMap<String, String>;
@@ -177,6 +179,7 @@ struct ImageEntry {
     format: String,
     width: Option<u32>,
     height: Option<u32>,
+    partition: Option<String>,
 }
 
 /// A theme after merging its base, ready for code generation.
@@ -705,6 +708,14 @@ impl Context {
                 return Err(format!("font.{name}: needs exactly one of 'icon' or 'font'"));
             }
         }
+        let labels = definition.font.iter().map(|(n, f)| (n, &f.partition)).chain(definition.image.iter().map(|(n, i)| (n, &i.partition)));
+        for (name, label) in labels {
+            if let Some(label) = label
+                && (label.is_empty() || label.len() > PARTITION_LABEL_MAX || !label.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+            {
+                return Err(format!("{name}.partition: a label of 1 to {PARTITION_LABEL_MAX} letters, digits and '_'"));
+            }
+        }
         let mut icons = BTreeMap::new();
         for font in definition.font.values() {
             for icon in font.icon.iter().flatten().map(|(k, _)| k) {
@@ -742,6 +753,21 @@ impl Context {
 
     fn names(&self) -> impl Iterator<Item = &String> {
         self.definition.font.keys().chain(self.definition.image.keys())
+    }
+
+    fn partition(&self, name: &str) -> Option<&str> {
+        match self.definition.font.get(name) {
+            Some(font) => font.partition.as_deref(),
+            None => self.definition.image.get(name).and_then(|i| i.partition.as_deref()),
+        }
+    }
+
+    fn partitions(&self) -> BTreeSet<&str> {
+        self.names().filter_map(|n| self.partition(n)).collect()
+    }
+
+    fn partition_entries<'a>(&'a self, label: &'a str) -> impl Iterator<Item = &'a String> {
+        self.names().filter(move |n| self.partition(n) == Some(label))
     }
 }
 
@@ -886,6 +912,7 @@ fn merge_themes(definition: &mut Definition, base: &Path, fonts_dir: &Path) -> R
                 glyph_file: None,
                 variation: BTreeMap::new(),
                 compress: default_compress(),
+                partition: None,
             };
             definition.font.insert(format!("{lower}_icons_{size}"), font);
         }
@@ -1078,7 +1105,7 @@ fn main() -> ExitCode {
 }
 
 fn run(args: &[String]) -> Result<(), String> {
-    const USAGE: &str = "usage: devkit-resgen <inputs|index|entry> <definition> <fonts dir> <out> [entry]";
+    const USAGE: &str = "usage: devkit-resgen <inputs|index|entry|partition> <definition> <fonts dir> <out> [entry | label size]";
     let [action, definition, fonts_dir, out, rest @ ..] = args else { return Err(USAGE.into()) };
     let context = Context::load(Path::new(definition), Path::new(fonts_dir))?;
     let out = Path::new(out);
@@ -1086,6 +1113,13 @@ fn run(args: &[String]) -> Result<(), String> {
         ("inputs", []) => write_inputs(&context, out),
         ("index", []) => write_index(&context, out),
         ("entry", [name]) => write_entry(&context, name, out),
+        ("partition", [label, size]) => {
+            let size = match size.strip_prefix("0x") {
+                Some(hex) => usize::from_str_radix(hex, 16),
+                None => size.parse(),
+            };
+            write_partition(&context, label, size.map_err(|_| USAGE.to_string())?, out)
+        }
         _ => Err(USAGE.into()),
     }
 }
@@ -1093,6 +1127,12 @@ fn run(args: &[String]) -> Result<(), String> {
 fn write_inputs(context: &Context, out: &Path) -> Result<(), String> {
     let names: Vec<&str> = context.names().map(String::as_str).collect();
     let mut text = format!("set(RESGEN_ENTRIES {})\n", names.join(" "));
+    let labels: Vec<&str> = context.partitions().into_iter().collect();
+    text += &format!("set(RESGEN_PARTITIONS {})\n", labels.join(" "));
+    for label in labels {
+        let entries: Vec<&str> = context.partition_entries(label).map(String::as_str).collect();
+        text += &format!("set(RESGEN_PARTITION_ENTRIES_{label} {})\n", entries.join(" "));
+    }
     let themes: Vec<String> = context.theme_files.iter().map(|p| format!("\"{}\"", p.display())).collect();
     text += &format!("set(RESGEN_THEME_FILES {})\n", themes.join(" "));
     for name in names {
@@ -1109,8 +1149,21 @@ fn write_index(context: &Context, out: &Path) -> Result<(), String> {
     );
     for name in context.names() {
         let symbol = name.to_uppercase();
+        let font = context.definition.font.contains_key(name);
+        if context.partition(name).is_some() {
+            let (ty, new) = if font {
+                ("devkit_gfx::Font", "devkit_gfx::Font::deferred")
+            } else {
+                ("devkit_gfx::DeferredImage", "devkit_gfx::DeferredImage::new")
+            };
+            text += &format!(
+                "static {symbol}_SLOT: devkit_gfx::ResourceSlot = devkit_gfx::ResourceSlot::new();\n\
+                 pub static {symbol}: {ty} = {new}(&{symbol}_HEAD, &{symbol}_SLOT);\n\n"
+            );
+            continue;
+        }
         let path = format!("{BIN_DIR}/{name}.bin");
-        let (ty, parse) = if context.definition.font.contains_key(name) {
+        let (ty, parse) = if font {
             ("devkit_gfx::Font", "devkit_gfx::Font::parse")
         } else {
             ("devkit_gfx::Image", "devkit_gfx::Image::parse")
@@ -1121,6 +1174,7 @@ fn write_index(context: &Context, out: &Path) -> Result<(), String> {
              pub static {symbol}: {ty} = {parse}(&{symbol}_DATA.0);\n\n"
         );
     }
+    text += &mount_code(context);
     for (name, theme) in &context.themes {
         for var in &theme.unused_vars {
             eprintln!("warning: theme.{name}.vars.{var}: not used");
@@ -1157,6 +1211,159 @@ fn write_entry(context: &Context, name: &str, out: &Path) -> Result<(), String> 
         return Err(format!("no entry {name}"));
     };
     write_if_changed(&out.join(BIN_DIR).join(format!("{name}.bin")), &data)
+}
+
+fn byte_array(data: &[u8]) -> String {
+    let bytes: Vec<String> = data.iter().map(u8::to_string).collect();
+    format!("[{}]", bytes.join(", "))
+}
+
+fn mount_code(context: &Context) -> String {
+    let labels = context.partitions();
+    if labels.is_empty() {
+        return String::new();
+    }
+    let mut text = String::new();
+    for label in &labels {
+        text += &format!("include!(\"{BIN_DIR}/{label}.rs\");\n");
+    }
+    text += "\n/// Maps the partitions that hold resources and binds what they hold; false,\n\
+             /// after an error log, when one is missing or another build wrote it, and\n\
+             /// its resources stay empty.\n\
+             pub fn mount() -> bool {\n    let mut mounted = true;\n";
+    for label in &labels {
+        let upper = label.to_uppercase();
+        let slots: Vec<String> = context.partition_entries(label).map(|n| format!("(&{0}_SLOT, {0}_AT)", n.to_uppercase())).collect();
+        text += &format!(
+            "    mounted &= resgen_mount(c\"{label}\", &PARTITION_{upper}_HEAD, PARTITION_{upper}_SIZE, PARTITION_{upper}_IMAGE, &[{}]);\n",
+            slots.join(", ")
+        );
+    }
+    text += "    mounted\n}\n\n";
+    text += r#"fn resgen_mount(
+    label: &'static core::ffi::CStr,
+    head: &[u8],
+    size: usize,
+    image: &core::ffi::CStr,
+    slots: &[(&'static devkit_gfx::ResourceSlot, (usize, usize))],
+) -> bool {
+    const TAG: &core::ffi::CStr = c"resgen";
+    let name = label.to_str().unwrap_or("?");
+    #[cfg(not(target_os = "none"))]
+    if let Err(err) = idf::partition::Partition::sim_add(label, size.next_multiple_of(4096), image, None) {
+        idf::log::error!(TAG, "partition '{name}': {err}");
+        return false;
+    }
+    let _ = image;
+    let Some(part) = idf::partition::Partition::find(label) else {
+        idf::log::error!(TAG, "no partition '{name}'");
+        return false;
+    };
+    let mut found = [0u8; 64];
+    if part.size() < size || part.read(0, &mut found).is_err() || found[..] != head[..] {
+        idf::log::error!(TAG, "partition '{name}' does not match this firmware");
+        return false;
+    }
+    let data = match part.map(0, size) {
+        Ok(mapping) => mapping.leak(),
+        Err(err) => {
+            idf::log::error!(TAG, "partition '{name}': map: {err}");
+            return false;
+        }
+    };
+    for (slot, (at, len)) in slots {
+        slot.bind(&data[*at..*at + *len]);
+    }
+    true
+}
+"#;
+    text
+}
+
+/// Packs the entries of partition `label` into its image, failing when the
+/// image is larger than `size` (0 for no limit), and writes the Rust that
+/// `resources.rs` includes for them.
+fn write_partition(context: &Context, label: &str, size: usize, out: &Path) -> Result<(), String> {
+    let mut image = vec![0u8; format::PARTITION_ALIGN];
+    let mut code = String::new();
+    for name in context.partition_entries(label) {
+        let path = out.join(BIN_DIR).join(format!("{name}.bin"));
+        let data = fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let head = if context.definition.font.contains_key(name) { format::FONT_HEADER_SIZE } else { format::IMAGE_HEADER_SIZE };
+        let symbol = name.to_uppercase();
+        code += &format!("const {symbol}_HEAD: [u8; {head}] = {};\n", byte_array(&data[..head]));
+        code += &format!("const {symbol}_AT: (usize, usize) = ({}, {});\n", image.len(), data.len());
+        image.extend_from_slice(&data);
+        image.resize(image.len().next_multiple_of(format::PARTITION_ALIGN), 0);
+    }
+    if size != 0 && image.len() > size {
+        return Err(format!("partition '{label}': {} bytes do not fit its {size}", image.len()));
+    }
+    let len = image.len();
+    let digest = sha256(&image[format::PARTITION_ALIGN..]);
+    let mut head = Vec::with_capacity(format::PARTITION_HEADER_SIZE);
+    head.extend_from_slice(&format::PARTITION_MAGIC);
+    head.extend_from_slice(&format::VERSION.to_le_bytes());
+    head.extend_from_slice(&[0, 0]);
+    head.extend_from_slice(&(len as u32).to_le_bytes());
+    head.extend_from_slice(&digest);
+    image[..head.len()].copy_from_slice(&head);
+
+    let upper = label.to_uppercase();
+    let path = out.join(BIN_DIR).join(format!("{label}.partition"));
+    let absolute = std::path::absolute(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    code += &format!("const PARTITION_{upper}_HEAD: [u8; {}] = {};\n", format::PARTITION_ALIGN, byte_array(&image[..format::PARTITION_ALIGN]));
+    code += &format!("const PARTITION_{upper}_SIZE: usize = {len};\n");
+    code += &format!("const PARTITION_{upper}_IMAGE: &core::ffi::CStr = c{:?};\n", absolute.display().to_string());
+    write_if_changed(&path, &image)?;
+    write_if_changed(&out.join(BIN_DIR).join(format!("{label}.rs")), code.as_bytes())
+}
+
+fn sha256(data: &[u8]) -> [u8; 32] {
+    const K: [u32; 64] = [
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+        0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+        0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+        0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+        0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+        0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+        0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+    ];
+    let mut h: [u32; 8] = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
+    let mut message = data.to_vec();
+    message.push(0x80);
+    message.resize((message.len() + 8).next_multiple_of(64) - 8, 0);
+    message.extend_from_slice(&((data.len() as u64) * 8).to_be_bytes());
+    for block in message.chunks_exact(64) {
+        let mut w = [0u32; 64];
+        for (i, word) in block.chunks_exact(4).enumerate() {
+            w[i] = u32::from_be_bytes([word[0], word[1], word[2], word[3]]);
+        }
+        for i in 16..64 {
+            let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
+            let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
+            w[i] = w[i - 16].wrapping_add(s0).wrapping_add(w[i - 7]).wrapping_add(s1);
+        }
+        let mut v = h;
+        for i in 0..64 {
+            let s1 = v[4].rotate_right(6) ^ v[4].rotate_right(11) ^ v[4].rotate_right(25);
+            let ch = (v[4] & v[5]) ^ (!v[4] & v[6]);
+            let t1 = v[7].wrapping_add(s1).wrapping_add(ch).wrapping_add(K[i]).wrapping_add(w[i]);
+            let s0 = v[0].rotate_right(2) ^ v[0].rotate_right(13) ^ v[0].rotate_right(22);
+            let maj = (v[0] & v[1]) ^ (v[0] & v[2]) ^ (v[1] & v[2]);
+            let t2 = s0.wrapping_add(maj);
+            v = [t1.wrapping_add(t2), v[0], v[1], v[2], v[3].wrapping_add(t1), v[4], v[5], v[6]];
+        }
+        for (a, b) in h.iter_mut().zip(v) {
+            *a = a.wrapping_add(b);
+        }
+    }
+    let mut out = [0u8; 32];
+    for (chunk, word) in out.chunks_exact_mut(4).zip(h) {
+        chunk.copy_from_slice(&word.to_be_bytes());
+    }
+    out
 }
 
 struct Glyph {
