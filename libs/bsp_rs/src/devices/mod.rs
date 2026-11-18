@@ -3,6 +3,10 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
+#[cfg(CONFIG_BSP_RS_DEVICE_AW9523)]
+pub(crate) mod aw9523;
+#[cfg(CONFIG_BSP_RS_DEVICE_AXP2101)]
+pub(crate) mod axp2101;
 #[cfg(CONFIG_BSP_RS_DEVICE_BMI270)]
 pub(crate) mod bmi270;
 #[cfg(CONFIG_BSP_RS_DEVICE_BMI270)]
@@ -13,6 +17,8 @@ pub(crate) mod es8388;
 pub(crate) mod gt911;
 #[cfg(CONFIG_BSP_RS_DEVICE_INA226)]
 pub(crate) mod ina226;
+#[cfg(CONFIG_BSP_RS_DEVICE_ILI9342C)]
+pub(crate) mod ili9342c;
 #[cfg(CONFIG_BSP_RS_DEVICE_ILI9881C)]
 pub(crate) mod ili9881c;
 #[cfg(CONFIG_BSP_RS_DEVICE_PI4IO)]

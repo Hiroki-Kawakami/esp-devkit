@@ -64,6 +64,131 @@ impl Drop for Panel {
     }
 }
 
+pub mod spi {
+    use alloc::boxed::Box;
+    use core::ffi::c_void;
+    use core::mem;
+    use core::ptr;
+    use core::sync::atomic::{AtomicU32, Ordering};
+
+    use super::PanelIo;
+    use crate::spi::Bus;
+    use crate::sync::{Mutex, MutexGuard, Semaphore};
+    use crate::{Error, Result, sys};
+
+    const MAX_WAKES: u32 = 64;
+
+    pub struct IoConfig {
+        pub cs: i32,
+        pub dc: i32,
+        pub pclk_hz: u32,
+        pub queue_depth: usize,
+        pub cmd_bits: i32,
+        pub param_bits: i32,
+    }
+
+    struct Done {
+        completed: AtomicU32,
+        waiters: AtomicU32,
+        wake: Semaphore,
+    }
+
+    impl Done {
+        fn reached(&self, ticket: u32) -> bool {
+            self.completed.load(Ordering::SeqCst).wrapping_sub(ticket) as i32 >= 0
+        }
+    }
+
+    // The bus interrupt is not allocated IRAM-safe, so this may stay in flash.
+    unsafe extern "C" fn color_done(
+        _io: sys::esp_lcd_panel_io_handle_t,
+        _data: *mut sys::esp_lcd_panel_io_event_data_t,
+        ctx: *mut c_void,
+    ) -> bool {
+        let done = unsafe { &*ctx.cast::<Done>() };
+        done.completed.fetch_add(1, Ordering::SeqCst);
+        for _ in 0..done.waiters.load(Ordering::SeqCst) {
+            done.wake.give_from_isr();
+        }
+        false
+    }
+
+    /// A panel IO on an SPI bus whose color transfers run in the background,
+    /// in the order they were queued.
+    pub struct Io {
+        io: PanelIo,
+        queued: Mutex<u32>,
+        done: Box<Done>,
+    }
+
+    /// The IO for one task: what it sends meanwhile stays together.
+    pub struct IoGuard<'a> {
+        io: &'a PanelIo,
+        queued: MutexGuard<'a, u32>,
+    }
+
+    impl Io {
+        pub fn new(bus: &Bus, config: &IoConfig) -> Result<Self> {
+            let done = Box::new(Done {
+                completed: AtomicU32::new(0),
+                waiters: AtomicU32::new(0),
+                wake: Semaphore::try_new(0, MAX_WAKES)?,
+            });
+            let mut cfg: sys::esp_lcd_panel_io_spi_config_t = unsafe { mem::zeroed() };
+            cfg.cs_gpio_num = config.cs;
+            cfg.dc_gpio_num = config.dc;
+            cfg.pclk_hz = config.pclk_hz;
+            cfg.trans_queue_depth = config.queue_depth;
+            cfg.on_color_trans_done = Some(color_done);
+            cfg.user_ctx = (&*done as *const Done).cast_mut().cast();
+            cfg.lcd_cmd_bits = config.cmd_bits;
+            cfg.lcd_param_bits = config.param_bits;
+            let mut handle = ptr::null_mut();
+            Error::check(unsafe { sys::esp_lcd_new_panel_io_spi(bus.host(), &cfg, &mut handle) })?;
+            let io = PanelIo { handle, _parent: Some(bus.keep()) };
+            Ok(Self { io, queued: Mutex::new(0), done })
+        }
+
+        pub fn lock(&self) -> IoGuard<'_> {
+            IoGuard { io: &self.io, queued: self.queued.lock() }
+        }
+
+        /// Blocks until the transfer of `ticket` has finished.
+        pub fn wait(&self, ticket: u32) {
+            let done = &*self.done;
+            if done.reached(ticket) {
+                return;
+            }
+            done.waiters.fetch_add(1, Ordering::SeqCst);
+            while !done.reached(ticket) {
+                done.wake.take();
+            }
+            done.waiters.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    impl IoGuard<'_> {
+        /// Waits for the transfers queued before.
+        pub fn tx_param(&self, cmd: i32, param: &[u8]) -> Result<()> {
+            self.io.tx_param(cmd, param)
+        }
+
+        /// Queues `data` after `cmd`, -1 for none, waiting for the transfers
+        /// queued before when there is a command. `data` must stay unchanged
+        /// until `Io::wait` for the returned ticket returns.
+        pub unsafe fn tx_color(&mut self, cmd: i32, data: &[u8]) -> Result<u32> {
+            if data.is_empty() {
+                return Err(Error::INVALID_ARG);
+            }
+            Error::check(unsafe {
+                sys::esp_lcd_panel_io_tx_color(self.io.handle, cmd, data.as_ptr().cast(), data.len())
+            })?;
+            *self.queued = self.queued.wrapping_add(1);
+            Ok(*self.queued)
+        }
+    }
+}
+
 #[cfg(CONFIG_SOC_MIPI_DSI_SUPPORTED)]
 pub mod dsi {
     use alloc::boxed::Box;

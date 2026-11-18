@@ -2,7 +2,8 @@
 
 The board support package in Rust (`libs/bsp_rs`). The board is chosen with
 `CONFIG_BSP_RS_BOARD_*`, independent of the C `bsp`'s `CONFIG_BSP_BOARD_*`.
-`firmware/tab5_rs` builds it for the Tab5 and its simulator.
+`firmware/tab5_rs` builds it for the Tab5 and `firmware/core_s3_rs` for the
+CoreS3, each with its simulator.
 
 ```rust
 let board = bsp_rs::init(&bsp_rs::Config::default())?;
@@ -32,6 +33,18 @@ let board = bsp_rs::init(&bsp_rs::Config::default())?;
   `crop`, with `media_engine` for the 2D engine. A rotated copy there must span
   at least 8 rows of the area: the engine stops completing shorter ones while
   the panel scans out.
+- A panel with no framebuffers (`frame_buffer_count()` is 0) keeps the
+  picture in its own memory. `write(area, pixels)` queues the area's rows,
+  back to back in the panel's format, and returns a `Ticket` without waiting;
+  the pixels stay unchanged until `wait(ticket)` returns. Writes go out in the
+  order they were queued.
+- `draw(area, image)` puts an `Image` in the panel's format on any panel: into
+  the framebuffer on the panel, or written and waited for. It is `unsafe` for
+  the same reason as `as_mut_slice`. The display takes only its own format;
+  `devkit_gfx::copy` and `swap_rgb565` convert above it.
+- `Config::rotation` is taken only by a panel that turns the picture itself:
+  `size()` is then the turned picture and `rotation()` the turn. A panel that
+  shows framebuffers takes R0 alone.
 - `set_brightness` takes 0..=100; the backlight starts off.
 - `Rect`, `Size`, `Rotation` and `ImageFormat` are `devkit_gfx`'s. `init`
   and the 2D engine return `NOT_SUPPORTED` for a format they cannot take; the

@@ -7,6 +7,7 @@
 #[allow(dead_code)]
 pub(crate) mod protocol;
 pub(crate) mod audio;
+pub(crate) mod gram;
 pub(crate) mod imu;
 pub(crate) mod panel;
 pub(crate) mod power;

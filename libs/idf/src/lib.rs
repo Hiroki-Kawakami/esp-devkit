@@ -33,6 +33,8 @@ pub mod nvs;
 pub mod partition;
 #[cfg(all(target_os = "none", CONFIG_SOC_SDMMC_HOST_SUPPORTED))]
 pub mod sdmmc;
+#[cfg(target_os = "none")]
+pub mod spi;
 pub mod sync;
 pub mod system;
 pub mod thread;

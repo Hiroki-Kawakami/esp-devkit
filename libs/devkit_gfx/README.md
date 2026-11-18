@@ -50,7 +50,8 @@ draw::<Rgb565, _, _>(&list, &prepared, &surface);
   origin, until the list is drawn.
 - `ImageFormat` names byte formats in memory order (`Rgb888` is R, G, B;
   `Bgr888` is B, G, R) and word formats by the bits of a native-endian word
-  (`Rgb565`, `Argb8888`). `L1`/`L2`/`L4` put the leftmost pixel in the high
+  (`Rgb565`, `Argb8888`); `Rgb565Be` is `Rgb565` with the high byte first in
+  memory. `L1`/`L2`/`L4` put the leftmost pixel in the high
   bits. Its value is the one in resource binaries; refer to it by name. `draw`
   takes `L8`, `A8`, `Rgb565`, `Bgr888` and `Argb8888`; an `Image` in another
   format is left out of the list and counted by `DisplayList::skipped`.
@@ -64,6 +65,10 @@ draw::<Rgb565, _, _>(&list, &prepared, &surface);
   logical picture, turned by a `Rotation` onto the stored one, with the stride
   in pixels. Whoever holds it is the only writer there, and a writer refuses
   what it cannot do instead of working around it.
+- `copy` puts an `Image` of the area's size into a `Target` on the CPU,
+  turned as the target says; it takes the target's format, or `Rgb565` and
+  `Rgb565Be` for each other. `swap_rgb565` turns one of those into the other
+  in place.
 - A `Raster` writes pixels itself. It runs on every task that draws, each with
   its own part of the picture.
 - `Surface::half` draws at half size: each pixel is the logical pixel at odd

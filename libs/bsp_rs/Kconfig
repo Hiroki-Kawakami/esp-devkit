@@ -11,6 +11,13 @@ choice BSP_RS_BOARD
         bool "M5Stack AtomS3 Lite (ESP32-S3)"
         depends on IDF_TARGET_ESP32S3
 
+    config BSP_RS_BOARD_CORE_S3
+        bool "M5Stack CoreS3 (ESP32-S3)"
+        depends on DEVKIT_SIMULATOR || IDF_TARGET_ESP32S3
+        select BSP_RS_DEVICE_AW9523 if !DEVKIT_SIMULATOR
+        select BSP_RS_DEVICE_AXP2101 if !DEVKIT_SIMULATOR
+        select BSP_RS_DEVICE_ILI9342C if !DEVKIT_SIMULATOR
+
     config BSP_RS_BOARD_TAB5
         bool "M5Stack Tab5 (ESP32-P4)"
         depends on DEVKIT_SIMULATOR || IDF_TARGET_ESP32P4
@@ -30,6 +37,12 @@ endchoice
 
 # Chip drivers and transports compiled into the crate; each board selects the
 # ones its bring-up uses.
+config BSP_RS_DEVICE_AW9523
+    bool
+
+config BSP_RS_DEVICE_AXP2101
+    bool
+
 config BSP_RS_DEVICE_BMI270
     bool
 
@@ -38,6 +51,10 @@ config BSP_RS_DEVICE_ES8388
 
 config BSP_RS_DEVICE_GT911
     bool
+
+config BSP_RS_DEVICE_ILI9342C
+    bool
+    select BSP_RS_DRIVER_SPI_LCD
 
 config BSP_RS_DEVICE_ILI9881C
     bool
@@ -71,6 +88,9 @@ config BSP_RS_DRIVER_MIPI_DSI
     bool
 
 config BSP_RS_DRIVER_SDMMC
+    bool
+
+config BSP_RS_DRIVER_SPI_LCD
     bool
 
 endmenu

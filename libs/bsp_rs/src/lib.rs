@@ -35,6 +35,8 @@ pub mod touch;
 
 #[cfg(CONFIG_BSP_RS_BOARD_ATOM_S3_LITE)]
 use boards::atom_s3_lite as board;
+#[cfg(CONFIG_BSP_RS_BOARD_CORE_S3)]
+use boards::core_s3 as board;
 #[cfg(CONFIG_BSP_RS_BOARD_TAB5)]
 use boards::tab5 as board;
 

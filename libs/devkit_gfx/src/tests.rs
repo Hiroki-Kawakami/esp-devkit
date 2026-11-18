@@ -1022,6 +1022,54 @@ fn a_rotated_target_maps_logical_rects_to_stored_ones() {
 }
 
 #[test]
+fn copy_turns_the_image_onto_the_stored_picture() {
+    let image: Vec<u8> = (0..6u16).flat_map(|v| v.to_le_bytes()).collect();
+    let image = Image::from_pixels(ImageFormat::Rgb565, 3, 2, 3, &image);
+    let stored = |rotation: Rotation, area: Rect, format: ImageFormat| {
+        let mut pixels = vec![0xFFu8; 4 * 4 * 2];
+        let mut target = Target::new(&mut pixels, format, Size::new(4, 4), 4).unwrap().rotated(rotation).crop(area).unwrap();
+        assert!(copy(&image, &mut target));
+        pixels
+            .chunks_exact(2)
+            .map(|p| if format == ImageFormat::Rgb565Be { u16::from_be_bytes([p[0], p[1]]) } else { u16::from_le_bytes([p[0], p[1]]) })
+            .collect::<Vec<_>>()
+    };
+    const N: u16 = 0xFFFF;
+    let area = Rect::new(1, 1, 3, 2);
+    assert_eq!(stored(Rotation::R0, area, ImageFormat::Rgb565), [N, N, N, N, N, 0, 1, 2, N, 3, 4, 5, N, N, N, N]);
+    assert_eq!(stored(Rotation::R0, area, ImageFormat::Rgb565Be), [N, N, N, N, N, 0, 1, 2, N, 3, 4, 5, N, N, N, N]);
+    assert_eq!(stored(Rotation::R90, area, ImageFormat::Rgb565), [N, 2, 5, N, N, 1, 4, N, N, 0, 3, N, N, N, N, N]);
+    assert_eq!(stored(Rotation::R180, area, ImageFormat::Rgb565), [N, N, N, N, 5, 4, 3, N, 2, 1, 0, N, N, N, N, N]);
+    assert_eq!(stored(Rotation::R270, area, ImageFormat::Rgb565Be), [N, N, N, N, N, 3, 0, N, N, 4, 1, N, N, 5, 2, N]);
+}
+
+#[test]
+fn copy_refuses_other_formats_and_sizes() {
+    let pixels = [0u8; 6 * 2];
+    let mut stored = vec![0u8; 4 * 4 * 3];
+    let mut target = Target::new(&mut stored, ImageFormat::Bgr888, Size::new(4, 4), 4).unwrap().crop(Rect::new(0, 0, 3, 2)).unwrap();
+    assert!(!copy(&Image::from_pixels(ImageFormat::Rgb565, 3, 2, 3, &pixels), &mut target));
+    let mut stored = vec![0u8; 4 * 4 * 2];
+    let mut target = Target::new(&mut stored, ImageFormat::Rgb565, Size::new(4, 4), 4).unwrap().crop(Rect::new(0, 0, 2, 2)).unwrap();
+    assert!(!copy(&Image::from_pixels(ImageFormat::Rgb565, 3, 2, 3, &pixels), &mut target));
+}
+
+#[test]
+fn swap_rgb565_reverses_the_bytes_of_every_pixel() {
+    let pixels: Vec<u8> = (0..20u8).collect();
+    for start in [0, 1, 2] {
+        let end = start + 2 * ((pixels.len() - start) / 2);
+        let mut swapped = pixels.clone();
+        swap_rgb565(&mut swapped[start..end]);
+        for (i, p) in swapped[start..end].chunks_exact(2).enumerate() {
+            assert_eq!(p, [pixels[start + 2 * i + 1], pixels[start + 2 * i]]);
+        }
+        swap_rgb565(&mut swapped[start..end]);
+        assert_eq!(swapped, pixels);
+    }
+}
+
+#[test]
 fn an_image_draw_cannot_take_is_left_out_and_counted() {
     let yuv = [0u8; 4 * 2 * 3 / 2];
     let image = Image::from_pixels(ImageFormat::Yuv420, 4, 2, 4, &yuv);

@@ -9,3 +9,5 @@ pub(crate) mod esp_hosted;
 pub(crate) mod mipi_dsi;
 #[cfg(CONFIG_BSP_RS_DRIVER_SDMMC)]
 pub(crate) mod sdmmc;
+#[cfg(CONFIG_BSP_RS_DRIVER_SPI_LCD)]
+pub(crate) mod spi_lcd;

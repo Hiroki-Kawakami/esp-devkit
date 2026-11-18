@@ -9,7 +9,7 @@ use idf::log::error;
 use idf::{Error, Result};
 
 use crate::Config;
-use crate::display::{ImageFormat, Size};
+use crate::display::{ImageFormat, Rotation, Size};
 
 #[cfg(target_os = "none")]
 mod audio;
@@ -38,6 +38,10 @@ fn resolve_fb_num(config: &Config) -> u8 {
 const PIXEL_FORMATS: &[ImageFormat] = &[ImageFormat::Rgb565, ImageFormat::Bgr888];
 
 fn resolve_pixel_format(config: &Config) -> Result<ImageFormat> {
+    if config.display.rotation.is_some_and(|r| r != Rotation::R0) {
+        error!(TAG, "display: the panel does not turn the picture");
+        return Err(Error::NOT_SUPPORTED);
+    }
     let format = config.display.pixel_format.unwrap_or(PIXEL_FORMATS[0]);
     if !PIXEL_FORMATS.contains(&format) {
         error!(TAG, "display: {format:?} is not supported");

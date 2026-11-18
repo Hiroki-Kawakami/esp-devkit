@@ -10,6 +10,7 @@
 extern crate alloc;
 
 mod color;
+mod copy;
 mod damage;
 mod effect;
 mod font;
@@ -29,6 +30,7 @@ mod target;
 mod text;
 
 pub use color::Color;
+pub use copy::{copy, swap_rgb565};
 pub use damage::Damage;
 pub use effect::{ArcMask, CornerMask, ShadowMask};
 pub use font::Font;

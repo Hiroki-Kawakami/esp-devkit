@@ -14,7 +14,7 @@ use idf::log::error;
 use idf::{Error, Result, thread};
 use super::Host;
 use super::protocol::{self, Event};
-use crate::display::{Driver, FrameBuffer, ImageFormat, Size};
+use crate::display::{Driver, FrameBuffer, ImageFormat, Rotation, Size};
 
 const TAG: &CStr = c"sim_panel";
 const MAX_FRAME_BUFFERS: usize = 3;
@@ -106,7 +106,10 @@ impl Driver for SimPanel {
         Ok(())
     }
 
-    fn reconfigure(&mut self, format: ImageFormat, fb_num: u8) -> Result<()> {
+    fn reconfigure(&mut self, format: ImageFormat, fb_num: u8, rotation: Rotation) -> Result<()> {
+        if rotation != Rotation::R0 {
+            return Err(Error::NOT_SUPPORTED);
+        }
         if format == self.format && usize::from(fb_num) == self.buffers.len() {
             return Ok(());
         }

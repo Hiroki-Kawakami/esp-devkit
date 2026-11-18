@@ -13,7 +13,7 @@ use idf::lcd::dsi::{self, ColorFormat, DpiPanel, VideoTiming};
 use idf::log::error;
 use idf::{Error, Result, ldo, ledc, thread};
 
-use crate::display::{Driver, FrameBuffer, ImageFormat, Size};
+use crate::display::{Driver, FrameBuffer, ImageFormat, Rotation, Size};
 
 const TAG: &CStr = c"mipi_dsi";
 
@@ -238,7 +238,10 @@ impl Driver for MipiDsi {
         backlight.set_duty(duty)
     }
 
-    fn reconfigure(&mut self, format: ImageFormat, fb_num: u8) -> Result<()> {
+    fn reconfigure(&mut self, format: ImageFormat, fb_num: u8, rotation: Rotation) -> Result<()> {
+        if rotation != Rotation::R0 {
+            return Err(Error::NOT_SUPPORTED);
+        }
         color_format(format)?;
         if fb_num == 0 || usize::from(fb_num) > dsi::MAX_FRAME_BUFFERS {
             return Err(Error::INVALID_ARG);

@@ -7,11 +7,12 @@ use core::cell::UnsafeCell;
 use core::marker::PhantomData;
 use core::ptr::NonNull;
 use core::slice;
+use core::sync::atomic::{AtomicU32, Ordering};
 use idf::{Error, Result};
 
 use crate::Absent;
 
-pub use devkit_gfx::{ImageFormat, Rect, Rotation, Size};
+pub use devkit_gfx::{Image, ImageFormat, Rect, Rotation, Size};
 use devkit_gfx::Target;
 
 #[derive(Default)]
@@ -21,7 +22,14 @@ pub struct Config {
     pub fb_num: u8,
     /// `None` selects the board default.
     pub pixel_format: Option<ImageFormat>,
+    /// `None` selects R0. Only a panel that turns the picture itself takes
+    /// another.
+    pub rotation: Option<Rotation>,
 }
+
+/// A transfer queued by `Display::write`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Ticket(pub(crate) u32);
 
 #[derive(Clone, Copy)]
 pub struct FrameBuffer {
@@ -91,8 +99,13 @@ fn unsigned(rect: Rect) -> Option<(u32, u32, u32, u32)> {
 }
 
 pub(crate) trait Driver: Send + Sync {
+    /// After the rotation.
     fn size(&self) -> Size;
     fn pixel_format(&self) -> ImageFormat;
+
+    fn rotation(&self) -> Rotation {
+        Rotation::R0
+    }
 
     fn frame_buffer_count(&self) -> usize {
         0
@@ -119,11 +132,25 @@ pub(crate) trait Driver: Send + Sync {
         Err(Error::NOT_SUPPORTED)
     }
 
+    /// `area` is inside the panel and `pixels` holds its rows back to back.
+    unsafe fn write(&self, _area: Rect, _pixels: &[u8]) -> Result<Ticket> {
+        Err(Error::NOT_SUPPORTED)
+    }
+
+    fn wait(&self, _ticket: Ticket) -> Result<()> {
+        Err(Error::NOT_SUPPORTED)
+    }
+
+    /// `area` is inside the panel, `image` its size in the panel's format.
+    fn draw(&self, _area: Rect, _image: &Image) -> Result<()> {
+        Err(Error::NOT_SUPPORTED)
+    }
+
     fn set_brightness(&self, _level: u8) -> Result<()> {
         Err(Error::NOT_SUPPORTED)
     }
 
-    fn reconfigure(&mut self, _format: ImageFormat, _fb_num: u8) -> Result<()> {
+    fn reconfigure(&mut self, _format: ImageFormat, _fb_num: u8, _rotation: Rotation) -> Result<()> {
         Err(Error::NOT_SUPPORTED)
     }
 }
@@ -154,6 +181,10 @@ macro_rules! driver_enum {
                 match self { $(Self::$variant(d) => d.pixel_format()),+ }
             }
 
+            fn rotation(&self) -> $crate::display::Rotation {
+                match self { $(Self::$variant(d) => d.rotation()),+ }
+            }
+
             fn frame_buffer_count(&self) -> usize {
                 match self { $(Self::$variant(d) => d.frame_buffer_count()),+ }
             }
@@ -178,12 +209,29 @@ macro_rules! driver_enum {
                 match self { $(Self::$variant(d) => d.wait_frame()),+ }
             }
 
+            unsafe fn write(&self, area: $crate::display::Rect, pixels: &[u8]) -> idf::Result<$crate::display::Ticket> {
+                match self { $(Self::$variant(d) => unsafe { d.write(area, pixels) }),+ }
+            }
+
+            fn wait(&self, ticket: $crate::display::Ticket) -> idf::Result<()> {
+                match self { $(Self::$variant(d) => d.wait(ticket)),+ }
+            }
+
+            fn draw(&self, area: $crate::display::Rect, image: &$crate::display::Image) -> idf::Result<()> {
+                match self { $(Self::$variant(d) => d.draw(area, image)),+ }
+            }
+
             fn set_brightness(&self, level: u8) -> idf::Result<()> {
                 match self { $(Self::$variant(d) => d.set_brightness(level)),+ }
             }
 
-            fn reconfigure(&mut self, format: $crate::display::ImageFormat, fb_num: u8) -> idf::Result<()> {
-                match self { $(Self::$variant(d) => d.reconfigure(format, fb_num)),+ }
+            fn reconfigure(
+                &mut self,
+                format: $crate::display::ImageFormat,
+                fb_num: u8,
+                rotation: $crate::display::Rotation,
+            ) -> idf::Result<()> {
+                match self { $(Self::$variant(d) => d.reconfigure(format, fb_num, rotation)),+ }
             }
         }
     };
@@ -192,8 +240,12 @@ macro_rules! driver_enum {
 #[cfg_attr(not(target_os = "none"), allow(unused_imports))]
 pub(crate) use driver_enum;
 
+fn pack(size: Size) -> u32 {
+    u32::from(size.width) << 16 | u32::from(size.height)
+}
+
 pub struct Display {
-    size: Size,
+    size: AtomicU32,
     driver: UnsafeCell<crate::board::Display>,
 }
 
@@ -202,19 +254,77 @@ unsafe impl Sync for Display {}
 impl Display {
     #[allow(dead_code)]
     pub(crate) fn new(driver: crate::board::Display) -> Self {
-        Self { size: driver.size(), driver: UnsafeCell::new(driver) }
+        Self { size: AtomicU32::new(pack(driver.size())), driver: UnsafeCell::new(driver) }
     }
 
     fn driver(&self) -> &crate::board::Display {
         unsafe { &*self.driver.get() }
     }
 
+    /// The logical picture, after the rotation.
     pub fn size(&self) -> Size {
-        self.size
+        let size = self.size.load(Ordering::Relaxed);
+        Size::new((size >> 16) as u16, size as u16)
     }
 
     pub fn pixel_format(&self) -> ImageFormat {
         self.driver().pixel_format()
+    }
+
+    /// How the panel turns the picture it is given.
+    pub fn rotation(&self) -> Rotation {
+        self.driver().rotation()
+    }
+
+    /// Puts `image`, in the panel's format, at `area` of what the panel shows.
+    /// Tasks drawing to overlapping areas at the same time is the caller's to
+    /// prevent.
+    pub unsafe fn draw(&self, area: Rect, image: &Image) -> Result<()> {
+        self.check(area, image.format())?;
+        if i32::from(image.width()) != i32::from(area.w) || i32::from(image.height()) != i32::from(area.h) {
+            return Err(Error::INVALID_ARG);
+        }
+        if self.frame_buffer_count() == 0 {
+            return self.driver().draw(area, image);
+        }
+        let fb = self.driver().shown().ok_or(Error::INVALID_STATE)?;
+        let format = fb.format();
+        let (start, len) = (format.row_bytes(area.x as usize), format.row_bytes(area.w as usize));
+        for (j, y) in (area.y..area.bottom()).enumerate() {
+            let src = &image.pixels()[j * image.stride_bytes()..][..len];
+            let row = unsafe { fb.row_mut(y as usize) };
+            row[start..start + len].copy_from_slice(src);
+        }
+        Ok(())
+    }
+
+    /// Queues `pixels`, `area`'s rows back to back in the panel's format, for a
+    /// panel without framebuffers, and returns without waiting for them to be
+    /// sent. They must stay unchanged until `wait` for the ticket returns.
+    pub unsafe fn write(&self, area: Rect, pixels: &[u8]) -> Result<Ticket> {
+        let format = self.pixel_format();
+        self.check(area, format)?;
+        if pixels.len() != format.row_bytes(area.w as usize) * area.h as usize {
+            return Err(Error::INVALID_ARG);
+        }
+        unsafe { self.driver().write(area, pixels) }
+    }
+
+    /// Blocks until what `write` queued for `ticket` has been sent.
+    pub fn wait(&self, ticket: Ticket) -> Result<()> {
+        self.driver().wait(ticket)
+    }
+
+    fn check(&self, area: Rect, format: ImageFormat) -> Result<()> {
+        if format != self.pixel_format() {
+            return Err(Error::NOT_SUPPORTED);
+        }
+        let size = self.size();
+        let (x, y, w, h) = unsigned(area).ok_or(Error::INVALID_ARG)?;
+        if x + w > u32::from(size.width) || y + h > u32::from(size.height) || format.bits() % 8 != 0 {
+            return Err(Error::INVALID_ARG);
+        }
+        Ok(())
     }
 
     pub fn frame_buffer_count(&self) -> usize {
@@ -240,7 +350,6 @@ impl Display {
         self.driver().wait_frame()
     }
 
-    /// `max_pending` copies may be in flight at once.
     /// 0..=100; 0 turns the backlight off.
     pub fn set_brightness(&self, level: u8) -> Result<()> {
         self.driver().set_brightness(level)
@@ -254,7 +363,10 @@ impl Display {
         let driver = unsafe { &mut *self.driver.get() };
         let format = config.pixel_format.unwrap_or_else(|| driver.pixel_format());
         let fb_num = if config.fb_num != 0 { config.fb_num } else { driver.frame_buffer_count() as u8 };
-        driver.reconfigure(format, fb_num)
+        let rotation = config.rotation.unwrap_or_else(|| driver.rotation());
+        let result = driver.reconfigure(format, fb_num, rotation);
+        self.size.store(pack(driver.size()), Ordering::Relaxed);
+        result
     }
 
     /// Reads what the panel shows, in its pixel format. Rows may be torn by
