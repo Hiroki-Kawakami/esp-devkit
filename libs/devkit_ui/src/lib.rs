@@ -44,6 +44,10 @@ mod zoom;
 #[cfg(test)]
 mod tests;
 
+// `INTERNAL` alone can be memory that takes 32-bit accesses only, where byte
+// and halfword accesses fault.
+pub(crate) const INTERNAL_RAM: idf::heap::Caps = idf::heap::Caps::INTERNAL.union(idf::heap::Caps::ACCESS_8BIT);
+
 pub use app::{App, AppConfig, Handle, Input, Probe};
 pub use bsp_rs::display::Rotation;
 pub use canvas::Canvas;

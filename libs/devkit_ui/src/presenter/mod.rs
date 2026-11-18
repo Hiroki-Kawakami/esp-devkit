@@ -55,9 +55,15 @@ pub struct Config {
     /// UI; the default fits boards with PSRAM.
     pub data_caps: Caps,
     /// Never memory that can be RTC RAM, as `INTERNAL` alone can: lanes run PIE
-    /// code, whose saved registers RTC RAM cannot take. `SIMD` alone avoids it.
+    /// code, whose saved registers RTC RAM cannot take. `SIMD` alone avoids it,
+    /// on a chip that has the vector unit and so such memory.
     pub lane_stack_caps: Caps,
 }
+
+#[cfg(CONFIG_SOC_SIMD_INSTRUCTION_SUPPORTED)]
+const LANE_STACK_CAPS: Caps = Caps::SIMD;
+#[cfg(not(CONFIG_SOC_SIMD_INSTRUCTION_SUPPORTED))]
+const LANE_STACK_CAPS: Caps = crate::INTERNAL_RAM;
 
 impl Default for Config {
     fn default() -> Self {
@@ -69,7 +75,7 @@ impl Default for Config {
             priority: 10,
             strips: StripSource::Allocate { bytes: 4 * 64 * 1024, caps: Caps::DMA | Caps::INTERNAL },
             data_caps: Caps::SPIRAM,
-            lane_stack_caps: Caps::SIMD,
+            lane_stack_caps: LANE_STACK_CAPS,
         }
     }
 }

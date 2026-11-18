@@ -12,6 +12,12 @@ kind = "idf"
 [targets.simulator_core_s3]
 kind = "sim"
 
+[targets.esp32]
+kind = "idf"
+
+[targets.simulator_core2]
+kind = "sim"
+
 [targets.test]
 kind = "sim"
 dir = "simulator"

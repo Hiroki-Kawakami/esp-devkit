@@ -41,9 +41,9 @@ use screens::{Home, StatusBar, StatusMsg};
 
 const TAG: &CStr = c"ui_demo";
 const SETTINGS_VALID: u32 = 0x5549_4445;
-#[cfg(not(CONFIG_BSP_RS_BOARD_CORE_S3))]
+#[cfg(CONFIG_BSP_RS_BOARD_TAB5)]
 const STRIP_BYTES: usize = 4 * 64 * 1024;
-#[cfg(CONFIG_BSP_RS_BOARD_CORE_S3)]
+#[cfg(not(CONFIG_BSP_RS_BOARD_TAB5))]
 const STRIP_BYTES: usize = 4 * 320 * 16 * 2;
 
 static SRAM: BufferPool<BufferBytes<STRIP_BYTES>, 1, FreeRtos> = BufferPool::new(BufferBytes::new());
@@ -102,7 +102,7 @@ fn register_mode() {
 pub fn run() {
     let value = settings();
     let mut config = bsp_rs::Config::default();
-    if !cfg!(CONFIG_BSP_RS_BOARD_CORE_S3) {
+    if cfg!(CONFIG_BSP_RS_BOARD_TAB5) {
         config.display.fb_num = 3;
         config.display.pixel_format = Some(if value.rgb888 { ImageFormat::Bgr888 } else { ImageFormat::Rgb565 });
     }
@@ -130,7 +130,7 @@ pub fn run() {
 
 fn run_demo(board: &Board, display: &'static Display, settings: &Settings) {
     screens::set_display(display);
-    let theme = if cfg!(CONFIG_BSP_RS_BOARD_CORE_S3) { &resources::SMALL } else { &resources::TOUCH };
+    let theme = if cfg!(CONFIG_BSP_RS_BOARD_TAB5) { &resources::TOUCH } else { &resources::SMALL };
     let mut config = AppConfig::new(theme);
     config.plugins.push(Box::new(SavedColorMode::new()));
     if settings.rotated {
@@ -142,7 +142,7 @@ fn run_demo(board: &Board, display: &'static Display, settings: &Settings) {
         screens::set_rotation(rotation);
     }
     if settings.data_internal {
-        config.presenter.data_caps = Caps::INTERNAL;
+        config.presenter.data_caps = Caps::INTERNAL.union(Caps::ACCESS_8BIT);
     }
     if settings.stack_psram {
         config.presenter.lane_stack_caps = Caps::SPIRAM;

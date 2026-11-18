@@ -72,11 +72,11 @@ struct Layer {
 
 impl Layer {
     fn new(pane: Rect) -> Option<Self> {
-        let mut rows = Vec::new_in(Caps::INTERNAL);
-        let mut columns = Vec::new_in(Caps::INTERNAL);
+        let mut rows = Vec::new_in(crate::INTERNAL_RAM);
+        let mut columns = Vec::new_in(crate::INTERNAL_RAM);
         rows.try_reserve_exact(pane.h as usize).ok()?;
         columns.try_reserve_exact(pane.w as usize).ok()?;
-        let mut offsets = Vec::new_in(Caps::INTERNAL);
+        let mut offsets = Vec::new_in(crate::INTERNAL_RAM);
         offsets.try_reserve_exact(pane.w as usize).ok()?;
         rows.resize(pane.h as usize, OUTSIDE);
         columns.resize(pane.w as usize, OUTSIDE);

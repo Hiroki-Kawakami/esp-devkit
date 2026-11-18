@@ -220,7 +220,7 @@ impl FbPresenter {
                 before: Rect::default(),
                 raster: 0,
                 stall: 0,
-                clips: ClipStore::new_in(Caps::INTERNAL),
+                clips: ClipStore::new_in(crate::INTERNAL_RAM),
             };
             let shared = shared.clone();
             let builder = thread::Builder::new()

@@ -506,7 +506,7 @@ impl Tree {
 }
 
 fn argb_band(count: usize) -> Option<Vec<u32, Caps>> {
-    for caps in [Caps::INTERNAL, Caps::SPIRAM] {
+    for caps in [crate::INTERNAL_RAM, Caps::SPIRAM] {
         let mut band = Vec::new_in(caps);
         if band.try_reserve_exact(count).is_ok() {
             band.resize(count, 0);

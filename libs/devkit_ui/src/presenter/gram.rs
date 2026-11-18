@@ -169,7 +169,7 @@ impl GramPresenter {
             prepared: UnsafeCell::new(Prepared::new_in(config.data_caps)),
         });
         for id in 0..MAX_LANES {
-            let lane = Lane { id, turn: 0, raster: 0, stall: 0, clips: ClipStore::new_in(Caps::INTERNAL) };
+            let lane = Lane { id, turn: 0, raster: 0, stall: 0, clips: ClipStore::new_in(crate::INTERNAL_RAM) };
             let shared = shared.clone();
             let builder = thread::Builder::new()
                 .name("ui_lane")

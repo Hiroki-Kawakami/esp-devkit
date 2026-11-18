@@ -143,7 +143,7 @@ pub(crate) struct Snapshot {
 const OPAQUE: u32 = u32::MAX;
 
 fn reserve<T>(count: usize) -> Option<Vec<T, Caps>> {
-    for caps in [Caps::INTERNAL, Caps::SPIRAM] {
+    for caps in [crate::INTERNAL_RAM, Caps::SPIRAM] {
         let mut memory = Vec::new_in(caps);
         if memory.try_reserve_exact(count).is_ok() {
             return Some(memory);
