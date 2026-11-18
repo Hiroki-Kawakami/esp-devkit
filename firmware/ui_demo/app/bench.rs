@@ -5,19 +5,23 @@
 
 use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use core::time::Duration;
 
+use bsp_rs::Board;
 use bsp_rs::display::Display;
 use devkit_gfx::{DisplayList, GlyphCache, ImageFormat};
-use devkit_ui::{Config, PresentMode, Presenter, Rotation, Stats, StripSource, Strips};
+use devkit_ui::{Config, FbPresenter, PresentMode, Rotation, Stats, StripSource, Strips};
 use idf::heap::Caps;
+use idf::log::{error, info};
+use idf::sync::{Mutex, Semaphore};
 use idf::thread;
 use idf::time::Instant;
 
+use crate::TAG;
 use crate::scene::{Assets, Kind, Scene};
 
 const GLYPH_CACHE_BYTES: usize = 128 * 1024;
@@ -46,7 +50,7 @@ pub struct Params {
 }
 
 pub struct Bench {
-    presenter: Presenter,
+    presenter: FbPresenter,
     assets: [&'static Assets; 2],
     cache: GlyphCache<Caps>,
     list: DisplayList<'static, Caps>,
@@ -66,7 +70,7 @@ impl Bench {
             &*Box::leak(Box::new(Assets::new(format, size.height as i16))),
         ];
         let config = Config { strips: StripSource::Given(sram), ..Config::default() };
-        let presenter = Presenter::new(display, config)?;
+        let presenter = FbPresenter::new(display, config)?;
         Ok(Self {
             presenter,
             assets,
@@ -226,5 +230,89 @@ impl Bench {
             at(95),
             at(100),
         ))
+    }
+}
+
+fn parse(args: &[&str]) -> Result<Params, String> {
+    let kind = match args.first().copied() {
+        Some("list") => Kind::List,
+        Some("thumbs") => Kind::Thumbs,
+        Some("dense") => Kind::Dense,
+        Some("menu") => Kind::Menu,
+        Some("tick") => Kind::Tick,
+        Some("seek") => Kind::Seek,
+        _ => return Err("bench <list|thumbs|dense|menu|tick|seek> <inplace|swap2|swap3> <rot0|rot90> <lanes> [frames] [speed] [sram|psram] [load]".to_string()),
+    };
+    let present = match args.get(1).copied() {
+        Some("inplace") => Present::InPlace,
+        Some("swap2") => Present::Swap2,
+        Some("swap3") => Present::Swap3,
+        _ => return Err("bad present mode".to_string()),
+    };
+    let rotated = match args.get(2).copied() {
+        Some("rot0") => false,
+        Some("rot90") => true,
+        _ => return Err("bad rotation".to_string()),
+    };
+    let lanes = args.get(3).and_then(|v| v.parse().ok()).filter(|n| (1..=2).contains(n));
+    let lanes = lanes.ok_or("bad lane count")?;
+    let frames = args.get(4).and_then(|v| v.parse().ok()).unwrap_or(240);
+    let speed = args.get(5).and_then(|v| v.parse().ok()).unwrap_or(7);
+    let strips_psram = args.get(6).copied() == Some("psram");
+    let load = args.get(7).copied() == Some("load");
+    Ok(Params { kind, present, rotated, lanes, frames, speed, strips_psram, load })
+}
+
+/// Answers `bench` lines from the harness for good.
+pub fn serve(board: &Board, display: &'static Display, sram: Strips) {
+    let mut bench = match Bench::new(display, sram) {
+        Ok(bench) => bench,
+        Err(err) => {
+            error!(TAG, "bench: {err}");
+            return;
+        }
+    };
+    let running = Arc::new(AtomicBool::new(false));
+    let result = Arc::new(Mutex::new(String::new()));
+    let request = Arc::new(Mutex::new(None::<(bool, Params)>));
+    let wake = Arc::new(Semaphore::new(0, 1));
+    for (name, latency) in [("bench", false), ("bench-latency", true)] {
+        let (running, request, wake) = (running.clone(), request.clone(), wake.clone());
+        harness_rs::register(name, move |args| {
+            if running.swap(true, Ordering::AcqRel) {
+                return Err("busy".to_string());
+            }
+            match parse(args) {
+                Ok(params) => {
+                    *request.lock() = Some((latency, params));
+                    wake.give();
+                    Ok(None)
+                }
+                Err(err) => {
+                    running.store(false, Ordering::Release);
+                    Err(err)
+                }
+            }
+        });
+    }
+    {
+        let result = result.clone();
+        harness_rs::register("bench-result", move |_| Ok(Some(result.lock().clone())));
+    }
+    {
+        let running = running.clone();
+        harness_rs::set_idle(move || !running.load(Ordering::Acquire));
+    }
+    if let Err(err) = harness_rs::start(board) {
+        error!(TAG, "harness: {err}");
+    }
+    info!(TAG, "bench ready {:?}", display.pixel_format());
+    loop {
+        wake.take();
+        let Some((latency, params)) = request.lock().take() else { continue };
+        let line = if latency { bench.latency(&params) } else { bench.run(&params) };
+        info!(TAG, "{line}");
+        *result.lock() = line;
+        running.store(false, Ordering::Release);
     }
 }

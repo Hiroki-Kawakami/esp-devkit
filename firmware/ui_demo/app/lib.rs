@@ -4,10 +4,15 @@
  */
 
 #![no_std]
+// CONFIG_SOC_* flags are unknown to --check-cfg on chips without them.
+#![allow(unexpected_cfgs)]
 
 extern crate alloc;
 
+#[cfg(any(not(target_os = "none"), CONFIG_SOC_PPA_SUPPORTED))]
 mod bench;
+// Mostly the bench's, which a chip without a 2D engine leaves out.
+#[cfg_attr(not(any(not(target_os = "none"), CONFIG_SOC_PPA_SUPPORTED)), allow(dead_code))]
 mod scene;
 mod screens;
 
@@ -17,11 +22,10 @@ mod resources {
 }
 
 use alloc::boxed::Box;
-use alloc::string::{String, ToString};
-use alloc::sync::Arc;
+use alloc::string::ToString;
 use core::ffi::CStr;
 use core::mem::MaybeUninit;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::Ordering;
 use core::time::Duration;
 
 use bsp_rs::Board;
@@ -29,17 +33,18 @@ use bsp_rs::display::{Display, ImageFormat};
 use devkit_core::{BufferBytes, BufferPool};
 use devkit_ui::{App, AppConfig, AutoRotation, ColorMode, Rotation, SavedColorMode, StripSource, Strips, TextInput};
 use idf::heap::Caps;
-use idf::log::{error, info};
-use idf::sync::{FreeRtos, Mutex, Semaphore};
+use idf::log::error;
+use idf::sync::FreeRtos;
 use idf::{system, thread};
 
-use bench::{Bench, Params, Present};
-use scene::Kind;
 use screens::{Home, StatusBar, StatusMsg};
 
 const TAG: &CStr = c"ui_demo";
 const SETTINGS_VALID: u32 = 0x5549_4445;
+#[cfg(not(CONFIG_BSP_RS_BOARD_CORE_S3))]
 const STRIP_BYTES: usize = 4 * 64 * 1024;
+#[cfg(CONFIG_BSP_RS_BOARD_CORE_S3)]
+const STRIP_BYTES: usize = 4 * 320 * 16 * 2;
 
 static SRAM: BufferPool<BufferBytes<STRIP_BYTES>, 1, FreeRtos> = BufferPool::new(BufferBytes::new());
 
@@ -74,36 +79,6 @@ fn restart_with(value: Settings) {
     });
 }
 
-fn parse(args: &[&str]) -> Result<Params, String> {
-    let kind = match args.first().copied() {
-        Some("list") => Kind::List,
-        Some("thumbs") => Kind::Thumbs,
-        Some("dense") => Kind::Dense,
-        Some("menu") => Kind::Menu,
-        Some("tick") => Kind::Tick,
-        Some("seek") => Kind::Seek,
-        _ => return Err("bench <list|thumbs|dense|menu|tick|seek> <inplace|swap2|swap3> <rot0|rot90> <lanes> [frames] [speed] [sram|psram] [load]".to_string()),
-    };
-    let present = match args.get(1).copied() {
-        Some("inplace") => Present::InPlace,
-        Some("swap2") => Present::Swap2,
-        Some("swap3") => Present::Swap3,
-        _ => return Err("bad present mode".to_string()),
-    };
-    let rotated = match args.get(2).copied() {
-        Some("rot0") => false,
-        Some("rot90") => true,
-        _ => return Err("bad rotation".to_string()),
-    };
-    let lanes = args.get(3).and_then(|v| v.parse().ok()).filter(|n| (1..=2).contains(n));
-    let lanes = lanes.ok_or("bad lane count")?;
-    let frames = args.get(4).and_then(|v| v.parse().ok()).unwrap_or(240);
-    let speed = args.get(5).and_then(|v| v.parse().ok()).unwrap_or(7);
-    let strips_psram = args.get(6).copied() == Some("psram");
-    let load = args.get(7).copied() == Some("load");
-    Ok(Params { kind, present, rotated, lanes, frames, speed, strips_psram, load })
-}
-
 fn register_mode() {
     harness_rs::register("mode", |args| {
         let mut value = settings();
@@ -127,8 +102,10 @@ fn register_mode() {
 pub fn run() {
     let value = settings();
     let mut config = bsp_rs::Config::default();
-    config.display.fb_num = 3;
-    config.display.pixel_format = Some(if value.rgb888 { ImageFormat::Bgr888 } else { ImageFormat::Rgb565 });
+    if !cfg!(CONFIG_BSP_RS_BOARD_CORE_S3) {
+        config.display.fb_num = 3;
+        config.display.pixel_format = Some(if value.rgb888 { ImageFormat::Bgr888 } else { ImageFormat::Rgb565 });
+    }
     let board = match bsp_rs::init(&config) {
         Ok(board) => board,
         Err(err) => {
@@ -153,7 +130,8 @@ pub fn run() {
 
 fn run_demo(board: &Board, display: &'static Display, settings: &Settings) {
     screens::set_display(display);
-    let mut config = AppConfig::new(&resources::TOUCH);
+    let theme = if cfg!(CONFIG_BSP_RS_BOARD_CORE_S3) { &resources::SMALL } else { &resources::TOUCH };
+    let mut config = AppConfig::new(theme);
     config.plugins.push(Box::new(SavedColorMode::new()));
     if settings.rotated {
         config.presenter.rotation = Rotation::R90;
@@ -250,58 +228,17 @@ fn run_demo(board: &Board, display: &'static Display, settings: &Settings) {
 }
 
 fn run_bench(board: &Board, display: &'static Display) {
-    let Some(sram) = SRAM.alloc(STRIP_BYTES, 64) else {
-        error!(TAG, "strips: taken");
-        return;
-    };
-    let mut bench = match Bench::new(display, Strips::new(sram)) {
-        Ok(bench) => bench,
-        Err(err) => {
-            error!(TAG, "bench: {err}");
+    #[cfg(any(not(target_os = "none"), CONFIG_SOC_PPA_SUPPORTED))]
+    {
+        let Some(sram) = SRAM.alloc(STRIP_BYTES, 64) else {
+            error!(TAG, "strips: taken");
             return;
-        }
-    };
-    let running = Arc::new(AtomicBool::new(false));
-    let result = Arc::new(Mutex::new(String::new()));
-    let request = Arc::new(Mutex::new(None::<(bool, Params)>));
-    let wake = Arc::new(Semaphore::new(0, 1));
-    for (name, latency) in [("bench", false), ("bench-latency", true)] {
-        let (running, request, wake) = (running.clone(), request.clone(), wake.clone());
-        harness_rs::register(name, move |args| {
-            if running.swap(true, Ordering::AcqRel) {
-                return Err("busy".to_string());
-            }
-            match parse(args) {
-                Ok(params) => {
-                    *request.lock() = Some((latency, params));
-                    wake.give();
-                    Ok(None)
-                }
-                Err(err) => {
-                    running.store(false, Ordering::Release);
-                    Err(err)
-                }
-            }
-        });
+        };
+        bench::serve(board, display, Strips::new(sram));
     }
+    #[cfg(not(any(not(target_os = "none"), CONFIG_SOC_PPA_SUPPORTED)))]
     {
-        let result = result.clone();
-        harness_rs::register("bench-result", move |_| Ok(Some(result.lock().clone())));
-    }
-    {
-        let running = running.clone();
-        harness_rs::set_idle(move || !running.load(Ordering::Acquire));
-    }
-    if let Err(err) = harness_rs::start(board) {
-        error!(TAG, "harness: {err}");
-    }
-    info!(TAG, "bench ready {:?}", display.pixel_format());
-    loop {
-        wake.take();
-        let Some((latency, params)) = request.lock().take() else { continue };
-        let line = if latency { bench.latency(&params) } else { bench.run(&params) };
-        info!(TAG, "{line}");
-        *result.lock() = line;
-        running.store(false, Ordering::Release);
+        let _ = (board, display);
+        error!(TAG, "bench: needs a 2D engine");
     }
 }

@@ -3270,7 +3270,7 @@ fn a_surface_keeps_to_the_row_grid_and_sees_what_lies_over_it() {
     let video = ExternalSurface::new().unwrap();
     let mut tree = Tree::new(Player { video, menu: false }, SCREEN, Caps::INTERNAL, theme());
     run(&mut tree);
-    let (_, hole) = tree.external().unwrap();
+    let (_, hole) = tree.external(16).unwrap();
     let hole = hole.unwrap();
     assert_eq!((hole.y, hole.bottom()), (32, 112));
     assert_eq!(overlap_of(&tree, hole), None);
@@ -3327,9 +3327,9 @@ fn the_opaque_core_of_an_overlay_leaves_its_rounded_corners_and_margins_out() {
             pixels[(y * width + x) * 4 + 3] = if x == inset { 0x80 } else { 0xff };
         }
     }
-    let core = crate::presenter::opaque_core(&pixels, devkit_gfx::Size::new(width as u16, height as u16));
+    let core = crate::external::opaque_core(&pixels, devkit_gfx::Size::new(width as u16, height as u16));
     assert_eq!(core, Some(Rect::new(3, 2, 7, 6)));
-    assert_eq!(crate::presenter::opaque_core(&alloc::vec![0u8; 16], devkit_gfx::Size::new(2, 2)), None);
+    assert_eq!(crate::external::opaque_core(&alloc::vec![0u8; 16], devkit_gfx::Size::new(2, 2)), None);
 }
 
 #[test]
@@ -3912,7 +3912,7 @@ fn modals_change_at_once_whatever_is_asked() {
 fn zoom_frame(tree: &mut Tree, cache: &mut devkit_gfx::GlyphCache<Caps>) -> Vec<u16> {
     let mut effects = crate::paint::Effects::new(Caps::INTERNAL);
     tree.update();
-    tree.capture_zooms(&mut effects, cache, None);
+    tree.capture_zooms(&mut effects, cache, None, None);
     let mut list = devkit_gfx::DisplayList::new_in(Caps::INTERNAL);
     tree.paint(&mut effects, &[SCREEN], &mut list);
     let mut pixels = vec![0u16; SCREEN.area() as usize];

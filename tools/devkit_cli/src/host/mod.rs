@@ -405,7 +405,7 @@ impl Host {
 
     fn touch(&self, id: u8, at: Option<(u16, u16)>) -> Result<(), String> {
         match &self.link {
-            Link::Sim(d) if d.present().is_some() => {
+            Link::Sim(d) if d.has_panel() => {
                 d.touch(id, at);
                 Ok(())
             }

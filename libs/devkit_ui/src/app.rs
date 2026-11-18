@@ -24,12 +24,11 @@ use idf::time::Instant;
 
 use crate::component::{Component, Screen};
 use crate::erased::Erased;
-use crate::external::{ExternalSurface, Overlay, Picture, Policy};
+use crate::external::{self, ExternalSurface, Overlay, Picture, Policy};
 use crate::keyboard::KeyboardMode;
 use crate::plugin::{Plugin, PluginContext, PluginInit, Store, UiEvent};
-use crate::blit::Blits;
-use crate::paint::{Effects, Engine};
-use crate::presenter::{Config, Presenter, ROW_GRID, Strips};
+use crate::paint::Effects;
+use crate::presenter::{Config, GramPresenter, Presenter, Strips};
 use crate::text_buffer::TextInput;
 use crate::theme::{ColorMode, Theme};
 use crate::node::NodeIndex;
@@ -316,11 +315,45 @@ fn rotation_code(rotation: Rotation) -> u8 {
     ROTATIONS.iter().position(|r| *r == rotation).unwrap_or(0) as u8
 }
 
-/// Keeps a picture to whole 16 row blocks, which a rotated copy needs.
-fn grid_rows(rect: Rect) -> Rect {
-    let top = rect.y.div_euclid(ROW_GRID) * ROW_GRID;
-    let bottom = (rect.bottom() + ROW_GRID - 1).div_euclid(ROW_GRID) * ROW_GRID;
+/// Keeps a picture to whole runs of the presenter's `grid` rows.
+fn grid_rows(rect: Rect, grid: i16) -> Rect {
+    let top = rect.y.div_euclid(grid) * grid;
+    let bottom = (rect.bottom() + grid - 1).div_euclid(grid) * grid;
     Rect::new(rect.x, top, rect.w, bottom - top)
+}
+
+fn render_overlay(
+    presenter: &dyn Presenter,
+    display: &Display,
+    rotation: Rotation,
+    list: &DisplayList<'_, Caps>,
+    first: usize,
+    rect: Rect,
+    cache: &mut GlyphCache<Caps>,
+) -> idf::Result<Picture> {
+    let blitter = presenter.blitter().ok_or(idf::Error::NOT_SUPPORTED)?;
+    external::render_overlay(list, first, rect, cache, rotation, display.pixel_format(), blitter)
+}
+
+/// The presenter for what `display` is.
+fn presenter(display: &'static Display, config: Config) -> idf::Result<Box<dyn Presenter>> {
+    if display.frame_buffer_count() == 0 {
+        return Ok(Box::new(GramPresenter::new(display, config)?));
+    }
+    #[cfg(any(not(target_os = "none"), CONFIG_SOC_PPA_SUPPORTED))]
+    return Ok(Box::new(crate::presenter::FbPresenter::new(display, config)?));
+    #[cfg(not(any(not(target_os = "none"), CONFIG_SOC_PPA_SUPPORTED)))]
+    {
+        let _ = config;
+        error!(TAG, "no presenter for framebuffers without a 2D engine");
+        Err(idf::Error::NOT_SUPPORTED)
+    }
+}
+
+/// The turn left for the UI to apply between the panel and the logical
+/// picture, after what the panel turns itself.
+fn remaining(rotation: Rotation, panel: Rotation) -> Rotation {
+    ROTATIONS[usize::from((rotation_code(rotation) + 4 - rotation_code(panel)) % 4)]
 }
 
 fn note(stage: &mut (u32, u32), from: Instant) -> Instant {
@@ -334,7 +367,7 @@ pub struct AppState<C: Screen> {
     shared: Arc<Shared>,
     receiver: Receiver<Event>,
     tree: Tree,
-    presenter: Presenter,
+    presenter: Box<dyn Presenter>,
     cache: GlyphCache<Caps>,
     effects: Effects,
     data_caps: Caps,
@@ -396,7 +429,10 @@ impl<C: Screen> AppState<C> {
         let (rotation, color_mode) = (init.rotation, init.color_mode);
         config.presenter.rotation = rotation;
         let data_caps = config.presenter.data_caps;
-        let presenter = Presenter::new(display, config.presenter)?;
+        let presenter = presenter(display, config.presenter)?;
+        if let Some(touch) = touch {
+            touch.set_rotation(display.rotation());
+        }
         let (events, receiver) = channel(QUEUE_DEPTH);
         let shared = Arc::new(Shared {
             events,
@@ -404,7 +440,7 @@ impl<C: Screen> AppState<C> {
             dropped: AtomicU32::new(0),
             busy: AtomicBool::new(true),
             display,
-            rotation: AtomicU8::new(rotation_code(rotation)),
+            rotation: AtomicU8::new(rotation_code(remaining(rotation, display.rotation()))),
             touch,
         });
         if let Some(touch) = touch {
@@ -586,10 +622,16 @@ impl<C: Screen> AppState<C> {
         self.tree.render_done(slot, request.reply, given_up);
     }
 
+    /// Whether UI over a surface is laid on before the frame shows, rather
+    /// than written over it after.
+    fn composites(&self) -> bool {
+        self.presenter.buffers().count >= 2 && self.presenter.blitter().is_some()
+    }
+
     fn release_surface(&mut self) {
         if let Some(old) = self.surface.take() {
             old.detach();
-            self.presenter.set_external(None, false);
+            self.presenter.set_external(None, false, None);
             (self.hole, self.overlay, self.slide) = (None, None, None);
         }
     }
@@ -598,8 +640,9 @@ impl<C: Screen> AppState<C> {
         if self.tree.transiting() {
             return;
         }
-        let size = self.shared.display.size();
-        let panel = (size.width as i16, size.height as i16);
+        let display = self.shared.display;
+        let size = display.size();
+        let panel = if display.rotation().swaps_axes() { (size.height as i16, size.width as i16) } else { (size.width as i16, size.height as i16) };
         let next = self.tree.screen_style.rotations.pick(self.requested, self.rotation, panel);
         if next == self.rotation {
             return;
@@ -610,7 +653,10 @@ impl<C: Screen> AppState<C> {
             return;
         }
         self.rotation = next;
-        self.shared.rotation.store(rotation_code(next), Ordering::Release);
+        if let Some(touch) = self.shared.touch {
+            touch.set_rotation(display.rotation());
+        }
+        self.shared.rotation.store(rotation_code(remaining(next, display.rotation())), Ordering::Release);
         self.tree.set_area(self.presenter.area());
         self.rotated = true;
         (self.overlay, self.slide) = (None, None);
@@ -623,7 +669,7 @@ impl<C: Screen> AppState<C> {
     }
 
     fn attach_surface(&mut self) -> Option<(ExternalSurface, Option<Rect>)> {
-        let shown = self.tree.external().map(|(surface, hole)| (surface.clone(), hole));
+        let shown = self.tree.external(self.presenter.row_grid()).map(|(surface, hole)| (surface.clone(), hole));
         let attached = self.surface.as_ref();
         if attached.is_none_or(|a| shown.as_ref().is_none_or(|s| !s.0.same(a))) {
             self.release_surface();
@@ -632,7 +678,7 @@ impl<C: Screen> AppState<C> {
                 let wake = Arc::new(move || {
                     shared.send(Event::Wake);
                 });
-                surface.attach(self.shared.display, self.rotation, self.presenter.buffers(), wake);
+                surface.attach(self.shared.display, self.rotation, self.presenter.buffers(), self.presenter.blitter(), wake);
                 self.surface = shown.as_ref().map(|s| s.0.clone());
             }
         }
@@ -673,27 +719,25 @@ impl<C: Screen> AppState<C> {
             self.tree.capture_presences(&mut self.effects, &mut self.cache);
         }
         if self.tree.zoom_pending() {
-            match Blits::new(2) {
-                Ok(mut blits) => {
-                    let shown = self.presenter.shown().map(|fb| (fb, self.rotation));
-                    let mut engine = Engine { blits: &mut blits, shown };
-                    self.tree.capture_zooms(&mut self.effects, &mut self.cache, Some(&mut engine));
-                }
-                Err(err) => {
-                    error!(TAG, "2D engine: {err}");
-                    self.tree.capture_zooms(&mut self.effects, &mut self.cache, None);
-                }
-            }
+            let mut blitter = self.presenter.blitter().and_then(|new| new(2).inspect_err(|err| error!(TAG, "2D engine: {err}")).ok());
+            let shown = self.presenter.shown().map(|fb| (fb, self.rotation));
+            self.tree.capture_zooms(&mut self.effects, &mut self.cache, blitter.as_deref_mut(), shown);
         }
         let mut update = (0, 0);
         let updated = note(&mut update, start);
-        let damage = self.tree.take_damage();
+        let mut damage = self.tree.take_damage();
         let shown = self.attach_surface();
+        if let Some((surface, _)) = &shown {
+            let overwritten = surface.take_overwritten();
+            if !overwritten.is_empty() {
+                damage.push(overwritten);
+            }
+        }
         let mut waited = self.waiting.is_some();
         if let Some((surface, hole)) = &shown {
             if surface.policy() == Policy::Exclusive {
                 let whole = Some(self.presenter.area());
-                self.presenter.set_external(whole, true);
+                self.presenter.set_external(whole, true, None);
                 surface.set_rect(whole);
                 self.hole = whole;
                 if !core::mem::replace(&mut self.exclusive, true) || core::mem::take(&mut self.rotated) {
@@ -737,10 +781,13 @@ impl<C: Screen> AppState<C> {
         self.tree.paint(&mut self.effects, regions, &mut list);
         let mut overlap = None;
         if let Some((surface, hole)) = &shown {
-            overlap = hole.and_then(|h| devkit_gfx::overlap(list.ops(), self.tree.external_split.get(), &h).map(|o| grid_rows(o).intersect(&h)));
-            let composite = (surface.policy() == Policy::Stamp || overlap.is_some()) && self.presenter.buffers().count >= 2;
+            let grid = self.presenter.row_grid();
+            overlap = hole.and_then(|h| devkit_gfx::overlap(list.ops(), self.tree.external_split.get(), &h).map(|o| grid_rows(o, grid).intersect(&h)));
+            let composite = (surface.policy() == Policy::Stamp || overlap.is_some()) && self.composites();
+            let over = overlap.filter(|_| !self.composites());
             surface.set_composite(composite);
-            if self.presenter.set_external(*hole, composite) {
+            surface.set_over(over);
+            if self.presenter.set_external(*hole, composite, over) {
                 list.clear();
                 if let Ok(regions) = self.presenter.regions() {
                     self.tree.paint(&mut self.effects, regions, &mut list);
@@ -762,8 +809,18 @@ impl<C: Screen> AppState<C> {
         }
         note(&mut self.timing.render, painted);
         if let Some((surface, hole)) = &shown {
+            if !self.composites() {
+                if overlap != self.overlay {
+                    if let Some(left) = self.overlay {
+                        surface.request_refresh(left);
+                    }
+                    self.overlay = overlap;
+                }
+                return;
+            }
+            let grid = self.presenter.row_grid();
             let slide = hole.and_then(|h| self.tree.sliding_over(h).map(|s| (h, s))).filter(|&(h, (_, home, (dx, dy)))| {
-                overlap.is_none_or(|o| grid_rows(home.offset(dx, dy)).intersect(&h).contains(&o))
+                overlap.is_none_or(|o| grid_rows(home.offset(dx, dy), grid).intersect(&h).contains(&o))
             });
             if let Some((hole, (id, home, offset))) = slide {
                 drop(list);
@@ -774,7 +831,7 @@ impl<C: Screen> AppState<C> {
             let changed = overlap != self.overlay || overlap.is_some_and(|o| damage.iter().any(|d| d.intersects(&o)));
             if changed {
                 match overlap {
-                    Some(rect) => match self.presenter.render_overlay(&list, self.tree.external_split.get(), rect, &mut self.cache) {
+                    Some(rect) => match render_overlay(&*self.presenter, self.shared.display, self.rotation, &list, self.tree.external_split.get(), rect, &mut self.cache) {
                         Ok(picture) => surface.set_overlay(Some(Arc::new(Overlay { picture: Arc::new(picture), rect }))),
                         Err(err) => error!(TAG, "overlay: {err}"),
                     },
@@ -797,7 +854,7 @@ impl<C: Screen> AppState<C> {
             None => {
                 let mut list = DisplayList::new_in(self.data_caps);
                 let area = self.tree.paint_alone(id, home, &mut self.effects, &mut list);
-                let picture = match self.presenter.render_overlay(&list, 0, area, &mut self.cache) {
+                let picture = match render_overlay(&*self.presenter, self.shared.display, self.rotation, &list, 0, area, &mut self.cache) {
                     Ok(picture) => Arc::new(picture),
                     Err(err) => {
                         error!(TAG, "overlay: {err}");

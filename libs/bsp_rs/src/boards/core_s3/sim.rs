@@ -22,6 +22,9 @@ use crate::{Board, Config};
 pub(crate) type AudioDriver = SimAudio;
 pub(crate) type Display = SimGram;
 
+// The ILI9342C's 40 MHz SPI clock.
+const PANEL_BYTES_PER_SECOND: u32 = 40_000_000 / 8;
+
 static DISPLAY: OnceLock<display::Display> = OnceLock::new();
 
 // Without the simulator host there is nothing to show or touch.
@@ -34,7 +37,7 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
     };
     info!(TAG, "board: CoreS3 (simulator)");
     host.send(&Event::device("M5Stack CoreS3"));
-    let panel = SimGram::new(host, PANEL_SIZE, PIXEL_FORMAT, rotation)?;
+    let panel = SimGram::new(host, PANEL_SIZE, PIXEL_FORMAT, rotation, PANEL_BYTES_PER_SECOND)?;
     let touch = sim_touch::start(host, touch::Config {
         width: PANEL_SIZE.width,
         height: PANEL_SIZE.height,

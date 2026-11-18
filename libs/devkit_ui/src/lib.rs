@@ -5,6 +5,8 @@
 
 #![cfg_attr(not(test), no_std)]
 #![feature(associated_type_defaults)]
+// CONFIG_SOC_* flags are unknown to --check-cfg on chips without them.
+#![allow(unexpected_cfgs)]
 
 extern crate alloc;
 
@@ -57,7 +59,9 @@ pub use rotation::{AutoRotation, Rotations};
 pub use plugin::{Plugin, PluginContext, PluginInit, SavedColorMode, Store, UiEvent};
 pub use popover::{Placement, Popover, PopoverAlign};
 pub use presence::{Edge, Presence};
-pub use presenter::{Config, PresentMode, Presenter, Stats, StripSource, Strips};
+#[cfg(any(not(target_os = "none"), CONFIG_SOC_PPA_SUPPORTED))]
+pub use presenter::FbPresenter;
+pub use presenter::{Config, PresentMode, Stats, StripSource, Strips};
 pub use task::{Task, This};
 pub use style::{Align, Animated, Bars, Dimension, Direction, Insets, Justify, Part, Prop, Role, ScreenStyle, Shadow, State, StateStyle, Style};
 pub use text_buffer::{TextBuffer, TextInput};

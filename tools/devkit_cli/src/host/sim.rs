@@ -11,8 +11,9 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::path::PathBuf;
 use std::process::{ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, Weak, mpsc};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use super::audio::{self, Player};
 use crate::protocol::{
@@ -56,10 +57,48 @@ pub struct Frame {
     pub rgb: Vec<u8>,
 }
 
+/// The memory of a panel that keeps the picture itself, unturned.
+struct Gram {
+    width: usize,
+    height: usize,
+    format: PixelFormat,
+    rotation: u8,
+    bytes_per_second: u32,
+    pixels: Vec<u8>,
+}
+
+impl Gram {
+    /// `false` when the rectangle leaves the turned picture or `payload` is
+    /// not its size.
+    fn put(&mut self, (x, y, w, h): (usize, usize, usize, usize), payload: &[u8]) -> bool {
+        let bpp = self.format.bytes();
+        let (width, height) = if self.rotation % 2 == 1 { (self.height, self.width) } else { (self.width, self.height) };
+        if w == 0 || h == 0 || x + w > width || y + h > height || payload.len() != w * h * bpp {
+            return false;
+        }
+        let (last_x, last_y) = (self.width - 1, self.height - 1);
+        for (j, row) in payload.chunks_exact(w * bpp).enumerate() {
+            for (i, px) in row.chunks_exact(bpp).enumerate() {
+                let (lx, ly) = (x + i, y + j);
+                let (sx, sy) = match self.rotation % 4 {
+                    0 => (lx, ly),
+                    1 => (ly, last_y - lx),
+                    2 => (last_x - lx, last_y - ly),
+                    _ => (last_x - ly, lx),
+                };
+                let at = (sy * self.width + sx) * bpp;
+                self.pixels[at..at + bpp].copy_from_slice(px);
+            }
+        }
+        true
+    }
+}
+
 struct State {
     status: Status,
     ready: bool,
     present: Option<Present>,
+    gram: Option<Gram>,
     brightness: u8,
     name: Option<String>,
 }
@@ -130,6 +169,7 @@ impl Device {
                 status: Status::Off,
                 ready: false,
                 present: None,
+                gram: None,
                 brightness: 0,
                 name: None,
             }),
@@ -234,6 +274,7 @@ impl Device {
             state.status = Status::Running;
             state.ready = false;
             state.present = None;
+            state.gram = None;
             state.brightness = 0;
         }
         let stdin = child.stdin.take().unwrap();
@@ -276,6 +317,7 @@ impl Device {
         state.status = Status::Off;
         state.ready = false;
         state.present = None;
+        state.gram = None;
     }
 
     fn close_run(&self) -> Option<Run> {
@@ -293,6 +335,17 @@ impl Device {
     }
 
     fn receive(self: &Arc<Self>, fd: RawFd) {
+        let (done, sent) = mpsc::channel::<(u32, Instant)>();
+        let me = Arc::downgrade(self);
+        thread::spawn(move || {
+            for (ticket, due) in sent {
+                thread::sleep(due.saturating_duration_since(Instant::now()));
+                let Some(device) = me.upgrade() else { return };
+                device.send(&Event::GramDone { ticket });
+            }
+        });
+        let mut busy_until = Instant::now();
+        let mut payload = Vec::new();
         let mut record = [0u8; RECORD_SIZE];
         while read_record(fd, &mut record) {
             let mut state = self.state.lock().unwrap();
@@ -339,7 +392,42 @@ impl Device {
                         player.set_muted(mute);
                     }
                 }
-                Some(Event::Touch { .. } | Event::AudioPlayed { .. } | Event::Imu { .. } | Event::Power { .. }) | None => {}
+                Some(Event::GramOpen { width, height, format, rotation, bytes_per_second }) => {
+                    let (width, height) = (usize::from(width), usize::from(height));
+                    let pixels = vec![0; width * height * format.bytes()];
+                    state.gram = Some(Gram { width, height, format, rotation, bytes_per_second, pixels });
+                }
+                Some(Event::GramRotate { rotation }) => {
+                    if let Some(gram) = state.gram.as_mut() {
+                        gram.rotation = rotation;
+                    }
+                }
+                Some(Event::GramWrite { ticket, x, y, w, h, bytes }) => {
+                    payload.resize(bytes as usize, 0);
+                    if !read_bytes(fd, &mut payload) {
+                        break;
+                    }
+                    let rect = (usize::from(x), usize::from(y), usize::from(w), usize::from(h));
+                    let rate = match state.gram.as_mut() {
+                        Some(gram) => {
+                            if !gram.put(rect, &payload) {
+                                eprintln!("[devkit] gram write {rect:?} of {bytes} bytes outside the panel");
+                            }
+                            gram.bytes_per_second
+                        }
+                        None => {
+                            eprintln!("[devkit] gram write before the panel opened");
+                            0
+                        }
+                    };
+                    let start = busy_until.max(Instant::now());
+                    busy_until = start + Duration::from_secs_f64(f64::from(bytes) / f64::from(rate.max(1)));
+                    let _ = done.send((ticket, if rate == 0 { start } else { busy_until }));
+                }
+                Some(
+                    Event::Touch { .. } | Event::AudioPlayed { .. } | Event::Imu { .. } | Event::Power { .. } | Event::GramDone { .. },
+                )
+                | None => {}
             }
         }
         unsafe { libc::close(fd) };
@@ -459,38 +547,61 @@ impl Device {
         self.state.lock().unwrap().present
     }
 
-    /// The presented frame as RGB; the firmware may be drawing into it meanwhile.
+    /// Whether the firmware shows a picture, from a framebuffer or a panel's
+    /// own memory.
+    pub fn has_panel(&self) -> bool {
+        let state = self.state.lock().unwrap();
+        state.present.is_some() || state.gram.is_some()
+    }
+
+    /// The picture on the panel as RGB, unturned; the firmware may be drawing
+    /// into a presented frame meanwhile.
     pub fn frame(&self) -> Option<Frame> {
+        {
+            let state = self.state.lock().unwrap();
+            if let Some(gram) = &state.gram {
+                return Some(to_rgb(&gram.pixels, gram.width, gram.height, gram.width * gram.format.bytes(), gram.format));
+            }
+        }
         let p = self.present()?;
         let (w, h, stride) = (usize::from(p.width), usize::from(p.height), p.stride as usize);
-        let bpp = p.format.bytes();
         let start = usize::try_from(p.offset).ok()?;
-        if stride < w * bpp || start.checked_add(stride * h)? > self.psram.len {
+        if stride < w * p.format.bytes() || start.checked_add(stride * h)? > self.psram.len {
             return None;
         }
         let src = unsafe { std::slice::from_raw_parts(self.psram.ptr.add(start), stride * h) };
-        let mut rgb = Vec::with_capacity(w * h * 3);
-        for row in src.chunks_exact(stride) {
-            for px in row[..w * bpp].chunks_exact(bpp) {
-                match p.format {
-                    PixelFormat::L8 => rgb.extend_from_slice(&[px[0], px[0], px[0]]),
-                    PixelFormat::Rgb565 => {
-                        let v = u16::from_le_bytes([px[0], px[1]]);
-                        let (r, g, b) = ((v >> 11) & 0x1F, (v >> 5) & 0x3F, v & 0x1F);
-                        rgb.extend_from_slice(&[(r << 3 | r >> 2) as u8, (g << 2 | g >> 4) as u8, (b << 3 | b >> 2) as u8]);
-                    }
-                    PixelFormat::Bgr888 => rgb.extend_from_slice(&[px[2], px[1], px[0]]),
-                }
-            }
-        }
-        Some(Frame { width: w, height: h, rgb })
+        Some(to_rgb(src, w, h, stride, p.format))
     }
 }
 
+fn to_rgb(src: &[u8], w: usize, h: usize, stride: usize, format: PixelFormat) -> Frame {
+    let bpp = format.bytes();
+    let mut rgb = Vec::with_capacity(w * h * 3);
+    let from565 = |v: u16| {
+        let (r, g, b) = ((v >> 11) & 0x1F, (v >> 5) & 0x3F, v & 0x1F);
+        [(r << 3 | r >> 2) as u8, (g << 2 | g >> 4) as u8, (b << 3 | b >> 2) as u8]
+    };
+    for row in src.chunks_exact(stride).take(h) {
+        for px in row[..w * bpp].chunks_exact(bpp) {
+            match format {
+                PixelFormat::L8 => rgb.extend_from_slice(&[px[0], px[0], px[0]]),
+                PixelFormat::Rgb565 => rgb.extend_from_slice(&from565(u16::from_le_bytes([px[0], px[1]]))),
+                PixelFormat::Rgb565Be => rgb.extend_from_slice(&from565(u16::from_be_bytes([px[0], px[1]]))),
+                PixelFormat::Bgr888 => rgb.extend_from_slice(&[px[2], px[1], px[0]]),
+            }
+        }
+    }
+    Frame { width: w, height: h, rgb }
+}
+
 fn read_record(fd: RawFd, record: &mut [u8; RECORD_SIZE]) -> bool {
+    read_bytes(fd, record)
+}
+
+fn read_bytes(fd: RawFd, buf: &mut [u8]) -> bool {
     let mut at = 0;
-    while at < RECORD_SIZE {
-        let n = unsafe { libc::recv(fd, record[at..].as_mut_ptr().cast(), RECORD_SIZE - at, 0) };
+    while at < buf.len() {
+        let n = unsafe { libc::recv(fd, buf[at..].as_mut_ptr().cast(), buf.len() - at, 0) };
         if n <= 0 {
             return false;
         }

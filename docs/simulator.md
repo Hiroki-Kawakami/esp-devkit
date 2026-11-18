@@ -100,6 +100,7 @@ addressed already. Without the variable no device ever appears.
 
 Fixed 64-byte records, defined once in `libs/bsp_rs/src/sim/protocol.rs` and
 compiled into the firmware and `tools/devkit_cli`. Byte 0 is the tag, fields follow little-endian.
+Only `GramWrite` carries more: its pixels follow the record on the socket.
 
 | event | direction | fields |
 |---|---|---|
@@ -116,9 +117,18 @@ compiled into the firmware and `tools/devkit_cli`. Byte 0 is the tag, fields fol
 | `Rtc` | firmware → host | the clock was set: seconds since 1970 UTC, valid |
 | `Power` | host → firmware | battery level 0..=100, external power, battery in; sent at `Hello` and on every change |
 | `Imu` | host → firmware | accel and gyro in panel axes; sent at `Hello` and when the window's rotation changes |
+| `GramOpen` | firmware → host | a panel with its own memory: unturned width and height, pixel format, rotation, bytes per second of its link |
+| `GramRotate` | firmware → host | rotation of the writes after it |
+| `GramWrite` | firmware → host | ticket, rectangle of the turned picture, byte count; the pixels follow |
+| `GramDone` | host → firmware | every write up to the ticket has gone out |
 
 The host reads the presented frame straight from the region each refresh, so a
-frame drawn while shown tears as it would on the panel. Audio works the same
+frame drawn while shown tears as it would on the panel. A panel with its own
+memory keeps it in the host instead, turning each write in as the panel would.
+The firmware reads a write's pixels when it sends them, not when it queues
+them, so pixels changed before `Display::wait` show up changed, as with DMA;
+`GramDone` comes once the link's bytes per second would have carried the
+write. Audio works the same
 way: the host reads samples from the ring, and the firmware only announces how
 far it has written. The simulated audio has no hardware gain and no headphone
 jack, so `DspMode::Disable` has no volume there.

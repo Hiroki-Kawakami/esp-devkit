@@ -3,58 +3,108 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
-use alloc::vec::Vec;
-use core::ptr::NonNull;
+use alloc::boxed::Box;
+use alloc::sync::Arc;
+use core::ffi::CStr;
+use core::sync::atomic::{AtomicU32, Ordering};
+use core::time::Duration;
 
-use devkit_gfx::{Target, copy};
-use idf::heap::Caps;
-use idf::sync::Mutex;
-use idf::{Error, Result};
+use idf::log::error;
+use idf::sync::{Mutex, Receiver, Sender, Semaphore, channel};
+use idf::{Error, Result, thread};
 
 use super::Host;
-use super::protocol::{self, Event};
+use super::protocol::{Event, PixelFormat};
 use crate::display::{Driver, Image, ImageFormat, Rect, Rotation, Size, Ticket};
 
-/// A panel that keeps the picture in its own memory, turned as the panel
-/// would. Writes land at once; the memory is shown in `Rgb565`.
+const TAG: &CStr = c"sim_gram";
+const QUEUE_DEPTH: usize = 10;
+const MAX_WAITERS: u32 = 8;
+const STALL_TIMEOUT: Duration = Duration::from_secs(2);
+
+enum Command {
+    Write { ticket: u32, area: Rect, pixels: *const u8, len: usize },
+    Rotate(Rotation),
+}
+
+// The writer keeps the pixels until `wait`, as for a DMA transfer.
+unsafe impl Send for Command {}
+
+struct Progress {
+    done: AtomicU32,
+    waiters: AtomicU32,
+    wake: Semaphore,
+}
+
+impl Progress {
+    fn reached(&self, ticket: u32) -> bool {
+        self.done.load(Ordering::SeqCst).wrapping_sub(ticket) as i32 >= 0
+    }
+}
+
+/// A panel that keeps the picture in its own memory, on the host. Pixels are
+/// read when they go out, and the host answers once the panel's link would
+/// have carried them.
 pub(crate) struct SimGram {
     host: &'static Host,
     size: Size,
     format: ImageFormat,
     rotation: Rotation,
-    memory: Mutex<Vec<u8, Caps>>,
+    issued: Mutex<u32>,
+    queue: Sender<Command>,
+    progress: Arc<Progress>,
+}
+
+fn quarters(rotation: Rotation) -> u8 {
+    match rotation {
+        Rotation::R0 => 0,
+        Rotation::R90 => 1,
+        Rotation::R180 => 2,
+        Rotation::R270 => 3,
+    }
+}
+
+fn send(host: &Host, queue: Receiver<Command>) {
+    loop {
+        match queue.recv() {
+            Command::Write { ticket, area, pixels, len } => {
+                let payload = unsafe { core::slice::from_raw_parts(pixels, len) };
+                let event = Event::GramWrite {
+                    ticket,
+                    x: area.x as u16,
+                    y: area.y as u16,
+                    w: area.w as u16,
+                    h: area.h as u16,
+                    bytes: len as u32,
+                };
+                host.send_with(&event, payload);
+            }
+            Command::Rotate(rotation) => host.send(&Event::GramRotate { rotation: quarters(rotation) }),
+        }
+    }
 }
 
 impl SimGram {
-    /// `size` is unturned; the memory lives in the PSRAM region the host
-    /// shows it from.
-    pub(crate) fn new(host: &'static Host, size: Size, format: ImageFormat, rotation: Rotation) -> Result<Self> {
-        let len = ImageFormat::Rgb565.row_bytes(usize::from(size.width)) * usize::from(size.height);
-        let mut memory = Vec::new_in(Caps::SPIRAM);
-        memory.try_reserve_exact(len).map_err(|_| Error::NO_MEM)?;
-        memory.resize(len, 0);
-        Ok(Self { host, size, format, rotation, memory: Mutex::new(memory) })
-    }
-
-    fn put(&self, area: Rect, image: &Image) -> Result<()> {
-        let mut memory = self.memory.lock();
-        let ptr = NonNull::new(memory.as_mut_ptr()).ok_or(Error::INVALID_STATE)?;
-        let stride = usize::from(self.size.width);
-        let mut target = unsafe { Target::from_raw(ptr, memory.len(), ImageFormat::Rgb565, self.size, stride) }
-            .and_then(|t| t.rotated(self.rotation).crop(area))
-            .ok_or(Error::INVALID_ARG)?;
-        if !copy(image, &mut target) {
-            return Err(Error::NOT_SUPPORTED);
-        }
-        let offset = self.host.psram_offset(memory.as_ptr()).ok_or(Error::INVALID_STATE)?;
-        self.host.send(&Event::Present {
-            offset,
-            width: self.size.width,
-            height: self.size.height,
-            stride: ImageFormat::Rgb565.row_bytes(stride) as u32,
-            format: protocol::PixelFormat::Rgb565,
-        });
-        Ok(())
+    /// `size` is unturned.
+    pub(crate) fn new(host: &'static Host, size: Size, format: ImageFormat, rotation: Rotation, bytes_per_second: u32) -> Result<Self> {
+        let wire = match format {
+            ImageFormat::Rgb565 => PixelFormat::Rgb565,
+            ImageFormat::Rgb565Be => PixelFormat::Rgb565Be,
+            ImageFormat::Bgr888 => PixelFormat::Bgr888,
+            _ => return Err(Error::NOT_SUPPORTED),
+        };
+        let progress = Arc::new(Progress { done: AtomicU32::new(0), waiters: AtomicU32::new(0), wake: Semaphore::try_new(0, MAX_WAITERS)? });
+        let listener = progress.clone();
+        host.set_gram_listener(Box::new(move |ticket| {
+            listener.done.store(ticket, Ordering::SeqCst);
+            for _ in 0..listener.waiters.load(Ordering::SeqCst) {
+                listener.wake.give();
+            }
+        }));
+        host.send(&Event::GramOpen { width: size.width, height: size.height, format: wire, rotation: quarters(rotation), bytes_per_second });
+        let (queue, commands) = channel(QUEUE_DEPTH);
+        thread::Builder::new().name("sim_gram").stack_size(4096).spawn(move || send(host, commands))?;
+        Ok(Self { host, size, format, rotation, issued: Mutex::new(0), queue, progress })
     }
 }
 
@@ -72,16 +122,32 @@ impl Driver for SimGram {
     }
 
     unsafe fn write(&self, area: Rect, pixels: &[u8]) -> Result<Ticket> {
-        self.put(area, &Image::from_pixels(self.format, area.w as u16, area.h as u16, area.w as usize, pixels))?;
-        Ok(Ticket(0))
+        let mut issued = self.issued.lock();
+        *issued = issued.wrapping_add(1);
+        self.queue.send(Command::Write { ticket: *issued, area, pixels: pixels.as_ptr(), len: pixels.len() });
+        Ok(Ticket(*issued))
     }
 
-    fn wait(&self, _ticket: Ticket) -> Result<()> {
+    fn wait(&self, ticket: Ticket) -> Result<()> {
+        let progress = &*self.progress;
+        while !progress.reached(ticket.0) {
+            progress.waiters.fetch_add(1, Ordering::SeqCst);
+            if !progress.reached(ticket.0) && !progress.wake.take_timeout(STALL_TIMEOUT) {
+                error!(TAG, "ticket {} not answered, at {}", ticket.0, progress.done.load(Ordering::SeqCst));
+            }
+            progress.waiters.fetch_sub(1, Ordering::SeqCst);
+        }
         Ok(())
     }
 
     fn draw(&self, area: Rect, image: &Image) -> Result<()> {
-        self.put(area, image)
+        let row = self.format.row_bytes(area.w as usize);
+        let mut last = None;
+        for j in 0..area.h {
+            let pixels = &image.pixels()[j as usize * image.stride_bytes()..][..row];
+            last = Some(unsafe { self.write(Rect::new(area.x, area.y + j, area.w, 1), pixels) }?);
+        }
+        last.map_or(Ok(()), |ticket| self.wait(ticket))
     }
 
     fn set_brightness(&self, level: u8) -> Result<()> {
@@ -93,6 +159,7 @@ impl Driver for SimGram {
         if format != self.format || fb_num != 0 {
             return Err(Error::NOT_SUPPORTED);
         }
+        self.queue.send(Command::Rotate(rotation));
         self.rotation = rotation;
         Ok(())
     }

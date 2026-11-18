@@ -3,9 +3,22 @@
     "TOUCH": {
       "base": "@touch",
       "fonts": { "title": "title_28", "body": ["body_24", "jp_24"], "caption": ["caption_20", "jp_20"] }
+    },
+    "SMALL": {
+      "base": "@small",
+      "fonts": { "title": "title_24", "body": ["body_16", "jp_16"], "caption": ["body_16", "jp_16"] }
     }
   },
   "font": {
+    "body_16": {
+      "size": 16, "font": "@montserrat", "variation": { "wght": 400 },
+      "glyph": [" !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~…›"]
+    },
+    "title_24": {
+      "size": 24, "font": "@montserrat", "variation": { "wght": 400 },
+      "glyph": [" !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~…›"]
+    },
+    "jp_16": { "size": 16, "font": "@noto-sans-jp", "variation": { "wght": 400 }, "bpp": 2, "glyph_file": "@jp_glyphs" },
     "caption_20": {
       "size": 20, "font": "@montserrat", "variation": { "wght": 400 },
       "glyph": [" !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~…›"]

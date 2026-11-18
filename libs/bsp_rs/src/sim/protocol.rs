@@ -6,7 +6,7 @@
  * this crate and tools/devkit_cli. See docs/simulator.md.
  */
 
-pub const VERSION: u32 = 6;
+pub const VERSION: u32 = 7;
 pub const RECORD_SIZE: usize = 64;
 pub const MAX_TOUCH_POINTS: usize = 10;
 pub const MAX_NAME: usize = 48;
@@ -47,15 +47,26 @@ pub enum PixelFormat {
     Rgb565,
     /// B, G, R in memory.
     Bgr888,
+    Rgb565Be,
 }
 
 impl PixelFormat {
     pub const fn bytes(self) -> usize {
         match self {
             Self::L8 => 1,
-            Self::Rgb565 => 2,
+            Self::Rgb565 | Self::Rgb565Be => 2,
             Self::Bgr888 => 3,
         }
+    }
+
+    const fn from_u8(v: u8) -> Option<Self> {
+        Some(match v {
+            0 => Self::L8,
+            1 => Self::Rgb565,
+            2 => Self::Bgr888,
+            3 => Self::Rgb565Be,
+            _ => return None,
+        })
     }
 }
 
@@ -97,6 +108,17 @@ pub enum Event {
     Power { level: u8, external: bool, battery: bool },
     /// Firmware to host: the clock was set, to seconds since 1970 UTC.
     Rtc { seconds: i64, valid: bool },
+    /// Firmware to host: a panel with memory of its own, `width` by `height`
+    /// unturned, that takes `bytes_per_second`. `rotation` in quarter turns
+    /// clockwise.
+    GramOpen { width: u16, height: u16, format: PixelFormat, rotation: u8, bytes_per_second: u32 },
+    /// Firmware to host: writes after it land turned by `rotation`.
+    GramRotate { rotation: u8 },
+    /// Firmware to host: `bytes` of pixels follow the record, the rows of
+    /// `x, y, w, h` of the turned picture back to back.
+    GramWrite { ticket: u32, x: u16, y: u16, w: u16, h: u16, bytes: u32 },
+    /// Host to firmware: every write up to `ticket` has been sent.
+    GramDone { ticket: u32 },
 }
 
 const TAG_HELLO: u8 = 1;
@@ -112,6 +134,10 @@ const TAG_AUDIO_PLAYED: u8 = 10;
 const TAG_IMU: u8 = 11;
 const TAG_POWER: u8 = 12;
 const TAG_RTC: u8 = 13;
+const TAG_GRAM_OPEN: u8 = 14;
+const TAG_GRAM_ROTATE: u8 = 15;
+const TAG_GRAM_WRITE: u8 = 16;
+const TAG_GRAM_DONE: u8 = 17;
 
 struct Writer {
     buf: [u8; RECORD_SIZE],
@@ -223,6 +249,22 @@ impl Event {
                 Writer::new(TAG_POWER).put(&[level, u8::from(external), u8::from(battery)]).buf
             }
             Self::Rtc { seconds, valid } => Writer::new(TAG_RTC).put(&seconds.to_le_bytes()).put(&[u8::from(valid)]).buf,
+            Self::GramOpen { width, height, format, rotation, bytes_per_second } => Writer::new(TAG_GRAM_OPEN)
+                .put(&width.to_le_bytes())
+                .put(&height.to_le_bytes())
+                .put(&[format as u8, rotation])
+                .put(&bytes_per_second.to_le_bytes())
+                .buf,
+            Self::GramRotate { rotation } => Writer::new(TAG_GRAM_ROTATE).put(&[rotation]).buf,
+            Self::GramWrite { ticket, x, y, w, h, bytes } => Writer::new(TAG_GRAM_WRITE)
+                .put(&ticket.to_le_bytes())
+                .put(&x.to_le_bytes())
+                .put(&y.to_le_bytes())
+                .put(&w.to_le_bytes())
+                .put(&h.to_le_bytes())
+                .put(&bytes.to_le_bytes())
+                .buf,
+            Self::GramDone { ticket } => Writer::new(TAG_GRAM_DONE).put(&ticket.to_le_bytes()).buf,
         }
     }
 
@@ -235,12 +277,7 @@ impl Event {
                 width: r.u16(),
                 height: r.u16(),
                 stride: r.u32(),
-                format: match r.u8() {
-                    0 => PixelFormat::L8,
-                    1 => PixelFormat::Rgb565,
-                    2 => PixelFormat::Bgr888,
-                    _ => return None,
-                },
+                format: PixelFormat::from_u8(r.u8())?,
             },
             TAG_BRIGHTNESS => Self::Brightness { level: r.u8() },
             TAG_DEVICE => Self::Device { name: r.take() },
@@ -267,6 +304,16 @@ impl Event {
             TAG_IMU => Self::Imu { accel: r.vec3(), gyro: r.vec3() },
             TAG_RTC => Self::Rtc { seconds: r.u64() as i64, valid: r.u8() != 0 },
             TAG_POWER => Self::Power { level: r.u8(), external: r.u8() != 0, battery: r.u8() != 0 },
+            TAG_GRAM_OPEN => Self::GramOpen {
+                width: r.u16(),
+                height: r.u16(),
+                format: PixelFormat::from_u8(r.u8())?,
+                rotation: r.u8(),
+                bytes_per_second: r.u32(),
+            },
+            TAG_GRAM_ROTATE => Self::GramRotate { rotation: r.u8() },
+            TAG_GRAM_WRITE => Self::GramWrite { ticket: r.u32(), x: r.u16(), y: r.u16(), w: r.u16(), h: r.u16(), bytes: r.u32() },
+            TAG_GRAM_DONE => Self::GramDone { ticket: r.u32() },
             _ => return None,
         })
     }
@@ -295,6 +342,10 @@ mod tests {
             Event::Imu { accel: [0.0, -1.0, 0.0], gyro: [1.5, -2.5, 3.5] },
             Event::Power { level: 76, external: true, battery: false },
             Event::Rtc { seconds: -1, valid: true },
+            Event::GramOpen { width: 320, height: 240, format: PixelFormat::Rgb565Be, rotation: 3, bytes_per_second: 5_000_000 },
+            Event::GramRotate { rotation: 1 },
+            Event::GramWrite { ticket: 0xFFFF_FFFE, x: 1, y: 2, w: 319, h: 16, bytes: 10_208 },
+            Event::GramDone { ticket: 7 },
         ] {
             assert_eq!(Event::decode(&e.encode()), Some(e));
         }

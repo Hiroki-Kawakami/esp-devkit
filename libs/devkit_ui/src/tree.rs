@@ -33,7 +33,7 @@ use crate::erased::Erased;
 use crate::motion::{Clock, Motion, MotionKind};
 use crate::nav::{NavOp, NavigatorNode, Overlay, Root, Saved};
 use crate::node::{CanvasNode, CollectionNode, NONE, Node, NodeContent, NodeImage, NodeIndex, Placement, Pull, ScrollNode, TextNode};
-use crate::presenter::{ROW_GRID, Strips};
+use crate::presenter::Strips;
 use crate::progress::ProgressNode;
 use crate::style::{Dimension, Insets, Role, ScreenStyle, State, Style};
 use crate::task::{Local, TaskSpec, TaskStart};
@@ -1608,16 +1608,16 @@ impl Tree {
         }
     }
 
-    /// The shown surface and its rectangle, kept to the row grid.
-    pub(crate) fn external(&self) -> Option<(&ExternalSurface, Option<Rect>)> {
+    /// The shown surface and its rectangle, kept to whole runs of `grid` rows.
+    pub(crate) fn external(&self, grid: i16) -> Option<(&ExternalSurface, Option<Rect>)> {
         if self.external == NONE {
             return None;
         }
         let node = &self.nodes[self.external as usize];
         let NodeContent::External(surface) = &node.content else { return None };
         let screen = node.screen.intersect(&self.area);
-        let top = (screen.y + ROW_GRID - 1).div_euclid(ROW_GRID) * ROW_GRID;
-        let bottom = screen.bottom().div_euclid(ROW_GRID) * ROW_GRID;
+        let top = (screen.y + grid - 1).div_euclid(grid) * grid;
+        let bottom = screen.bottom().div_euclid(grid) * grid;
         let rect = Rect::new(screen.x, top, screen.w, bottom - top);
         Some((surface, (!rect.is_empty()).then_some(rect)))
     }

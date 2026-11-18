@@ -44,6 +44,7 @@ pub(crate) type TouchListener = Box<dyn Fn(&[TouchPoint]) + Send + Sync>;
 pub(crate) type AudioListener = Box<dyn Fn(u32, u64) + Send + Sync>;
 pub(crate) type ImuListener = Box<dyn Fn([f32; 3], [f32; 3]) + Send + Sync>;
 pub(crate) type PowerListener = Box<dyn Fn(u8, bool, bool) + Send + Sync>;
+pub(crate) type GramListener = Box<dyn Fn(u32) + Send + Sync>;
 
 pub(crate) struct Host {
     fd: c_int,
@@ -57,6 +58,7 @@ static TOUCH: OnceLock<TouchListener> = OnceLock::new();
 static AUDIO: OnceLock<AudioListener> = OnceLock::new();
 static IMU: OnceLock<ImuListener> = OnceLock::new();
 static POWER: OnceLock<PowerListener> = OnceLock::new();
+static GRAM: OnceLock<GramListener> = OnceLock::new();
 
 /// `None` when the firmware does not run under the simulator host.
 pub(crate) fn host() -> Option<&'static Host> {
@@ -85,16 +87,23 @@ fn connect() -> Option<Host> {
 
 impl Host {
     pub(crate) fn send(&self, event: &Event) {
+        self.send_with(event, &[]);
+    }
+
+    /// `event`, with `payload` right behind it.
+    pub(crate) fn send_with(&self, event: &Event, payload: &[u8]) {
         let record = event.encode();
         let _guard = self.send_lock.lock();
-        let mut at = 0;
-        while at < RECORD_SIZE {
-            let n = unsafe { ffi::send(self.fd, record[at..].as_ptr().cast(), RECORD_SIZE - at, 0) };
-            if n <= 0 {
-                warn!(TAG, "send to host failed");
-                return;
+        for bytes in [&record[..], payload] {
+            let mut at = 0;
+            while at < bytes.len() {
+                let n = unsafe { ffi::send(self.fd, bytes[at..].as_ptr().cast(), bytes.len() - at, 0) };
+                if n <= 0 {
+                    warn!(TAG, "send to host failed");
+                    return;
+                }
+                at += n as usize;
             }
-            at += n as usize;
         }
     }
 
@@ -134,6 +143,14 @@ impl Host {
             warn!(TAG, "power listener already set");
         }
     }
+
+    /// Runs on the receiver task with the last ticket sent. Only the first
+    /// listener is kept.
+    pub(crate) fn set_gram_listener(&self, listener: GramListener) {
+        if GRAM.set(listener).is_err() {
+            warn!(TAG, "gram listener already set");
+        }
+    }
 }
 
 // The host closing its end means it went away, so the firmware goes too.
@@ -167,6 +184,11 @@ fn receive(fd: c_int) {
             Some(Event::Power { level, external, battery }) => {
                 if let Some(listener) = POWER.get() {
                     listener(level, external, battery);
+                }
+            }
+            Some(Event::GramDone { ticket }) => {
+                if let Some(listener) = GRAM.get() {
+                    listener(ticket);
                 }
             }
             Some(_) => {}
