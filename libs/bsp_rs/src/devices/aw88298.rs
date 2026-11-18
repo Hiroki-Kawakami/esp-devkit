@@ -43,19 +43,20 @@ const GAIN_STEPS_PER_DB: f32 = 2.0;
 const GAIN_FINE_STEPS: u8 = 12;
 const GAIN_MIN_STEPS: u8 = 15 * GAIN_FINE_STEPS + GAIN_FINE_STEPS - 1;
 
-/// Switches the chip's supply; it forgets every register while off.
-pub(crate) type Power = Box<dyn Fn(bool) -> Result<()> + Send + Sync>;
+/// Holds the chip in reset with `true`; it forgets every register there and
+/// does not answer on I2C.
+pub(crate) type Reset = Box<dyn Fn(bool) -> Result<()> + Send + Sync>;
 
 pub(crate) struct Config {
     pub port: i32,
     pub pins: Pins,
-    pub power: Power,
+    pub reset: Reset,
 }
 
 struct State {
     open: bool,
     speaker: bool,
-    powered: bool,
+    active: bool,
     rate: u32,
     gain_steps: u8,
     mute: bool,
@@ -68,11 +69,11 @@ fn i2sctrl(sample_rate: u32) -> u16 {
     index as u16 | I2SCTRL_BASE
 }
 
-/// Powered only while a stream is open with the speaker on, and configured
-/// afresh each time it powers up.
+/// Out of reset only while a stream is open with the speaker on, and
+/// configured afresh each time it leaves reset.
 pub(crate) struct Aw88298 {
     device: Device<'static>,
-    power: Power,
+    reset: Reset,
     out: I2sOut,
     state: Mutex<State>,
 }
@@ -81,8 +82,8 @@ impl Aw88298 {
     pub(crate) fn new(bus: &'static MasterBus, config: Config) -> Result<Self> {
         let device = bus.add_device(ADDR, SCL_HZ).inspect_err(|err| error!(TAG, "add device: {err}"))?;
         let out = I2sOut::new(config.port, config.pins)?;
-        let state = State { open: false, speaker: false, powered: false, rate: out.rate(), gain_steps: 0, mute: true };
-        Ok(Self { device, power: config.power, out, state: Mutex::new(state) })
+        let state = State { open: false, speaker: false, active: false, rate: out.rate(), gain_steps: 0, mute: true };
+        Ok(Self { device, reset: config.reset, out, state: Mutex::new(state) })
     }
 
     fn write_reg(&self, reg: u8, value: u16) -> Result<()> {
@@ -99,9 +100,9 @@ impl Aw88298 {
         u16::from(byte) << 8 | HAGCCFG4_HOLDTH
     }
 
-    fn power_up(&self, state: &mut State) -> Result<()> {
-        (self.power)(true)?;
-        state.powered = true;
+    fn activate(&self, state: &mut State) -> Result<()> {
+        (self.reset)(false)?;
+        state.active = true;
         let configured = [
             (REG_BSTCTRL2, BSTCTRL2_NO_BOOST),
             (REG_SYSCTRL2, Self::sysctrl2(state)),
@@ -112,17 +113,17 @@ impl Aw88298 {
         .into_iter()
         .try_for_each(|(reg, value)| self.write_reg(reg, value));
         if let Err(err) = configured {
-            error!(TAG, "power up: {err}");
-            let _ = self.power_down(state);
+            error!(TAG, "configure: {err}");
+            let _ = self.deactivate(state);
             return Err(err);
         }
         Ok(())
     }
 
-    fn power_down(&self, state: &mut State) -> Result<()> {
+    fn deactivate(&self, state: &mut State) -> Result<()> {
         let stop = self.write_reg(REG_SYSCTRL, SYSCTRL_STOP);
-        state.powered = false;
-        stop.and((self.power)(false))
+        state.active = false;
+        stop.and((self.reset)(true))
     }
 
     /// Starts the stream, or changes the format of a running one.
@@ -131,10 +132,10 @@ impl Aw88298 {
         let mut state = self.state.lock();
         state.open = true;
         state.rate = format.sample_rate;
-        if state.powered {
+        if state.active {
             self.write_reg(REG_I2SCTRL, i2sctrl(state.rate))
         } else if state.speaker {
-            self.power_up(&mut state)
+            self.activate(&mut state)
         } else {
             Ok(())
         }
@@ -145,7 +146,7 @@ impl Aw88298 {
         self.out.close(|| {
             let mut state = self.state.lock();
             state.open = false;
-            if state.powered { self.power_down(&mut state) } else { Ok(()) }
+            if state.active { self.deactivate(&mut state) } else { Ok(()) }
         })
     }
 
@@ -164,9 +165,9 @@ impl Aw88298 {
     pub(crate) fn set_speaker_enabled(&self, enabled: bool) -> Result<()> {
         let mut state = self.state.lock();
         state.speaker = enabled;
-        match (state.open && enabled, state.powered) {
-            (true, false) => self.power_up(&mut state),
-            (false, true) => self.power_down(&mut state),
+        match (state.open && enabled, state.active) {
+            (true, false) => self.activate(&mut state),
+            (false, true) => self.deactivate(&mut state),
             _ => Ok(()),
         }
     }
@@ -178,12 +179,12 @@ impl Aw88298 {
     pub(crate) fn set_gain(&self, db: f32) -> Result<()> {
         let mut state = self.state.lock();
         state.gain_steps = (-db * GAIN_STEPS_PER_DB + 0.5).clamp(0.0, f32::from(GAIN_MIN_STEPS)) as u8;
-        if state.powered { self.write_reg(REG_HAGCCFG4, Self::volume(&state)) } else { Ok(()) }
+        if state.active { self.write_reg(REG_HAGCCFG4, Self::volume(&state)) } else { Ok(()) }
     }
 
     pub(crate) fn set_mute(&self, mute: bool) -> Result<()> {
         let mut state = self.state.lock();
         state.mute = mute;
-        if state.powered { self.write_reg(REG_SYSCTRL2, Self::sysctrl2(&state)) } else { Ok(()) }
+        if state.active { self.write_reg(REG_SYSCTRL2, Self::sysctrl2(&state)) } else { Ok(()) }
     }
 }

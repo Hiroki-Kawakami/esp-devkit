@@ -14,7 +14,8 @@ use idf::sync::{Mutex, OnceLock};
 use idf::{Result, gpio, thread};
 
 use super::audio::AudioDriver;
-use super::{PANEL_SIZE, TAG, UnknownPower, resolve_rotation};
+use super::power::{self as core_s3_power, AW9523_BOOST_EN, AW9523_USB_OTG_EN, PowerDriver};
+use super::{PANEL_SIZE, TAG, resolve_rotation};
 use crate::audio::{self, Audio};
 use crate::devices::aw9523::{Aw9523, PinConfig};
 use crate::devices::axp2101::{self, Axp2101, Ldo};
@@ -34,7 +35,7 @@ const I2C_PIN_SDA: i32 = 12;
 const I2C_PIN_SCL: i32 = 11;
 
 const AW9523_ADDR: u16 = 0x58;
-const AW9523_AMP_POWER: u8 = 2;
+const AW9523_AMP_RST: u8 = 2;
 const AW9523_LCD_RST: u8 = 9;
 const AW9523_TOUCH_INT: usize = 10;
 const AW9523_PIN_INT: i32 = 21;
@@ -75,13 +76,16 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
         .get_or_try_init(|| Axp2101::new(bus, axp2101::ADDR, axp2101::DEFAULT_HZ))
         .inspect_err(|err| error!(TAG, "axp2101: {err}"))?;
     rails_init(axp).inspect_err(|err| error!(TAG, "power rails: {err}"))?;
+    if let Err(err) = core_s3_power::configure(axp) {
+        warn!(TAG, "charger setup: {err}");
+    }
     let aw = AW9523
         .get_or_try_init(|| expander_init(bus).map(Mutex::new))
         .inspect_err(|err| error!(TAG, "aw9523: {err}"))?;
     let display = panel_init(rotation, axp, aw).inspect_err(|err| error!(TAG, "panel: {err}"))?;
     let touch = touch_init(bus, aw, rotation).inspect_err(|err| warn!(TAG, "touch unavailable: {err}")).ok();
     let audio = audio_init(config, bus, aw);
-    let power = power::start(UnknownPower, audio);
+    let power = power::start(PowerDriver::new(axp, aw), audio);
     Ok(Board {
         audio,
         display: Some(DISPLAY.get_or_init(|| display::Display::new(display))),
@@ -93,7 +97,11 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
     })
 }
 
+// The LDOs start at voltages fused into the chip, and ALDO1 feeds the amp's
+// 1.8 V core, which takes no more than 2 V.
 fn rails_init(axp: &Axp2101) -> Result<()> {
+    axp.set_ldo_mv(Ldo::Aldo1, 1800)?;
+    axp.set_ldo_mv(Ldo::Aldo2, 3300)?;
     axp.set_ldo_mv(Ldo::Aldo3, 3300)?;
     axp.set_ldo_mv(Ldo::Aldo4, 3300)?;
     for ldo in [Ldo::Aldo1, Ldo::Aldo2, Ldo::Aldo3, Ldo::Aldo4, Ldo::Bldo1, Ldo::Bldo2] {
@@ -102,14 +110,14 @@ fn rails_init(axp: &Axp2101) -> Result<()> {
     axp.set_ldo_enabled(Ldo::Dldo1, false)
 }
 
-// P0_2 supplies the speaker amplifier, which stays off until a stream needs
-// it; the other outputs gate the panel and the touch controller.
+// The speaker amp stays in reset until a stream needs it; the other outputs
+// gate the panel, the touch controller and the 5 V outputs.
 fn expander_init(bus: &'static MasterBus) -> Result<Aw9523<'static>> {
     let mut pins = [PinConfig::default(); 16];
     for pin in [0, 8, usize::from(AW9523_LCD_RST)] {
         pins[pin] = PinConfig::output(true);
     }
-    for pin in [1, usize::from(AW9523_AMP_POWER), 5, 6, 7, 12, 13, 14, 15] {
+    for pin in [1, AW9523_AMP_RST, AW9523_USB_OTG_EN, 6, 7, 12, 13, 14, AW9523_BOOST_EN].map(usize::from) {
         pins[pin] = PinConfig::output(false);
     }
     pins[AW9523_TOUCH_INT] = PinConfig::input(true);
@@ -205,7 +213,7 @@ unsafe extern "C" fn on_expander_int(_: *mut c_void) {
 
 // Non-fatal: the board comes up without audio.
 fn audio_init(config: &Config, bus: &'static MasterBus, aw: &'static Mutex<Aw9523<'static>>) -> Option<&'static Audio> {
-    AudioDriver::new(bus, Box::new(move |on| aw.lock().set_output(AW9523_AMP_POWER, on)))
+    AudioDriver::new(bus, Box::new(move |held| aw.lock().set_output(AW9523_AMP_RST, !held)))
         .and_then(|driver| audio::start(driver, &config.audio))
         .inspect_err(|err| warn!(TAG, "audio unavailable: {err}"))
         .ok()

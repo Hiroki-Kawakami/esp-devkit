@@ -7,11 +7,12 @@ use idf::Result;
 use idf::log::{info, warn};
 use idf::sync::OnceLock;
 
-use super::{PANEL_SIZE, PIXEL_FORMAT, TAG, UnknownPower, resolve_rotation};
+use super::{PANEL_SIZE, PIXEL_FORMAT, TAG, resolve_rotation};
 use crate::audio;
 use crate::display;
 use crate::power;
 use crate::sim::audio::SimAudio;
+use crate::sim::power::SimPower;
 use crate::sim::{self, gram::SimGram, protocol::Event, touch as sim_touch};
 use crate::touch;
 use crate::{Board, Config};
@@ -26,7 +27,7 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
     let rotation = resolve_rotation(config)?;
     let Some(host) = sim::host() else {
         info!(TAG, "board: CoreS3 (simulator, no host)");
-        let power = power::start(UnknownPower, None);
+        let power = power::start(SimPower::new(None), None);
         return Ok(Board { audio: None, display: None, imu: None, power, rtc: None, sd: None, touch: None });
     };
     info!(TAG, "board: CoreS3 (simulator)");
@@ -47,7 +48,7 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
         .and_then(|driver| audio::start(driver, &config.audio))
         .inspect_err(|err| warn!(TAG, "audio unavailable: {err}"))
         .ok();
-    let power = power::start(UnknownPower, audio);
+    let power = power::start(SimPower::new(Some(host)), audio);
     Ok(Board {
         audio,
         display: Some(DISPLAY.get_or_init(|| display::Display::new(panel))),

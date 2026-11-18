@@ -165,7 +165,7 @@ impl Driver for Absent {
     }
 }
 
-#[cfg_attr(not(target_os = "none"), allow(unused_macros))]
+#[allow(unused_macros)]
 macro_rules! driver_enum {
     ($vis:vis enum $name:ident { $($variant:ident($ty:ty)),+ $(,)? }) => {
         $vis enum $name {
@@ -237,7 +237,7 @@ macro_rules! driver_enum {
     };
 }
 
-#[cfg_attr(not(target_os = "none"), allow(unused_imports))]
+#[allow(unused_imports)]
 pub(crate) use driver_enum;
 
 fn pack(size: Size) -> u32 {

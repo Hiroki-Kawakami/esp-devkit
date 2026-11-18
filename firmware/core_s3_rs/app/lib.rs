@@ -77,6 +77,10 @@ pub fn run() {
         }
         let size = display.size();
         info!(TAG, "{:?}: {}x{} {:?}", display.rotation(), size.width, size.height, display.pixel_format());
+        match board.power.read() {
+            Ok(state) => info!(TAG, "power: {state:?}"),
+            Err(err) => error!(TAG, "power: {err}"),
+        }
         draw_bars(display);
         mark_top(display);
         if let Some(audio) = board.audio {

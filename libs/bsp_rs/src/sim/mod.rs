@@ -6,13 +6,21 @@
 // Shared with tools/devkit_cli, which uses the parts this side does not.
 #[allow(dead_code)]
 pub(crate) mod protocol;
+// Each board uses only the models of the devices it has.
+#[allow(dead_code)]
 pub(crate) mod audio;
+#[allow(dead_code)]
 pub(crate) mod gram;
+#[allow(dead_code)]
 pub(crate) mod imu;
+#[allow(dead_code)]
 pub(crate) mod panel;
 pub(crate) mod power;
+#[allow(dead_code)]
 pub(crate) mod rtc;
+#[allow(dead_code)]
 pub(crate) mod sd;
+#[allow(dead_code)]
 pub(crate) mod touch;
 
 use alloc::boxed::Box;
@@ -112,6 +120,7 @@ impl Host {
     }
 
     /// Runs on the receiver task. Only the first listener is kept.
+    #[allow(dead_code)]
     pub(crate) fn set_imu_listener(&self, listener: ImuListener) {
         if IMU.set(listener).is_err() {
             warn!(TAG, "imu listener already set");

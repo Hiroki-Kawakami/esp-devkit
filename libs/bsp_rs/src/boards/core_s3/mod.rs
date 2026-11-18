@@ -9,12 +9,14 @@ use idf::log::error;
 use idf::{Error, Result};
 
 use crate::display::{ImageFormat, Rotation, Size};
-use crate::{Config, power};
+use crate::Config;
 
 #[cfg(target_os = "none")]
 mod audio;
 #[cfg(target_os = "none")]
 mod device;
+#[cfg(target_os = "none")]
+mod power;
 #[cfg(target_os = "none")]
 pub(crate) use audio::AudioDriver;
 #[cfg(target_os = "none")]
@@ -29,10 +31,6 @@ const TAG: &CStr = c"core_s3";
 
 const PANEL_SIZE: Size = Size { width: 320, height: 240 };
 const PIXEL_FORMAT: ImageFormat = ImageFormat::Rgb565Be;
-
-struct UnknownPower;
-
-impl power::Driver for UnknownPower {}
 
 fn resolve_rotation(config: &Config) -> Result<Rotation> {
     if config.display.fb_num != 0 || config.display.pixel_format.is_some_and(|f| f != PIXEL_FORMAT) {

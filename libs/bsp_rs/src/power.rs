@@ -78,6 +78,7 @@ pub(crate) trait Driver: Send + Sync + 'static {
 }
 
 /// `empty_mv..=full_mv` mapped linearly onto 0..=100.
+#[allow(dead_code)]
 pub(crate) fn linear_level(mv: u32, empty_mv: u32, full_mv: u32) -> u8 {
     if mv <= empty_mv {
         0

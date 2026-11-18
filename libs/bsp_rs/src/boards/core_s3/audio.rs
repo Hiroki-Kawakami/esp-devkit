@@ -16,8 +16,8 @@ use crate::devices::aw88298::{self, Aw88298};
 const I2S_PORT: i32 = 1;
 const I2S_PINS: Pins = Pins { mclk: -1, bclk: 34, ws: 33, dout: 13, din: -1 };
 
-// Every open powers the amp up and configures it again, which cuts the head
-// of a stream that follows closely.
+// Every open takes the amp out of reset and configures it again, which cuts
+// the head of a stream that follows closely.
 const CLOSE_DELAY: Duration = Duration::from_secs(3);
 
 pub(crate) struct AudioDriver {
@@ -25,8 +25,8 @@ pub(crate) struct AudioDriver {
 }
 
 impl AudioDriver {
-    pub(crate) fn new(bus: &'static MasterBus, power: aw88298::Power) -> Result<Self> {
-        Ok(Self { amp: Aw88298::new(bus, aw88298::Config { port: I2S_PORT, pins: I2S_PINS, power })? })
+    pub(crate) fn new(bus: &'static MasterBus, reset: aw88298::Reset) -> Result<Self> {
+        Ok(Self { amp: Aw88298::new(bus, aw88298::Config { port: I2S_PORT, pins: I2S_PINS, reset })? })
     }
 }
 

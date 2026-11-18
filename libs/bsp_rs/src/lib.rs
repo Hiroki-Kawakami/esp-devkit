@@ -14,23 +14,26 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use idf::{Error, Result};
 
 mod absent;
-#[cfg_attr(not(target_os = "none"), allow(dead_code))]
+// Each board starts only the subsystems it has, so on the others these
+// modules are legitimately unused.
+#[allow(dead_code)]
 pub mod audio;
 mod boards;
 mod devices;
 pub mod dispatch;
+#[allow(dead_code)]
 pub mod display;
 mod driver;
-#[cfg_attr(not(target_os = "none"), allow(dead_code))]
+#[allow(dead_code)]
 pub mod imu;
 pub mod power;
-#[cfg_attr(not(target_os = "none"), allow(dead_code))]
+#[allow(dead_code)]
 pub mod rtc;
-#[cfg_attr(not(target_os = "none"), allow(dead_code))]
+#[allow(dead_code)]
 pub mod sd;
 #[cfg(not(target_os = "none"))]
 mod sim;
-#[cfg_attr(not(target_os = "none"), allow(dead_code))]
+#[allow(dead_code)]
 pub mod touch;
 
 #[cfg(CONFIG_BSP_RS_BOARD_ATOM_S3_LITE)]
