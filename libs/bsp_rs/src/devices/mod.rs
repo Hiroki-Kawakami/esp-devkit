@@ -9,6 +9,8 @@ pub(crate) mod aw88298;
 pub(crate) mod aw9523;
 #[cfg(CONFIG_BSP_RS_DEVICE_AXP2101)]
 pub(crate) mod axp2101;
+#[cfg(CONFIG_BSP_RS_DEVICE_BM8563)]
+pub(crate) mod bm8563;
 #[cfg(CONFIG_BSP_RS_DEVICE_BMI270)]
 pub(crate) mod bmi270;
 #[cfg(CONFIG_BSP_RS_DEVICE_BMI270)]

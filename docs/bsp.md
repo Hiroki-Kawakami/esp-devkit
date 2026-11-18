@@ -99,6 +99,8 @@ on a board without one.
 - `start_timer(period)` raises the chip's interrupt and expiry flag every
   `period` until `stop_timer`; `timer_expired` and `clear_timer` read and clear
   the flag, which survives deep sleep. A board may refuse short periods.
+  `init` stops a timer left from before and clears its flag, as the interrupt
+  drives the board's power on the boards that have one.
 
 ## SD
 

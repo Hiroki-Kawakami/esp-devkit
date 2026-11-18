@@ -19,12 +19,14 @@ use super::{PANEL_SIZE, TAG, resolve_rotation};
 use crate::audio::{self, Audio};
 use crate::devices::aw9523::{Aw9523, PinConfig};
 use crate::devices::axp2101::{self, Axp2101, Ldo};
+use crate::devices::bm8563::{self, Bm8563};
 use crate::devices::ft6336u::{self, Ft6336u};
 use crate::devices::ili9342c;
 use crate::dispatch::{self, Next, Notifier, Source};
 use crate::display::{self, Rotation};
 use crate::driver::spi_lcd::SpiLcd;
 use crate::power;
+use crate::rtc::{self, Rtc};
 use crate::touch::{self, Touch};
 use crate::{Board, Config};
 
@@ -85,13 +87,14 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
     let display = panel_init(rotation, axp, aw).inspect_err(|err| error!(TAG, "panel: {err}"))?;
     let touch = touch_init(bus, aw, rotation).inspect_err(|err| warn!(TAG, "touch unavailable: {err}")).ok();
     let audio = audio_init(config, bus, aw);
+    let rtc = rtc_init(bus);
     let power = power::start(PowerDriver::new(axp, aw), audio);
     Ok(Board {
         audio,
         display: Some(DISPLAY.get_or_init(|| display::Display::new(display))),
         imu: None,
         power,
-        rtc: None,
+        rtc,
         sd: None,
         touch,
     })
@@ -217,6 +220,20 @@ fn audio_init(config: &Config, bus: &'static MasterBus, aw: &'static Mutex<Aw952
         .and_then(|driver| audio::start(driver, &config.audio))
         .inspect_err(|err| warn!(TAG, "audio unavailable: {err}"))
         .ok()
+}
+
+// Non-fatal: the board comes up without a clock. The clock's INT holds the
+// PMIC's IRQ low, which powers a board that is off back on; a timer left from
+// before would turn a later power off into a restart.
+fn rtc_init(bus: &'static MasterBus) -> Option<&'static Rtc> {
+    let rtc = Bm8563::new(bus, bm8563::ADDR)
+        .and_then(rtc::start)
+        .inspect_err(|err| warn!(TAG, "rtc unavailable: {err}"))
+        .ok()?;
+    if let Err(err) = rtc.stop_timer() {
+        error!(TAG, "rtc timer stop: {err}");
+    }
+    Some(rtc)
 }
 
 fn set_backlight(axp: &Axp2101, level: u8) -> Result<()> {

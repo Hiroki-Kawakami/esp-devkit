@@ -81,6 +81,12 @@ pub fn run() {
             Ok(state) => info!(TAG, "power: {state:?}"),
             Err(err) => error!(TAG, "power: {err}"),
         }
+        if let Some(rtc) = board.rtc {
+            match rtc.is_valid().and_then(|valid| Ok((valid, rtc.now()?))) {
+                Ok((valid, now)) => info!(TAG, "rtc: {now:?} valid={valid}"),
+                Err(err) => error!(TAG, "rtc: {err}"),
+            }
+        }
         draw_bars(display);
         mark_top(display);
         if let Some(audio) = board.audio {
