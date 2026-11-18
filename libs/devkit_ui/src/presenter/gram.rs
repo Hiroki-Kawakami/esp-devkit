@@ -351,4 +351,8 @@ impl Presenter for GramPresenter {
     fn blitter(&self) -> Option<NewBlitter> {
         None
     }
+
+    fn half_pictures(&self) -> bool {
+        false
+    }
 }

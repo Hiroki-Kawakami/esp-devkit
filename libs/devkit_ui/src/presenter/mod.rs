@@ -244,4 +244,7 @@ pub(crate) trait Presenter {
     fn shown(&self) -> Option<FrameBuffer>;
     /// The 2D engine copies may go to.
     fn blitter(&self) -> Option<NewBlitter>;
+    /// Whether zoom and presence pictures are drawn at half size, for less
+    /// time than their full resolution takes.
+    fn half_pictures(&self) -> bool;
 }

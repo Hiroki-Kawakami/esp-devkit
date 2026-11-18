@@ -241,6 +241,8 @@ pub(crate) struct Tree {
     pub(crate) external_split: Cell<usize>,
     /// A navigator, and where the display list is once it is painted.
     pub(crate) zoom_split: Cell<(NodeIndex, usize)>,
+    /// Zoom and presence pictures at half size, to draw them in less time.
+    pub(crate) half_pictures: bool,
     pending_redraw: Vec<(Id, Option<Rect>)>,
     format: ImageFormat,
     pub(crate) navigators: Vec<NodeIndex>,
@@ -363,6 +365,7 @@ impl Tree {
             external: NONE,
             external_split: Cell::new(0),
             zoom_split: Cell::new((NONE, 0)),
+            half_pictures: true,
             pending_redraw: Vec::new(),
             tasks: Vec::new(),
             deferred: Vec::new(),

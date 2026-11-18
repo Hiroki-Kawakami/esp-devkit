@@ -539,4 +539,8 @@ impl Presenter for FbPresenter {
     fn blitter(&self) -> Option<NewBlitter> {
         Some(PpaBlitter::boxed)
     }
+
+    fn half_pictures(&self) -> bool {
+        true
+    }
 }

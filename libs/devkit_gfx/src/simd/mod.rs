@@ -7,6 +7,7 @@
 //! loops give the same pixels everywhere else; each unit adds a module.
 
 mod p4;
+mod s3;
 
 // A build makes only its own chip's.
 #[allow(dead_code)]
@@ -14,6 +15,7 @@ mod p4;
 pub(crate) enum Unit {
     None,
     P4,
+    S3,
 }
 
 include!(concat!(env!("OUT_DIR"), "/simd.rs"));
@@ -42,6 +44,7 @@ pub fn mix565(back: u16, front: u16, a5: u32) -> u16 {
 pub unsafe fn blend565(out: *mut u16, back: *const u16, front: *const u16, n: usize, a5: u32) {
     let done = match UNIT {
         Unit::P4 => unsafe { p4::blend565(out, back, front, n, a5) },
+        Unit::S3 => unsafe { s3::blend565(out, back, front, n, a5) },
         Unit::None => 0,
     };
     for i in done..n {
@@ -55,6 +58,7 @@ pub unsafe fn tint888(out: *mut u8, n: usize, color: [u8; 3], alpha: u8) {
     let a = u32::from(alpha) + (u32::from(alpha) >> 7);
     let done = match UNIT {
         Unit::P4 => unsafe { p4::tint888(out, n, color, a) },
+        Unit::S3 => unsafe { s3::tint888(out, n, color, a) },
         Unit::None => 0,
     };
     for i in done..n {
@@ -71,9 +75,19 @@ pub unsafe fn tint888(out: *mut u8, n: usize, color: [u8; 3], alpha: u8) {
 pub unsafe fn tint565(out: *mut u16, n: usize, color: u16, a5: u32) {
     let done = match UNIT {
         Unit::P4 => unsafe { p4::tint565(out, n, color, a5) },
+        Unit::S3 => unsafe { s3::tint565(out, n, color, a5) },
         Unit::None => 0,
     };
     for i in done..n {
         unsafe { out.add(i).write(mix565(out.add(i).read(), color, a5)) };
+    }
+}
+
+/// Reverses the bytes of the 16-bit pixels at `pixels` from the first, as
+/// many of `n` as the vector unit takes; how many that was.
+pub(crate) unsafe fn swap565(pixels: *mut u8, n: usize) -> usize {
+    match UNIT {
+        Unit::S3 => unsafe { s3::swap565(pixels, n) },
+        Unit::P4 | Unit::None => 0,
     }
 }

@@ -17,11 +17,11 @@ use crate::animate::faded;
 use crate::blit::{self, Blit, Blitter};
 use crate::canvas::Canvas;
 use crate::node::{NONE, NodeContent, NodeIndex};
-use crate::presence::{Snapshot, half};
+use crate::presence::Snapshot;
 use crate::style::Shadow;
 use crate::theme::{Palette, Transition};
 use crate::tree::{Tree, shadow_extent};
-use crate::zoom::{PICTURE_SCALE, Picture, Zoom, scaled};
+use crate::zoom::{Picture, Zoom};
 
 const BAND_ROWS: i16 = 32;
 
@@ -345,8 +345,8 @@ impl Tree {
             return None;
         }
         let background = self.slots[usize::from(node.owner)].theme.palette(self.color_mode).background;
-        let mut entering = Picture::allocate(area)?;
-        let mut leaving = Picture::allocate(area)?;
+        let mut entering = Picture::allocate(area, self.half_pictures)?;
+        let mut leaving = Picture::allocate(area, self.half_pictures)?;
         let shown = self.shown_bands(nav, area, &transit.stale, effects);
         self.take_picture(navigator.shown(), area, background, effects, cache, &mut entering, blitter.as_deref_mut(), None, &[])?;
         self.take_picture(transit.leaving, area, background, effects, cache, &mut leaving, blitter, panel, &shown)?;
@@ -395,14 +395,17 @@ impl Tree {
         prepared.prepare(&list, &[area], cache);
         let mut clips = ClipStore::new_in(self.caps);
         let width = picture.width as usize;
-        let count = width * (BAND_ROWS / 2) as usize;
-        let mut bands = [band_memory(count)?, band_memory(count)?];
+        let count = width * picture.scaled(BAND_ROWS) as usize;
+        let mut bands = match blitter {
+            Some(_) => Some([band_memory(count)?, band_memory(count)?]),
+            None => None,
+        };
         let stride = width * size_of::<u16>();
         let target = (picture.as_mut_ptr().cast::<u8>(), Size::new(picture.width as u16, picture.height as u16));
         let (mut y, mut turn) = (0, 0);
         while y < area.h {
             let band = (y / BAND_ROWS) as usize;
-            let at = (0, scaled(y) as u16);
+            let at = (0, picture.scaled(y) as u16);
             if let Some(blitter) = blitter.as_deref_mut()
                 && let Some((fb, rotation)) = panel
                 && shown.get(band).copied().unwrap_or(false)
@@ -416,7 +419,7 @@ impl Tree {
                 while blitter.pending() > 1 {
                     wait(blitter);
                 }
-                if let Err(err) = unsafe { from_panel(blitter, &fb, rotation, block, target, at) } {
+                if let Err(err) = unsafe { from_panel(blitter, &fb, rotation, block, target, at, picture.scale()) } {
                     idf::log::error!(c"ui", "zoom picture from the panel: {err}");
                     return None;
                 }
@@ -424,15 +427,15 @@ impl Tree {
                 continue;
             }
             let rows = BAND_ROWS.min(area.h - y);
-            let lines = scaled(y + rows) - scaled(y);
+            let lines = picture.scaled(y + rows) - picture.scaled(y);
             let band = Rect::new(area.x, area.y + y, area.w, rows);
             match blitter.as_deref_mut() {
                 Some(blitter) if lines > 0 => {
                     while blitter.pending() > 1 {
                         wait(blitter);
                     }
-                    let memory = &mut bands[turn];
-                    let surface = unsafe { Surface::half(memory.as_mut_ptr().cast(), stride, band) };
+                    let memory = &mut bands.as_mut()?[turn];
+                    let surface = unsafe { picture_surface(picture.half, memory.as_mut_ptr().cast(), stride, band) };
                     draw::<Rgb565, _, _, _>(&list, &prepared, &mut clips, &surface);
                     let mut op = Blit::new(unsafe { blit::image(memory.as_ptr().cast(), ImageFormat::Rgb565, Size::new(width as u16, lines as u16)) });
                     op.at = (at.0 as i16, at.1 as i16);
@@ -446,7 +449,7 @@ impl Tree {
                 Some(_) => {}
                 None => {
                     let memory = unsafe { picture.as_mut_ptr().add(usize::from(at.1) * width) };
-                    let surface = unsafe { Surface::half(memory.cast(), stride, band) };
+                    let surface = unsafe { picture_surface(picture.half, memory.cast(), stride, band) };
                     draw::<Rgb565, _, _, _>(&list, &prepared, &mut clips, &surface);
                 }
             }
@@ -482,19 +485,20 @@ impl Tree {
         }
         let mut list = DisplayList::new_in(self.caps);
         let area = self.paint_alone(id, shown, effects, &mut list);
-        let mut snapshot = Snapshot::allocate(area.w, area.h)?;
+        let mut snapshot = Snapshot::allocate(area.w, area.h, self.half_pictures)?;
         let mut prepared = Prepared::new_in(self.caps);
         prepared.prepare(&list, &[area], cache);
         let mut clips = ClipStore::new_in(self.caps);
-        let columns = half(area.w);
-        let mut band = argb_band(columns * (BAND_ROWS / 2) as usize)?;
+        let columns = snapshot.scaled(area.w);
+        let mut band = argb_band(columns * snapshot.scaled(BAND_ROWS))?;
         let mut y = 0;
         while y < area.h {
             let rows = BAND_ROWS.min(area.h - y);
             band.fill(0);
-            let surface = unsafe { Surface::half(band.as_mut_ptr().cast(), columns * size_of::<u32>(), Rect::new(area.x, area.y + y, area.w, rows)) };
+            let rect = Rect::new(area.x, area.y + y, area.w, rows);
+            let surface = unsafe { picture_surface(snapshot.half(), band.as_mut_ptr().cast(), columns * size_of::<u32>(), rect) };
             draw::<Argb8888, _, _, _>(&list, &prepared, &mut clips, &surface);
-            snapshot.store(&band, half(y + rows) - half(y))?;
+            snapshot.store(&band, snapshot.scaled(y + rows) - snapshot.scaled(y))?;
             y += rows;
         }
         Some(snapshot)
@@ -523,9 +527,23 @@ fn band_memory(count: usize) -> Option<Vec<u16, Caps>> {
     None
 }
 
+/// Draws pane rows into `ptr` with `stride`: at half size when `half`.
+unsafe fn picture_surface(half: bool, ptr: *mut u8, stride: usize, band: Rect) -> Surface {
+    if half { unsafe { Surface::half(ptr, stride, band) } } else { unsafe { Surface::new(ptr, stride, band) } }
+}
+
 /// `block` of the logical picture in `fb`, as the panel shows it, scaled by
-/// `PICTURE_SCALE` into the picture at `at`.
-unsafe fn from_panel(blitter: &mut dyn Blitter, fb: &FrameBuffer, rotation: Rotation, block: Rect, (ptr, size): (*mut u8, Size), at: (u16, u16)) -> idf::Result<()> {
+/// `scale` into the picture at `at`.
+#[allow(clippy::too_many_arguments)]
+unsafe fn from_panel(
+    blitter: &mut dyn Blitter,
+    fb: &FrameBuffer,
+    rotation: Rotation,
+    block: Rect,
+    (ptr, size): (*mut u8, Size),
+    at: (u16, u16),
+    scale: f32,
+) -> idf::Result<()> {
     let stored = unsafe { fb.target() }.and_then(|t| t.rotated(rotation).stored_rect(block)).ok_or(idf::Error::INVALID_ARG)?;
     let mut op = Blit::new(unsafe { blit::image(fb.as_ptr(), fb.format(), fb.size()) });
     op.src_rect = stored;
@@ -535,7 +553,7 @@ unsafe fn from_panel(blitter: &mut dyn Blitter, fb: &FrameBuffer, rotation: Rota
         Rotation::R180 => Rotation::R180,
         Rotation::R270 => Rotation::R90,
     };
-    op.scale = PICTURE_SCALE;
+    op.scale = scale;
     op.at = (at.0 as i16, at.1 as i16);
     blitter.blit(unsafe { blit::target(ptr, ImageFormat::Rgb565, size) }?, &op)
 }

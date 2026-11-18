@@ -5,12 +5,11 @@
 
 use core::time::Duration;
 
-use idf::lcd::spi::IoGuard;
 use idf::spi::Bus;
 use idf::{Result, sys, thread};
 
 use crate::display::{ImageFormat, Rotation, Size};
-use crate::driver::spi_lcd::{self, Backlight, SpiLcd};
+use crate::driver::spi_lcd::{self, Backlight, Io, SpiLcd};
 
 const PCLK_HZ: u32 = 40_000_000;
 
@@ -55,7 +54,7 @@ const INIT_CMDS: &[(u8, &[u8])] = &[
     (0xB6, &[0x08, 0x82, 0x1D, 0x04]),
 ];
 
-fn init(io: &IoGuard, invert: bool) -> Result<()> {
+fn init(io: &Io, invert: bool) -> Result<()> {
     let ms = |ms| thread::sleep(Duration::from_millis(ms));
     io.tx_param(sys::LCD_CMD_SLPOUT as i32, &[])?;
     ms(120);

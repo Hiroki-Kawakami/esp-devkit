@@ -61,6 +61,8 @@ pub fn copy(image: &Image, target: &mut Target) -> bool {
 
 /// Turns `Rgb565` pixels into `Rgb565Be` in place, and back.
 pub fn swap_rgb565(pixels: &mut [u8]) {
+    let done = unsafe { crate::simd::swap565(pixels.as_mut_ptr(), pixels.len() / 2) };
+    let pixels = &mut pixels[done * 2..];
     let (head, words, tail) = unsafe { pixels.align_to_mut::<u32>() };
     if head.len() % 2 != 0 {
         pixels.chunks_exact_mut(2).for_each(|p| p.swap(0, 1));

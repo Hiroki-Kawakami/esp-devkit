@@ -12,9 +12,6 @@ use idf::heap::Caps;
 const BACK_SCALE: f32 = 0.9;
 const FRONT_SCALE: f32 = 1.1;
 const OUTSIDE: u16 = u16::MAX;
-/// Size of both pictures against the pane: half, as `Surface::half` draws
-/// them, and in the 2D engine's steps of 1/16.
-pub(crate) const PICTURE_SCALE: f32 = 0.5;
 pub(crate) const CHUNK: usize = 128;
 
 #[repr(C, align(16))]
@@ -24,28 +21,33 @@ pub(crate) struct Line(pub(crate) [u16; CHUNK]);
 #[derive(Clone, Copy)]
 struct Block([u16; 32]);
 
-/// An RGB565 picture of a pane at `PICTURE_SCALE`, cache-line aligned so the
-/// 2D engine can write it.
+/// An RGB565 picture of a pane, at full size or half, cache-line aligned so
+/// the 2D engine can write it.
 pub(crate) struct Picture {
     blocks: Vec<Block, Caps>,
     pub(crate) width: i16,
     pub(crate) height: i16,
-}
-
-/// What the 2D engine makes of `length` pixels at `PICTURE_SCALE`.
-pub(crate) fn scaled(length: i16) -> i16 {
-    let sixteenths = (PICTURE_SCALE * 16.0) as i32;
-    (i32::from(length) * sixteenths / 16) as i16
+    pub(crate) half: bool,
 }
 
 impl Picture {
-    pub(crate) fn allocate(area: Rect) -> Option<Self> {
-        let (width, height) = (scaled(area.w), scaled(area.h));
-        let count = (width as usize * height as usize).div_ceil(32);
-        let mut blocks = Vec::new_in(Caps::SPIRAM);
-        blocks.try_reserve_exact(count).ok()?;
-        blocks.resize(count, Block([0; 32]));
-        Some(Self { blocks, width, height })
+    pub(crate) fn allocate(area: Rect, half: bool) -> Option<Self> {
+        let mut picture = Self { blocks: Vec::new_in(Caps::SPIRAM), width: 0, height: 0, half };
+        (picture.width, picture.height) = (picture.scaled(area.w), picture.scaled(area.h));
+        let count = (picture.width as usize * picture.height as usize).div_ceil(32);
+        picture.blocks.try_reserve_exact(count).ok()?;
+        picture.blocks.resize(count, Block([0; 32]));
+        Some(picture)
+    }
+
+    pub(crate) fn scale(&self) -> f32 {
+        if self.half { 0.5 } else { 1.0 }
+    }
+
+    /// `length` pixels of the pane in the picture: at half size, as both
+    /// `Surface::half` and the 2D engine, in its steps of 1/16, make them.
+    pub(crate) fn scaled(&self, length: i16) -> i16 {
+        if self.half { (i32::from(length) * 8 / 16) as i16 } else { length }
     }
 
     pub(crate) fn as_mut_ptr(&mut self) -> *mut u16 {
@@ -83,10 +85,11 @@ impl Layer {
     }
 
     fn map(&mut self, picture: &Picture, scale: f32) {
+        let size = picture.scale();
         let fill = |out: &mut [u16], limit: i16| {
             let middle = out.len() as f32 / 2.0;
             for (at, slot) in out.iter_mut().enumerate() {
-                let source = ((at as f32 + 0.5 - middle) / scale + middle) * PICTURE_SCALE;
+                let source = ((at as f32 + 0.5 - middle) / scale + middle) * size;
                 *slot = if source >= 0.0 && (source as i16) < limit { source as u16 } else { OUTSIDE };
             }
         };

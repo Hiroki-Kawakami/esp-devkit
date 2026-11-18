@@ -132,20 +132,15 @@ pub(crate) struct Snapshot {
     alpha: Vec<u8, Caps>,
     /// Where each row's alpha starts; `OPAQUE` for none.
     rows: Vec<u32, Caps>,
-    /// The node's size; the picture is half of it, rounded down.
+    /// The node's size; the picture is it divided by `shrink`, rounded down.
     width: i16,
     height: i16,
+    shrink: usize,
     scale: AtomicU32,
     opacity: AtomicU8,
 }
 
 const OPAQUE: u32 = u32::MAX;
-
-const SHRINK: usize = 2;
-
-pub(crate) fn half(length: i16) -> usize {
-    length as usize / SHRINK
-}
 
 fn reserve<T>(count: usize) -> Option<Vec<T, Caps>> {
     for caps in [Caps::INTERNAL, Caps::SPIRAM] {
@@ -158,19 +153,32 @@ fn reserve<T>(count: usize) -> Option<Vec<T, Caps>> {
 }
 
 impl Snapshot {
-    pub(crate) fn allocate(width: i16, height: i16) -> Option<Self> {
-        if half(width) == 0 || half(height) == 0 {
+    /// At half size when `half`.
+    pub(crate) fn allocate(width: i16, height: i16, half: bool) -> Option<Self> {
+        let shrink = if half { 2 } else { 1 };
+        let (columns, lines) = (width as usize / shrink, height as usize / shrink);
+        if columns == 0 || lines == 0 {
             return None;
         }
-        let color: Vec<u16, Caps> = reserve(half(width) * half(height))?;
+        let color: Vec<u16, Caps> = reserve(columns * lines)?;
         let alpha = Vec::new_in(*color.allocator());
-        let rows = reserve(half(height))?;
-        Some(Self { color, alpha, rows, width, height, scale: AtomicU32::new(1.0f32.to_bits()), opacity: AtomicU8::new(255) })
+        let rows = reserve(lines)?;
+        Some(Self { color, alpha, rows, width, height, shrink, scale: AtomicU32::new(1.0f32.to_bits()), opacity: AtomicU8::new(255) })
     }
 
-    /// Adds `rows` rows of half-size ARGB8888 `pixels` below those stored.
+    pub(crate) fn half(&self) -> bool {
+        self.shrink == 2
+    }
+
+    /// `length` pixels of the node in the picture.
+    pub(crate) fn scaled(&self, length: i16) -> usize {
+        length as usize / self.shrink
+    }
+
+    /// Adds `rows` rows of ARGB8888 `pixels` at the picture's size below those
+    /// stored.
     pub(crate) fn store(&mut self, pixels: &[u32], rows: usize) -> Option<()> {
-        let columns = half(self.width);
+        let columns = self.scaled(self.width);
         for line in pixels[..rows * columns].chunks_exact(columns) {
             self.color.extend(line.iter().map(|&argb| ((argb >> 19 & 0x1f) << 11 | (argb >> 10 & 0x3f) << 5 | (argb >> 3 & 0x1f)) as u16));
             if line.iter().all(|&argb| argb >= 0xff00_0000) {
@@ -199,13 +207,13 @@ impl Snapshot {
         let area = target.area();
         let source = |at: i16, length: i16| {
             let s = ((f32::from(at) + 0.5) / scale) as i32;
-            (at >= 0 && s < i32::from(length)).then(|| (s as usize / SHRINK).min(half(length) - 1) as u16)
+            (at >= 0 && s < i32::from(length)).then(|| (s as usize / self.shrink).min(self.scaled(length) - 1) as u16)
         };
         // The columns inside the picture are contiguous.
         let columns: Vec<(usize, u16)> = (area.x..area.right()).enumerate().filter_map(|(i, x)| source(x, self.width).map(|s| (i, s))).collect();
         let Some(&(first, _)) = columns.first() else { return };
         let sources: Vec<u16> = columns.iter().map(|c| c.1).collect();
-        let width = half(self.width);
+        let width = self.scaled(self.width);
         let solid = (255 * opacity).wrapping_add(255) >> 8;
         let offsets: Vec<u16> = sources.iter().map(|&s| s * 2).collect();
         let mut fronts = Line([0; CHUNK]);
