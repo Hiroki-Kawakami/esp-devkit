@@ -16,6 +16,7 @@ choice BSP_RS_BOARD
         depends on DEVKIT_SIMULATOR || IDF_TARGET_ESP32S3
         select BSP_RS_DEVICE_AW9523 if !DEVKIT_SIMULATOR
         select BSP_RS_DEVICE_AXP2101 if !DEVKIT_SIMULATOR
+        select BSP_RS_DEVICE_FT6336U if !DEVKIT_SIMULATOR
         select BSP_RS_DEVICE_ILI9342C if !DEVKIT_SIMULATOR
 
     config BSP_RS_BOARD_TAB5
@@ -47,6 +48,9 @@ config BSP_RS_DEVICE_BMI270
     bool
 
 config BSP_RS_DEVICE_ES8388
+    bool
+
+config BSP_RS_DEVICE_FT6336U
     bool
 
 config BSP_RS_DEVICE_GT911

@@ -11,6 +11,7 @@ use core::time::Duration;
 
 use idf::log::{error, warn};
 use idf::sync::{Mutex, OnceLock, Semaphore};
+use devkit_gfx::Rotation;
 use idf::Result;
 
 use crate::dispatch::{self, Next, Notifier, Source};
@@ -70,16 +71,71 @@ pub(crate) trait Driver: Send + 'static {
 }
 
 pub(crate) struct Config {
-    /// Display space, for mirroring.
+    /// The panel's unturned picture, which `swap_xy` and the mirrors map chip
+    /// space onto.
     pub width: u16,
     pub height: u16,
     pub swap_xy: bool,
     pub mirror_x: bool,
     pub mirror_y: bool,
+    pub rotation: Rotation,
     pub int: Int,
 }
 
+/// Swaps the axes, then mirrors each about the size it maps onto.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct Transform {
+    swap: bool,
+    mirror_x: bool,
+    mirror_y: bool,
+    width: u16,
+    height: u16,
+}
+
+impl Transform {
+    /// From the stored picture of `width` x `height` to the logical one.
+    fn turn(rotation: Rotation, width: u16, height: u16) -> Self {
+        let (swap, mirror_x, mirror_y) = match rotation {
+            Rotation::R0 => (false, false, false),
+            Rotation::R90 => (true, true, false),
+            Rotation::R180 => (false, true, true),
+            Rotation::R270 => (true, false, true),
+        };
+        let (width, height) = if swap { (height, width) } else { (width, height) };
+        Self { swap, mirror_x, mirror_y, width, height }
+    }
+
+    fn then(self, next: Self) -> Self {
+        let (inner_x, inner_y) = if next.swap { (self.mirror_y, self.mirror_x) } else { (self.mirror_x, self.mirror_y) };
+        Self {
+            swap: self.swap != next.swap,
+            mirror_x: next.mirror_x != inner_x,
+            mirror_y: next.mirror_y != inner_y,
+            width: next.width,
+            height: next.height,
+        }
+    }
+
+    fn apply(&self, p: Point) -> Point {
+        let (mut x, mut y) = if self.swap { (p.y, p.x) } else { (p.x, p.y) };
+        if self.mirror_x && self.width > 0 {
+            x = (self.width - 1).saturating_sub(x);
+        }
+        if self.mirror_y && self.height > 0 {
+            y = (self.height - 1).saturating_sub(y);
+        }
+        Point { x, y, id: p.id }
+    }
+}
+
+const ROTATIONS: [Rotation; 4] = [Rotation::R0, Rotation::R90, Rotation::R180, Rotation::R270];
+
+fn rotation_code(rotation: Rotation) -> u8 {
+    ROTATIONS.iter().position(|r| *r == rotation).unwrap_or(0) as u8
+}
+
 #[allow(dead_code)]
+#[derive(Clone, Copy)]
 pub(crate) enum Int {
     /// Polled continuously.
     None,
@@ -118,6 +174,7 @@ pub struct Touch {
     callback_changed: AtomicBool,
     injected: Mutex<Option<Vec<Point>>>,
     has_injected: AtomicBool,
+    rotation: AtomicU8,
     notifier: OnceLock<Notifier>,
 }
 
@@ -132,8 +189,19 @@ impl Touch {
             callback_changed: AtomicBool::new(false),
             injected: Mutex::new(None),
             has_injected: AtomicBool::new(false),
+            rotation: AtomicU8::new(0),
             notifier: OnceLock::new(),
         })
+    }
+
+    /// Reports points turned as a display by `rotation` shows its picture,
+    /// from the next sample on.
+    pub fn set_rotation(&self, rotation: Rotation) {
+        self.rotation.store(rotation_code(rotation), Ordering::Release);
+    }
+
+    pub fn rotation(&self) -> Rotation {
+        ROTATIONS[usize::from(self.rotation.load(Ordering::Acquire))]
     }
 
     /// The latest sample in display space; 0 while nothing touches.
@@ -205,15 +273,8 @@ pub(crate) fn start<D: Driver>(driver: D, config: Config) -> Result<&'static Tou
     if let Int::Gpio(pin) = config.int {
         attach_int(pin, touch).inspect_err(|err| error!(TAG, "INT on GPIO{pin}: {err}"))?;
     }
-    let notifier = dispatch::add(Box::new(TouchSource {
-        driver,
-        touch,
-        config,
-        callback: None,
-        settled: 0,
-        down: false,
-        failing: false,
-    }))?;
+    touch.set_rotation(config.rotation);
+    let notifier = dispatch::add(Box::new(TouchSource::new(driver, touch, &config)))?;
     let _ = touch.notifier.set(notifier);
     Ok(touch)
 }
@@ -259,27 +320,48 @@ impl Touch {
 struct TouchSource<D> {
     driver: D,
     touch: &'static Touch,
-    config: Config,
+    int: Int,
+    mount: Transform,
+    rotation: Rotation,
+    transform: Transform,
     callback: Option<EventCallback>,
     settled: u8,
     down: bool,
     failing: bool,
 }
 
-impl Config {
-    fn orient(&self, p: Point) -> Point {
-        let (mut x, mut y) = if self.swap_xy { (p.y, p.x) } else { (p.x, p.y) };
-        if self.mirror_x && self.width > 0 {
-            x = (self.width - 1).saturating_sub(x);
-        }
-        if self.mirror_y && self.height > 0 {
-            y = (self.height - 1).saturating_sub(y);
-        }
-        Point { x, y, id: p.id }
-    }
-}
-
 impl<D: Driver> TouchSource<D> {
+    fn new(driver: D, touch: &'static Touch, config: &Config) -> Self {
+        let mount = Transform {
+            swap: config.swap_xy,
+            mirror_x: config.mirror_x,
+            mirror_y: config.mirror_y,
+            width: config.width,
+            height: config.height,
+        };
+        let rotation = touch.rotation();
+        Self {
+            driver,
+            touch,
+            int: config.int,
+            mount,
+            rotation,
+            transform: mount.then(Transform::turn(rotation, config.width, config.height)),
+            callback: None,
+            settled: 0,
+            down: false,
+            failing: false,
+        }
+    }
+
+    fn follow_rotation(&mut self) {
+        let rotation = self.touch.rotation();
+        if rotation != self.rotation {
+            self.rotation = rotation;
+            self.transform = self.mount.then(Transform::turn(rotation, self.mount.width, self.mount.height));
+        }
+    }
+
     fn emit(&mut self, points: &[Point]) {
         self.touch.publish(points);
         if let Some(cb) = &mut self.callback {
@@ -302,17 +384,18 @@ impl<D: Driver> Source for TouchSource<D> {
             }
         }
 
-        let has_int = !matches!(self.config.int, Int::None);
+        let has_int = !matches!(self.int, Int::None);
         let int_pending = self.touch.int_pending.swap(false, Ordering::AcqRel);
         if has_int && !int_pending && self.settled >= DEFAULT_SETTLE_COUNT && !self.down {
             return Next::Idle;
         }
 
+        self.follow_rotation();
         let mut points = [Point::default(); MAX_POINTS];
         let n = match self.driver.poll() {
             Ok(raw) => {
                 for (out, p) in points.iter_mut().zip(raw) {
-                    *out = self.config.orient(*p);
+                    *out = self.transform.apply(*p);
                 }
                 raw.len().min(MAX_POINTS)
             }
@@ -350,7 +433,8 @@ impl<D: Driver> Source for TouchSource<D> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Config, DEFAULT_SETTLE_COUNT, Driver, Int, Point, Touch, TouchSource, assign_tracks};
+    use super::{Config, DEFAULT_SETTLE_COUNT, Driver, Int, Point, ROTATIONS, Touch, TouchSource, Transform, assign_tracks};
+    use devkit_gfx::Rotation;
     use crate::dispatch::{Next, Source};
     use alloc::boxed::Box;
     use alloc::sync::Arc;
@@ -374,20 +458,13 @@ mod tests {
     fn source(config: Config) -> (TouchSource<Fake>, Arc<Mutex<Vec<Point>>>, &'static Touch) {
         let touched = Arc::new(Mutex::new(Vec::new()));
         let touch: &'static Touch = Box::leak(Box::new(Touch::new().unwrap()));
-        let src = TouchSource {
-            driver: Fake(touched.clone(), Vec::new()),
-            touch,
-            config,
-            callback: None,
-            settled: 0,
-            down: false,
-            failing: false,
-        };
+        touch.set_rotation(config.rotation);
+        let src = TouchSource::new(Fake(touched.clone(), Vec::new()), touch, &config);
         (src, touched, touch)
     }
 
     fn config(int: Int) -> Config {
-        Config { width: 100, height: 200, swap_xy: false, mirror_x: false, mirror_y: false, int }
+        Config { width: 100, height: 200, swap_xy: false, mirror_x: false, mirror_y: false, rotation: Rotation::R0, int }
     }
 
     #[test]
@@ -472,6 +549,41 @@ mod tests {
         let mut out = [Point::default(); 1];
         assert_eq!(touch.read(&mut out), 1);
         assert_eq!(out[0], p(100 - 1 - 20, 200 - 1 - 10));
+    }
+
+    #[test]
+    fn a_rotation_turns_points_into_the_logical_picture() {
+        let (mut src, touched, touch) = source(config(Int::None));
+        *touched.lock() = alloc::vec![p(10, 20)];
+        let mut out = [Point::default(); 1];
+        for (rotation, expected) in [
+            (Rotation::R90, p(200 - 1 - 20, 10)),
+            (Rotation::R180, p(100 - 1 - 10, 200 - 1 - 20)),
+            (Rotation::R270, p(20, 100 - 1 - 10)),
+            (Rotation::R0, p(10, 20)),
+        ] {
+            touch.set_rotation(rotation);
+            src.tick();
+            touch.read(&mut out);
+            assert_eq!(out[0], expected, "{rotation:?}");
+        }
+    }
+
+    #[test]
+    fn the_composed_transform_matches_the_mount_then_the_turn() {
+        let (w, h) = (100, 200);
+        for mount in 0..8 {
+            let mount = Transform { swap: mount & 1 != 0, mirror_x: mount & 2 != 0, mirror_y: mount & 4 != 0, width: w, height: h };
+            let (cw, ch) = if mount.swap { (h, w) } else { (w, h) };
+            for rotation in ROTATIONS {
+                let turn = Transform::turn(rotation, w, h);
+                let composed = mount.then(turn);
+                for (x, y) in [(0, 0), (cw - 1, 0), (0, ch - 1), (cw - 1, ch - 1), (7, 31)] {
+                    let chip = p(x, y);
+                    assert_eq!(composed.apply(chip), turn.apply(mount.apply(chip)), "{mount:?} {rotation:?} {chip:?}");
+                }
+            }
+        }
     }
 
     #[test]

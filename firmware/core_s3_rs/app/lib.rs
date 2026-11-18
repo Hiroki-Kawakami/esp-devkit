@@ -13,9 +13,11 @@ use core::ffi::CStr;
 use core::time::Duration;
 
 use bsp_rs::display::{Display, Image, ImageFormat, Rect, Rotation};
+use bsp_rs::touch::{MAX_POINTS, Point, Touch};
 use devkit_gfx::swap_rgb565;
 use idf::log::{error, info};
 use idf::thread;
+use idf::time::Instant;
 
 const TAG: &CStr = c"core_s3_rs";
 
@@ -32,6 +34,8 @@ const BARS: [(u8, u8, u8); 8] = [
 const ROTATIONS: [Rotation; 4] = [Rotation::R0, Rotation::R90, Rotation::R180, Rotation::R270];
 const MARK: i16 = 32;
 const HOLD: Duration = Duration::from_secs(3);
+const DOT: i16 = 8;
+const TOUCH_POLL: Duration = Duration::from_millis(10);
 
 pub fn run() {
     let board = match bsp_rs::init(&bsp_rs::Config::default()) {
@@ -54,11 +58,45 @@ pub fn run() {
         if let Err(err) = unsafe { display.reconfigure(&config) } {
             error!(TAG, "rotation {rotation:?}: {err}");
         }
+        if let Some(touch) = board.touch {
+            touch.set_rotation(*rotation);
+        }
         let size = display.size();
         info!(TAG, "{:?}: {}x{} {:?}", display.rotation(), size.width, size.height, display.pixel_format());
         draw_bars(display);
         mark_top(display);
-        thread::sleep(HOLD);
+        match board.touch {
+            Some(touch) => follow_touch(display, touch),
+            None => thread::sleep(HOLD),
+        }
+    }
+}
+
+// A dot under each finger, for `HOLD`.
+fn follow_touch(display: &Display, touch: &Touch) {
+    let size = display.size();
+    let dot = pixels(display, DOT, DOT, (0, 0, 0));
+    let mut points = [Point::default(); MAX_POINTS];
+    let mut last = 0;
+    let start = Instant::now();
+    while start.elapsed() < HOLD {
+        let n = touch.read(&mut points);
+        for p in &points[..n] {
+            let x = (p.x as i16 - DOT / 2).clamp(0, size.width as i16 - DOT);
+            let y = (p.y as i16 - DOT / 2).clamp(0, size.height as i16 - DOT);
+            let written = unsafe { display.write(Rect::new(x, y, DOT, DOT), &dot) }.and_then(|t| display.wait(t));
+            if let Err(err) = written {
+                error!(TAG, "dot at {},{}: {err}", p.x, p.y);
+            }
+        }
+        if n != last {
+            match points[..n].first() {
+                Some(p) => info!(TAG, "touch: {n} at {},{}", p.x, p.y),
+                None => info!(TAG, "touch: released"),
+            }
+            last = n;
+        }
+        thread::sleep(TOUCH_POLL);
     }
 }
 

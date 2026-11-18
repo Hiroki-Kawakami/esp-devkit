@@ -13,6 +13,8 @@ pub(crate) mod bmi270;
 mod bmi270_config;
 #[cfg(CONFIG_BSP_RS_DEVICE_ES8388)]
 pub(crate) mod es8388;
+#[cfg(CONFIG_BSP_RS_DEVICE_FT6336U)]
+pub(crate) mod ft6336u;
 #[cfg(CONFIG_BSP_RS_DEVICE_GT911)]
 pub(crate) mod gt911;
 #[cfg(CONFIG_BSP_RS_DEVICE_INA226)]

@@ -215,6 +215,7 @@ fn touch_init(bus: &'static MasterBus, display: &Display) -> Option<&'static Tou
         swap_xy: false,
         mirror_x: false,
         mirror_y: false,
+        rotation: display::Rotation::R0,
         int: touch::Int::Gpio(TOUCH_PIN_INT),
     };
     let result = match display {

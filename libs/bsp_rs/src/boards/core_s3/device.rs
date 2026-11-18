@@ -4,21 +4,25 @@
  */
 
 use alloc::boxed::Box;
+use core::ffi::c_void;
 use core::time::Duration;
 
 use idf::i2c::{BusConfig, MasterBus};
-use idf::log::error;
+use idf::log::{error, warn};
 use idf::spi;
 use idf::sync::{Mutex, OnceLock};
-use idf::{Result, thread};
+use idf::{Result, gpio, thread};
 
 use super::{PANEL_SIZE, TAG, UnknownPower, resolve_rotation};
 use crate::devices::aw9523::{Aw9523, PinConfig};
 use crate::devices::axp2101::{self, Axp2101, Ldo};
+use crate::devices::ft6336u::{self, Ft6336u};
 use crate::devices::ili9342c;
+use crate::dispatch::{self, Next, Notifier, Source};
 use crate::display::{self, Rotation};
 use crate::driver::spi_lcd::SpiLcd;
 use crate::power;
+use crate::touch::{self, Touch};
 use crate::{Board, Config};
 
 pub(crate) type Display = SpiLcd;
@@ -30,6 +34,8 @@ const I2C_PIN_SCL: i32 = 11;
 const AW9523_ADDR: u16 = 0x58;
 const AW9523_LCD_RST: u8 = 9;
 const AW9523_TOUCH_INT: usize = 10;
+const AW9523_PIN_INT: i32 = 21;
+const EXPANDER_RETRY: Duration = Duration::from_millis(10);
 
 const LCD_SPI_HOST: i32 = 1;
 const LCD_PIN_MOSI: i32 = 37;
@@ -47,6 +53,7 @@ static I2C: OnceLock<MasterBus> = OnceLock::new();
 static AXP2101: OnceLock<Axp2101<'static>> = OnceLock::new();
 static AW9523: OnceLock<Mutex<Aw9523<'static>>> = OnceLock::new();
 static DISPLAY: OnceLock<display::Display> = OnceLock::new();
+static EXPANDER_INT: OnceLock<Notifier> = OnceLock::new();
 
 pub(crate) fn init(config: &Config) -> Result<Board> {
     let rotation = resolve_rotation(config)?;
@@ -69,6 +76,7 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
         .get_or_try_init(|| expander_init(bus).map(Mutex::new))
         .inspect_err(|err| error!(TAG, "aw9523: {err}"))?;
     let display = panel_init(rotation, axp, aw).inspect_err(|err| error!(TAG, "panel: {err}"))?;
+    let touch = touch_init(bus, aw, rotation).inspect_err(|err| warn!(TAG, "touch unavailable: {err}")).ok();
     let power = power::start(UnknownPower, None);
     Ok(Board {
         audio: None,
@@ -77,7 +85,7 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
         power,
         rtc: None,
         sd: None,
-        touch: None,
+        touch,
     })
 }
 
@@ -100,7 +108,7 @@ fn expander_init(bus: &'static MasterBus) -> Result<Aw9523<'static>> {
     for pin in [1, 5, 6, 7, 12, 13, 14, 15] {
         pins[pin] = PinConfig::output(false);
     }
-    pins[AW9523_TOUCH_INT] = PinConfig::input();
+    pins[AW9523_TOUCH_INT] = PinConfig::input(true);
     Aw9523::new(bus, AW9523_ADDR, &pins)
 }
 
@@ -135,6 +143,60 @@ fn panel_init(rotation: Rotation, axp: &'static Axp2101, aw: &Mutex<Aw9523>) -> 
         rotation,
         backlight: Some(Box::new(move |level| set_backlight(axp, level))),
     })
+}
+
+fn touch_init(bus: &'static MasterBus, aw: &'static Mutex<Aw9523<'static>>, rotation: Rotation) -> Result<&'static Touch> {
+    let ft = Ft6336u::new(bus, ft6336u::DEFAULT_HZ)?;
+    let touch = touch::start(ft, touch::Config {
+        width: PANEL_SIZE.width,
+        height: PANEL_SIZE.height,
+        swap_xy: false,
+        mirror_x: false,
+        mirror_y: false,
+        rotation,
+        int: touch::Int::External,
+    })?;
+    expander_int_init(aw, touch).inspect_err(|err| error!(TAG, "expander INT on GPIO{AW9523_PIN_INT}: {err}"))?;
+    Ok(touch)
+}
+
+// The expander holds its INT low until its inputs are read over I2C, which the
+// ISR leaves to the dispatch task.
+struct ExpanderInt {
+    aw: &'static Mutex<Aw9523<'static>>,
+    touch: &'static Touch,
+    failing: bool,
+}
+
+impl Source for ExpanderInt {
+    fn tick(&mut self) -> Next {
+        if let Err(err) = self.aw.lock().read_inputs() {
+            if !self.failing {
+                warn!(TAG, "aw9523 inputs: {err}");
+                self.failing = true;
+            }
+            return Next::After(EXPANDER_RETRY);
+        }
+        self.failing = false;
+        self.touch.interrupt();
+        Next::Idle
+    }
+}
+
+fn expander_int_init(aw: &'static Mutex<Aw9523<'static>>, touch: &'static Touch) -> Result<()> {
+    let notifier = dispatch::add(Box::new(ExpanderInt { aw, touch, failing: false }))?;
+    let _ = EXPANDER_INT.set(notifier);
+    gpio::set_direction(AW9523_PIN_INT, gpio::Mode::Input)?;
+    gpio::set_pull(AW9523_PIN_INT, gpio::Pull::Up)?;
+    gpio::install_isr_service()?;
+    gpio::set_interrupt(AW9523_PIN_INT, gpio::Interrupt::FallingEdge)?;
+    unsafe { gpio::add_isr_handler(AW9523_PIN_INT, on_expander_int, core::ptr::null_mut()) }
+}
+
+unsafe extern "C" fn on_expander_int(_: *mut c_void) {
+    if let Some(n) = EXPANDER_INT.get() {
+        n.notify_from_isr();
+    }
 }
 
 fn set_backlight(axp: &Axp2101, level: u8) -> Result<()> {

@@ -16,6 +16,7 @@ pub(crate) const DEFAULT_HZ: u32 = 400_000;
 
 const TIMEOUT: Duration = Duration::from_millis(100);
 
+const REG_INPUT0: u8 = 0x00;
 const REG_OUTPUT0: u8 = 0x02;
 const REG_CONFIG0: u8 = 0x04;
 const REG_INT0: u8 = 0x06;
@@ -37,15 +38,17 @@ pub(crate) enum PinMode {
 pub(crate) struct PinConfig {
     pub mode: PinMode,
     pub initial: bool,
+    /// An input change pulls INT low until the inputs are read.
+    pub interrupt: bool,
 }
 
 impl PinConfig {
     pub(crate) const fn output(initial: bool) -> Self {
-        Self { mode: PinMode::Output, initial }
+        Self { mode: PinMode::Output, initial, interrupt: false }
     }
 
-    pub(crate) const fn input() -> Self {
-        Self { mode: PinMode::Input, initial: false }
+    pub(crate) const fn input(interrupt: bool) -> Self {
+        Self { mode: PinMode::Input, initial: false, interrupt }
     }
 }
 
@@ -57,11 +60,14 @@ pub(crate) struct Aw9523<'bus> {
 }
 
 impl<'bus> Aw9523<'bus> {
-    /// Every pin is a GPIO with its interrupt masked, port 0 push-pull.
+    /// Every pin is a GPIO, port 0 push-pull.
     pub(crate) fn new(bus: &'bus MasterBus, address: u16, config: &[PinConfig; 16]) -> Result<Self> {
         let device = bus.add_device(address, DEFAULT_HZ)?;
-        let (mut direction, mut output) = (0u16, 0u16);
+        let (mut direction, mut output, mut interrupt) = (0u16, 0u16, 0u16);
         for (i, pin) in config.iter().enumerate() {
+            if pin.mode == PinMode::Input && pin.interrupt {
+                interrupt |= 1 << i;
+            }
             if pin.mode == PinMode::Output {
                 direction |= 1 << i;
                 if pin.initial {
@@ -74,6 +80,7 @@ impl<'bus> Aw9523<'bus> {
         aw.read_reg(REG_ID).inspect_err(|err| error!(TAG, "not responding on 0x{address:02x}: {err}"))?;
         let [out0, out1] = output.to_le_bytes();
         let [in0, in1] = (!direction).to_le_bytes();
+        let [mask0, mask1] = (!interrupt).to_le_bytes();
         // Levels before directions, so no output glitches as it turns on.
         for (reg, value) in [
             (REG_LEDMODE0, 0xFF),
@@ -83,12 +90,18 @@ impl<'bus> Aw9523<'bus> {
             (REG_OUTPUT0 + 1, out1),
             (REG_CONFIG0, in0),
             (REG_CONFIG0 + 1, in1),
-            (REG_INT0, 0xFF),
-            (REG_INT0 + 1, 0xFF),
+            (REG_INT0, mask0),
+            (REG_INT0 + 1, mask1),
         ] {
             aw.write_reg(reg, value)?;
         }
+        aw.read_inputs()?;
         Ok(aw)
+    }
+
+    /// Also releases INT.
+    pub(crate) fn read_inputs(&self) -> Result<u16> {
+        Ok(u16::from_le_bytes([self.read_reg(REG_INPUT0)?, self.read_reg(REG_INPUT0 + 1)?]))
     }
 
     pub(crate) fn set_output(&mut self, pin: u8, value: bool) -> Result<()> {

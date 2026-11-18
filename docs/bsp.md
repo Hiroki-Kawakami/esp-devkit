@@ -64,6 +64,12 @@ waiting on the dispatch task, `set_event_cb` delivers each sample on that task,
 and `wait_interrupt` blocks until the controller signals. `inject` delivers
 points as if the controller had reported them, without waking `wait_interrupt`.
 
+Points are in the panel's unturned picture until `set_rotation` turns them as
+a display with that rotation shows its picture. The board maps the
+controller's own axes onto the panel, and `bsp_rs::init` starts from
+`Config.display.rotation`. The touch does not follow the display; whoever turns
+one turns the other.
+
 ## Power
 
 `board.power` is on every board, shared the same way.

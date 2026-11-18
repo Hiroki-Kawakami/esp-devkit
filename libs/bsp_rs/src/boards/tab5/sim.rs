@@ -45,6 +45,7 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
         swap_xy: false,
         mirror_x: false,
         mirror_y: false,
+        rotation: display::Rotation::R0,
         int: touch::Int::External,
     })
     .inspect_err(|err| warn!(TAG, "touch unavailable: {err}"))

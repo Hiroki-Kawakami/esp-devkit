@@ -4,20 +4,21 @@
  */
 
 use idf::Result;
-use idf::log::info;
+use idf::log::{info, warn};
 use idf::sync::OnceLock;
 
 use super::{PANEL_SIZE, PIXEL_FORMAT, TAG, UnknownPower, resolve_rotation};
 use crate::display;
 use crate::power;
-use crate::sim::{self, gram::SimGram, protocol::Event};
+use crate::sim::{self, gram::SimGram, protocol::Event, touch as sim_touch};
+use crate::touch;
 use crate::{Board, Config};
 
 pub(crate) type Display = SimGram;
 
 static DISPLAY: OnceLock<display::Display> = OnceLock::new();
 
-// Without the simulator host there is nothing to show.
+// Without the simulator host there is nothing to show or touch.
 pub(crate) fn init(config: &Config) -> Result<Board> {
     let rotation = resolve_rotation(config)?;
     let power = power::start(UnknownPower, None);
@@ -28,6 +29,17 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
     info!(TAG, "board: CoreS3 (simulator)");
     host.send(&Event::device("M5Stack CoreS3"));
     let panel = SimGram::new(host, PANEL_SIZE, PIXEL_FORMAT, rotation)?;
+    let touch = sim_touch::start(host, touch::Config {
+        width: PANEL_SIZE.width,
+        height: PANEL_SIZE.height,
+        swap_xy: false,
+        mirror_x: false,
+        mirror_y: false,
+        rotation,
+        int: touch::Int::External,
+    })
+    .inspect_err(|err| warn!(TAG, "touch unavailable: {err}"))
+    .ok();
     Ok(Board {
         audio: None,
         display: Some(DISPLAY.get_or_init(|| display::Display::new(panel))),
@@ -35,6 +47,6 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
         power,
         rtc: None,
         sd: None,
-        touch: None,
+        touch,
     })
 }
