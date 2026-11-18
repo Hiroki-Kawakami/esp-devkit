@@ -7,6 +7,8 @@
 pub(crate) mod aw88298;
 #[cfg(CONFIG_BSP_RS_DEVICE_AW9523)]
 pub(crate) mod aw9523;
+#[cfg(CONFIG_BSP_RS_DEVICE_AXP192)]
+pub(crate) mod axp192;
 #[cfg(CONFIG_BSP_RS_DEVICE_AXP2101)]
 pub(crate) mod axp2101;
 #[cfg(CONFIG_BSP_RS_DEVICE_BM8563)]
@@ -27,6 +29,8 @@ pub(crate) mod ina226;
 pub(crate) mod ili9342c;
 #[cfg(CONFIG_BSP_RS_DEVICE_ILI9881C)]
 pub(crate) mod ili9881c;
+#[cfg(CONFIG_BSP_RS_DEVICE_NS4168)]
+pub(crate) mod ns4168;
 #[cfg(CONFIG_BSP_RS_DEVICE_PI4IO)]
 pub(crate) mod pi4io;
 #[cfg(CONFIG_BSP_RS_DEVICE_RX8130)]

@@ -18,6 +18,7 @@ pub(crate) const DEFAULT_HZ: u32 = 400_000;
 const TIMEOUT: Duration = Duration::from_millis(100);
 
 const REG_STATUS1: u8 = 0x00;
+const REG_CHIP_ID: u8 = 0x03;
 const REG_COMMON_CFG: u8 = 0x10;
 const REG_CHARGE_CTRL: u8 = 0x18;
 const REG_DCDC_UVP: u8 = 0x23;
@@ -31,6 +32,7 @@ const REG_CHGLED: u8 = 0x69;
 const REG_LDO_EN0: u8 = 0x90;
 const REG_LDO_VOLT0: u8 = 0x92;
 
+const CHIP_ID: u8 = 0x4A;
 const STATUS1_VBUS_GOOD: u8 = 1 << 5;
 const STATUS1_BATTERY: u8 = 1 << 3;
 const STATUS2_DIRECTION: u8 = 0b11 << 5;
@@ -55,6 +57,7 @@ pub(crate) struct Status {
     pub charging: bool,
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Ldo {
     Aldo1,
@@ -85,9 +88,13 @@ pub(crate) struct Axp2101<'bus> {
 }
 
 impl<'bus> Axp2101<'bus> {
+    /// `NOT_FOUND` when another chip answers at `address`.
     pub(crate) fn new(bus: &'bus MasterBus, address: u16, clock_hz: u32) -> Result<Self> {
         let axp = Self { device: bus.add_device(address, clock_hz)? };
-        axp.read_reg(REG_STATUS1).inspect_err(|err| error!(TAG, "not responding on 0x{address:02x}: {err}"))?;
+        let id = axp.read_reg(REG_CHIP_ID).inspect_err(|err| error!(TAG, "not responding on 0x{address:02x}: {err}"))?;
+        if id != CHIP_ID {
+            return Err(Error::NOT_FOUND);
+        }
         Ok(axp)
     }
 

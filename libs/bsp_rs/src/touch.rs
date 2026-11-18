@@ -80,6 +80,24 @@ pub(crate) struct Config {
     pub mirror_y: bool,
     pub rotation: Rotation,
     pub int: Int,
+    /// Areas of chip space that are buttons rather than touches; `ZoneButtons`
+    /// reports them.
+    pub zones: &'static [Zone],
+}
+
+/// `x0..x1` by `y0..y1` in chip space.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct Zone {
+    pub x0: u16,
+    pub y0: u16,
+    pub x1: u16,
+    pub y1: u16,
+}
+
+impl Zone {
+    fn contains(&self, p: &Point) -> bool {
+        (self.x0..self.x1).contains(&p.x) && (self.y0..self.y1).contains(&p.y)
+    }
 }
 
 /// Swaps the axes, then mirrors each about the size it maps onto.
@@ -176,6 +194,8 @@ pub struct Touch {
     has_injected: AtomicBool,
     rotation: AtomicU8,
     notifier: OnceLock<Notifier>,
+    zones: AtomicU8,
+    zones_pressed: AtomicU8,
 }
 
 impl Touch {
@@ -191,6 +211,8 @@ impl Touch {
             has_injected: AtomicBool::new(false),
             rotation: AtomicU8::new(0),
             notifier: OnceLock::new(),
+            zones: AtomicU8::new(0),
+            zones_pressed: AtomicU8::new(0),
         })
     }
 
@@ -274,9 +296,31 @@ pub(crate) fn start<D: Driver>(driver: D, config: Config) -> Result<&'static Tou
         attach_int(pin, touch).inspect_err(|err| error!(TAG, "INT on GPIO{pin}: {err}"))?;
     }
     touch.set_rotation(config.rotation);
+    touch.zones.store(config.zones.len().min(crate::button::MAX_BUTTONS) as u8, Ordering::Release);
     let notifier = dispatch::add(Box::new(TouchSource::new(driver, touch, &config)))?;
     let _ = touch.notifier.set(notifier);
     Ok(touch)
+}
+
+/// The zones of the touch that started, as buttons in their order.
+pub(crate) struct ZoneButtons;
+
+impl crate::button::Driver for ZoneButtons {
+    fn count(&self) -> usize {
+        TOUCH.get().map_or(0, |t| usize::from(t.zones.load(Ordering::Acquire)))
+    }
+
+    fn sample(&mut self, pressed: &mut [bool]) -> Result<()> {
+        let bits = TOUCH.get().map_or(0, |t| t.zones_pressed.load(Ordering::Acquire));
+        for (i, p) in pressed.iter_mut().enumerate() {
+            *p = bits & 1 << i != 0;
+        }
+        Ok(())
+    }
+
+    fn notifies(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(not(target_os = "none"))]
@@ -325,6 +369,7 @@ struct TouchSource<D> {
     rotation: Rotation,
     transform: Transform,
     callback: Option<EventCallback>,
+    zones: &'static [Zone],
     settled: u8,
     down: bool,
     failing: bool,
@@ -348,10 +393,30 @@ impl<D: Driver> TouchSource<D> {
             rotation,
             transform: mount.then(Transform::turn(rotation, config.width, config.height)),
             callback: None,
+            zones: config.zones,
             settled: 0,
             down: false,
             failing: false,
         }
+    }
+
+    /// Notes which zones `raw` presses and drops the points inside them.
+    fn split_zones(&self, raw: &[Point], out: &mut [Point; MAX_POINTS]) -> usize {
+        let mut pressed = 0u8;
+        let mut n = 0;
+        for p in raw.iter().take(MAX_POINTS) {
+            match self.zones.iter().position(|z| z.contains(p)) {
+                Some(i) => pressed |= 1 << i,
+                None => {
+                    out[n] = self.transform.apply(*p);
+                    n += 1;
+                }
+            }
+        }
+        if self.touch.zones_pressed.swap(pressed, Ordering::AcqRel) != pressed {
+            crate::button::notify();
+        }
+        n
     }
 
     fn follow_rotation(&mut self) {
@@ -392,13 +457,14 @@ impl<D: Driver> Source for TouchSource<D> {
 
         self.follow_rotation();
         let mut points = [Point::default(); MAX_POINTS];
-        let n = match self.driver.poll() {
-            Ok(raw) => {
-                for (out, p) in points.iter_mut().zip(raw) {
-                    *out = self.transform.apply(*p);
-                }
-                raw.len().min(MAX_POINTS)
-            }
+        let polled = self.driver.poll().map(|raw| {
+            let mut copy = [Point::default(); MAX_POINTS];
+            let n = raw.len().min(MAX_POINTS);
+            copy[..n].copy_from_slice(&raw[..n]);
+            (copy, n)
+        });
+        let n = match polled {
+            Ok((raw, count)) => self.split_zones(&raw[..count], &mut points),
             Err(err) => {
                 if !self.failing {
                     warn!(TAG, "poll: {err}");
@@ -433,7 +499,7 @@ impl<D: Driver> Source for TouchSource<D> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Config, DEFAULT_SETTLE_COUNT, Driver, Int, Point, ROTATIONS, Touch, TouchSource, Transform, assign_tracks};
+    use super::{Config, DEFAULT_SETTLE_COUNT, Driver, Int, Point, ROTATIONS, Touch, TouchSource, Transform, Zone, assign_tracks};
     use devkit_gfx::Rotation;
     use crate::dispatch::{Next, Source};
     use alloc::boxed::Box;
@@ -464,7 +530,22 @@ mod tests {
     }
 
     fn config(int: Int) -> Config {
-        Config { width: 100, height: 200, swap_xy: false, mirror_x: false, mirror_y: false, rotation: Rotation::R0, int }
+        Config { width: 100, height: 200, swap_xy: false, mirror_x: false, mirror_y: false, rotation: Rotation::R0, int, zones: &[] }
+    }
+
+    #[test]
+    fn points_in_a_zone_press_its_button_instead_of_touching() {
+        static ZONES: [Zone; 2] = [Zone { x0: 0, y0: 200, x1: 50, y1: 240 }, Zone { x0: 50, y0: 200, x1: 100, y1: 240 }];
+        let (mut src, touched, touch) = source(Config { zones: &ZONES, ..config(Int::None) });
+        *touched.lock() = alloc::vec![p(10, 20), p(60, 210)];
+        src.tick();
+        let mut out = [Point::default(); 4];
+        assert_eq!(touch.read(&mut out), 1);
+        assert_eq!(out[0], p(10, 20));
+        assert_eq!(touch.zones_pressed.load(core::sync::atomic::Ordering::Acquire), 0b10);
+        touched.lock().clear();
+        src.tick();
+        assert_eq!(touch.zones_pressed.load(core::sync::atomic::Ordering::Acquire), 0);
     }
 
     #[test]

@@ -33,7 +33,7 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
     let Some(host) = sim::host() else {
         info!(TAG, "board: CoreS3 (simulator, no host)");
         let power = power::start(SimPower::new(None), None);
-        return Ok(Board { audio: None, display: None, imu: None, power, rtc: None, sd: None, touch: None });
+        return Ok(Board { audio: None, buttons: None, display: None, imu: None, power, rtc: None, sd: None, touch: None });
     };
     info!(TAG, "board: CoreS3 (simulator)");
     host.send(&Event::device("M5Stack CoreS3"));
@@ -46,6 +46,7 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
         mirror_y: false,
         rotation,
         int: touch::Int::External,
+        zones: &[],
     })
     .inspect_err(|err| warn!(TAG, "touch unavailable: {err}"))
     .ok();
@@ -57,6 +58,7 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
     let rtc = SimRtc::new(host).and_then(|driver| rtc::start(driver).inspect_err(|err| warn!(TAG, "rtc unavailable: {err}")).ok());
     Ok(Board {
         audio,
+        buttons: None,
         display: Some(DISPLAY.get_or_init(|| display::Display::new(panel))),
         imu: None,
         power,

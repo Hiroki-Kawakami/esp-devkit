@@ -20,6 +20,7 @@ use alloc::vec::Vec;
 use core::ffi::{CStr, c_int};
 
 use bsp_rs::Board;
+use bsp_rs::button::Buttons;
 use bsp_rs::display::{Display, ImageFormat};
 use bsp_rs::imu::{Imu, Vec3};
 use bsp_rs::touch::{Point, Touch};
@@ -59,7 +60,7 @@ pub fn set_idle(idle: impl Fn() -> bool + Send + Sync + 'static) {
 
 /// Starts answering on the console.
 pub fn start(board: &Board) -> idf::Result<()> {
-    let harness = Harness { display: board.display, imu: board.imu, touch: board.touch, contacts: BTreeMap::new() };
+    let harness = Harness { buttons: board.buttons, display: board.display, imu: board.imu, touch: board.touch, contacts: BTreeMap::new() };
     Builder::new().name("harness").stack_size(STACK_SIZE).priority(PRIORITY).spawn(move || harness.run())?;
     Ok(())
 }
@@ -75,6 +76,7 @@ fn reply(text: &str) {
 }
 
 struct Harness {
+    buttons: Option<&'static Buttons>,
     display: Option<&'static Display>,
     imu: Option<&'static Imu>,
     touch: Option<&'static Touch>,
@@ -121,6 +123,7 @@ impl Harness {
             "info" => self.info(),
             "down" | "move" => self.contact(rest),
             "up" => self.release(rest),
+            "btn" => self.button(rest),
             "imu" => self.imu(rest),
             "idle" => {
                 let idle = IDLE.lock().clone();
@@ -156,8 +159,22 @@ impl Harness {
             other => return Err(format!("no harness name for {other:?}")),
         };
         let touch = u8::from(self.touch.is_some());
+        let buttons = self.buttons.map_or(0, |b| b.count());
         let imu = u8::from(self.imu.is_some());
-        Ok(Some(format!("{} {} {format} {touch} 0 1 {imu}", size.width, size.height)))
+        Ok(Some(format!("{} {} {format} {touch} {buttons} 1 {imu}", size.width, size.height)))
+    }
+
+    /// `btn <id> down|up` holds or releases a button.
+    fn button(&self, args: &[&str]) -> Result<Option<String>, String> {
+        let buttons = self.buttons.ok_or("no buttons")?;
+        let (id, pressed) = match args {
+            [id, "down"] => (id, true),
+            [id, "up"] => (id, false),
+            _ => return Err("btn <id> down|up".to_string()),
+        };
+        let id: u8 = id.parse().ok().filter(|&i| usize::from(i) < buttons.count()).ok_or("bad id")?;
+        buttons.inject(id, pressed);
+        Ok(None)
     }
 
     fn contact(&mut self, args: &[&str]) -> Result<Option<String>, String> {

@@ -113,7 +113,7 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
     #[cfg(CONFIG_BSP_RS_DRIVER_ESP_HOSTED)]
     coprocessor_init();
     let power = power::start(power, audio);
-    Ok(Board { audio, display: Some(DISPLAY.get_or_init(|| display::Display::new(display))), imu, power, rtc, sd, touch })
+    Ok(Board { audio, buttons: None, display: Some(DISPLAY.get_or_init(|| display::Display::new(display))), imu, power, rtc, sd, touch })
 }
 
 // PI4IOE1 owns LCD_RST + TP_RST + SPK_EN + the headphone-detect input; PI4IOE2
@@ -217,6 +217,7 @@ fn touch_init(bus: &'static MasterBus, display: &Display) -> Option<&'static Tou
         mirror_y: false,
         rotation: display::Rotation::R0,
         int: touch::Int::Gpio(TOUCH_PIN_INT),
+        zones: &[],
     };
     let result = match display {
         Display::Ili9881c(_) => Gt911::new(bus, &gt911::Config {

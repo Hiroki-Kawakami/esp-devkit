@@ -293,6 +293,7 @@ impl I2sOut {
     }
 
     /// The rate last opened.
+    #[allow(dead_code)]
     pub(crate) fn rate(&self) -> u32 {
         self.rate.load(Ordering::Relaxed)
     }

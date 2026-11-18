@@ -11,6 +11,16 @@ choice BSP_RS_BOARD
         bool "M5Stack AtomS3 Lite (ESP32-S3)"
         depends on IDF_TARGET_ESP32S3
 
+    config BSP_RS_BOARD_CORE2
+        bool "M5Stack Core2 (ESP32)"
+        depends on DEVKIT_SIMULATOR || IDF_TARGET_ESP32
+        select BSP_RS_DEVICE_AXP192 if !DEVKIT_SIMULATOR
+        select BSP_RS_DEVICE_AXP2101 if !DEVKIT_SIMULATOR
+        select BSP_RS_DEVICE_BM8563 if !DEVKIT_SIMULATOR
+        select BSP_RS_DEVICE_FT6336U if !DEVKIT_SIMULATOR
+        select BSP_RS_DEVICE_ILI9342C if !DEVKIT_SIMULATOR
+        select BSP_RS_DEVICE_NS4168 if !DEVKIT_SIMULATOR
+
     config BSP_RS_BOARD_CORE_S3
         bool "M5Stack CoreS3 (ESP32-S3)"
         depends on DEVKIT_SIMULATOR || IDF_TARGET_ESP32S3
@@ -47,6 +57,9 @@ config BSP_RS_DEVICE_AW88298
 config BSP_RS_DEVICE_AW9523
     bool
 
+config BSP_RS_DEVICE_AXP192
+    bool
+
 config BSP_RS_DEVICE_AXP2101
     bool
 
@@ -76,6 +89,10 @@ config BSP_RS_DEVICE_ILI9881C
 
 config BSP_RS_DEVICE_INA226
     bool
+
+config BSP_RS_DEVICE_NS4168
+    bool
+    select BSP_RS_DRIVER_I2S_OUT
 
 config BSP_RS_DEVICE_PI4IO
     bool

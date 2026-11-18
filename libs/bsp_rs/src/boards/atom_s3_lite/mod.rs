@@ -21,5 +21,5 @@ impl power::Driver for UsbPower {
 
 pub(crate) fn init(_config: &Config) -> Result<Board> {
     let power = power::start(UsbPower, None);
-    Ok(Board { audio: None, display: None, imu: None, power, rtc: None, sd: None, touch: None })
+    Ok(Board { audio: None, buttons: None, display: None, imu: None, power, rtc: None, sd: None, touch: None })
 }

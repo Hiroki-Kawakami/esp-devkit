@@ -19,6 +19,8 @@ mod absent;
 #[allow(dead_code)]
 pub mod audio;
 mod boards;
+#[allow(dead_code)]
+pub mod button;
 mod devices;
 pub mod dispatch;
 #[allow(dead_code)]
@@ -38,6 +40,8 @@ pub mod touch;
 
 #[cfg(CONFIG_BSP_RS_BOARD_ATOM_S3_LITE)]
 use boards::atom_s3_lite as board;
+#[cfg(CONFIG_BSP_RS_BOARD_CORE2)]
+use boards::core2 as board;
 #[cfg(CONFIG_BSP_RS_BOARD_CORE_S3)]
 use boards::core_s3 as board;
 #[cfg(CONFIG_BSP_RS_BOARD_TAB5)]
@@ -48,6 +52,7 @@ pub use absent::Absent;
 #[non_exhaustive]
 pub struct Board {
     pub audio: Option<&'static audio::Audio>,
+    pub buttons: Option<&'static button::Buttons>,
     pub display: Option<&'static display::Display>,
     pub imu: Option<&'static imu::Imu>,
     pub power: &'static power::Power,

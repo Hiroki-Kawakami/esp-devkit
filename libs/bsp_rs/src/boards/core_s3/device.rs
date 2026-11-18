@@ -91,6 +91,7 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
     let power = power::start(PowerDriver::new(axp, aw), audio);
     Ok(Board {
         audio,
+        buttons: None,
         display: Some(DISPLAY.get_or_init(|| display::Display::new(display))),
         imu: None,
         power,
@@ -170,6 +171,7 @@ fn touch_init(bus: &'static MasterBus, aw: &'static Mutex<Aw9523<'static>>, rota
         mirror_y: false,
         rotation,
         int: touch::Int::External,
+        zones: &[],
     })?;
     expander_int_init(aw, touch).inspect_err(|err| error!(TAG, "expander INT on GPIO{AW9523_PIN_INT}: {err}"))?;
     Ok(touch)
