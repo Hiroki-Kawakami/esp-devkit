@@ -13,7 +13,9 @@ use idf::spi;
 use idf::sync::{Mutex, OnceLock};
 use idf::{Result, gpio, thread};
 
+use super::audio::AudioDriver;
 use super::{PANEL_SIZE, TAG, UnknownPower, resolve_rotation};
+use crate::audio::{self, Audio};
 use crate::devices::aw9523::{Aw9523, PinConfig};
 use crate::devices::axp2101::{self, Axp2101, Ldo};
 use crate::devices::ft6336u::{self, Ft6336u};
@@ -32,6 +34,7 @@ const I2C_PIN_SDA: i32 = 12;
 const I2C_PIN_SCL: i32 = 11;
 
 const AW9523_ADDR: u16 = 0x58;
+const AW9523_AMP_POWER: u8 = 2;
 const AW9523_LCD_RST: u8 = 9;
 const AW9523_TOUCH_INT: usize = 10;
 const AW9523_PIN_INT: i32 = 21;
@@ -77,9 +80,10 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
         .inspect_err(|err| error!(TAG, "aw9523: {err}"))?;
     let display = panel_init(rotation, axp, aw).inspect_err(|err| error!(TAG, "panel: {err}"))?;
     let touch = touch_init(bus, aw, rotation).inspect_err(|err| warn!(TAG, "touch unavailable: {err}")).ok();
-    let power = power::start(UnknownPower, None);
+    let audio = audio_init(config, bus, aw);
+    let power = power::start(UnknownPower, audio);
     Ok(Board {
-        audio: None,
+        audio,
         display: Some(DISPLAY.get_or_init(|| display::Display::new(display))),
         imu: None,
         power,
@@ -98,14 +102,14 @@ fn rails_init(axp: &Axp2101) -> Result<()> {
     axp.set_ldo_enabled(Ldo::Dldo1, false)
 }
 
-// P0_2 powers the speaker amplifier, which does not answer on I2C while it is
-// low; the other outputs gate the panel and the touch controller.
+// P0_2 supplies the speaker amplifier, which stays off until a stream needs
+// it; the other outputs gate the panel and the touch controller.
 fn expander_init(bus: &'static MasterBus) -> Result<Aw9523<'static>> {
     let mut pins = [PinConfig::default(); 16];
-    for pin in [0, 2, 8, usize::from(AW9523_LCD_RST)] {
+    for pin in [0, 8, usize::from(AW9523_LCD_RST)] {
         pins[pin] = PinConfig::output(true);
     }
-    for pin in [1, 5, 6, 7, 12, 13, 14, 15] {
+    for pin in [1, usize::from(AW9523_AMP_POWER), 5, 6, 7, 12, 13, 14, 15] {
         pins[pin] = PinConfig::output(false);
     }
     pins[AW9523_TOUCH_INT] = PinConfig::input(true);
@@ -197,6 +201,14 @@ unsafe extern "C" fn on_expander_int(_: *mut c_void) {
     if let Some(n) = EXPANDER_INT.get() {
         n.notify_from_isr();
     }
+}
+
+// Non-fatal: the board comes up without audio.
+fn audio_init(config: &Config, bus: &'static MasterBus, aw: &'static Mutex<Aw9523<'static>>) -> Option<&'static Audio> {
+    AudioDriver::new(bus, Box::new(move |on| aw.lock().set_output(AW9523_AMP_POWER, on)))
+        .and_then(|driver| audio::start(driver, &config.audio))
+        .inspect_err(|err| warn!(TAG, "audio unavailable: {err}"))
+        .ok()
 }
 
 fn set_backlight(axp: &Axp2101, level: u8) -> Result<()> {

@@ -3,6 +3,8 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
+#[cfg(CONFIG_BSP_RS_DEVICE_AW88298)]
+pub(crate) mod aw88298;
 #[cfg(CONFIG_BSP_RS_DEVICE_AW9523)]
 pub(crate) mod aw9523;
 #[cfg(CONFIG_BSP_RS_DEVICE_AXP2101)]

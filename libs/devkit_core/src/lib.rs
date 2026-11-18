@@ -10,6 +10,7 @@ extern crate alloc;
 
 mod align;
 mod bitflags;
+mod boxed;
 mod buffer_pool;
 mod byte_cursor;
 mod defer;
@@ -20,6 +21,8 @@ pub mod sync;
 mod zeroable;
 
 pub use align::A16;
+#[doc(hidden)]
+pub use boxed::__Box;
 pub use buffer_pool::{BufferBytes, BufferLease, BufferPool};
 pub use byte_cursor::{ByteReader, ByteWriter, OutOfBounds};
 pub use defer::{Guard, guard};

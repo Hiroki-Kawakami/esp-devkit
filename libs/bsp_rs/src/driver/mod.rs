@@ -5,6 +5,8 @@
 
 #[cfg(CONFIG_BSP_RS_DRIVER_ESP_HOSTED)]
 pub(crate) mod esp_hosted;
+#[cfg(CONFIG_BSP_RS_DRIVER_I2S_OUT)]
+pub(crate) mod i2s_out;
 #[cfg(CONFIG_BSP_RS_DRIVER_MIPI_DSI)]
 pub(crate) mod mipi_dsi;
 #[cfg(CONFIG_BSP_RS_DRIVER_SDMMC)]

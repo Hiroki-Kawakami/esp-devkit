@@ -9,11 +9,14 @@ extern crate alloc;
 
 use alloc::vec;
 use alloc::vec::Vec;
+use core::f32::consts::TAU;
 use core::ffi::CStr;
 use core::time::Duration;
 
+use bsp_rs::audio::{Audio, Format, Pcm, SampleFormat};
 use bsp_rs::display::{Display, Image, ImageFormat, Rect, Rotation};
 use bsp_rs::touch::{MAX_POINTS, Point, Touch};
+use devkit_core::math::sinf;
 use devkit_gfx::swap_rgb565;
 use idf::log::{error, info};
 use idf::thread;
@@ -36,6 +39,12 @@ const MARK: i16 = 32;
 const HOLD: Duration = Duration::from_secs(3);
 const DOT: i16 = 8;
 const TOUCH_POLL: Duration = Duration::from_millis(10);
+const BEEP_RATE: u32 = 48_000;
+const BEEP_HZ: f32 = 880.0;
+const BEEP_LENGTH: Duration = Duration::from_millis(150);
+const BEEP_GAP: Duration = Duration::from_millis(500);
+const BEEP_CHUNK: usize = 480;
+const BEEP_VOLUME: u8 = 70;
 
 pub fn run() {
     let board = match bsp_rs::init(&bsp_rs::Config::default()) {
@@ -52,6 +61,11 @@ pub fn run() {
     if let Err(err) = display.set_brightness(100) {
         error!(TAG, "set_brightness: {err}");
     }
+    if let Some(audio) = board.audio
+        && let Err(err) = audio.set_volume(BEEP_VOLUME)
+    {
+        error!(TAG, "set_volume: {err}");
+    }
     for rotation in ROTATIONS.iter().cycle() {
         let mut config = bsp_rs::display::Config::default();
         config.rotation = Some(*rotation);
@@ -65,11 +79,45 @@ pub fn run() {
         info!(TAG, "{:?}: {}x{} {:?}", display.rotation(), size.width, size.height, display.pixel_format());
         draw_bars(display);
         mark_top(display);
+        if let Some(audio) = board.audio {
+            beep_twice(audio);
+        }
         match board.touch {
             Some(touch) => follow_touch(display, touch),
             None => thread::sleep(HOLD),
         }
     }
+}
+
+// The first beep powers the amp up; the second follows within its close delay,
+// so the two heads show whether powering up cuts into a stream.
+fn beep_twice(audio: &Audio) {
+    for i in 0..2 {
+        if i > 0 {
+            thread::sleep(BEEP_GAP);
+        }
+        if let Err(err) = beep(audio) {
+            error!(TAG, "beep: {err}");
+        }
+    }
+}
+
+fn beep(audio: &Audio) -> idf::Result<()> {
+    let format = Format { sample_rate: BEEP_RATE, sample: SampleFormat::S16, channels: 2 };
+    let mut stream = audio.open(format)?;
+    let step = TAU * BEEP_HZ / BEEP_RATE as f32;
+    let mut phase = 0.0f32;
+    let mut pcm = Vec::with_capacity(BEEP_CHUNK * 2);
+    for _ in 0..BEEP_LENGTH.as_millis() as usize * BEEP_RATE as usize / 1000 / BEEP_CHUNK {
+        pcm.clear();
+        for _ in 0..BEEP_CHUNK {
+            let sample = (sinf(phase) * f32::from(i16::MAX / 2)) as i16;
+            pcm.extend_from_slice(&[sample, sample]);
+            phase = (phase + step) % TAU;
+        }
+        stream.write(Pcm::S16(&pcm))?;
+    }
+    stream.close()
 }
 
 // A dot under each finger, for `HOLD`.

@@ -8,12 +8,15 @@ use idf::log::{info, warn};
 use idf::sync::OnceLock;
 
 use super::{PANEL_SIZE, PIXEL_FORMAT, TAG, UnknownPower, resolve_rotation};
+use crate::audio;
 use crate::display;
 use crate::power;
+use crate::sim::audio::SimAudio;
 use crate::sim::{self, gram::SimGram, protocol::Event, touch as sim_touch};
 use crate::touch;
 use crate::{Board, Config};
 
+pub(crate) type AudioDriver = SimAudio;
 pub(crate) type Display = SimGram;
 
 static DISPLAY: OnceLock<display::Display> = OnceLock::new();
@@ -21,9 +24,9 @@ static DISPLAY: OnceLock<display::Display> = OnceLock::new();
 // Without the simulator host there is nothing to show or touch.
 pub(crate) fn init(config: &Config) -> Result<Board> {
     let rotation = resolve_rotation(config)?;
-    let power = power::start(UnknownPower, None);
     let Some(host) = sim::host() else {
         info!(TAG, "board: CoreS3 (simulator, no host)");
+        let power = power::start(UnknownPower, None);
         return Ok(Board { audio: None, display: None, imu: None, power, rtc: None, sd: None, touch: None });
     };
     info!(TAG, "board: CoreS3 (simulator)");
@@ -40,8 +43,13 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
     })
     .inspect_err(|err| warn!(TAG, "touch unavailable: {err}"))
     .ok();
+    let audio = SimAudio::new(host)
+        .and_then(|driver| audio::start(driver, &config.audio))
+        .inspect_err(|err| warn!(TAG, "audio unavailable: {err}"))
+        .ok();
+    let power = power::start(UnknownPower, audio);
     Ok(Board {
-        audio: None,
+        audio,
         display: Some(DISPLAY.get_or_init(|| display::Display::new(panel))),
         imu: None,
         power,

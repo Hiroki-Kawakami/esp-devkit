@@ -9,6 +9,7 @@ use core::ffi::CStr;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 
+use devkit_core::boxed;
 use devkit_core::math::powf;
 use devkit_audio::convert::{self, PcmLayout};
 use devkit_audio::eq::{Biquad, Eq, EqConfig, EqControl};
@@ -234,7 +235,7 @@ struct Dsp {
 }
 
 struct Pipeline {
-    dsp: Option<Dsp>,
+    dsp: Option<Box<Dsp>>,
     out: Vec<u8, Caps>,
 }
 
@@ -244,7 +245,7 @@ fn alloc_filled<T: Clone>(len: usize, value: T) -> Result<Vec<T, Caps>> {
     Ok(vec)
 }
 
-fn create_dsp() -> Result<(Controls, Dsp)> {
+fn create_dsp() -> Result<(Controls, Box<Dsp>)> {
     let (eq, eq_control) =
         Eq::new(&EqConfig { max_stages: MAX_STAGES, enabled: true, ..EqConfig::default() }).map_err(map_err)?;
     let (gain, gain_control) = Gain::new(&GainConfig { gain: 0.0, ..GainConfig::default() }).map_err(map_err)?;
@@ -257,7 +258,7 @@ fn create_dsp() -> Result<(Controls, Dsp)> {
     let work = alloc_filled(CHUNK_FRAMES * MAX_CHANNELS, 0)?;
     Ok((
         Controls { eq: eq_control, gain: gain_control, mixer: mixer_control },
-        Dsp { eq, gain, mixer, work },
+        boxed!(Dsp { eq, gain, mixer, work }),
     ))
 }
 
@@ -297,7 +298,9 @@ struct Core<D> {
 }
 
 impl<D: Driver> Core<D> {
-    fn new(driver: D, config: &Config) -> Result<Self> {
+    // Written straight into the heap: assembled on the stack first, it costs the
+    // caller of bsp_rs::init more than a default main task has.
+    fn new(driver: D, config: &Config) -> Result<Box<Self>> {
         let (controls, dsp) = match config.dsp_mode {
             DspMode::Disable => (None, None),
             DspMode::Auto | DspMode::Manual => match create_dsp() {
@@ -309,7 +312,7 @@ impl<D: Driver> Core<D> {
             },
         };
         let out = alloc_filled(CHUNK_FRAMES * MAX_CHANNELS * MAX_SAMPLE_BYTES, 0)?;
-        let mut audio = Self {
+        let mut audio = boxed!(Self {
             driver,
             dsp_mode: config.dsp_mode,
             controls,
@@ -330,7 +333,7 @@ impl<D: Driver> Core<D> {
             callback: Mutex::new(None),
             callback_changed: AtomicBool::new(false),
             notifier: OnceLock::new(),
-        };
+        });
         let voiced = {
             let state = audio.state.lock();
             let voiced = audio.apply_profile(&state, audio.headphone_inserted());
@@ -787,7 +790,7 @@ impl<D: Driver> Source for OutputSource<'static, D> {
 }
 
 /// Volume, mute, routing and EQ, from any task.
-pub struct Audio(Core<crate::board::AudioDriver>);
+pub struct Audio(Box<Core<crate::board::AudioDriver>>);
 
 impl Audio {
     /// Starts the only stream there can be: `INVALID_STATE` while another
@@ -1057,7 +1060,7 @@ mod tests {
     const STEREO: Format = Format { sample_rate: 48_000, sample: SampleFormat::S16, channels: 2 };
     const FADE_SAMPLES: usize = 4800;
 
-    fn audio_with(driver: Stub, dsp_mode: DspMode) -> Core<Stub> {
+    fn audio_with(driver: Stub, dsp_mode: DspMode) -> Box<Core<Stub>> {
         Core::new(driver, &Config { dsp_mode, speaker_mode: SpeakerMode::On }).unwrap()
     }
 

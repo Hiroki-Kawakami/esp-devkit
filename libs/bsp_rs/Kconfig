@@ -14,6 +14,7 @@ choice BSP_RS_BOARD
     config BSP_RS_BOARD_CORE_S3
         bool "M5Stack CoreS3 (ESP32-S3)"
         depends on DEVKIT_SIMULATOR || IDF_TARGET_ESP32S3
+        select BSP_RS_DEVICE_AW88298 if !DEVKIT_SIMULATOR
         select BSP_RS_DEVICE_AW9523 if !DEVKIT_SIMULATOR
         select BSP_RS_DEVICE_AXP2101 if !DEVKIT_SIMULATOR
         select BSP_RS_DEVICE_FT6336U if !DEVKIT_SIMULATOR
@@ -38,6 +39,10 @@ endchoice
 
 # Chip drivers and transports compiled into the crate; each board selects the
 # ones its bring-up uses.
+config BSP_RS_DEVICE_AW88298
+    bool
+    select BSP_RS_DRIVER_I2S_OUT
+
 config BSP_RS_DEVICE_AW9523
     bool
 
@@ -49,6 +54,7 @@ config BSP_RS_DEVICE_BMI270
 
 config BSP_RS_DEVICE_ES8388
     bool
+    select BSP_RS_DRIVER_I2S_OUT
 
 config BSP_RS_DEVICE_FT6336U
     bool
@@ -87,6 +93,9 @@ config BSP_RS_DEVICE_ST712X_TOUCH
 config BSP_RS_DRIVER_ESP_HOSTED
     bool
     select BSP_RS_DRIVER_SDMMC
+
+config BSP_RS_DRIVER_I2S_OUT
+    bool
 
 config BSP_RS_DRIVER_MIPI_DSI
     bool

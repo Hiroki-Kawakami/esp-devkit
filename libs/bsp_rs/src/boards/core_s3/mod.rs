@@ -9,19 +9,21 @@ use idf::log::error;
 use idf::{Error, Result};
 
 use crate::display::{ImageFormat, Rotation, Size};
-use crate::{Absent, Config, power};
+use crate::{Config, power};
 
 #[cfg(target_os = "none")]
+mod audio;
+#[cfg(target_os = "none")]
 mod device;
+#[cfg(target_os = "none")]
+pub(crate) use audio::AudioDriver;
 #[cfg(target_os = "none")]
 pub(crate) use device::{Display, init};
 
 #[cfg(not(target_os = "none"))]
 mod sim;
 #[cfg(not(target_os = "none"))]
-pub(crate) use sim::{Display, init};
-
-pub(crate) type AudioDriver = Absent;
+pub(crate) use sim::{AudioDriver, Display, init};
 
 const TAG: &CStr = c"core_s3";
 
