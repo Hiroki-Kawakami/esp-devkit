@@ -59,7 +59,6 @@ impl Component for LogDemo {
             top_bar(ui, Some(LogMsg::Back), "Log", actions),
             ui.collection(self.lines, CollectionLayout::List { row_height: theme.widgets.list_item.height }, Self::row).scroll_anchor(ScrollEdge::End).grow(1).id(id!("log")),
         ])
-        .padding_each(0, ui.insets().top, 0, 0)
         .background(ui.colors().surface)
     }
 }

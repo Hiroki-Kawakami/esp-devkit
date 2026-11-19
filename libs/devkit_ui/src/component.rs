@@ -443,6 +443,7 @@ impl<C: Component> AnyHost for Host<C> {
     fn build(&self, tree: &mut Tree, id: u16, node: NodeIndex) {
         let ui = Ui::new(tree.bump(), tree.context(id));
         let element = self.component.view(&ui);
+        tree.slots[usize::from(id)].spacing_below = element.spacing_below;
         tree.reconcile(id, node, &element);
     }
 

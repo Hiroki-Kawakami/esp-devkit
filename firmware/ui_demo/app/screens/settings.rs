@@ -4,7 +4,7 @@
  */
 
 use devkit_ui::widgets::{DropdownMenu, dropdown, segmented, slider, slider_value, switch, table, table_chevron, table_header, table_label, table_row, table_section, table_value, top_bar};
-use devkit_ui::{Align, AutoRotation, ColorMode, Component, Cx, Drag, Element, Input, Screen, Ui, id};
+use devkit_ui::{Align, AutoRotation, ColorMode, Component, Cx, Drag, Element, Input, Insets, Screen, Ui, id};
 use idf::sync::OnceLock;
 
 use crate::resources::{colors, icons};
@@ -54,7 +54,7 @@ impl Settings {
 fn slider_row<'a, M: Copy>(ui: &'a Ui<M>, label: &'a str, text: &'a str, value: u8, on_drag: fn(Drag) -> M) -> Element<'a, M> {
     let theme = ui.theme();
     let header = ui.row([table_label(ui, label), ui.text(theme.fonts.caption, text).foreground(colors::MUTED)]).align(Align::Center);
-    table_row(ui, [ui.column([header, slider(ui, value, on_drag)]).padding_each(0, theme.widgets.unit.padding, 0, theme.widgets.unit.gap).grow(1)])
+    table_row(ui, [ui.column([header, slider(ui, value, on_drag)]).padding_insets(Insets { left: 0, top: theme.widgets.unit.padding, right: 0, bottom: theme.widgets.unit.gap }).grow(1)])
 }
 
 impl Component for Settings {
@@ -130,7 +130,6 @@ impl Component for Settings {
             .grow(1)
             .id(id!("content")),
         ])
-        .padding_each(0, ui.insets().top, 0, 0)
         .background(c.background)
     }
 }

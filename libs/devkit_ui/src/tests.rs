@@ -74,7 +74,7 @@ static SLIDER_TRACK: StateStyle = StateStyle { base: &[Prop::Height(8), Prop::Ba
 static SLIDER_FILL: StateStyle = StateStyle { base: &[Prop::Background(ColorRole::Primary)], ..StateStyle::EMPTY };
 static SLIDER_THUMB: StateStyle = StateStyle { base: &[Prop::Width(28), Prop::Height(28)], ..StateStyle::EMPTY };
 static ICON_BUTTON: StateStyle = StateStyle { base: &[Prop::Width(64), Prop::Height(64)], ..StateStyle::EMPTY };
-static TOP_BAR: StateStyle = StateStyle { base: &[Prop::Height(80), Prop::PaddingX(8), Prop::Gap(12)], ..StateStyle::EMPTY };
+static TOP_BAR: StateStyle = StateStyle { base: &[Prop::Height(64), Prop::Gap(12)], ..StateStyle::EMPTY };
 static TOP_BAR_BACK: StateStyle = StateStyle { base: &[Prop::Height(64), Prop::Gap(12)], ..StateStyle::EMPTY };
 static DROPDOWN_ITEM: StateStyle = StateStyle { base: &[Prop::Height(56)], ..StateStyle::EMPTY };
 static DROPDOWN_MENU: StateStyle = StateStyle { base: &[Prop::Radius(14), Prop::Border(ColorRole::Divider, 2)], ..StateStyle::EMPTY };
@@ -139,7 +139,7 @@ fn widgets(icon: Icon) -> Widgets {
     button: ButtonTheme { root: &EMPTY, label: &EMPTY, primary: &EMPTY, secondary: &EMPTY, destructive: &EMPTY, plain: &EMPTY, navigation: &EMPTY, primary_outline: &EMPTY, secondary_outline: &EMPTY, destructive_outline: &EMPTY, plain_outline: &EMPTY },
     icon_button: IconButtonTheme { root: &ICON_BUTTON },
     list_item: ListItemTheme { height: 80, root: &EMPTY, text: &EMPTY, title: &EMPTY, meta: &EMPTY, leading: &EMPTY, trailing: &EMPTY },
-    top_bar: TopBarTheme { back_height: 64, padding_x: 8, back_icon: icon, root: &TOP_BAR, title: &EMPTY, back: &TOP_BAR_BACK },
+    top_bar: TopBarTheme { back_height: 64, padding_x: 8, padding_y: 8, back_icon: icon, root: &TOP_BAR, title: &EMPTY, back: &TOP_BAR_BACK },
     switch: SwitchTheme { root: &EMPTY, thumb: &EMPTY },
     checkbox: CheckboxTheme { root: &EMPTY, mark: &EMPTY },
     slider: SliderTheme { inset: 14, track_inset: 4, root: &SLIDER_ROOT, track: &SLIDER_TRACK, fill: &SLIDER_FILL, thumb: &SLIDER_THUMB },
@@ -1190,7 +1190,7 @@ impl Component for Cells {
     }
 
     fn view<'a>(&'a self, ui: &'a Ui<CellMsg>) -> Element<'a, CellMsg> {
-        let grid = ui.collection(self.count, CollectionLayout::Grid { width: 100, height: 120 }, cell).gap_xy(16, 20).padding_each(24, 8, 24, 24);
+        let grid = ui.collection(self.count, CollectionLayout::Grid { width: 100, height: 120 }, cell).gap_xy(16, 20).padding_insets(Insets { left: 24, top: 8, right: 24, bottom: 24 });
         ui.column([grid.width(self.width).height(500).id(id!("grid"))])
     }
 }
@@ -2851,6 +2851,7 @@ fn a_tap_in_a_field_places_the_cursor() {
 
 struct TopChrome {
     height: i16,
+    spacing: i16,
 }
 
 impl Component for TopChrome {
@@ -2862,7 +2863,7 @@ impl Component for TopChrome {
     }
 
     fn view<'a>(&'a self, ui: &'a Ui<i16>) -> Element<'a, i16> {
-        if self.height == 0 { ui.empty() } else { ui.column([]).height(self.height).id(id!("chrome")) }
+        if self.height == 0 { ui.empty() } else { ui.column([]).height(self.height).spacing_below(self.spacing).id(id!("chrome")) }
     }
 }
 
@@ -2876,14 +2877,14 @@ impl Component for Padded {
     fn update(&mut self, _: (), _: &mut Cx<Self>) {}
 
     fn view<'a>(&'a self, ui: &'a Ui<()>) -> Element<'a, ()> {
-        ui.column([ui.column([]).height(10).id(id!("first"))]).padding_each(0, ui.insets().top, 0, 0)
+        ui.column([ui.column([]).height(10).id(id!("first"))]).padding_insets(ui.edge_padding(Sides::TOP, Insets::default()))
     }
 }
 
 #[test]
 fn the_chrome_is_as_tall_as_it_comes_out_and_screens_start_below_it() {
     let mut tree = Tree::new(Padded, SCREEN, Caps::INTERNAL, theme());
-    let chrome = tree.add_chrome(TopChrome { height: 30 });
+    let chrome = tree.add_chrome(TopChrome { height: 30, spacing: 0 });
     run(&mut tree);
     assert_eq!(tree.context(0).insets.top, 30);
     assert_eq!(rect_of(&tree, "first").y, 30);
@@ -2894,6 +2895,19 @@ fn the_chrome_is_as_tall_as_it_comes_out_and_screens_start_below_it() {
     tree.post(id, Erased::new(0i16));
     run(&mut tree);
     assert_eq!(rect_of(&tree, "first").y, 0, "a chrome showing nothing covers nothing");
+}
+
+#[test]
+fn the_room_below_the_chrome_collapses_with_the_room_a_view_wants() {
+    let mut tree = Tree::new(Padded, SCREEN, Caps::INTERNAL, theme());
+    tree.add_chrome(TopChrome { height: 30, spacing: 16 });
+    run(&mut tree);
+    assert_eq!(rect_of(&tree, "first").y, 46, "wanting none leaves what the chrome asks for");
+    let taps = Box::leak(Box::new(AtomicU32::new(0)));
+    let mut bar = Tree::new(Bar { back: true, title: "Title", taps }, SCREEN, Caps::INTERNAL, theme());
+    bar.add_chrome(TopChrome { height: 30, spacing: 4 });
+    run(&mut bar);
+    assert_eq!(rect_of(&bar, "back").y, 30 + 8, "the top bar's own padding is the larger");
 }
 
 #[test]
@@ -4057,7 +4071,7 @@ fn a_modal_moves_above_the_keyboard() {
 #[test]
 fn insets_are_what_the_planes_above_cover() {
     let mut tree = asked_with(false, |tree| {
-        tree.add_chrome(TopChrome { height: 40 });
+        tree.add_chrome(TopChrome { height: 40, spacing: 0 });
         tree.add_keyboard(crate::keyboard::KeyboardMode::Auto);
     });
     let chrome = tree.chrome[0];

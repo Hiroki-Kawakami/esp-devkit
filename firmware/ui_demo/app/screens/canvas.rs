@@ -8,7 +8,7 @@ use alloc::vec::Vec;
 
 use devkit_gfx::{Color, TextOptions, TextRun};
 use devkit_ui::widgets::{button, top_bar};
-use devkit_ui::{Canvas, Component, Cx, Element, Gesture, Gestures, Phase, Raster, RasterTarget, Rect, Screen, TextInput, Ui, id};
+use devkit_ui::{Canvas, Component, Cx, Element, Gesture, Gestures, Insets, Phase, Raster, RasterTarget, Rect, Screen, Sides, TextInput, Ui, id};
 
 use crate::scene::BODY;
 
@@ -217,7 +217,7 @@ impl Component for CanvasDemo {
             ui.canvas(Self::draw_chart).height(160).id(id!("chart")).on_size(CanvasMsg::ChartSized),
             ui.canvas(Self::draw_wave).height(160).id(id!("wave")).on_size(|_, height| CanvasMsg::WaveSized(height)).gestures(Gestures::PAN, CanvasMsg::Scrub),
         ])
-        .padding_each(0, ui.insets().top, 0, ui.insets().bottom)
+        .padding_insets(ui.edge_padding(Sides::BOTTOM, Insets::default()))
         .background(ui.colors().surface)
     }
 }

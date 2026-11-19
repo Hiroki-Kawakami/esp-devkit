@@ -257,9 +257,14 @@ app.run();
 - `App::chrome` adds a component along the top, above the screens, that stays
   across navigation. How tall it comes out is the top inset of the screens, 0
   while it shows nothing; planes build from the top down, so screens see the
-  height of this update. Screens read it with `ui.insets()` and can avoid it or
-  draw beneath. `ui.insets()` is what the planes above cover: the chrome and the
+  height of this update. The chrome's root may ask with `.spacing_below(px)`
+  for room between it and what is placed against it; it then leaves that room
+  out of its own padding. `ui.edge_padding(sides, wanted)` gives a view placed
+  against `sides` of the screen its padding: on each of those edges, what the
+  planes above cover plus the larger of `wanted` and the room they ask for, so
+  the two collapse; elsewhere `wanted`. What covers is the chrome and the
   keyboard under the chrome, only the keyboard on the chrome and the `Overlay`.
+  `top_bar` applies it to the top and sides itself.
   `ScreenStyle` tells the chrome what the top root screen
   wants. `Handle`s from `App::chrome` post to that component.
 - `Overlay` holds one screen over a scrim, `widgets.overlay.scrim`. The scrim
@@ -341,7 +346,7 @@ app.run();
   `table_label`, `table_value` and `table_chevron` are the usual ones. Unlike
   `collection`, every row exists.
 - `modal` is a dialog for a screen on the `Overlay`, centered in what
-  `ui.insets()` leave, so it moves above the keyboard. What it holds stacks as
+  `ui.edge_padding` leaves, so it moves above the keyboard. What it holds stacks as
   it is: `modal_title`, `modal_message`, `modal_actions` with buttons side by
   side at equal widths, or any other element. It is `widgets.modal.width` wide,
   less where the screen keeps `margin` free on each side, and
@@ -467,9 +472,9 @@ config.plugins.push(Box::new(SavedColorMode::new()));
 
 - `AppConfig::keyboard` says when the docked keyboard shows: with
   `KeyboardMode::Auto`, while an input has focus and no physical keyboard is
-  reported by `Input::set_keyboard_connected`. It raises `insets().bottom` of
+  reported by `Input::set_keyboard_connected`. It raises the bottom `edge_padding` of
   what is under it, and slides in from the bottom and out again while
-  `insets()` changes at once.
+  `edge_padding` changes at once.
   `widgets::keyboard` places one in a view instead, coming and going at once.
 - A `Keyboard` is static data. Label and action of a `Key` are separate, a style
   or font can replace the theme's, and widths go by quarters of a column: a key

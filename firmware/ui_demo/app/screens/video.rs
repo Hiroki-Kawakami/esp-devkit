@@ -203,7 +203,6 @@ impl Component for VideoDemo {
             .gap(theme.widgets.unit.gap),
             menu,
         ])
-        .padding_each(0, ui.insets().top, 0, 0)
         .background(ui.colors().surface)
     }
 }

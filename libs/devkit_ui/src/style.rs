@@ -348,11 +348,21 @@ pub enum Bars {
     Hidden,
 }
 
-/// Space the chrome takes from each edge of the screen.
+/// A length for each side of a box.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Insets {
-    pub top: i16,
-    pub bottom: i16,
     pub left: i16,
+    pub top: i16,
     pub right: i16,
+    pub bottom: i16,
+}
+
+impl Insets {
+    /// `value` on `sides`, 0 on the others.
+    pub const fn new(sides: Sides, value: i16) -> Self {
+        const fn on(sides: Sides, side: Sides, value: i16) -> i16 {
+            if sides.contains(side) { value } else { 0 }
+        }
+        Self { left: on(sides, Sides::LEFT, value), top: on(sides, Sides::TOP, value), right: on(sides, Sides::RIGHT, value), bottom: on(sides, Sides::BOTTOM, value) }
+    }
 }

@@ -6,7 +6,7 @@
 use alloc::vec::Vec;
 
 use devkit_ui::widgets::{button, list_item, modal, modal_actions, modal_message, modal_title, password_field, progress_bar, progress_indicator, text_field, toast, top_bar};
-use devkit_ui::{Align, Component, Corners, Cx, Edge, Element, Id, Overlay, Part, Presence, Root, Screen, TextBuffer, TextInput, Ui, id};
+use devkit_ui::{Align, Component, Corners, Cx, Edge, Element, Id, Insets, Overlay, Part, Presence, Root, Screen, Sides, TextBuffer, TextInput, Ui, id};
 
 use crate::resources::colors;
 
@@ -73,7 +73,6 @@ impl Component for PresenceDemo {
         items.push(list_item(ui, None, "Toast", Some(if self.toast { "Shown" } else { "Hidden" }), None, PresenceMsg::Toast).id(id!("toggle-toast")));
         let note = if self.toast { toast(ui, "Saved to storage").id(id!("toast")).appear(Presence::fade().offset(0, 24)) } else { ui.empty() };
         ui.column([top_bar(ui, Some(PresenceMsg::Back), "Presence", ui.empty()), ui.scroll(ui.column(items)).grow(1), note])
-            .padding_each(0, ui.insets().top, 0, 0)
             .background(ui.colors().background)
     }
 }
@@ -182,7 +181,7 @@ impl Component for Shown {
                 let sheet = ui
                     .column(self.content(ui, "Bottom sheet", "Comes from the bottom edge and goes back there. Open a modal to replace it at once."))
                     .gap(m.padding)
-                    .padding_each(m.padding, m.padding, m.padding, m.padding + ui.insets().bottom)
+                    .padding_insets(ui.edge_padding(Sides::BOTTOM, Insets::new(Sides::ALL, m.padding)))
                     .radius(m.radius)
                     .corners(Corners::TOP)
                     .background(c.surface)

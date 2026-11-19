@@ -79,6 +79,8 @@ pub(crate) struct Slot {
     /// Only for screens.
     pub(crate) phase: Option<Phase>,
     pub(crate) shown: Vec<Box<dyn Any>>,
+    /// The view's `spacing_below` as last built.
+    pub(crate) spacing_below: i16,
 }
 
 /// A node's `.task`, and its future while the node is shown.
@@ -298,6 +300,7 @@ pub(crate) struct Tree {
     pub(crate) root_id: u32,
     /// How tall the chrome came out, the top inset of what is under it.
     chrome_height: i16,
+    chrome_spacing: i16,
     pub(crate) render_request: Option<(u16, RenderRequest)>,
     pending_animations: Vec<(Id, Animation)>,
     pending_scrolls: Vec<(Id, ScrollTarget, bool)>,
@@ -368,6 +371,7 @@ impl Tree {
             link,
             root_id: 0,
             chrome_height: 0,
+            chrome_spacing: 0,
             render_request: None,
             pending_animations: Vec::new(),
             pending_scrolls: Vec::new(),
@@ -508,35 +512,39 @@ impl Tree {
         self.chrome.iter().any(|&c| self.slots[usize::from(c)].node == node)
     }
 
-    /// What the planes above the one holding `slot` cover.
-    fn insets_above(&self, slot: u16) -> Insets {
+    /// What the planes above the one holding `slot` cover, and the room they
+    /// want below them.
+    fn insets_above(&self, slot: u16) -> (Insets, Insets) {
         let plane = self.plane_of(slot);
         let keyboard = self.keyboard_slot.map_or(NONE, |k| self.slots[usize::from(k)].node);
         // Not placed yet: under everything, as a screen is.
         let mut above = if plane == NONE { self.nodes[self.root as usize].first_child } else { self.nodes[plane as usize].next };
-        let mut insets = Insets::default();
+        let (mut insets, mut spacing) = (Insets::default(), Insets::default());
         while above != NONE {
             if self.is_chrome(above) {
                 insets.top = self.chrome_height;
+                spacing.top = self.chrome_spacing;
             }
             if above == keyboard {
                 insets.bottom = insets.bottom.max(self.keyboard_height);
             }
             above = self.nodes[above as usize].next;
         }
-        insets
+        (insets, spacing)
     }
 
     pub(crate) fn context(&self, slot: u16) -> BuildContext {
         let (split_role, can_pop) = self.nav_state(slot);
         let theme = self.slots[usize::from(slot)].theme;
+        let (insets, spacing) = self.insets_above(slot);
         BuildContext {
             split_role,
             can_pop,
             colors: *theme.palette(self.color_mode),
             color_mode: self.color_mode,
             theme,
-            insets: self.insets_above(slot),
+            insets,
+            spacing,
             area: self.area,
             screen_style: self.screen_style,
             format: self.format,
@@ -577,7 +585,7 @@ impl Tree {
         match free {
             Some(slot) => slot as u16,
             None => {
-                self.slots.push(Slot { host: None, node: NONE, events: None, theme: self.theme, phase: None, shown: Vec::new() });
+                self.slots.push(Slot { host: None, node: NONE, events: None, theme: self.theme, phase: None, shown: Vec::new(), spacing_below: 0 });
                 (self.slots.len() - 1) as u16
             }
         }
@@ -1276,7 +1284,7 @@ impl Tree {
                 let host = spec.create();
                 let slot = self.alloc_slot();
                 let theme = self.slots[usize::from(owner)].theme;
-                self.slots[usize::from(slot)] = Slot { host: Some(host), node: id, events: spec.event_map(owner), theme, phase: None, shown: Vec::new() };
+                self.slots[usize::from(slot)] = Slot { host: Some(host), node: id, events: spec.event_map(owner), theme, phase: None, shown: Vec::new(), spacing_below: 0 };
                 self.nodes[id as usize].content = NodeContent::Child(slot);
                 self.build_component(slot);
                 return id;
@@ -1449,15 +1457,19 @@ impl Tree {
 
     fn measure_chrome(&mut self) {
         let width = self.area.w;
-        let mut height = 0;
+        let (mut height, mut spacing) = (0, 0);
         for i in 0..self.chrome.len() {
-            let node = self.slots[usize::from(self.chrome[i])].node;
-            height = height.max(self.measure(node, width, crate::layout::UNBOUNDED).1);
+            let slot = &self.slots[usize::from(self.chrome[i])];
+            let (node, wanted) = (slot.node, slot.spacing_below);
+            let h = self.measure(node, width, crate::layout::UNBOUNDED).1;
+            if h + wanted > height + spacing {
+                (height, spacing) = (h, wanted);
+            }
         }
-        if height == self.chrome_height {
+        if (height, spacing) == (self.chrome_height, self.chrome_spacing) {
             return;
         }
-        self.chrome_height = height;
+        (self.chrome_height, self.chrome_spacing) = (height, spacing);
         for slot in 0..self.slots.len() as u16 {
             if self.slots[usize::from(slot)].host.is_some() && !self.chrome.contains(&slot) {
                 self.mark_slot_dirty(slot);

@@ -133,12 +133,14 @@ impl Default for Corners {
 }
 
 devkit_core::bitflags! {
-    /// Which sides of a box a border runs along. The default is all of them.
+    /// Which sides of a box. The default is all of them.
     pub struct Sides: u8 {
         const LEFT = 1 << 0;
         const TOP = 1 << 1;
         const RIGHT = 1 << 2;
         const BOTTOM = 1 << 3;
+        const HORIZONTAL = 0b0101;
+        const VERTICAL = 0b1010;
         const ALL = 0b1111;
     }
 }

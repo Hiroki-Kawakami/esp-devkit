@@ -187,6 +187,7 @@ pub struct NavigatorTheme {
 pub struct TopBarTheme {
     pub back_height: i16,
     pub padding_x: i16,
+    pub padding_y: i16,
     pub back_icon: Icon,
     pub root: &'static StateStyle,
     pub title: &'static StateStyle,

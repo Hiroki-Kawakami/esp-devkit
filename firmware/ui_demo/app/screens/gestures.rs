@@ -86,7 +86,6 @@ impl Component for GestureDemo {
                 .gestures(Gestures::all(), GestureMsg::Touch)
                 .on_tap(GestureMsg::Tap),
         ])
-        .padding_each(0, ui.insets().top, 0, 0)
         .background(c.surface)
     }
 }

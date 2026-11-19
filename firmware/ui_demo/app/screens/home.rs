@@ -53,7 +53,6 @@ impl Component for Home {
     fn view<'a>(&'a self, ui: &'a Ui<u8>) -> Element<'a, u8> {
         let items: Vec<_> = DEMOS.iter().enumerate().map(|(i, (name, id))| list_item(ui, None, name, None, None, i as u8).id(Id::named(*id))).collect();
         ui.column([top_bar(ui, None, "ui_demo", ui.empty()), ui.scroll(ui.column(items)).grow(1)])
-            .padding_each(0, ui.insets().top, 0, 0)
             .background(ui.colors().background)
     }
 }

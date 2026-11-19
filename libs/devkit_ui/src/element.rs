@@ -299,12 +299,13 @@ pub struct ElementData<'a, M: Copy> {
     pub(crate) appear: Option<Presence>,
     pub(crate) task: Option<&'a dyn TaskSpec>,
     pub(crate) disappear: Option<Presence>,
+    pub(crate) spacing_below: i16,
     _msg: PhantomData<fn() -> M>,
 }
 
 impl<'a, M: Copy> Element<'a, M> {
     fn new(bump: NonNull<Bump>, content: Content<'a>, children: &'a mut [Element<'a, M>]) -> Self {
-        let data = ElementData { bump, content, children: NonNull::from(children), style: Style::default(), when: &[], inherit: State::empty(), state_source: false, id: None, part: None, role: Role::None, tap: None, drag: None, on_scroll: None, bounce: true, scrollbar: true, anchor: ScrollEdge::Start, anchored: None, pull: None, gestures: None, size: None, input: None, focusable: false, keep_focus: false, keyboard: None, input_kind: InputKind::Text, repeat: false, state: State::empty(), appear: None, disappear: None, task: None, _msg: PhantomData };
+        let data = ElementData { bump, content, children: NonNull::from(children), style: Style::default(), when: &[], inherit: State::empty(), state_source: false, id: None, part: None, role: Role::None, tap: None, drag: None, on_scroll: None, bounce: true, scrollbar: true, anchor: ScrollEdge::Start, anchored: None, pull: None, gestures: None, size: None, input: None, focusable: false, keep_focus: false, keyboard: None, input_kind: InputKind::Text, repeat: false, state: State::empty(), appear: None, disappear: None, task: None, spacing_below: 0, _msg: PhantomData };
         Self { data: unsafe { NonNull::new_unchecked(bump.as_ref().alloc(data)) } }
     }
 
@@ -434,6 +435,13 @@ impl<'a, M: Copy> Element<'a, M> {
     /// `bounce`.
     pub fn pull(mut self, height: i16, refreshing: bool, msg: M) -> Self {
         self.pull = Some(Pull { height, refreshing, msg: Erased::new(msg) });
+        self
+    }
+
+    /// On the root of a chrome: the room wanted below it. A view placed against
+    /// it gets the larger of this and the room it wants itself.
+    pub fn spacing_below(mut self, px: i16) -> Self {
+        self.spacing_below = px;
         self
     }
 
@@ -651,9 +659,8 @@ impl<'a, M: Copy> Element<'a, M> {
         self.prop(Prop::PaddingY(px))
     }
 
-    /// Left, top, right, bottom.
-    pub fn padding_each(self, left: i16, top: i16, right: i16, bottom: i16) -> Self {
-        self.prop(Prop::PaddingEach(left, top, right, bottom))
+    pub fn padding_insets(self, insets: Insets) -> Self {
+        self.prop(Prop::PaddingEach(insets.left, insets.top, insets.right, insets.bottom))
     }
 
     pub fn gap(self, px: i16) -> Self {
@@ -866,6 +873,7 @@ impl<'a, M: Copy> Children<'a, M> for Vec<Element<'a, M>> {
 pub(crate) struct BuildContext {
     pub(crate) theme: &'static Theme,
     pub(crate) insets: Insets,
+    pub(crate) spacing: Insets,
     pub(crate) area: devkit_gfx::Rect,
     pub(crate) screen_style: ScreenStyle,
     pub(crate) format: ImageFormat,
@@ -891,7 +899,6 @@ impl<M: Copy> Ui<M> {
         self.context.theme
     }
 
-    /// The space the chrome covers.
     pub fn color_mode(&self) -> ColorMode {
         self.context.color_mode
     }
@@ -920,8 +927,20 @@ impl<M: Copy> Ui<M> {
         self.context.format
     }
 
-    pub fn insets(&self) -> Insets {
-        self.context.insets
+    /// The padding for a view placed against `sides` of the screen that wants
+    /// `wanted` along each edge. Past what covers one of `sides`, the larger
+    /// of `wanted` and the room that asks for; elsewhere `wanted`.
+    pub fn edge_padding(&self, sides: Sides, wanted: Insets) -> Insets {
+        let (covered, spacing) = (self.context.insets, self.context.spacing);
+        let edge = |side: Sides, covered: i16, spacing: i16, wanted: i16| {
+            if sides.contains(side) { covered + wanted.max(spacing) } else { wanted }
+        };
+        Insets {
+            left: edge(Sides::LEFT, covered.left, spacing.left, wanted.left),
+            top: edge(Sides::TOP, covered.top, spacing.top, wanted.top),
+            right: edge(Sides::RIGHT, covered.right, spacing.right, wanted.right),
+            bottom: edge(Sides::BOTTOM, covered.bottom, spacing.bottom, wanted.bottom),
+        }
     }
 
     /// The logical size of the whole UI.

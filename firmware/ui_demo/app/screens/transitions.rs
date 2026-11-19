@@ -8,7 +8,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use devkit_ui::widgets::{list_item, segmented, top_bar};
-use devkit_ui::{Child, ColorRole, Component, Cx, Element, Id, Nav, Root, Screen, Transition, Ui, id};
+use devkit_ui::{Child, ColorRole, Component, Cx, Element, Id, Insets, Nav, Root, Screen, Sides, Transition, Ui, id};
 
 use crate::resources::colors;
 
@@ -64,7 +64,6 @@ impl Component for TransitionDemo {
             ui.column([segmented(ui, &options, self.default).id(id!("transition-default"))]).padding(theme.widgets.unit.padding),
             stage,
         ])
-        .padding_each(0, ui.insets().top, 0, 0)
         .background(ui.colors().background)
     }
 }
@@ -133,9 +132,9 @@ impl Component for Page {
             .padding(theme.widgets.unit.padding * 2)
             .background(tint);
         let items: Vec<_> = MOVES.iter().map(|(name, id, msg)| list_item(ui, None, name, None, None, *msg).id(Id::named(*id))).collect();
-        let top = if self.covers { ui.insets().top } else { 0 };
+        let padding = if self.covers { ui.edge_padding(Sides::TOP, Insets::default()) } else { Insets::default() };
         ui.column([header, ui.scroll(ui.column(items)).grow(1)])
-            .padding_each(0, top, 0, 0)
+            .padding_insets(padding)
             .background(c.background)
     }
 }

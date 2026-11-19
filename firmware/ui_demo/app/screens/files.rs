@@ -7,7 +7,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use devkit_ui::widgets::{button, menu, menu_divider, menu_header, menu_item, checkbox, icon_button, list_item, modal, modal_actions, modal_message, modal_title, progress_bar, progress_indicator, slider, slider_value, switch, top_bar};
-use devkit_ui::{Align, Child, CollectionLayout, Component, Cx, Elide, Element, Handle, Id, Justify, Sides, Overlay, Popover, PopoverAlign, RenderMode, Root, Screen, SplitRole, Strips, Ui, id};
+use devkit_ui::{Align, Child, CollectionLayout, Component, Cx, Elide, Element, Handle, Id, Insets, Justify, Sides, Overlay, Popover, PopoverAlign, RenderMode, Root, Screen, SplitRole, Strips, Ui, id};
 use idf::heap::Caps;
 use idf::sync::{LazyLock, Mutex};
 
@@ -106,7 +106,6 @@ impl Component for Storages {
             })
             .collect();
         ui.column([top_bar(ui, Some(StorageMsg::Back), "File Manager", ui.empty()), ui.column(items)])
-            .padding_each(0, ui.insets().top, 0, 0)
             .background(ui.colors().background)
     }
 }
@@ -213,17 +212,16 @@ impl Component for Browser {
             ui.text(theme.fonts.caption, "Internal Storage › Download")
                 .foreground(colors::MUTED)
                 .height(48)
-                .padding_each(24, 13, 24, 0)
+                .padding_insets(Insets { left: 24, top: 13, right: 24, bottom: 0 })
                 .border(ui.colors().divider, 1)
                 .border_sides(Sides::TOP),
             if self.grid {
-                ui.collection(self.names.len(), CollectionLayout::Grid { width: CELL.0, height: CELL.1 }, Self::cell).gap_xy(16, 20).padding_each(24, 8, 24, 24).revision(self.revision).id(id!("grid")).grow(1)
+                ui.collection(self.names.len(), CollectionLayout::Grid { width: CELL.0, height: CELL.1 }, Self::cell).gap_xy(16, 20).padding_insets(Insets { left: 24, top: 8, right: 24, bottom: 24 }).revision(self.revision).id(id!("grid")).grow(1)
             } else {
                 ui.collection(self.names.len(), CollectionLayout::List { row_height: theme.widgets.list_item.height }, Self::row).revision(self.revision).id(id!("files")).grow(1)
             }
             .background(ui.colors().surface),
         ])
-        .padding_each(0, ui.insets().top, 0, 0)
         .background(ui.colors().surface)
     }
 }
@@ -317,14 +315,13 @@ impl Component for Detail {
                 .gap(m.gap),
                 ui.text(theme.fonts.caption, "/storage/emulated/0/Download/Archives/2026/October/screenshots/large/original.png").foreground(colors::MUTED).ellipsis(Elide::Start).id(id!("path")),
                 ui.text(theme.fonts.body, "A very long file name that should keep both of its ends in view when shortened.pdf").foreground(c.text).wrap().max_lines(2).ellipsis(Elide::Middle).id(id!("long-name")),
-                ui.text(theme.fonts.caption, "This note is long enough to wrap, and what follows it moves down with its height.").foreground(colors::MUTED).wrap().padding_each(m.gap, 0, 0, 0).border(c.primary, 4).border_sides(Sides::LEFT).id(id!("note")),
+                ui.text(theme.fonts.caption, "This note is long enough to wrap, and what follows it moves down with its height.").foreground(colors::MUTED).wrap().padding_insets(Insets::new(Sides::LEFT, m.gap)).border(c.primary, 4).border_sides(Sides::LEFT).id(id!("note")),
             ])
             .padding(m.padding)
             .gap(m.padding)
             .border(c.divider, 1)
             .border_sides(Sides::TOP),
         ])
-        .padding_each(0, ui.insets().top, 0, 0)
         .background(c.surface)
     }
 }

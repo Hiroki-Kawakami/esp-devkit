@@ -130,7 +130,8 @@ pub fn run() {
 
 fn run_demo(board: &Board, display: &'static Display, settings: &Settings) {
     screens::set_display(display);
-    let theme = if cfg!(CONFIG_BSP_RS_BOARD_TAB5) { &resources::TOUCH } else { &resources::SMALL };
+    let small = !cfg!(CONFIG_BSP_RS_BOARD_TAB5);
+    let theme = if small { &resources::SMALL } else { &resources::TOUCH };
     let mut config = AppConfig::new(theme);
     config.plugins.push(Box::new(SavedColorMode::new()));
     if settings.rotated {
@@ -180,7 +181,18 @@ fn run_demo(board: &Board, display: &'static Display, settings: &Settings) {
             Ok(None)
         }
     };
-    let status = app.chrome(StatusBar::new());
+    if !small {
+        let status = app.chrome(StatusBar::new());
+        let clock = thread::Builder::new().name("clock").stack_size(4096).spawn(move || {
+            loop {
+                thread::sleep(Duration::from_secs(1));
+                status.post(StatusMsg::Tick);
+            }
+        });
+        if let Err(err) = clock {
+            error!(TAG, "clock: {err}");
+        }
+    }
     harness_rs::register("video", |_| Ok(Some(screens::VIDEO_FRAMES.load(Ordering::Relaxed).to_string())));
     harness_rs::register("ui", move |args| match args {
         ["tree"] => probe.tree().map(Some),
@@ -212,15 +224,6 @@ fn run_demo(board: &Board, display: &'static Display, settings: &Settings) {
         ["card", "in"] => screens::set_card_present(true).then_some(None).ok_or_else(|| "queue".to_string()),
         _ => Err("ui <tree|stats|tap <id>|invoke <id>|type <text>|key <name>|keyboard <connected|removed>|card <in|out>>".to_string()),
     });
-    let clock = thread::Builder::new().name("clock").stack_size(4096).spawn(move || {
-        loop {
-            thread::sleep(Duration::from_secs(1));
-            status.post(StatusMsg::Tick);
-        }
-    });
-    if let Err(err) = clock {
-        error!(TAG, "clock: {err}");
-    }
     if let Err(err) = harness_rs::start(board) {
         error!(TAG, "harness: {err}");
     }

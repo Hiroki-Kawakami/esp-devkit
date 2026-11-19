@@ -3,7 +3,7 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
-use devkit_ui::{Align, Bars, Component, Cx, Element, Ui, id};
+use devkit_ui::{Align, Bars, Component, Cx, Element, Insets, Ui, id};
 
 use crate::resources::icons;
 use crate::scene::CAPTION;
@@ -45,7 +45,8 @@ impl Component for StatusBar {
             ui.text(&CAPTION, "78%").foreground(color),
         ])
         .height(super::STATUS_BAR_HEIGHT)
-        .padding_x(24)
+        .padding_insets(Insets { left: 24, top: 12, right: 24, bottom: 0 })
+        .spacing_below(12)
         .gap(14)
         .align(Align::Center)
     }

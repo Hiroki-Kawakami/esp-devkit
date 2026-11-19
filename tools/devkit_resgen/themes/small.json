@@ -267,9 +267,9 @@
       "back_icon": "icon.back",
       "back_height": 44,
       "padding_x": 4,
+      "padding_y": 4,
       "root": {
-        "height": 52,
-        "padding_x": "widgets.top_bar.padding_x",
+        "height": "widgets.top_bar.back_height",
         "gap": "widgets.unit.gap"
       },
       "title": {

@@ -3,11 +3,12 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
-use devkit_gfx::Rect;
+use devkit_gfx::{Rect, Sides};
 
 use crate::app::Handle;
 use crate::component::{Component, Cx};
 use crate::element::{Element, Ui};
+use crate::style::Insets;
 
 /// Which side of its anchor a popover opens on. `Auto` takes below where the
 /// popover fits, then above, then the roomier side.
@@ -107,7 +108,7 @@ impl<P: 'static, M: Copy + 'static> Component for Popover<P, M> {
 
 /// `panel` placed by `anchor` in what the insets leave of the screen.
 pub(crate) fn popover<'a, M: Copy>(ui: &'a Ui<M>, anchor: Rect, placement: Placement, align: PopoverAlign, panel: Element<'a, M>) -> Element<'a, M> {
-    let ((width, height), insets) = (ui.screen_size(), ui.insets());
+    let ((width, height), insets) = (ui.screen_size(), ui.edge_padding(Sides::ALL, Insets::default()));
     let bounds = Rect::new(insets.left, insets.top, width - insets.left - insets.right, height - insets.top - insets.bottom);
     ui.column([panel.anchored(Anchored { anchor, bounds, placement, align })])
 }

@@ -9,7 +9,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use devkit_gfx::{Elide, Rect};
+use devkit_gfx::{Elide, Rect, Sides};
 
 use crate::app::Handle;
 use crate::id;
@@ -20,7 +20,7 @@ use crate::presence::Presence;
 use crate::progress::Gauge;
 use crate::keyboard::{Keyboard, KeyboardPanel, KeyboardProps};
 use crate::text_buffer::{TextBuffer, TextInput};
-use crate::style::{Align, Justify, Part, Role, State, StateStyle};
+use crate::style::{Align, Insets, Justify, Part, Role, State, StateStyle};
 use crate::theme::Icon;
 
 const VALUE_RANGE: u16 = 255;
@@ -63,6 +63,7 @@ pub fn list_item<'a, M: Copy>(ui: &'a Ui<M>, leading: Option<Icon>, title: &'a s
 }
 
 /// `back` makes the back icon and the title one button; `actions` follow it.
+/// Placed at the top of the screen, it keeps clear of what covers that edge.
 pub fn top_bar<'a, M: Copy + 'static>(ui: &'a Ui<M>, back: Option<M>, title: &'a str, actions: Element<'a, M>) -> Element<'a, M> {
     let theme = ui.theme();
     let t = &theme.widgets.top_bar;
@@ -74,7 +75,7 @@ pub fn top_bar<'a, M: Copy + 'static>(ui: &'a Ui<M>, back: Option<M>, title: &'a
             let button = ui
                 .row([ui.icon(t.back_icon).shrink(0), label])
                 .style(t.back)
-                .padding_each(left, 0, right, 0)
+                .padding_insets(Insets { left, top: 0, right, bottom: 0 })
                 .shrink(1)
                 .align(Align::Center)
                 .role(Role::Button)
@@ -85,7 +86,9 @@ pub fn top_bar<'a, M: Copy + 'static>(ui: &'a Ui<M>, back: Option<M>, title: &'a
         }
         None => label.padding_x(theme.widgets.unit.padding - t.padding_x).grow(1),
     };
-    ui.row([lead, actions]).style(t.root).align(Align::Center).role(Role::Header)
+    let (x, y) = (t.padding_x, t.padding_y);
+    let padding = ui.edge_padding(Sides::TOP | Sides::HORIZONTAL, Insets { left: x, top: y, right: x, bottom: y });
+    ui.column([ui.row([lead, actions]).style(t.root).align(Align::Center)]).padding_insets(padding).role(Role::Header)
 }
 
 pub fn switch<'a, M: Copy>(ui: &'a Ui<M>, on: bool, on_tap: M) -> Element<'a, M> {
@@ -226,7 +229,8 @@ pub fn vertical_divider<'a, M: Copy>(ui: &'a Ui<M>) -> Element<'a, M> {
 /// A scroller with a table's margins.
 pub fn table<'a, M: Copy>(ui: &'a Ui<M>, children: impl Children<'a, M>) -> Element<'a, M> {
     let padding = ui.theme().widgets.table.padding;
-    ui.scroll(ui.column(children).padding_each(padding, 0, padding, padding + ui.insets().bottom))
+    let padding = ui.edge_padding(Sides::BOTTOM, Insets { left: padding, top: 0, right: padding, bottom: padding });
+    ui.scroll(ui.column(children).padding_insets(padding))
 }
 
 /// The title above a `table_section`.
@@ -310,8 +314,9 @@ pub fn modal<'a, M: Copy>(ui: &'a Ui<M>, children: impl Children<'a, M>) -> Elem
 /// A `modal` whose panel is `element`, as wide as it is.
 pub fn modal_from<'a, M: Copy>(ui: &'a Ui<M>, element: Element<'a, M>) -> Element<'a, M> {
     let t = &ui.theme().widgets.modal;
-    let (width, insets) = (ui.screen_size().0, ui.insets());
-    let room = width - insets.left - insets.right - t.margin * 2;
+    let width = ui.screen_size().0;
+    let padding = ui.edge_padding(Sides::ALL, Insets::new(Sides::HORIZONTAL, t.margin));
+    let room = width - padding.left - padding.right;
     let panel = element
         .style(t.panel)
         .max_width(room)
@@ -319,7 +324,7 @@ pub fn modal_from<'a, M: Copy>(ui: &'a Ui<M>, element: Element<'a, M>) -> Elemen
         .disappear(Presence::fade().ms(100))
         .part_of(Part::Panel);
     ui.column([panel])
-        .padding_each(insets.left + t.margin, insets.top, insets.right + t.margin, insets.bottom)
+        .padding_insets(padding)
         .align(Align::Center)
         .justify(Justify::Center)
         .absolute(Some(0), Some(0), Some(0), Some(0))
