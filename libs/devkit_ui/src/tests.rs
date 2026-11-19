@@ -716,7 +716,9 @@ fn a_dropdown_menu_touches_the_dropdown_and_opens_upward_at_the_bottom() {
     assert!(tree.find(id!("dropdown-menu")).is_none());
     tree.touch(&[(0, (100, 300))], 0);
     tree.touch(&[(0, (100, 0))], 16);
-    tree.touch(&[], 32);
+    tree.touch(&[(0, (100, 0))], 200);
+    tree.touch(&[], 210);
+    assert!(!tree.animating());
     run(&mut tree);
     tap(&mut tree, "open");
     let open = rect_of(&tree, "open");
@@ -1325,6 +1327,29 @@ fn drag_cancels_the_tap_of_a_row() {
     tree.touch(&[], 500);
     tree.update();
     assert!(tree.find(id!("panel")).is_none());
+}
+
+#[test]
+fn a_press_that_stops_a_fling_is_not_a_tap() {
+    let mut tree = Tree::new(Sample::new(), SCREEN, Caps::INTERNAL, theme());
+    run(&mut tree);
+    let viewport = rect_of(&tree, "list");
+    let x = viewport.x + 10;
+    let press = (x, viewport.y + 100);
+    for (i, y) in [300, 260, 220, 180].into_iter().enumerate() {
+        tree.touch(&[(0, (x, viewport.y + y))], i as u32 * 10);
+    }
+    tree.touch(&[], 35);
+    assert!(tree.animating());
+    tree.touch(&[(1, press)], 40);
+    tree.touch(&[], 100);
+    tree.update();
+    assert!(tree.find(id!("panel")).is_none());
+    assert!(!tree.animating());
+    tree.touch(&[(2, press)], 200);
+    tree.touch(&[], 260);
+    tree.update();
+    assert!(tree.find(id!("panel")).is_some(), "the same press on a list at rest taps");
 }
 
 #[test]

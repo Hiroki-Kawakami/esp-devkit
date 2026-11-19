@@ -183,6 +183,8 @@ app.run();
 - Each finger acts on its own, so separate lists scroll and flings run at the
   same time. A node belongs to the first finger on it; another finger landing
   on it does nothing until it lifts and lands again.
+- A finger landing on a scroller that moves by itself stops it and only scrolls
+  it: what is under the finger is not tapped, pressed or dragged.
 - `.gestures(Gestures::PINCH | Gestures::PAN, Msg::Gesture)` recognizes gestures
   on a node and reports a `Gesture`; what they do to the view is the caller's.
   `PRESS` reports `Down` and `Up` whatever else is recognized. With `DOUBLE_TAP`,

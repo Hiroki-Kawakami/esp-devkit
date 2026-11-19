@@ -2297,6 +2297,9 @@ impl Tree {
         let passive = held(hit.scroller, |c| c.scroller) || held(hit.tap, |c| c.tap) || held(hit.drag, |c| c.drag);
         let hit = if passive { NO_HIT } else { hit };
         let gesture = if passive { NONE } else { gesture };
+        let stops = hit.scroller != NONE && self.motion(hit.scroller, |kind| matches!(kind, MotionKind::Fling(_))).is_some();
+        let hit = if stops { Hit { scroller: hit.scroller, ..NO_HIT } } else { hit };
+        let gesture = if stops { NONE } else { gesture };
         self.stop_motions(hit.scroller, |kind| matches!(kind, MotionKind::Fling(_)));
         let position = self.nodes.get(hit.scroller as usize).and_then(|n| n.scroll_offset()).unwrap_or(0) as f32;
         self.set_pressed(hit.tap, true);
