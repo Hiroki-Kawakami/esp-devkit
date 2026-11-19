@@ -2,7 +2,7 @@
 
 An IPv4 network stack in Rust that replaces lwIP: ARP, IPv4 with reassembly,
 ICMP, UDP, TCP, a DHCP client and a DNS resolver, behind a std-like socket API,
-with TLS 1.3 from `devkit_crypto` on top. It runs the same
+with TLS 1.3 from `devkit_crypto` and an HTTP/1.1 client on top. It runs the same
 over the chip's own Wi-Fi, a Wi-Fi coprocessor registered by a board, and the
 simulator's network. How each protocol behaves is in
 [`docs/protocols.md`](docs/protocols.md); how the stack spends its time and how
@@ -29,6 +29,7 @@ stream.write_all(b"hello")?;
 | `wifi_manager` | saved networks, joining them by itself, the Wi-Fi on/off switch |
 | `udp_socket`, `tcp_socket` | `UdpSocket`, `TcpListener`, `TcpStream` and its split halves, with their builders |
 | `tls` | `TlsStream`: a `devkit_crypto` TLS 1.3 client connection over a `TcpStream`, and its split halves |
+| `http` | `Client`, `Response`, `BodyWriter`, and `get` for a single request: HTTP/1.1 over TCP or TLS |
 | `link` | the `Link` trait a network interface implements, `LinkRx` and `RxFrame` |
 | `stack` | the sans-IO `Stack` that does all protocol work |
 | `net` | the stack's task, the lock around the `Stack`, and the wakeups between them |
@@ -153,6 +154,57 @@ tls.write_all(b"GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n
 A handshake verifies the server's chain on the calling task: with
 `Verify::WebPki` it took about 5 KB of stack on the devices.
 
+## HTTP
+
+`http::Client` sends HTTP/1.1 requests to `http://` and `https://` URLs and
+keeps each connection whose response was read to its end, up to `max_idle`
+(4), for the next request to the same scheme, host and port. A kept
+connection the server closed meanwhile gets the request again on a new one.
+`http::get(url)` makes a client for one request; it goes with the response.
+
+```rust
+let client = http::Client::new();
+let mut resp = client.get("https://example.com/data.json").send()?;
+let body = resp.bytes(64 * 1024)?;
+
+let http::Started::Body(mut up) = client.put(url).content_length(n).start()? else { ... };
+up.write_all(&chunk)?;
+let resp = up.finish()?;
+```
+
+- **Bodies.** `Response::read` streams the body, `bytes(limit)` collects it and
+  `save(path)` writes it to a file, leaving what it wrote when it fails. A
+  response dropped before its end closes its connection.
+  `content_length()` is the field as sent and `received()` counts the same
+  bytes, so the two give progress even while the body is decoded.
+- **Compression.** With `DEVKIT_NET_HTTP_DECOMPRESS` the client sends
+  `Accept-Encoding: gzip, deflate` and decodes such bodies; `deflate` is
+  taken with or without its zlib header. A request that sets
+  Accept-Encoding itself gets the body as sent. `bytes(limit)` limits the
+  decoded length; a Content-Length over it, or over what a compressor can
+  make of that much, fails at once with `MessageTooLarge`. Decoding takes
+  about 41 KB of heap per response, allocated at its first read.
+- **Redirects.** 301, 302, 303, 307 and 308 are followed, 20 at most
+  (`redirects`), as curl and wget do: 303, and 301 or 302 after a POST,
+  become a GET; credentials and Authorization and Cookie fields are dropped
+  when the scheme, host or port changes. Past the limit, `TooManyRedirects`.
+- **Authentication.** Credentials from `credentials(user, password)` or the
+  URL go out as Basic with the first request; a 401 that offers Digest
+  (MD5 or SHA-256, `-sess` too, qop `auth`) gets one answer.
+- **Request bodies.** `body(bytes)` is sent again when a redirect or a Digest
+  challenge asks. `start()` streams one on a connection of its own, chunked
+  unless `content_length` is given. A body over 1 MB, a streamed one of unknown
+  length and one sent with credentials ask with `Expect: 100-continue` first;
+  the body goes after 100 Continue or a second of silence. A server that
+  answers before it gets the body hands `start` its response instead
+  (`Started::Response`), after the redirects and the Digest challenge that do
+  not need the body.
+- **Timeouts.** `connect_timeout` (name lookup, TCP and TLS) and
+  `idle_timeout` (each wait for the server) are 30 s; `timeout`, from the
+  request to the end of the body, is off. All of them fail with `TimedOut`.
+- **TLS.** Without `tls(config)`, the default CA bundle verifies servers; it
+  is loaded at the client's first https request.
+
 ## Names
 
 `dns::lookup` (and `_timeout`, `_async`) returns the addresses of a host name.
@@ -194,6 +246,7 @@ tasks, never from an interrupt.
 |---|---|---|
 | `DEVKIT_NET_WIFI` | y where the chip has Wi-Fi | registers the chip's own Wi-Fi as `sta` |
 | `DEVKIT_NET_IRAM_OPT` | n | places the code every frame goes through in IRAM (about 19 KB) |
+| `DEVKIT_NET_HTTP_DECOMPRESS` | y | decodes gzip and deflate HTTP bodies; off, `devkit_compression` stays out of the link |
 
 `DEVKIT_NET_IRAM_OPT` trades heap for speed where flash cache misses dominate;
 see [`docs/performance.md`](docs/performance.md). A new Kconfig symbol reaches an

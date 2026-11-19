@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-# Writes the test's fixtures into a directory: zlib streams and the LZW streams
+# Writes the test's fixtures into a directory: zlib and gzip streams and the LZW streams
 # GIF and TIFF writers produce (Pillow, with libtiff for TIFF), over patterns the
 # test regenerates. Pillow and ffmpeg always write GIF with 8-bit literals, so
 # the narrow case is encoded here and checked by having Pillow decode it.
+import gzip
 import io
 import os
 import struct
@@ -119,9 +120,30 @@ def emit(name, data):
         f.write(data)
 
 
+def flushed():
+    z = zlib.compressobj(9)
+    out = z.compress(runs(3000)) + z.flush(zlib.Z_SYNC_FLUSH)
+    out += z.compress(noise(3000, 0xFF)) + z.flush(zlib.Z_FULL_FLUSH)
+    return out + z.compress(runs(2000)) + z.flush()
+
+
+def gzip_with_fields(data):
+    raw = zlib.compressobj(9, zlib.DEFLATED, -15)
+    deflated = raw.compress(data) + raw.flush()
+    header = b"\x1f\x8b\x08\x1e" + struct.pack("<I", 0) + b"\x00\xff"
+    header += struct.pack("<H", 5) + b"extra" + b"name.bin\x00" + b"comment\x00"
+    header += struct.pack("<H", zlib.crc32(header) & 0xFFFF)
+    stream = header + deflated + struct.pack("<II", zlib.crc32(data), len(data))
+    assert gzip.decompress(stream) == data
+    return stream
+
+
 emit("zlib_noise", zlib.compress(noise(4096, 0xFF), 9))
 emit("zlib_runs", zlib.compress(runs(5000), 9))
 emit("zlib_stored", zlib.compress(noise(300, 0xFF), 0))
+emit("zlib_flush", flushed())
+emit("gzip_runs", gzip.compress(runs(5000), 9, mtime=0))
+emit("gzip_fields", gzip_with_fields(noise(4096, 0x0F)))
 
 bits, stream = gif_lzw(64, 64, noise(4096, 0xFF))
 assert bits == 8

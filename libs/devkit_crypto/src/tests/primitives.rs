@@ -5,7 +5,7 @@
 
 use crate::Error;
 use crate::cipher::chacha20;
-use crate::hash::{Blake2s, Hash, Sha1, Sha256, Sha384, Sha512};
+use crate::hash::{Blake2s, Hash, Md5, Sha1, Sha256, Sha384, Sha512};
 use crate::kdf::Hkdf;
 use crate::mac::{Hmac, siphash};
 
@@ -31,6 +31,7 @@ fn by_name<R>(name: &str, f: &mut dyn FnMut(&dyn Fn(&[u8]) -> Vec<u8>, &dyn Fn(&
         };
     }
     match name {
+        "md5" => with!(Md5),
         "sha1" => with!(Sha1),
         "sha256" => with!(Sha256),
         "sha384" => with!(Sha384),
@@ -49,6 +50,7 @@ fn hkdf(name: &str, salt: &[u8], ikm: &[u8], info: &[u8], len: usize) -> (Vec<u8
         (prk.as_ref().to_vec(), okm)
     }
     match name {
+        "md5" => run::<Md5>(salt, ikm, info, len),
         "sha1" => run::<Sha1>(salt, ikm, info, len),
         "sha256" => run::<Sha256>(salt, ikm, info, len),
         "sha384" => run::<Sha384>(salt, ikm, info, len),

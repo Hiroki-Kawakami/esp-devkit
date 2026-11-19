@@ -5,6 +5,7 @@
 
 mod dhcp;
 mod dns;
+pub(crate) mod http;
 mod ipv4;
 mod link;
 mod runner;

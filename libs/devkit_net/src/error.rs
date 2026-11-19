@@ -28,13 +28,20 @@ pub enum Error {
     /// The name does not exist or has no address.
     NotFound,
     NoNameServer,
+    /// The peer sent what the protocol does not allow.
+    InvalidData,
+    TooManyRedirects,
     Tls(devkit_crypto::Error),
+    /// A file the data went to.
+    Fs(idf::Error),
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Error::Tls(e) = self {
-            return write!(f, "TLS: {e}");
+        match self {
+            Error::Tls(e) => return write!(f, "TLS: {e}"),
+            Error::Fs(e) => return write!(f, "file: {e}"),
+            _ => {}
         }
         f.write_str(match self {
             Error::NotStarted => "network stack not started",
@@ -56,7 +63,9 @@ impl fmt::Display for Error {
             Error::InvalidInput => "invalid input",
             Error::NotFound => "name not found",
             Error::NoNameServer => "no name server",
-            Error::Tls(_) => unreachable!(),
+            Error::InvalidData => "invalid data",
+            Error::TooManyRedirects => "too many redirects",
+            Error::Tls(_) | Error::Fs(_) => unreachable!(),
         })
     }
 }

@@ -7,6 +7,13 @@ config DEVKIT_NET_WIFI
     help
         Registers the chip's own Wi-Fi as the station interface "sta".
 
+config DEVKIT_NET_HTTP_DECOMPRESS
+    bool "Decompress HTTP bodies"
+    default y
+    help
+        The HTTP client asks for gzip and deflate bodies and decodes them.
+        Off, it leaves out the decompressor and returns bodies as sent.
+
 config DEVKIT_NET_IRAM_OPT
     bool "Place the per-packet path in IRAM"
     default n

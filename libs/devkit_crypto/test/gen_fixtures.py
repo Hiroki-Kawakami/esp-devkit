@@ -13,7 +13,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM, ChaCha20Poly1305
 
 LENGTHS = [0, 1, 3, 55, 56, 63, 64, 65, 111, 112, 127, 128, 129, 200, 1000, 4099]
 KEY_LENGTHS = [0, 1, 20, 32, 64, 65, 128, 131]
-HASHES = ["sha1", "sha256", "sha384", "sha512", "blake2s"]
+HASHES = ["md5", "sha1", "sha256", "sha384", "sha512", "blake2s"]
 
 
 def noise(n, seed):

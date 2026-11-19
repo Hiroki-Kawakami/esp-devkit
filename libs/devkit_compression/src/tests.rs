@@ -146,6 +146,117 @@ fn inflate_keeps_its_error() {
     assert_eq!(z.read(&mut src, &mut window, &mut out), Err(Error::Corrupt));
 }
 
+fn flushed() -> Vec<u8> {
+    [runs(3000), noise(3000, 0xFF), runs(2000)].concat()
+}
+
+/// Has the first `avail` bytes of `data`, and more to come until all of them.
+struct Trickle<'a> {
+    data: &'a [u8],
+    pos: usize,
+    avail: usize,
+}
+
+impl Source for Trickle<'_> {
+    fn fill_buf(&mut self) -> Result<&[u8]> {
+        Ok(&self.data[self.pos..self.avail])
+    }
+
+    fn consume(&mut self, n: usize) {
+        self.pos += n;
+    }
+
+    fn pending(&self) -> bool {
+        self.avail < self.data.len()
+    }
+}
+
+fn inflate_trickled(data: &[u8], gzip: bool, step: usize, out_chunk: usize) -> Result<Vec<u8>> {
+    let mut src = Trickle { data, pos: 0, avail: step.min(data.len()) };
+    let mut z = zeroed::<Inflate>();
+    let mut window = zeroed::<Window>();
+    if gzip { z.start_gzip(&mut src)? } else { z.start(&mut src)? };
+    let mut out = Vec::new();
+    let mut buf = vec![0; out_chunk];
+    while !z.ended() {
+        let got = z.read(&mut src, &mut window, &mut buf)?;
+        out.extend_from_slice(&buf[..got]);
+        if got < out_chunk && !z.ended() {
+            assert!(src.pending(), "stopped short with all the input there");
+            src.avail = (src.avail + step).min(data.len());
+        }
+    }
+    Ok(out)
+}
+
+#[test]
+fn inflate_goes_on_as_input_arrives() {
+    let cases = [
+        ("zlib_noise.bin", false, noise(4096, 0xFF)),
+        ("zlib_runs.bin", false, runs(5000)),
+        ("zlib_stored.bin", false, noise(300, 0xFF)),
+        ("zlib_flush.bin", false, flushed()),
+        ("gzip_runs.bin", true, runs(5000)),
+        ("gzip_fields.bin", true, noise(4096, 0x0F)),
+    ];
+    for (name, gzip, want) in cases {
+        let data = fixture(name);
+        for (step, out_chunk) in [(1, 8192), (3, 1), (7, 13), (64, 4096), (1000, 7)] {
+            assert_eq!(inflate_trickled(&data, gzip, step, out_chunk).unwrap(), want, "{name} by {step}");
+        }
+    }
+}
+
+#[test]
+fn inflate_decodes_flushes_and_gzip() {
+    for (input, output) in [(4096, 8192), (1, 7)] {
+        assert_eq!(inflate_all(&fixture("zlib_flush.bin"), input, output).unwrap(), flushed());
+    }
+    for name in ["gzip_runs.bin", "gzip_fields.bin"] {
+        let data = fixture(name);
+        let mut src = &data[..];
+        let mut z = zeroed::<Inflate>();
+        let mut window = zeroed::<Window>();
+        z.start_gzip(&mut src).unwrap();
+        let mut out = vec![0; 6000];
+        let got = z.read(&mut src, &mut window, &mut out).unwrap();
+        assert!(z.ended(), "{name}");
+        assert!(src.is_empty(), "{name}");
+        assert_eq!(&out[..got], if name == "gzip_runs.bin" { runs(5000) } else { noise(4096, 0x0F) });
+    }
+}
+
+fn gunzip(data: &[u8]) -> Result<Vec<u8>> {
+    let mut src = data;
+    let mut z = zeroed::<Inflate>();
+    let mut window = zeroed::<Window>();
+    z.start_gzip(&mut src)?;
+    read_all(|out| z.read(&mut src, &mut window, out), 8192)
+}
+
+#[test]
+fn inflate_checks_the_checksums() {
+    let zlib = fixture("zlib_runs.bin");
+    let mut bad = zlib.clone();
+    *bad.last_mut().unwrap() ^= 1;
+    assert_eq!(inflate_all(&bad, 4096, 8192), Err(Error::Corrupt));
+    assert_eq!(inflate_all(&zlib[..zlib.len() - 2], 4096, 8192), Err(Error::Truncated));
+
+    let gz = fixture("gzip_fields.bin");
+    let n = gz.len();
+    for at in [n - 8, n - 1] {
+        let mut bad = gz.clone();
+        bad[at] ^= 1;
+        assert_eq!(gunzip(&bad), Err(Error::Corrupt), "byte {at} from the end");
+    }
+    let mut bad = gz.clone();
+    bad[10] ^= 1;
+    assert_eq!(gunzip(&bad), Err(Error::Corrupt), "FHCRC");
+    assert_eq!(gunzip(&gz[..n - 3]), Err(Error::Truncated));
+    assert_eq!(gunzip(&gz[..5]), Err(Error::Truncated));
+    assert_eq!(gunzip(&zlib), Err(Error::Corrupt));
+}
+
 #[test]
 fn reading_before_start_fails() {
     let mut src: &[u8] = &[];

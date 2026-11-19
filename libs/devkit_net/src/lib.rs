@@ -17,6 +17,7 @@ mod error;
 mod frag;
 #[cfg(test)]
 mod harness;
+pub mod http;
 mod iface;
 mod icmp;
 mod link;

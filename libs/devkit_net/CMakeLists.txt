@@ -1,6 +1,8 @@
 # Network protocol stack.
 set(srcs "/dev/null")
-set(requires devkit_crypto idf rust_rt)
+# devkit_compression stays out of the link with DEVKIT_NET_HTTP_DECOMPRESS off;
+# IDF resolves requirements before sdkconfig, so they cannot follow it.
+set(requires devkit_compression devkit_crypto idf rust_rt)
 set(headers "")
 set(options "")
 if(ESP_PLATFORM)

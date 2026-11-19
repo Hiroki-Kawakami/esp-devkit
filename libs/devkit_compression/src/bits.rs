@@ -53,8 +53,17 @@ impl<'a> Input<'a> {
         self.padding
     }
 
+    /// What is left of the source's current block.
+    pub(crate) fn left(&self) -> usize {
+        self.end as usize - self.ptr as usize
+    }
+
+    pub(crate) fn more(&self) -> bool {
+        self.src.pending()
+    }
+
     #[cold]
-    fn pad(&mut self) -> Result<u32> {
+    pub(crate) fn pad(&mut self) -> Result<u32> {
         self.padding += 1;
         if self.padding > MAX_PADDING { Err(Error::Truncated) } else { Ok(0) }
     }

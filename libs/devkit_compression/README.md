@@ -7,7 +7,7 @@ call, so neither side ever holds a whole stream.
 | type | what |
 |---|---|
 | `Source` | the input every decompressor takes, as `std::io::BufRead` shapes it; `&[u8]` is one |
-| `Inflate` | DEFLATE inside a zlib wrapper |
+| `Inflate` | DEFLATE inside a zlib (`start`) or gzip (`start_gzip`) wrapper, or bare (`start_raw`) |
 | `Lzw` | variable-width LZW up to 12-bit codes, in the GIF and the TIFF variants |
 
 ```rust
@@ -30,7 +30,17 @@ does not pay for it.
 `read` fills `out`; fewer bytes than asked means the stream ended. A corrupt
 stream fails the call and every later one until `start`. A DEFLATE stream that
 runs out of input fails with `Truncated` once it has read more than the few
-zero bits a final symbol's lookahead needs, or ends quietly at a block boundary.
+zero bits a final symbol's lookahead needs; a bare one may also end quietly at a
+block boundary. A wrapped stream ends after its trailer: the Adler-32 of a zlib
+stream, the CRC-32 and length of a gzip member. One that does not match fails
+with `Corrupt`; `ended` is true only after it matched. A gzip header's optional
+fields are skipped and its header CRC checked.
+
+**Input that arrives in pieces.** A `Source` whose `pending` is true has more
+input to come after what `fill_buf` returns. `Inflate` then decodes while the
+current block surely holds the next symbol, takes the rest one symbol at a time
+without consuming a symbol it only has part of, and returns what it has when the
+input runs out; `ended` tells that apart from the end of the stream.
 
 Running out of input ends an LZW stream as an end-of-information code would:
 writers often leave the code out, and a stream cut short is told apart by the

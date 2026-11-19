@@ -5,6 +5,7 @@
 
 #![cfg_attr(not(test), no_std)]
 
+mod adler32;
 mod bits;
 mod inflate;
 mod lzw;
@@ -39,9 +40,16 @@ impl fmt::Display for Error {
 /// Feeds a decompressor block by block, as `std::io::BufRead` does.
 pub trait Source {
     /// The bytes not consumed yet, or the next block; empty at the end of the
-    /// input.
+    /// input, or of what has arrived while `pending`.
     fn fill_buf(&mut self) -> Result<&[u8]>;
     fn consume(&mut self, n: usize);
+
+    /// More input is still to come after what `fill_buf` has. `Inflate` that
+    /// runs out then returns early and goes on in the next `read`, instead of
+    /// taking the stream as ended; `Lzw` does not ask.
+    fn pending(&self) -> bool {
+        false
+    }
 }
 
 impl Source for &[u8] {

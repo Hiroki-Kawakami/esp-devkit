@@ -4,11 +4,13 @@
  */
 
 mod blake2s;
+mod md5;
 mod sha;
 
 use core::fmt;
 
 pub use blake2s::Blake2s;
+pub use md5::Md5;
 pub use sha::{Sha1, Sha256, Sha384, Sha512};
 
 use crate::psa;

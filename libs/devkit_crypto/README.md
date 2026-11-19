@@ -21,7 +21,7 @@ Hkdf::<Sha256>::new(b"salt", b"input key material").expand(&[b"label", b"context
 | module | what | from |
 |---|---|---|
 | `hash` | the `Hash` trait; `Sha1`, `Sha256`, `Sha384`, `Sha512`; `HashAlg` for signatures | PSA |
-| `hash` | `Blake2s`, keyed or not, 1 to 32 byte digests | own |
+| `hash` | `Blake2s`, keyed or not, 1 to 32 byte digests; `Md5`, for protocols that name it | own |
 | `mac` | `Hmac<H>` over any `Hash`; `siphash` (SipHash-2-4) | own |
 | `kdf` | `Hkdf<H>` over any `Hash` | own |
 | `cipher` | `chacha20` from any block counter | own |
