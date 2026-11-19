@@ -207,6 +207,7 @@ impl Tree {
                 let viewport = rect.intersect(&clip);
                 list.push_clip(viewport);
                 self.paint_children(id, cx, cy - scroll.offset, viewport, down, effects, regions, list);
+                self.paint_scrollbar(id, rect, opacity, palette, effects, list);
                 list.pop_clip();
             }
             NodeContent::Collection(l) => {
@@ -216,6 +217,7 @@ impl Tree {
                     let (px, py) = l.grid.place(index as usize);
                     self.paint_node(item, x + px, y + py - l.offset, viewport, down, effects, regions, list);
                 }
+                self.paint_scrollbar(id, rect, opacity, palette, effects, list);
                 list.pop_clip();
             }
             NodeContent::Navigator(nav) if self.transit(id).is_some_and(|t| t.zoom.is_some()) => {
@@ -281,6 +283,13 @@ impl Tree {
         let Some(side) = nav.split else { return };
         let t = &self.slots[usize::from(node.owner)].theme.widgets.navigator;
         list.fill(Rect::new(rect.x + side, rect.y, t.divider_width, rect.h).intersect(&viewport), dim(palette.color(t.divider_color), opacity));
+    }
+
+    fn paint_scrollbar(&self, id: NodeIndex, rect: Rect, opacity: u8, palette: &Palette, effects: &mut Effects, list: &mut DisplayList<'_, Caps>) {
+        let shown = self.scrollbar_opacity(id);
+        let Some(bar) = self.scrollbar_rect(id, rect).filter(|_| shown > 0) else { return };
+        let t = &self.slots[usize::from(self.nodes[id as usize].owner)].theme.widgets.scrollbar;
+        list.round_rect(bar, effects.corner((t.width / 2) as u8), dim(dim(palette.color(t.color), shown), opacity));
     }
 
     fn paint_children<'a>(&'a self, id: NodeIndex, dx: i32, dy: i32, clip: Rect, inherited: Inherited, effects: &mut Effects, regions: &[Rect], list: &mut DisplayList<'a, Caps>) {

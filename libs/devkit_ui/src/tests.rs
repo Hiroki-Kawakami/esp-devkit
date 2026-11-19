@@ -153,6 +153,7 @@ fn widgets(icon: Icon) -> Widgets {
     table_header: TableHeaderTheme { root: &EMPTY },
     table_section: TableSectionTheme { root: &EMPTY },
     table_row: TableRowTheme { chevron_icon: icon, root: &TABLE_ROW, label: &EMPTY, value: &EMPTY, chevron: &EMPTY },
+    scrollbar: ScrollbarTheme { width: 4, inset: 2, min_length: 20, color: ColorRole::Text },
     navigator: NavigatorTheme { divider_width: 1, divider_color: ColorRole::Divider },
     menu: MenuTheme { check_icon: icon, panel: &MENU_PANEL, item: &MENU_ITEM, icon: &EMPTY, label: &EMPTY, check: &MENU_CHECK, header: &EMPTY, divider: &EMPTY },
     modal: ModalTheme { width: 360, margin: 24, panel: &EMPTY, title: &EMPTY, message: &EMPTY, actions: &EMPTY },
@@ -1042,6 +1043,60 @@ fn a_growing_list_tells_its_extent_with_the_offset_that_goes_with_it() {
 }
 
 #[test]
+fn a_scroller_shows_its_bar_while_it_moves_and_fades_it_after() {
+    let mut tree = layout_tree(|ui, _| ui.column([ui.scroll(ui.column([ui.column([]).height(2000)])).height(500).id(id!("s"))]));
+    let s = tree.find(id!("s")).unwrap();
+    let screen = tree.nodes[s as usize].screen;
+    let x = screen.x + 10;
+    assert_eq!(tree.scrollbar_opacity(s), 0);
+    tree.touch(&[(0, (x, screen.y + 300))], 0);
+    tree.touch(&[(0, (x, screen.y + 200))], 16);
+    run(&mut tree);
+    assert_eq!(tree.scrollbar_opacity(s), 255);
+    assert_eq!(tree.scrollbar_rect(s, screen), Some(Rect::new(screen.right() - 6, screen.y + 2 + 24, 4, 124)));
+    tree.tick(16);
+    tree.tick(1000);
+    assert_eq!(tree.scrollbar_opacity(s), 255, "held by the finger");
+    tree.touch(&[(0, (x, screen.y + 200))], 1100);
+    tree.touch(&[], 1110);
+    tree.tick(500);
+    assert_eq!(tree.scrollbar_opacity(s), 255);
+    assert!(tree.timed() && !tree.animating());
+    tree.tick(200);
+    assert!(tree.animating());
+    tree.tick(150);
+    assert!((100..160).contains(&tree.scrollbar_opacity(s)), "{}", tree.scrollbar_opacity(s));
+    tree.tick(200);
+    assert_eq!(tree.scrollbar_opacity(s), 0);
+    assert!(!tree.timed() && !tree.animating());
+}
+
+#[test]
+fn the_bar_reaches_the_end_shrinks_past_it_and_stays_off_where_nothing_overflows() {
+    let tree = layout_tree(|ui, _| {
+        ui.column([
+            ui.scroll(ui.column([ui.column([]).height(2000)])).height(300).scroll_anchor(ScrollEdge::End).id(id!("end")),
+            ui.scroll(ui.column([ui.column([]).height(100)])).height(150).id(id!("fits")),
+            ui.scroll(ui.column([ui.column([]).height(2000)])).height(100).scrollbar(false).id(id!("off")),
+        ])
+    });
+    let bar = |name: &str| {
+        let id = tree.find(crate::Id::of(name)).unwrap();
+        tree.scrollbar_rect(id, tree.nodes[id as usize].screen)
+    };
+    let end = rect_of(&tree, "end");
+    let at_end = bar("end").unwrap();
+    assert_eq!((at_end.bottom(), at_end.h), (end.bottom() - 2, 44));
+    assert_eq!(bar("fits"), None);
+    assert_eq!(bar("off"), None);
+    let mut tree = tree;
+    let id = tree.find(id!("end")).unwrap();
+    *tree.nodes[id as usize].scroll_offset_mut().unwrap() += 30;
+    let past = tree.scrollbar_rect(id, end).unwrap();
+    assert_eq!((past.bottom(), past.h), (end.bottom() - 2, 14));
+}
+
+#[test]
 fn a_scroll_starts_at_its_end_anchor() {
     let tree = layout_tree(|ui, _| ui.column([ui.scroll(ui.column([ui.column([]).height(2000)])).height(500).scroll_anchor(ScrollEdge::End).id(id!("s"))]));
     assert_eq!(tree.nodes[tree.find(id!("s")).unwrap() as usize].scroll_offset(), Some(1500));
@@ -1652,6 +1707,76 @@ fn a_drag_follows_the_contact_without_a_tap_slop() {
     assert_eq!(thumb.x + thumb.w / 2, tree.nodes[fill as usize].screen.right());
     tree.touch(&[], 32);
     tree.update();
+}
+
+struct ScrolledSlider(&'static core::cell::RefCell<Vec<Drag>>);
+
+impl Component for ScrolledSlider {
+    type Msg = Drag;
+    fn update(&mut self, drag: Drag, _: &mut Cx<Self>) {
+        self.0.borrow_mut().push(drag);
+    }
+    fn view<'a>(&'a self, ui: &'a Ui<Drag>) -> Element<'a, Drag> {
+        let content = ui.column([widgets::slider(ui, 0, |drag| drag).width(200).id(id!("slider")), ui.column([]).height(2000)]);
+        ui.column([ui.scroll(content).grow(1).id(id!("scroll"))])
+    }
+}
+
+impl Screen for ScrolledSlider {}
+
+fn scrolled_slider() -> (Tree, &'static core::cell::RefCell<Vec<Drag>>, (i16, i16)) {
+    let drags = Box::leak(Box::new(core::cell::RefCell::new(Vec::new())));
+    let mut tree = Tree::new(ScrolledSlider(drags), SCREEN, Caps::INTERNAL, theme());
+    run(&mut tree);
+    let slider = rect_of(&tree, "slider");
+    (tree, drags, (slider.x + 100, slider.y + slider.h / 2))
+}
+
+fn scrolled(tree: &Tree) -> i32 {
+    tree.nodes[tree.find(id!("scroll")).unwrap() as usize].scroll_offset().unwrap()
+}
+
+#[test]
+fn a_slider_in_a_scroller_moved_along_it_scrolls_and_hears_nothing() {
+    let (mut tree, drags, (x, y)) = scrolled_slider();
+    tree.touch(&[(0, (x, y))], 0);
+    tree.touch(&[(0, (x + 2, y - 40))], 16);
+    tree.touch(&[(0, (x + 4, y - 80))], 32);
+    tree.touch(&[(0, (x + 4, y - 80))], 200);
+    tree.touch(&[], 210);
+    run(&mut tree);
+    assert!(scrolled(&tree) > 0);
+    assert!(drags.borrow().is_empty());
+}
+
+#[test]
+fn a_slider_in_a_scroller_moved_across_it_drags_and_holds_the_scroller() {
+    let (mut tree, drags, (x, y)) = scrolled_slider();
+    tree.touch(&[(0, (x, y))], 0);
+    tree.update();
+    assert!(drags.borrow().is_empty(), "nothing before the first move");
+    tree.touch(&[(0, (x + 40, y + 4))], 16);
+    tree.touch(&[(0, (x + 60, y - 80))], 32);
+    tree.touch(&[], 48);
+    run(&mut tree);
+    assert_eq!(scrolled(&tree), 0);
+    let drags = drags.borrow();
+    assert_eq!(drags.len(), 3);
+    assert_eq!(drags[1].x - drags[0].x, 20);
+    assert!(drags[2].ended);
+}
+
+#[test]
+fn a_slider_in_a_scroller_pressed_and_lifted_reports_the_press_then_the_end() {
+    let (mut tree, drags, (x, y)) = scrolled_slider();
+    tree.touch(&[(0, (x, y))], 0);
+    tree.touch(&[(0, (x + 3, y + 3))], 16);
+    tree.touch(&[], 100);
+    run(&mut tree);
+    let drags = drags.borrow();
+    assert_eq!(drags.len(), 2);
+    assert_eq!((drags[0].x + 3, drags[0].ended), (drags[1].x, false));
+    assert!(drags[1].ended);
 }
 
 #[test]

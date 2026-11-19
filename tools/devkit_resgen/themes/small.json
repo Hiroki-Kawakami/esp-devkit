@@ -67,7 +67,8 @@
       "pressed": "#dfe3e6",
       "selected": "#e3f2fd",
       "scrim": "#00000080",
-      "shadow": "#11141838"
+      "shadow": "#11141838",
+      "scrollbar": "#00000038"
     },
     "dark": {
       "surface": "#1b1e22",
@@ -83,7 +84,8 @@
       "pressed": "#2a2f35",
       "selected": "#1e3a52",
       "scrim": "#000000a0",
-      "shadow": "#00000060"
+      "shadow": "#00000060",
+      "scrollbar": "#ffffff38"
     }
   },
   "vars": {
@@ -541,6 +543,12 @@
       "divider": {
         "padding_y": 6
       }
+    },
+    "scrollbar": {
+      "width": 4,
+      "inset": 2,
+      "min_length": 24,
+      "color": "color.scrollbar"
     },
     "navigator": {
       "divider_width": 1,

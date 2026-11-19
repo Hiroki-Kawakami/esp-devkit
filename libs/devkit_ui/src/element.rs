@@ -283,6 +283,7 @@ pub struct ElementData<'a, M: Copy> {
     pub(crate) drag: Option<DragMap>,
     pub(crate) on_scroll: Option<ScrollMap>,
     pub(crate) bounce: bool,
+    pub(crate) scrollbar: bool,
     pub(crate) anchor: ScrollEdge,
     pub(crate) anchored: Option<Anchored>,
     pub(crate) pull: Option<Pull>,
@@ -303,7 +304,7 @@ pub struct ElementData<'a, M: Copy> {
 
 impl<'a, M: Copy> Element<'a, M> {
     fn new(bump: NonNull<Bump>, content: Content<'a>, children: &'a mut [Element<'a, M>]) -> Self {
-        let data = ElementData { bump, content, children: NonNull::from(children), style: Style::default(), when: &[], inherit: State::empty(), state_source: false, id: None, part: None, role: Role::None, tap: None, drag: None, on_scroll: None, bounce: true, anchor: ScrollEdge::Start, anchored: None, pull: None, gestures: None, size: None, input: None, focusable: false, keep_focus: false, keyboard: None, input_kind: InputKind::Text, repeat: false, state: State::empty(), appear: None, disappear: None, task: None, _msg: PhantomData };
+        let data = ElementData { bump, content, children: NonNull::from(children), style: Style::default(), when: &[], inherit: State::empty(), state_source: false, id: None, part: None, role: Role::None, tap: None, drag: None, on_scroll: None, bounce: true, scrollbar: true, anchor: ScrollEdge::Start, anchored: None, pull: None, gestures: None, size: None, input: None, focusable: false, keep_focus: false, keyboard: None, input_kind: InputKind::Text, repeat: false, state: State::empty(), appear: None, disappear: None, task: None, _msg: PhantomData };
         Self { data: unsafe { NonNull::new_unchecked(bump.as_ref().alloc(data)) } }
     }
 
@@ -413,6 +414,13 @@ impl<'a, M: Copy> Element<'a, M> {
         self
     }
 
+    /// On a `scroll` or `list`: whether a bar shows where it is while it moves
+    /// and fades after. On by default; content that fits shows none.
+    pub fn scrollbar(mut self, scrollbar: bool) -> Self {
+        self.scrollbar = scrollbar;
+        self
+    }
+
     /// On a `scroll` or `list`: the end it starts at and keeps to while it is
     /// there, as its content grows or shrinks. `Start` by default.
     pub fn scroll_anchor(mut self, edge: ScrollEdge) -> Self {
@@ -436,7 +444,9 @@ impl<'a, M: Copy> Element<'a, M> {
         self
     }
 
-    /// Follows a contact from the press on, ahead of any scrolling around it.
+    /// Follows a contact from the press on. Inside a scroller it waits for the
+    /// first move: across, it follows from there; along, the scroller takes the
+    /// contact and nothing comes. Lifted unmoved, it reports the press, then the end.
     pub fn on_drag(mut self, on_drag: fn(Drag) -> M) -> Self {
         self.drag = Some(DragMap { function: on_drag as *const (), call: call_drag_map::<M> });
         self

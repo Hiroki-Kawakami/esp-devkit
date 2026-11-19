@@ -100,6 +100,8 @@ pub(crate) enum MotionKind {
     Fade(Channel),
     Fling(Fling),
     Phase,
+    /// A scroller's bar fading out.
+    Scrollbar,
 }
 
 /// Something moving on a node by itself, one frame at a time.
@@ -215,6 +217,7 @@ impl Tree {
             MotionKind::Fade(_) => self.step_fade(i),
             MotionKind::Fling(fling) => return self.advance(i, fling, dt_ms),
             MotionKind::Phase => self.step_phase(i),
+            MotionKind::Scrollbar => self.damage_scrollbar(self.motions[i].node),
         }
         ended
     }
@@ -225,6 +228,7 @@ impl Tree {
             MotionKind::Presence(running) => self.end_presence(motion.node, running.appearing),
             MotionKind::Value(animation) => self.end_animation(motion.node, &animation),
             MotionKind::Fade(channel) => self.end_fade(motion.node, channel),
+            MotionKind::Scrollbar => self.damage_scrollbar(motion.node),
             MotionKind::Fling(_) | MotionKind::Phase => {}
         }
     }

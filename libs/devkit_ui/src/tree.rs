@@ -30,9 +30,9 @@ use crate::id::Id;
 use crate::external::{ExternalSurface, Policy, TouchPoint};
 use crate::keyboard::{InputKind, KeyboardMode, KeyboardPanel};
 use crate::erased::Erased;
-use crate::motion::{Clock, Motion, MotionKind};
+use crate::motion::{Clock, Curve, Motion, MotionKind, Repeat};
 use crate::nav::{NavOp, NavigatorNode, Overlay, Root, Saved};
-use crate::node::{CanvasNode, CollectionNode, NONE, Node, NodeContent, NodeImage, NodeIndex, Placement, Pull, ScrollNode, TextNode};
+use crate::node::{Bar, CanvasNode, CollectionNode, NONE, Node, NodeContent, NodeImage, NodeIndex, Placement, Pull, ScrollNode, TextNode};
 use crate::presenter::Strips;
 use crate::progress::ProgressNode;
 use crate::style::{Dimension, Insets, Role, ScreenStyle, State, Style};
@@ -46,6 +46,9 @@ const FLING_MIN: f32 = 0.05;
 const VELOCITY_TAU_MS: f32 = 40.0;
 /// A finger still for this long before lifting throws nothing.
 const FLING_STALE_MS: u32 = 80;
+/// A scroller's bar stays this long after it stops, then fades for `BAR_FADE_MS`.
+const BAR_HOLD_MS: u32 = 600;
+const BAR_FADE_MS: u32 = 300;
 /// Share of the speed lost per millisecond.
 const FLING_DECAY: f32 = 0.0025;
 const MAX_FLING_STEP_MS: f32 = 32.0;
@@ -120,6 +123,9 @@ pub(crate) struct Contact {
     /// Nothing nearer to the finger takes a pan.
     pub(crate) pan: bool,
     pub(crate) dragging: bool,
+    /// `drag` and `scroller` both took the finger; the first move past the
+    /// slop picks one, and `drag` hears nothing until then.
+    deciding: bool,
     /// Of `scroller`, before rounding.
     position: f32,
     velocity: f32,
@@ -970,6 +976,7 @@ impl Tree {
         node.drag = element.drag;
         node.on_scroll = element.on_scroll;
         node.bounce = element.bounce;
+        node.scrollbar = element.scrollbar;
         node.anchor = element.anchor;
         if node.anchored.as_deref() != element.anchored.as_ref() {
             node.anchored = element.anchored.map(Box::new);
@@ -1889,7 +1896,9 @@ impl Tree {
 
     /// Something happens after a delay, without an event to wake for.
     pub(crate) fn timed(&self) -> bool {
-        self.contacts.iter().any(|c| self.nodes.get(c.tap as usize).is_some_and(|n| n.repeat)) || self.gesture_timed()
+        self.contacts.iter().any(|c| self.nodes.get(c.tap as usize).is_some_and(|n| n.repeat))
+            || self.gesture_timed()
+            || self.scrolls.iter().chain(&self.collections).any(|&id| self.nodes[id as usize].bar != Bar::Hidden)
     }
 
     fn set_offset(&mut self, id: NodeIndex, offset: i32) {
@@ -1900,9 +1909,69 @@ impl Tree {
         node.pinned = offset as f32 >= end;
         if offset != before {
             node.scrolled = true;
+            if node.scrollbar {
+                node.bar = Bar::Moved;
+            }
             let screen = node.screen;
             self.damage.push(screen);
+            self.stop_motions(id, |kind| matches!(kind, MotionKind::Scrollbar));
             self.scroll_moved(id, before);
+        }
+    }
+
+    /// Where the bar of `id` goes while `id` is at `rect`, when its content overflows.
+    pub(crate) fn scrollbar_rect(&self, id: NodeIndex, rect: Rect) -> Option<Rect> {
+        let node = &self.nodes[id as usize];
+        if !node.scrollbar {
+            return None;
+        }
+        let ScrollPosition { offset, extent, viewport } = self.scroll_position(id);
+        let viewport = i32::from(viewport);
+        let t = &self.slots[usize::from(node.owner)].theme.widgets.scrollbar;
+        let (width, inset) = (i32::from(t.width), i32::from(t.inset));
+        let track = viewport - 2 * inset;
+        if extent <= viewport || track <= width {
+            return None;
+        }
+        let end = extent - viewport;
+        let length = (track * viewport / extent).max(i32::from(t.min_length)).min(track);
+        let past = if offset < 0 { -offset } else { (offset - end).max(0) };
+        let length = (length - past).max(width);
+        let top = (track - length) * offset.clamp(0, end) / end;
+        Some(Rect::new(rect.right() - (inset + width) as i16, rect.y + (inset + top) as i16, width as i16, length as i16))
+    }
+
+    /// Of 255, how much of the bar of `id` shows.
+    pub(crate) fn scrollbar_opacity(&self, id: NodeIndex) -> u8 {
+        if self.nodes[id as usize].bar != Bar::Hidden {
+            return 255;
+        }
+        let fade = self.motion(id, |kind| matches!(kind, MotionKind::Scrollbar)).and_then(|i| self.motions[i].clock);
+        fade.map_or(0, |clock| (255.0 * (1.0 - clock.linear())) as u8)
+    }
+
+    pub(crate) fn damage_scrollbar(&mut self, id: NodeIndex) {
+        if let Some(bar) = self.scrollbar_rect(id, self.nodes[id as usize].screen) {
+            self.damage.push(bar);
+        }
+    }
+
+    fn tick_scrollbars(&mut self, dt_ms: u32) {
+        for i in 0..self.scrolls.len() + self.collections.len() {
+            let id = if i < self.scrolls.len() { self.scrolls[i] } else { self.collections[i - self.scrolls.len()] };
+            let held = self.moving(id);
+            let node = &mut self.nodes[id as usize];
+            node.bar = match node.bar {
+                Bar::Hidden => continue,
+                Bar::Moved => Bar::Held { ms: 0 },
+                Bar::Held { .. } if held => Bar::Held { ms: 0 },
+                Bar::Held { ms } if ms + dt_ms < BAR_HOLD_MS => Bar::Held { ms: ms + dt_ms },
+                Bar::Held { .. } => {
+                    node.bar = Bar::Hidden;
+                    self.motions.push(Motion::new(id, Some(Clock::new(BAR_FADE_MS, Curve::Linear, Repeat::Once)), MotionKind::Scrollbar));
+                    continue;
+                }
+            };
         }
     }
 
@@ -2280,6 +2349,7 @@ impl Tree {
             surface: NONE,
             pan: hit.scroller == NONE && hit.drag == NONE && hit.surface == NONE,
             dragging: false,
+            deciding: false,
             position: 0.0,
             velocity: 0.0,
             held_ms: 0,
@@ -2304,14 +2374,32 @@ impl Tree {
         let position = self.nodes.get(hit.scroller as usize).and_then(|n| n.scroll_offset()).unwrap_or(0) as f32;
         self.set_pressed(hit.tap, true);
         self.set_pressed(hit.drag, true);
-        self.send_drag(hit.drag, p, false);
+        let deciding = hit.drag != NONE && hit.scroller != NONE;
+        if !deciding {
+            self.send_drag(hit.drag, p, false);
+        }
         self.gesture_pressed(gesture, track, p, now_ms);
-        self.contacts.push(Contact { passive, tap: hit.tap, scroller: hit.scroller, drag: hit.drag, gesture, surface: hit.surface, position, ..contact });
+        self.contacts.push(Contact { passive, tap: hit.tap, scroller: hit.scroller, drag: hit.drag, gesture, surface: hit.surface, deciding, position, ..contact });
     }
 
     fn contact_moved(&mut self, index: usize, p: (i16, i16), now_ms: u32) {
         let mut contact = self.contacts[index];
-        self.send_drag(contact.drag, p, false);
+        if contact.deciding {
+            let across = (i32::from(p.0) - i32::from(contact.start.0)).abs();
+            let along = (i32::from(p.1) - i32::from(contact.start.1)).abs();
+            if across.max(along) > TAP_SLOP {
+                contact.deciding = false;
+                if across >= along {
+                    contact.scroller = NONE;
+                } else {
+                    self.set_pressed(contact.drag, false);
+                    contact.drag = NONE;
+                }
+            }
+        }
+        if !contact.deciding {
+            self.send_drag(contact.drag, p, false);
+        }
         let moved = i32::from(p.1) - i32::from(contact.start.1);
         let starting = !contact.dragging && moved.abs() > TAP_SLOP && contact.scroller != NONE;
         if starting {
@@ -2339,6 +2427,9 @@ impl Tree {
     fn release(&mut self, contact: Contact, now_ms: u32) {
         self.set_pressed(contact.tap, false);
         self.set_pressed(contact.drag, false);
+        if contact.deciding {
+            self.send_drag(contact.drag, contact.start, false);
+        }
         self.send_drag(contact.drag, contact.last, true);
         let consumed = self.gesture_released(&contact, now_ms);
         if contact.scroller != NONE {
@@ -2463,6 +2554,7 @@ impl Tree {
     /// Advances what moves by itself.
     pub(crate) fn tick(&mut self, dt_ms: u32) {
         self.tick_motions(dt_ms);
+        self.tick_scrollbars(dt_ms);
         self.finish_departures();
         self.tick_repeat(dt_ms);
         self.tick_gestures(dt_ms);

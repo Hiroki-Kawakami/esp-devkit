@@ -139,6 +139,15 @@ pub(crate) struct Pull {
     pub(crate) msg: Erased,
 }
 
+/// A scroller's bar, between its moves and its fade.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Bar {
+    Hidden,
+    /// Moved since the last tick, which counts the idle time before the move.
+    Moved,
+    Held { ms: u32 },
+}
+
 pub(crate) struct ScrollNode {
     pub(crate) offset: i32,
     pub(crate) content: i32,
@@ -304,6 +313,8 @@ pub(crate) struct Node {
     pub(crate) drag: Option<DragMap>,
     pub(crate) on_scroll: Option<ScrollMap>,
     pub(crate) bounce: bool,
+    pub(crate) scrollbar: bool,
+    pub(crate) bar: Bar,
     pub(crate) anchor: ScrollEdge,
     pub(crate) anchored: Option<Box<Anchored>>,
     /// At its end as of the last move, before content changed it.
@@ -374,6 +385,8 @@ impl Node {
             drag: None,
             on_scroll: None,
             bounce: true,
+            scrollbar: true,
+            bar: Bar::Hidden,
             anchor: ScrollEdge::Start,
             anchored: None,
             pinned: false,

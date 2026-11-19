@@ -74,6 +74,9 @@ app.run();
   never bounces. `.pull(height, refreshing, msg)` sends `msg` when let go
   `height` past the start and stays that far open until a view gives
   `refreshing` false; the indicator is the app's, drawn from `on_scroll`.
+- A scroller whose content overflows shows a bar along its right side while it
+  moves and fades it out after; `.scrollbar(false)` hides it. The theme's
+  `widgets.scrollbar` sizes and colors it.
 - A `scroll` is as tall as its child where nothing sets its height, up to
   `max_height` or what its parent gives, and shrinks like text; past that its
   child scrolls.
@@ -185,6 +188,8 @@ app.run();
   on it does nothing until it lifts and lands again.
 - A finger landing on a scroller that moves by itself stops it and only scrolls
   it: what is under the finger is not tapped, pressed or dragged.
+- An `on_drag` inside a scroller waits for the finger's first move: across, the
+  drag takes it; along, the scroller does and the drag hears nothing.
 - `.gestures(Gestures::PINCH | Gestures::PAN, Msg::Gesture)` recognizes gestures
   on a node and reports a `Gesture`; what they do to the view is the caller's.
   `PRESS` reports `Down` and `Up` whatever else is recognized. With `DOUBLE_TAP`,

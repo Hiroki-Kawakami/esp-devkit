@@ -166,6 +166,16 @@ pub struct ListItemTheme {
     pub trailing: &'static StateStyle,
 }
 
+/// The bar a `scroll` or `list` shows while it moves, along its right side.
+#[derive(Clone, Copy)]
+pub struct ScrollbarTheme {
+    pub width: i16,
+    /// From the right side and both ends.
+    pub inset: i16,
+    pub min_length: i16,
+    pub color: ColorRole,
+}
+
 /// What divides the two sides of a split navigator.
 #[derive(Clone, Copy)]
 pub struct NavigatorTheme {
@@ -363,6 +373,7 @@ pub struct Widgets {
     pub table_section: TableSectionTheme,
     pub table_row: TableRowTheme,
     pub menu: MenuTheme,
+    pub scrollbar: ScrollbarTheme,
     pub navigator: NavigatorTheme,
     pub modal: ModalTheme,
     pub overlay: OverlayTheme,
