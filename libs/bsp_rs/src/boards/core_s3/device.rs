@@ -15,7 +15,7 @@ use idf::{Result, gpio, thread};
 
 use super::audio::AudioDriver;
 use super::power::{self as core_s3_power, AW9523_BOOST_EN, AW9523_USB_OTG_EN, PowerDriver};
-use super::{PANEL_SIZE, TAG, resolve_rotation};
+use super::{PANEL_PPI, PANEL_SIZE, TAG, resolve_rotation};
 use crate::audio::{self, Audio};
 use crate::devices::aw9523::{Aw9523, PinConfig};
 use crate::devices::axp2101::{self, Axp2101, Ldo};
@@ -154,6 +154,7 @@ fn panel_init(rotation: Rotation, axp: &'static Axp2101, aw: &Mutex<Aw9523>) -> 
         cs: LCD_PIN_CS,
         dc: LCD_PIN_DC,
         size: PANEL_SIZE,
+        ppi: PANEL_PPI,
         madctl: LCD_MADCTL,
         invert: true,
         rotation,

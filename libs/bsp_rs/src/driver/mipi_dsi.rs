@@ -46,6 +46,7 @@ pub(crate) fn send_init_cmds(io: &PanelIo, cmds: &[InitCmd]) -> Result<()> {
 
 pub(crate) struct Config {
     pub size: Size,
+    pub ppi: u16,
     pub pixel_format: ImageFormat,
     /// 0 selects one framebuffer.
     pub fb_num: u8,
@@ -73,6 +74,7 @@ pub(crate) struct MipiDsi {
     stack: Option<Stack>,
     _phy_power: ldo::Channel,
     size: Size,
+    ppi: u16,
     format: ImageFormat,
     fb_num: u8,
     shown: AtomicUsize,
@@ -129,6 +131,7 @@ impl MipiDsi {
             stack: None,
             _phy_power: phy_power,
             size: config.size,
+            ppi: config.ppi,
             format: config.pixel_format,
             fb_num: config.fb_num.max(1),
             shown: AtomicUsize::new(0),
@@ -177,6 +180,10 @@ impl MipiDsi {
 impl Driver for MipiDsi {
     fn size(&self) -> Size {
         self.size
+    }
+
+    fn ppi(&self) -> u16 {
+        self.ppi
     }
 
     fn pixel_format(&self) -> ImageFormat {

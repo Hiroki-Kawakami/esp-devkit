@@ -46,6 +46,8 @@ let board = bsp_rs::init(&bsp_rs::Config::default())?;
   `size()` is then the turned picture and `rotation()` the turn. A panel that
   shows framebuffers takes R0 alone.
 - `set_brightness` takes 0..=100; the backlight starts off.
+- `ppi()` is the panel's pixels per inch, the same along both axes; the board
+  gives it next to the panel's size.
 - `Rect`, `Size`, `Rotation` and `ImageFormat` are `devkit_gfx`'s. `init`
   and the 2D engine return `NOT_SUPPORTED` for a format they cannot take; the
   2D engine returns `INVALID_ARG` for an empty rectangle or one left of or

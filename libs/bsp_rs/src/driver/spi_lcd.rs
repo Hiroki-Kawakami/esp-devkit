@@ -33,6 +33,7 @@ pub(crate) struct Config {
     pub pclk_hz: u32,
     /// Unturned.
     pub size: Size,
+    pub ppi: u16,
     pub pixel_format: ImageFormat,
     /// For the unturned picture; a rotation flips its MV, MX and MY bits.
     pub madctl: u8,
@@ -241,6 +242,7 @@ impl Io {
 pub(crate) struct SpiLcd {
     io: Io,
     size: Size,
+    ppi: u16,
     format: ImageFormat,
     madctl: u8,
     rotation: Rotation,
@@ -269,6 +271,7 @@ impl SpiLcd {
         let mut lcd = Self {
             io,
             size: config.size,
+            ppi: config.ppi,
             format: config.pixel_format,
             madctl: config.madctl,
             rotation: Rotation::R0,
@@ -291,6 +294,10 @@ impl SpiLcd {
 impl Driver for SpiLcd {
     fn size(&self) -> Size {
         if self.rotation.swaps_axes() { Size::new(self.size.height, self.size.width) } else { self.size }
+    }
+
+    fn ppi(&self) -> u16 {
+        self.ppi
     }
 
     fn pixel_format(&self) -> ImageFormat {

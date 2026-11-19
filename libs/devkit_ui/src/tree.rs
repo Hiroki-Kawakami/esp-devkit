@@ -40,8 +40,13 @@ use crate::task::{Local, TaskSpec, TaskStart};
 use crate::text_buffer::TextInput;
 use crate::theme::{ColorMode, Theme};
 
-pub(crate) const TAP_SLOP: i32 = 12;
-const FLING_MIN: f32 = 0.05;
+const TAP_SLOP_MM: f32 = 1.0;
+const DOUBLE_TAP_REACH_MM: f32 = 3.45;
+const SWIPE_MIN_MM: f32 = 5.5;
+/// Per millisecond.
+const FLING_MIN_MM: f32 = 0.0043;
+/// Until `set_ppi`.
+const DEFAULT_PPI: u16 = 294;
 /// Time constant of the speed average: older movement fades with this.
 const VELOCITY_TAU_MS: f32 = 40.0;
 /// A finger still for this long before lifting throws nothing.
@@ -102,6 +107,25 @@ pub(crate) enum Phase {
 enum Deferred {
     Post(u32, Erased),
     Nav(u32, NavOp),
+}
+
+/// How far a finger goes before it means something, in the panel's pixels.
+#[derive(Clone, Copy)]
+pub(crate) struct Reach {
+    /// A finger moved further is no longer a tap.
+    pub(crate) slop: i32,
+    pub(crate) double_tap: i32,
+    pub(crate) swipe: i32,
+    /// Per millisecond: a scroller let go slower stays.
+    pub(crate) fling: f32,
+}
+
+impl Reach {
+    fn new(ppi: u16) -> Self {
+        let px = |mm: f32| mm * f32::from(ppi) / 25.4;
+        let round = |mm: f32| (px(mm) + 0.5) as i32;
+        Self { slop: round(TAP_SLOP_MM), double_tap: round(DOUBLE_TAP_REACH_MM), swipe: round(SWIPE_MIN_MM), fling: px(FLING_MIN_MM) }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -282,6 +306,7 @@ pub(crate) struct Tree {
     reveal_next: NodeIndex,
     focus: NodeIndex,
     keyboard_changed: bool,
+    pub(crate) reach: Reach,
     caret_on: bool,
     caret_ms: u32,
     keyboard_slot: Option<u16>,
@@ -350,6 +375,7 @@ impl Tree {
             reveal_next: NONE,
             focus: NONE,
             keyboard_changed: false,
+            reach: Reach::new(DEFAULT_PPI),
             caret_on: true,
             caret_ms: 0,
             keyboard_slot: None,
@@ -1894,6 +1920,11 @@ impl Tree {
         !self.queue.is_empty()
     }
 
+    /// Sizes what a finger must do to the panel's pixels per inch.
+    pub(crate) fn set_ppi(&mut self, ppi: u16) {
+        self.reach = Reach::new(ppi);
+    }
+
     /// Something happens after a delay, without an event to wake for.
     pub(crate) fn timed(&self) -> bool {
         self.contacts.iter().any(|c| self.nodes.get(c.tap as usize).is_some_and(|n| n.repeat))
@@ -2094,7 +2125,7 @@ impl Tree {
                 }
                 self.fling(id, Fling { position, velocity, anchor: None });
             }
-            None if velocity.abs() > FLING_MIN => self.fling(id, Fling { position, velocity, anchor: None }),
+            None if velocity.abs() > self.reach.fling => self.fling(id, Fling { position, velocity, anchor: None }),
             None => {}
         }
     }
@@ -2118,7 +2149,7 @@ impl Tree {
                 velocity = (velocity - SPRING_RATE * push * dt) * fade;
                 position = target + next;
                 let crossed = anchor.is_none() && next * past < 0.0;
-                let rest = if crossed { velocity.abs() <= FLING_MIN } else { next.abs() < SETTLE_PX && velocity.abs() < SETTLE_SPEED };
+                let rest = if crossed { velocity.abs() <= self.reach.fling } else { next.abs() < SETTLE_PX && velocity.abs() < SETTLE_SPEED };
                 if rest {
                     position = target;
                 }
@@ -2133,7 +2164,7 @@ impl Tree {
                         true
                     }
                     Some(_) => false,
-                    None => velocity.abs() <= FLING_MIN,
+                    None => velocity.abs() <= self.reach.fling,
                 }
             }
         };
@@ -2387,7 +2418,7 @@ impl Tree {
         if contact.deciding {
             let across = (i32::from(p.0) - i32::from(contact.start.0)).abs();
             let along = (i32::from(p.1) - i32::from(contact.start.1)).abs();
-            if across.max(along) > TAP_SLOP {
+            if across.max(along) > self.reach.slop {
                 contact.deciding = false;
                 if across >= along {
                     contact.scroller = NONE;
@@ -2401,7 +2432,7 @@ impl Tree {
             self.send_drag(contact.drag, p, false);
         }
         let moved = i32::from(p.1) - i32::from(contact.start.1);
-        let starting = !contact.dragging && moved.abs() > TAP_SLOP && contact.scroller != NONE;
+        let starting = !contact.dragging && moved.abs() > self.reach.slop && contact.scroller != NONE;
         if starting {
             contact.dragging = true;
             self.set_pressed(contact.tap, false);

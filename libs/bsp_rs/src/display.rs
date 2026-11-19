@@ -101,6 +101,7 @@ fn unsigned(rect: Rect) -> Option<(u32, u32, u32, u32)> {
 pub(crate) trait Driver: Send + Sync {
     /// After the rotation.
     fn size(&self) -> Size;
+    fn ppi(&self) -> u16;
     fn pixel_format(&self) -> ImageFormat;
 
     fn rotation(&self) -> Rotation {
@@ -160,6 +161,10 @@ impl Driver for Absent {
         match *self {}
     }
 
+    fn ppi(&self) -> u16 {
+        match *self {}
+    }
+
     fn pixel_format(&self) -> ImageFormat {
         match *self {}
     }
@@ -175,6 +180,10 @@ macro_rules! driver_enum {
         impl $crate::display::Driver for $name {
             fn size(&self) -> $crate::display::Size {
                 match self { $(Self::$variant(d) => d.size()),+ }
+            }
+
+            fn ppi(&self) -> u16 {
+                match self { $(Self::$variant(d) => d.ppi()),+ }
             }
 
             fn pixel_format(&self) -> $crate::display::ImageFormat {
@@ -265,6 +274,11 @@ impl Display {
     pub fn size(&self) -> Size {
         let size = self.size.load(Ordering::Relaxed);
         Size::new((size >> 16) as u16, size as u16)
+    }
+
+    /// Pixels per inch of the panel, the same along both axes.
+    pub fn ppi(&self) -> u16 {
+        self.driver().ppi()
     }
 
     pub fn pixel_format(&self) -> ImageFormat {

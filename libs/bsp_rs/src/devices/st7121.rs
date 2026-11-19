@@ -12,6 +12,7 @@ use crate::driver::mipi_dsi::{self, InitCmd, MipiDsi};
 
 pub(crate) struct Config {
     pub size: Size,
+    pub ppi: u16,
     pub pixel_format: ImageFormat,
     pub fb_num: u8,
     pub backlight_gpio: Option<i32>,
@@ -21,6 +22,7 @@ pub(crate) struct Config {
 pub(crate) fn create(config: &Config) -> Result<MipiDsi> {
     MipiDsi::new(&mipi_dsi::Config {
         size: config.size,
+        ppi: config.ppi,
         pixel_format: config.pixel_format,
         fb_num: config.fb_num,
         backlight_gpio: config.backlight_gpio,

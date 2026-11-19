@@ -468,6 +468,7 @@ impl<C: Screen> AppState<C> {
                 tree.add_keyboard(config.keyboard);
                 tree.color_mode = color_mode;
                 tree.set_pixel_format(display.pixel_format());
+                tree.set_ppi(display.ppi());
                 tree.half_pictures = presenter.half_pictures();
                 tree
             },

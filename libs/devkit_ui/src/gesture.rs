@@ -5,13 +5,11 @@
 
 use crate::erased::Erased;
 use crate::node::{NONE, NodeIndex};
-use crate::tree::{Contact, TAP_SLOP, Tree};
+use crate::tree::{Contact, Tree};
 
 const DOUBLE_TAP_MS: u32 = 300;
-const DOUBLE_TAP_REACH: i32 = 40;
 const LONG_PRESS_MS: u32 = 500;
 const SWIPE_MS: u32 = 400;
-const SWIPE_MIN: i32 = 64;
 
 devkit_core::bitflags! {
     /// What a node recognizes, reported through one handler.
@@ -293,7 +291,7 @@ impl Tree {
             Mode::Panning => tracker.changed[0] = Some(Gesture::Pan { phase: Phase::Changed, x, y, dx, dy }),
             Mode::Single => {
                 tracker.point = contact.last;
-                if tracker.moved || distance(tracker.start, contact.last) <= TAP_SLOP {
+                if tracker.moved || distance(tracker.start, contact.last) <= self.reach.slop {
                     return;
                 }
                 tracker.moved = true;
@@ -364,7 +362,7 @@ impl Tree {
                 (false, _, true) => Direction::Down,
                 (false, _, false) => Direction::Up,
             };
-            if dx.abs().max(dy.abs()) >= SWIPE_MIN {
+            if dx.abs().max(dy.abs()) >= self.reach.swipe {
                 self.emit(node, Gesture::Swipe { direction });
                 consumed = true;
             }
@@ -379,7 +377,7 @@ impl Tree {
         let node = self.trackers[index].node;
         let first = self.trackers[index].waiting.take();
         if let Some(first) = first {
-            if distance(first.point, contact.last) <= DOUBLE_TAP_REACH {
+            if distance(first.point, contact.last) <= self.reach.double_tap {
                 let (x, y) = self.local(node, contact.last);
                 self.emit(node, Gesture::DoubleTap { x, y });
                 return;

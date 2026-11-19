@@ -12,7 +12,7 @@ use idf::{Error, Result, gpio, thread};
 
 use super::audio::AudioDriver;
 use super::power::{self as tab5_power, BatteryProbe, PowerDriver};
-use super::{PANEL_SIZE, TAG, resolve_fb_num, resolve_pixel_format};
+use super::{PANEL_PPI, PANEL_SIZE, TAG, resolve_fb_num, resolve_pixel_format};
 use crate::audio::{self, Audio};
 use crate::devices::bmi270::{self, Bmi270};
 use crate::devices::gt911::{self, Gt911};
@@ -173,6 +173,7 @@ fn panel_init(config: &Config, bus: &MasterBus) -> Result<Display> {
         if version == Some(1) {
             let lcd = st7121::create(&st7121::Config {
                 size: PANEL_SIZE,
+                ppi: PANEL_PPI,
                 pixel_format,
                 fb_num,
                 backlight_gpio: Some(LCD_PIN_BL),
@@ -183,6 +184,7 @@ fn panel_init(config: &Config, bus: &MasterBus) -> Result<Display> {
         }
         let lcd = st7123::create(&st7123::Config {
             size: PANEL_SIZE,
+            ppi: PANEL_PPI,
             pixel_format,
             fb_num,
             backlight_gpio: Some(LCD_PIN_BL),
@@ -195,6 +197,7 @@ fn panel_init(config: &Config, bus: &MasterBus) -> Result<Display> {
         info!(TAG, "panel: ILI9881C");
         let lcd = ili9881c::create(&ili9881c::Config {
             size: PANEL_SIZE,
+            ppi: PANEL_PPI,
             pixel_format,
             fb_num,
             backlight_gpio: Some(LCD_PIN_BL),

@@ -30,6 +30,7 @@ pub(crate) use sim::{AudioDriver, Display, init};
 const TAG: &CStr = c"core_s3";
 
 const PANEL_SIZE: Size = Size { width: 320, height: 240 };
+const PANEL_PPI: u16 = 200;
 const PIXEL_FORMAT: ImageFormat = ImageFormat::Rgb565Be;
 
 fn resolve_rotation(config: &Config) -> Result<Rotation> {

@@ -48,6 +48,7 @@ impl Progress {
 pub(crate) struct SimGram {
     host: &'static Host,
     size: Size,
+    ppi: u16,
     format: ImageFormat,
     rotation: Rotation,
     issued: Mutex<u32>,
@@ -86,7 +87,7 @@ fn send(host: &Host, queue: Receiver<Command>) {
 
 impl SimGram {
     /// `size` is unturned.
-    pub(crate) fn new(host: &'static Host, size: Size, format: ImageFormat, rotation: Rotation, bytes_per_second: u32) -> Result<Self> {
+    pub(crate) fn new(host: &'static Host, size: Size, ppi: u16, format: ImageFormat, rotation: Rotation, bytes_per_second: u32) -> Result<Self> {
         let wire = match format {
             ImageFormat::Rgb565 => PixelFormat::Rgb565,
             ImageFormat::Rgb565Be => PixelFormat::Rgb565Be,
@@ -104,13 +105,17 @@ impl SimGram {
         host.send(&Event::GramOpen { width: size.width, height: size.height, format: wire, rotation: quarters(rotation), bytes_per_second });
         let (queue, commands) = channel(QUEUE_DEPTH);
         thread::Builder::new().name("sim_gram").stack_size(4096).spawn(move || send(host, commands))?;
-        Ok(Self { host, size, format, rotation, issued: Mutex::new(0), queue, progress })
+        Ok(Self { host, size, ppi, format, rotation, issued: Mutex::new(0), queue, progress })
     }
 }
 
 impl Driver for SimGram {
     fn size(&self) -> Size {
         if self.rotation.swaps_axes() { Size::new(self.size.height, self.size.width) } else { self.size }
+    }
+
+    fn ppi(&self) -> u16 {
+        self.ppi
     }
 
     fn pixel_format(&self) -> ImageFormat {

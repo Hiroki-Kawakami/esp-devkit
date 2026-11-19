@@ -13,7 +13,7 @@ use idf::{Error, Result, spi, thread};
 
 use super::audio::AudioDriver;
 use super::power::{self as core2_power, PowerDriver};
-use super::{BUTTON_ZONES, PANEL_SIZE, TAG, resolve_rotation};
+use super::{BUTTON_ZONES, PANEL_PPI, PANEL_SIZE, TAG, resolve_rotation};
 use crate::audio::{self, Audio};
 use crate::button;
 use crate::devices::axp192::{self, Axp192, Rail};
@@ -219,6 +219,7 @@ fn panel_init(rotation: Rotation, pmu: &'static Pmu) -> Result<SpiLcd> {
         cs: LCD_PIN_CS,
         dc: LCD_PIN_DC,
         size: PANEL_SIZE,
+        ppi: PANEL_PPI,
         madctl: LCD_MADCTL,
         invert: true,
         rotation,

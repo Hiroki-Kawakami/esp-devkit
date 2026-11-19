@@ -190,6 +190,9 @@ app.run();
   it: what is under the finger is not tapped, pressed or dragged.
 - An `on_drag` inside a scroller waits for the finger's first move: across, the
   drag takes it; along, the scroller does and the drag hears nothing.
+- How far a finger moves before a tap turns into a scroll, a drag or a swipe,
+  how near a second tap lands, and how fast a scroller must be let go to
+  glide are lengths on the glass, sized by the display's `ppi()`.
 - `.gestures(Gestures::PINCH | Gestures::PAN, Msg::Gesture)` recognizes gestures
   on a node and reports a `Gesture`; what they do to the view is the caller's.
   `PRESS` reports `Down` and `Up` whatever else is recognized. With `DOUBLE_TAP`,

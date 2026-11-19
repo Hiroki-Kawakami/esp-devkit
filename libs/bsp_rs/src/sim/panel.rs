@@ -23,6 +23,7 @@ const FRAME_PERIOD: Duration = Duration::from_millis(16);
 pub(crate) struct SimPanel {
     host: &'static Host,
     size: Size,
+    ppi: u16,
     formats: &'static [ImageFormat],
     format: ImageFormat,
     buffers: Vec<Vec<u8, Caps>>,
@@ -31,9 +32,9 @@ pub(crate) struct SimPanel {
 
 impl SimPanel {
     /// Framebuffers live in the PSRAM region the host shows them from.
-    pub(crate) fn new(host: &'static Host, size: Size, formats: &'static [ImageFormat], format: ImageFormat, fb_num: u8) -> Result<Self> {
+    pub(crate) fn new(host: &'static Host, size: Size, ppi: u16, formats: &'static [ImageFormat], format: ImageFormat, fb_num: u8) -> Result<Self> {
         let buffers = allocate(size, formats, format, fb_num)?;
-        Ok(Self { host, size, formats, format, buffers, shown: AtomicUsize::new(0) })
+        Ok(Self { host, size, ppi, formats, format, buffers, shown: AtomicUsize::new(0) })
     }
 }
 
@@ -59,6 +60,10 @@ fn allocate(size: Size, formats: &[ImageFormat], format: ImageFormat, fb_num: u8
 impl Driver for SimPanel {
     fn size(&self) -> Size {
         self.size
+    }
+
+    fn ppi(&self) -> u16 {
+        self.ppi
     }
 
     fn pixel_format(&self) -> ImageFormat {

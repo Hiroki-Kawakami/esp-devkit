@@ -7,7 +7,7 @@ use idf::Result;
 use idf::log::{info, warn};
 use idf::sync::OnceLock;
 
-use super::{BUTTON_ZONES, PANEL_SIZE, PIXEL_FORMAT, TAG, resolve_rotation};
+use super::{BUTTON_ZONES, PANEL_PPI, PANEL_SIZE, PIXEL_FORMAT, TAG, resolve_rotation};
 use crate::audio;
 use crate::button;
 use crate::display;
@@ -38,7 +38,7 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
     };
     info!(TAG, "board: Core2 (simulator)");
     host.send(&Event::device("M5Stack Core2"));
-    let panel = SimGram::new(host, PANEL_SIZE, PIXEL_FORMAT, rotation, PANEL_BYTES_PER_SECOND)?;
+    let panel = SimGram::new(host, PANEL_SIZE, PANEL_PPI, PIXEL_FORMAT, rotation, PANEL_BYTES_PER_SECOND)?;
     let touch = sim_touch::start(host, touch::Config {
         width: PANEL_SIZE.width,
         height: PANEL_SIZE.height,

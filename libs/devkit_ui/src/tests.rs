@@ -1043,6 +1043,27 @@ fn a_growing_list_tells_its_extent_with_the_offset_that_goes_with_it() {
 }
 
 #[test]
+fn a_denser_panel_needs_more_pixels_before_a_tap_turns_into_a_scroll() {
+    let scrolled_by = |ppi: u16, by: i16| {
+        let mut tree = layout_tree(|ui, _| ui.column([ui.scroll(ui.column([ui.column([]).height(2000)])).height(500).id(id!("s"))]));
+        tree.set_ppi(ppi);
+        let screen = rect_of(&tree, "s");
+        tree.touch(&[(0, (screen.x + 10, screen.y + 300))], 0);
+        tree.touch(&[(0, (screen.x + 10, screen.y + 300 - by))], 16);
+        tree.nodes[tree.find(id!("s")).unwrap() as usize].scroll_offset().unwrap()
+    };
+    assert_eq!(scrolled_by(294, 10), 0);
+    assert_eq!(scrolled_by(200, 10), 10);
+    let reach = |ppi| {
+        let mut tree = layout_tree(|ui, _| ui.column([]));
+        tree.set_ppi(ppi);
+        (tree.reach.slop, tree.reach.double_tap, tree.reach.swipe)
+    };
+    assert_eq!(reach(294), (12, 40, 64));
+    assert_eq!(reach(200), (8, 27, 43));
+}
+
+#[test]
 fn a_scroller_shows_its_bar_while_it_moves_and_fades_it_after() {
     let mut tree = layout_tree(|ui, _| ui.column([ui.scroll(ui.column([ui.column([]).height(2000)])).height(500).id(id!("s"))]));
     let s = tree.find(id!("s")).unwrap();

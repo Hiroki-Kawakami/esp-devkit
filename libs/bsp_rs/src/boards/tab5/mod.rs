@@ -30,6 +30,7 @@ pub(crate) use sim::{AudioDriver, Display, init};
 const TAG: &CStr = c"tab5";
 
 const PANEL_SIZE: Size = Size { width: 720, height: 1280 };
+const PANEL_PPI: u16 = 294;
 
 fn resolve_fb_num(config: &Config) -> u8 {
     if config.display.fb_num != 0 { config.display.fb_num } else { 2 }
