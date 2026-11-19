@@ -14,7 +14,7 @@ use core::time::Duration;
 use devkit_net::wifi_manager::{self, Manager};
 use devkit_crypto::tls::{ClientConfig, Verify};
 use devkit_crypto::x509::TrustStore;
-use devkit_net::{TcpListener, TcpStream, TlsStream, UdpSocket};
+use devkit_net::{TcpListener, TcpStream, TlsStream, UdpSocket, http};
 use idf::executor::{self, Spawner};
 use idf::log::{error, info};
 use idf::nvs::{Key, Nvs};
@@ -323,6 +323,53 @@ fn https_get(host: &str, path: &str) -> Result<String, String> {
     ))
 }
 
+/// GETs `url` with `devkit_net::http` in the background, over HTTP/1.1 only
+/// with `h1`; the status, the version, the body size decoded and as received,
+/// and the time go to the log.
+fn http_command(args: &[&str]) -> Result<Option<String>, String> {
+    let (url, h1) = match args {
+        [url] => (String::from(*url), false),
+        [url, "h1"] => (String::from(*url), true),
+        _ => return Err(String::from("usage: <url> [h1]")),
+    };
+    idf::thread::Builder::new()
+        .stack_size(16384)
+        .priority(5)
+        .spawn(move || {
+            let result = http_get(&url, h1);
+            let unused = idf::thread::current().stack_high_water_mark();
+            match result {
+                Ok(line) => info!(TAG, "http {url}: {line} | stack unused {unused}"),
+                Err(err) => error!(TAG, "http {url}: {err} | stack unused {unused}"),
+            }
+        })
+        .map_err(|_| String::from("spawn"))?;
+    Ok(None)
+}
+
+fn http_get(url: &str, h1: bool) -> Result<String, String> {
+    let start = idf::time::Instant::now();
+    let mut builder = http::Client::builder();
+    if h1 {
+        let store = TrustStore::default_bundle().map_err(|err| format!("CA bundle: {err}"))?;
+        let mut config = ClientConfig::new(Verify::WebPki(store));
+        config.alpn = vec![b"http/1.1".to_vec()];
+        builder = builder.tls(alloc::sync::Arc::new(config));
+    }
+    let mut resp = builder.build().get(url).send().map_err(|err| format!("{err}"))?;
+    let head = start.elapsed();
+    let body = resp.bytes(1024 * 1024).map_err(|err| format!("{err}"))?;
+    Ok(format!(
+        "{} {:?} | {} bytes, {} received | head {} ms, total {} ms",
+        resp.status(),
+        resp.version(),
+        body.len(),
+        resp.received(),
+        head.as_millis(),
+        start.elapsed().as_millis()
+    ))
+}
+
 /// Times the primitives a TLS connection uses, in the background; results go to the log.
 fn crypto_bench_command(_: &[&str]) -> Result<Option<String>, String> {
     idf::thread::Builder::new()
@@ -527,6 +574,7 @@ pub fn register_commands() {
         Ok(None)
     });
     harness_rs::register("cpu", cpu_command);
+    #[cfg(all(target_os = "none", CONFIG_SOC_AES_SUPPORT_GCM, CONFIG_SOC_AES_GDMA))]
     harness_rs::register("gcm", crate::gcm::command);
     harness_rs::register("udpflood", flood_command);
     harness_rs::register("diag", diag_command);
@@ -539,5 +587,6 @@ pub fn register_commands() {
     harness_rs::register("udp", |args| exchange_command(args, true));
     harness_rs::register("dns", dns_command);
     harness_rs::register("https", https_command);
+    harness_rs::register("http", http_command);
     harness_rs::register("cryptobench", crypto_bench_command);
 }

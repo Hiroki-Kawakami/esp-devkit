@@ -22,6 +22,7 @@ use idf::system::{CORE_COUNT, core_id};
 use idf::thread::{self, Builder};
 use idf::time::Instant;
 
+#[cfg(all(target_os = "none", CONFIG_SOC_AES_SUPPORT_GCM, CONFIG_SOC_AES_GDMA))]
 mod gcm;
 mod net;
 mod netbench;

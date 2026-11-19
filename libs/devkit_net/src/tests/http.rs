@@ -6,13 +6,13 @@
 use std::collections::VecDeque;
 use std::ffi::CString;
 use std::sync::{Arc, Mutex};
-use std::task::Poll;
+use std::task::{Poll, Waker};
 use std::time::{Duration, Instant};
 
 use super::in_task;
 
 use crate::Error;
-use crate::http::{Client, ClientBuilder, Connector, Response, Started, TestTransport};
+use crate::http::{Client, ClientBuilder, Connector, Response, Started, TestTransport, Version};
 
 enum Gate {
     /// Once this many request lines went out.
@@ -21,19 +21,31 @@ enum Gate {
     Seen(&'static [u8]),
 }
 
+type Responder = Box<dyn FnMut(&[u8]) -> Vec<u8> + Send>;
+
 /// One connection of the scripted server: replies released as the client's
-/// requests come in.
+/// requests come in, or made by a responder from each write.
 #[derive(Default)]
-struct Wire {
+pub(crate) struct Wire {
     replies: VecDeque<(Gate, Vec<u8>)>,
     out: VecDeque<u8>,
     chunk: usize,
     sent: Vec<u8>,
     /// EOF once every reply was read.
     close: bool,
+    #[cfg(CONFIG_DEVKIT_NET_HTTP2)]
+    h2: bool,
+    responder: Option<Responder>,
+    waker: Option<Waker>,
 }
 
 impl Wire {
+    /// A connection whose ALPN chose h2, answered by `respond`.
+    #[cfg(CONFIG_DEVKIT_NET_HTTP2)]
+    pub(crate) fn h2(respond: impl FnMut(&[u8]) -> Vec<u8> + Send + 'static) -> Self {
+        Self { chunk: usize::MAX, h2: true, responder: Some(Box::new(respond)), ..Self::default() }
+    }
+
     fn new(replies: &[&str]) -> Self {
         let replies = replies.iter().enumerate().map(|(i, r)| (Gate::Requests(i + 1), r.as_bytes().to_vec())).collect();
         Self { replies, chunk: usize::MAX, ..Self::default() }
@@ -68,16 +80,26 @@ impl Wire {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct Mock(Arc<Mutex<Wire>>);
 
 impl Mock {
-    // A read the script holds back wakes nobody: only a timeout ends it.
+    #[cfg(CONFIG_DEVKIT_NET_HTTP2)]
+    pub(crate) fn h2(&self) -> bool {
+        self.0.lock().unwrap().h2
+    }
+
+    /// Waits until the script releases a reply, which only a write does.
     pub(crate) async fn read(&mut self, buf: &mut [u8]) -> crate::Result<usize> {
-        core::future::poll_fn(|_| {
+        core::future::poll_fn(|cx| {
             let mut wire = self.0.lock().unwrap();
             wire.release();
             if wire.out.is_empty() {
-                return if wire.close && wire.replies.is_empty() { Poll::Ready(Ok(0)) } else { Poll::Pending };
+                if wire.close && wire.replies.is_empty() {
+                    return Poll::Ready(Ok(0));
+                }
+                wire.waker = Some(cx.waker().clone());
+                return Poll::Pending;
             }
             let n = buf.len().min(wire.chunk).min(wire.out.len());
             for (dst, src) in buf.iter_mut().zip(wire.out.drain(..n)) {
@@ -89,19 +111,28 @@ impl Mock {
     }
 
     pub(crate) fn write_all(&mut self, buf: &[u8]) -> crate::Result<()> {
-        self.0.lock().unwrap().sent.extend_from_slice(buf);
+        let mut wire = self.0.lock().unwrap();
+        wire.sent.extend_from_slice(buf);
+        if let Some(mut respond) = wire.responder.take() {
+            let reply = respond(buf);
+            wire.out.extend(reply);
+            wire.responder = Some(respond);
+        }
+        if let Some(waker) = wire.waker.take() {
+            waker.wake();
+        }
         Ok(())
     }
 }
 
 #[derive(Default)]
-struct Server {
+pub(crate) struct Server {
     waiting: Mutex<VecDeque<Arc<Mutex<Wire>>>>,
     opened: Mutex<Vec<(String, Arc<Mutex<Wire>>)>>,
 }
 
 impl Server {
-    fn opened(&self) -> usize {
+    pub(crate) fn opened(&self) -> usize {
         self.opened.lock().unwrap().len()
     }
 
@@ -114,7 +145,7 @@ impl Server {
     }
 }
 
-fn serve(builder: ClientBuilder, wires: Vec<Wire>) -> (Client, Arc<Server>) {
+pub(crate) fn serve(builder: ClientBuilder, wires: Vec<Wire>) -> (Client, Arc<Server>) {
     let server = Arc::new(Server::default());
     server.waiting.lock().unwrap().extend(wires.into_iter().map(|w| Arc::new(Mutex::new(w))));
     let s = server.clone();
@@ -126,7 +157,7 @@ fn serve(builder: ClientBuilder, wires: Vec<Wire>) -> (Client, Arc<Server>) {
     (builder.connector(connector).build(), server)
 }
 
-fn read_all(resp: &mut Response) -> crate::Result<Vec<u8>> {
+pub(crate) fn read_all(resp: &mut Response) -> crate::Result<Vec<u8>> {
     let mut out = Vec::new();
     let mut buf = [0u8; 100];
     loop {
@@ -146,6 +177,7 @@ fn a_length_body_and_the_request_head() {
         let (client, server) = serve(Client::builder(), vec![Wire::new(&["HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello"])]);
         let mut resp = client.get("http://example.com:8080/a b?q=1").header("X-Test", "1").send().unwrap();
         assert_eq!((resp.status(), resp.reason(), resp.content_length()), (200, "OK", Some(5)));
+        assert_eq!(resp.version(), Version::Http11);
         assert_eq!(resp.url(), "http://example.com:8080/a%20b?q=1");
         assert_eq!(read_all(&mut resp).unwrap(), b"hello");
         assert_eq!(resp.received(), 5);

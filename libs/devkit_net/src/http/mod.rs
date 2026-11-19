@@ -3,13 +3,15 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
-//! HTTP/1.1 client: connections reused per origin, redirects, Basic and
-//! Digest authentication, decoded bodies.
+//! HTTP/1.1 and HTTP/2 client: connections reused per origin, redirects,
+//! Basic and Digest authentication, decoded bodies.
 
 mod auth;
 mod body;
 mod conn;
 mod h1;
+#[cfg(CONFIG_DEVKIT_NET_HTTP2)]
+mod h2;
 mod headers;
 mod url;
 
@@ -17,7 +19,6 @@ use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::String;
 use alloc::sync::Arc;
-use alloc::vec;
 use alloc::vec::Vec;
 use core::time::Duration;
 
@@ -27,8 +28,10 @@ use idf::sync::Mutex;
 use idf::time::Instant;
 
 use self::auth::Digest;
-use self::body::Parts;
+use self::body::{Carrier, Parts};
 use self::conn::{Conn, Limits, Pool, Transport};
+#[cfg(CONFIG_DEVKIT_NET_HTTP2)]
+use self::h2::H2;
 use self::url::{Origin, Url};
 use crate::tcp_socket::{blocking, blocking_timeout};
 use crate::{Error, Result, TcpStream, TlsStream};
@@ -47,6 +50,14 @@ const EXPECT_BYTES: u64 = 1024 * 1024;
 const EXPECT_WAIT: Duration = Duration::from_secs(1);
 /// Bodies up to this go out in one write with the head.
 const COALESCE_BYTES: usize = 4096;
+
+/// The HTTP version a response came in.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Version {
+    Http10,
+    Http11,
+    Http2,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Method {
@@ -88,8 +99,19 @@ struct Inner {
     timeout: Option<Duration>,
     redirects: u8,
     user_agent: String,
+    #[cfg(CONFIG_DEVKIT_NET_HTTP2)]
+    windows: Windows,
     #[cfg(test)]
     connector: Option<Connector>,
+}
+
+/// HTTP/2 receive windows: what the server may send ahead, and so what a
+/// stream and a connection hold at most unread.
+#[cfg(CONFIG_DEVKIT_NET_HTTP2)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Windows {
+    pub stream: u32,
+    pub connection: u32,
 }
 
 /// Sends requests, keeping connections whose response was read to its end
@@ -107,6 +129,8 @@ pub struct ClientBuilder {
     redirects: u8,
     max_idle: usize,
     user_agent: String,
+    #[cfg(CONFIG_DEVKIT_NET_HTTP2)]
+    windows: Windows,
     #[cfg(test)]
     connector: Option<Connector>,
 }
@@ -121,6 +145,8 @@ impl Default for ClientBuilder {
             redirects: DEFAULT_REDIRECTS,
             max_idle: DEFAULT_IDLE,
             user_agent: String::from(USER_AGENT),
+            #[cfg(CONFIG_DEVKIT_NET_HTTP2)]
+            windows: Windows { stream: 64 * 1024, connection: 128 * 1024 },
             #[cfg(test)]
             connector: None,
         }
@@ -172,6 +198,23 @@ impl ClientBuilder {
         self
     }
 
+    /// HTTP/2 receive windows, 64 KB per stream and 128 KB per connection
+    /// unless set: the most a response held unread takes, and how far a
+    /// download runs ahead of its round trips. Clamped to 16 KB to 2 GB;
+    /// ignored without `DEVKIT_NET_HTTP2`.
+    pub fn http2_windows(self, stream: u32, connection: u32) -> Self {
+        #[cfg(CONFIG_DEVKIT_NET_HTTP2)]
+        {
+            let clamp = |n: u32| n.clamp(16 * 1024, 0x7FFF_FFFF);
+            Self { windows: Windows { stream: clamp(stream), connection: clamp(connection) }, ..self }
+        }
+        #[cfg(not(CONFIG_DEVKIT_NET_HTTP2))]
+        {
+            let _ = (stream, connection);
+            self
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn connector(mut self, connector: Connector) -> Self {
         self.connector = Some(connector);
@@ -188,6 +231,8 @@ impl ClientBuilder {
                 timeout: self.timeout,
                 redirects: self.redirects,
                 user_agent: self.user_agent,
+                #[cfg(CONFIG_DEVKIT_NET_HTTP2)]
+                windows: self.windows,
                 #[cfg(test)]
                 connector: self.connector,
             }),
@@ -254,18 +299,17 @@ impl Client {
         }
         let store = TrustStore::default_bundle().map_err(Error::Tls)?;
         let mut config = ClientConfig::new(Verify::WebPki(store));
-        config.alpn = vec![b"http/1.1".to_vec()];
+        if cfg!(CONFIG_DEVKIT_NET_HTTP2) {
+            config.alpn.push(b"h2".to_vec());
+        }
+        config.alpn.push(b"http/1.1".to_vec());
         let config = Arc::new(config);
         *tls = Some(config.clone());
         Ok(config)
     }
 
-    async fn connect(&self, origin: &Origin, limits: &Limits) -> Result<Conn> {
-        #[cfg(test)]
-        if let Some(connector) = &self.inner.connector {
-            return Ok(Conn::new(connector(&origin.host)?, origin.clone()));
-        }
-        let io = limits
+    async fn open(&self, origin: &Origin, limits: &Limits) -> Result<Transport> {
+        limits
             .run(self.inner.connect_timeout, async {
                 let tcp = TcpStream::connect_async((origin.host.as_str(), origin.port)).await?;
                 tcp.set_nodelay(true)?;
@@ -275,22 +319,50 @@ impl Client {
                 let tls = TlsStream::start_async(tcp, Some(&origin.host), self.tls_config()?).await?;
                 Ok(Transport::Tls(Box::new(tls)))
             })
-            .await?;
-        Ok(Conn::new(io, origin.clone()))
+            .await
+    }
+
+    /// A new connection; one whose ALPN chose h2 also goes into the pool, to
+    /// be shared.
+    async fn connect(&self, origin: &Origin, limits: &Limits) -> Result<Link> {
+        #[cfg(test)]
+        let io = match &self.inner.connector {
+            Some(connector) => connector(&origin.host)?,
+            None => self.open(origin, limits).await?,
+        };
+        #[cfg(not(test))]
+        let io = self.open(origin, limits).await?;
+        #[cfg(CONFIG_DEVKIT_NET_HTTP2)]
+        let io = match h2::split(io) {
+            Ok(halves) => {
+                let conn = H2::start(halves, origin.clone(), self.inner.windows, limits).await?;
+                self.inner.pool.put_h2(conn.clone());
+                return Ok(Link::H2(conn));
+            }
+            Err(io) => io,
+        };
+        Ok(Link::H1(Conn::new(io, origin.clone())))
+    }
+
+    /// An HTTP/2 connection to `origin` there already is.
+    fn shared(&self, origin: &Origin) -> Option<Link> {
+        #[cfg(CONFIG_DEVKIT_NET_HTTP2)]
+        return self.inner.pool.h2(origin).map(Link::H2);
+        #[cfg(not(CONFIG_DEVKIT_NET_HTTP2))]
+        {
+            let _ = origin;
+            None
+        }
     }
 
     fn limits(&self, timeout: Option<Duration>) -> Limits {
         Limits { idle: self.inner.idle_timeout, deadline: timeout.and_then(|t| Instant::now().checked_add(t)) }
     }
 
-    fn head_text(&self, req: &Req<'_>, length: Length, expect: bool) -> String {
-        let mut h = format!("{} {} HTTP/1.1\r\n", req.method.as_str(), req.url.target);
-        let mut field = |name: &str, value: &str| {
-            h.push_str(name);
-            h.push_str(": ");
-            h.push_str(value);
-            h.push_str("\r\n");
-        };
+    /// The header fields, in the order they go out.
+    fn fields(&self, req: &Req<'_>, length: Length, expect: bool) -> Vec<(String, String)> {
+        let mut fields = Vec::new();
+        let mut field = |name: &str, value: &str| fields.push((String::from(name), String::from(value)));
         let user = &req.headers;
         if !user.contains("host") {
             field("Host", &req.url.origin.authority());
@@ -324,8 +396,38 @@ impl Client {
                 field(name, value);
             }
         }
+        fields
+    }
+
+    fn head_text(&self, req: &Req<'_>, length: Length, expect: bool) -> String {
+        let mut h = format!("{} {} HTTP/1.1\r\n", req.method.as_str(), req.url.target);
+        for (name, value) in self.fields(req, length, expect) {
+            h.push_str(&name);
+            h.push_str(": ");
+            h.push_str(&value);
+            h.push_str("\r\n");
+        }
         h.push_str("\r\n");
         h
+    }
+
+    #[cfg(CONFIG_DEVKIT_NET_HTTP2)]
+    fn head_block(&self, req: &Req<'_>, length: Length, expect: bool) -> Vec<u8> {
+        let fields = self.fields(req, length, expect);
+        let host = fields.iter().find(|(n, _)| n.eq_ignore_ascii_case("host")).map(|(_, v)| v.as_str()).unwrap_or("");
+        h2::request_block(req.method.as_str(), req.url.origin.tls, host, &req.url.target, &fields)
+    }
+
+    fn response(&self, sink: Sink, req: &Req<'_>, head: h1::Head, complete: bool, limits: Limits) -> Result<Response> {
+        let carrier = match sink {
+            Sink::H1(conn) => Carrier::H1(conn),
+            #[cfg(CONFIG_DEVKIT_NET_HTTP2)]
+            Sink::H2(stream) => {
+                let (h2, id) = stream.release();
+                Carrier::H2(h2, id)
+            }
+        };
+        Response::new(carrier, self.inner.pool.clone(), self.parts(req, head, complete), limits)
     }
 
     fn parts(&self, req: &Req<'_>, head: h1::Head, complete: bool) -> Parts {
@@ -338,16 +440,30 @@ impl Client {
     async fn exchange(&self, req: &Req<'_>, limits: &Limits) -> Result<Response> {
         let mut retried = false;
         loop {
+            #[cfg(CONFIG_DEVKIT_NET_HTTP2)]
+            if let Some(h2) = self.inner.pool.h2(&req.url.origin) {
+                match self.round_trip_h2(&h2, req, limits).await {
+                    Err(Error::ConnectionAborted | Error::ConnectionReset | Error::BrokenPipe | Error::NotConnected)
+                        if !retried =>
+                    {
+                        retried = true;
+                        continue;
+                    }
+                    result => return result,
+                }
+            }
             let kept = self.inner.pool.take(&req.url.origin);
             let reused = kept.is_some();
             let mut conn = match kept {
                 Some(conn) => conn,
-                None => self.connect(&req.url.origin, limits).await?,
+                None => match self.connect(&req.url.origin, limits).await? {
+                    Link::H1(conn) => conn,
+                    #[cfg(CONFIG_DEVKIT_NET_HTTP2)]
+                    Link::H2(_) => continue,
+                },
             };
             match self.round_trip(&mut conn, req, limits).await {
-                Ok((head, complete)) => {
-                    return Response::new(conn, self.inner.pool.clone(), self.parts(req, head, complete), *limits);
-                }
+                Ok((head, complete)) => return self.response(Sink::H1(conn), req, head, complete, *limits),
                 Err(Error::ConnectionAborted | Error::ConnectionReset | Error::BrokenPipe | Error::NotConnected)
                     if reused && !retried =>
                 {
@@ -373,13 +489,32 @@ impl Client {
         } else {
             conn.write_all(head.as_bytes(), limits).await?;
             if expect {
-                if let Some(head) = wait_continue(conn, limits).await? {
+                if let Some(head) = wait_continue(limits, h1_continue(conn, limits)).await? {
                     return Ok((head, false));
                 }
             }
             conn.write_all(body, limits).await?;
         }
         Ok((h1::final_head(conn, limits).await?, true))
+    }
+
+    #[cfg(CONFIG_DEVKIT_NET_HTTP2)]
+    async fn round_trip_h2(&self, h2: &Arc<H2>, req: &Req<'_>, limits: &Limits) -> Result<Response> {
+        let body = req.body.unwrap_or(&[]);
+        let length = if req.body.is_some() || req.method.sends_body() { Length::Known(body.len() as u64) } else { Length::None };
+        let expect = body.len() as u64 > EXPECT_BYTES;
+        let id = h2.open(&self.head_block(req, length, expect), body.is_empty(), limits).await?;
+        let stream = h2::StreamRef::new(h2.clone(), id);
+        if expect {
+            if let Some(head) = wait_continue(limits, h2.continued(id, limits)).await? {
+                return self.response(Sink::H2(stream), req, head, false, *limits);
+            }
+        }
+        if !body.is_empty() {
+            h2.send(id, body, true, limits).await?;
+        }
+        let head = h2.head(id, limits).await?;
+        self.response(Sink::H2(stream), req, head, true, *limits)
     }
 
     async fn send(&self, mut req: Req<'_>, limits: Limits) -> Result<Response> {
@@ -449,21 +584,22 @@ impl Client {
     }
 }
 
+async fn h1_continue(conn: &mut Conn, limits: &Limits) -> Result<Option<h1::Head>> {
+    loop {
+        let head = h1::read_head(conn, limits).await?;
+        if head.status == 100 {
+            return Ok(None);
+        }
+        if !h1::is_interim(head.status) {
+            return Ok(Some(head));
+        }
+    }
+}
+
 /// `Some` with a final response the server sent instead of 100 Continue;
 /// `None` to send the body, after 100 Continue or a second of silence.
-async fn wait_continue(conn: &mut Conn, limits: &Limits) -> Result<Option<h1::Head>> {
-    let wait = limits.run(Some(EXPECT_WAIT), async {
-        loop {
-            let head = h1::read_head(conn, limits).await?;
-            if head.status == 100 {
-                return Ok(None);
-            }
-            if !h1::is_interim(head.status) {
-                return Ok(Some(head));
-            }
-        }
-    });
-    match wait.await {
+async fn wait_continue(limits: &Limits, wait: impl Future<Output = Result<Option<h1::Head>>>) -> Result<Option<h1::Head>> {
+    match limits.run(Some(EXPECT_WAIT), wait).await {
         Err(Error::TimedOut) => {
             if limits.deadline.is_some_and(|d| Instant::now() >= d) {
                 return Err(Error::TimedOut);
@@ -472,6 +608,19 @@ async fn wait_continue(conn: &mut Conn, limits: &Limits) -> Result<Option<h1::He
         }
         other => other,
     }
+}
+
+enum Link {
+    H1(Conn),
+    #[cfg(CONFIG_DEVKIT_NET_HTTP2)]
+    H2(Arc<H2>),
+}
+
+/// Where a request's body goes.
+enum Sink {
+    H1(Conn),
+    #[cfg(CONFIG_DEVKIT_NET_HTTP2)]
+    H2(h2::StreamRef),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -593,12 +742,28 @@ impl<'a> RequestBuilder<'a> {
         let mut redirects = 0;
         let mut asked = false;
         loop {
-            let mut conn = client.connect(&req.url.origin, &limits).await?;
-            conn.write_all(client.head_text(&req, length, expect).as_bytes(), &limits).await?;
-            let Some(head) = (if expect { wait_continue(&mut conn, &limits).await? } else { None }) else {
+            let link = match client.shared(&req.url.origin) {
+                Some(link) => link,
+                None => client.connect(&req.url.origin, &limits).await?,
+            };
+            let (sink, head) = match link {
+                Link::H1(mut conn) => {
+                    conn.write_all(client.head_text(&req, length, expect).as_bytes(), &limits).await?;
+                    let head = if expect { wait_continue(&limits, h1_continue(&mut conn, &limits)).await? } else { None };
+                    (Sink::H1(conn), head)
+                }
+                #[cfg(CONFIG_DEVKIT_NET_HTTP2)]
+                Link::H2(h2) => {
+                    let id = h2.open(&client.head_block(&req, length, expect), false, &limits).await?;
+                    let stream = h2::StreamRef::new(h2.clone(), id);
+                    let head = if expect { wait_continue(&limits, h2.continued(id, &limits)).await? } else { None };
+                    (Sink::H2(stream), head)
+                }
+            };
+            let Some(head) = head else {
                 return Ok(Started::Body(BodyWriter {
                     client: client.clone(),
-                    conn: Some(conn),
+                    sink: Some(sink),
                     req: req.into_owned(),
                     length,
                     written: 0,
@@ -607,7 +772,7 @@ impl<'a> RequestBuilder<'a> {
                     scratch: Vec::new(),
                 }));
             };
-            let resp = Response::new(conn, client.inner.pool.clone(), client.parts(&req, head, false), limits)?;
+            let resp = client.response(sink, &req, head, false, limits)?;
             if let Some(digest) = client.challenge(&req, &resp, &mut asked) {
                 req.digest = Some(digest);
                 continue;
@@ -646,7 +811,7 @@ pub enum Started {
 /// abandons the request and its connection.
 pub struct BodyWriter {
     client: Client,
-    conn: Option<Conn>,
+    sink: Option<Sink>,
     req: Req<'static>,
     length: Length,
     written: u64,
@@ -662,18 +827,20 @@ impl BodyWriter {
     }
 
     pub async fn write_all_async(&mut self, data: &[u8]) -> Result<()> {
-        let conn = self.conn.as_mut().ok_or(Error::NotConnected)?;
+        let sink = self.sink.as_mut().ok_or(Error::NotConnected)?;
         if data.is_empty() {
             return Ok(());
         }
-        match self.length {
-            Length::Known(n) => {
-                if self.written + data.len() as u64 > n {
-                    return Err(Error::InvalidInput);
-                }
-                conn.write_all(data, &self.limits).await?;
+        if let Length::Known(n) = self.length {
+            if self.written + data.len() as u64 > n {
+                return Err(Error::InvalidInput);
             }
-            _ => {
+        }
+        match (sink, self.length) {
+            #[cfg(CONFIG_DEVKIT_NET_HTTP2)]
+            (Sink::H2(stream), _) => stream.h2().send(stream.id, data, false, &self.limits).await?,
+            (Sink::H1(conn), Length::Known(_)) => conn.write_all(data, &self.limits).await?,
+            (Sink::H1(conn), _) => {
                 let size = format!("{:x}\r\n", data.len());
                 if data.len() <= COALESCE_BYTES {
                     self.scratch.clear();
@@ -705,15 +872,27 @@ impl BodyWriter {
     }
 
     pub async fn finish_async(mut self) -> Result<Response> {
-        let mut conn = self.conn.take().ok_or(Error::NotConnected)?;
-        match self.length {
-            Length::Known(n) if self.written != n => return Err(Error::InvalidInput),
-            Length::Known(_) => {}
-            _ => conn.write_all(b"0\r\n\r\n", &self.limits).await?,
+        let sink = self.sink.take().ok_or(Error::NotConnected)?;
+        if matches!(self.length, Length::Known(n) if self.written != n) {
+            return Err(Error::InvalidInput);
         }
-        let head = h1::final_head(&mut conn, &self.limits).await?;
+        let (sink, head) = match sink {
+            Sink::H1(mut conn) => {
+                if self.length == Length::Chunked {
+                    conn.write_all(b"0\r\n\r\n", &self.limits).await?;
+                }
+                let head = h1::final_head(&mut conn, &self.limits).await?;
+                (Sink::H1(conn), head)
+            }
+            #[cfg(CONFIG_DEVKIT_NET_HTTP2)]
+            Sink::H2(stream) => {
+                stream.h2().send(stream.id, &[], true, &self.limits).await?;
+                let head = stream.h2().head(stream.id, &self.limits).await?;
+                (Sink::H2(stream), head)
+            }
+        };
         let client = &self.client;
-        let resp = Response::new(conn, client.inner.pool.clone(), client.parts(&self.req, head, true), self.limits)?;
+        let resp = client.response(sink, &self.req, head, true, self.limits)?;
         match client.redirect(&self.req, &resp, &mut self.redirects)? {
             Some(next) if next.method != self.req.method => {
                 resp.discard().await;

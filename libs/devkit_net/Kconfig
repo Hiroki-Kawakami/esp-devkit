@@ -14,6 +14,13 @@ config DEVKIT_NET_HTTP_DECOMPRESS
         The HTTP client asks for gzip and deflate bodies and decodes them.
         Off, it leaves out the decompressor and returns bodies as sent.
 
+config DEVKIT_NET_HTTP2
+    bool "HTTP/2"
+    default y
+    help
+        The HTTP client offers h2 over TLS and speaks HTTP/2 to servers that
+        take it. Off, it speaks HTTP/1.1 only.
+
 config DEVKIT_NET_IRAM_OPT
     bool "Place the per-packet path in IRAM"
     default n

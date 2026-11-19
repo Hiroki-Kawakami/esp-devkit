@@ -114,7 +114,7 @@ impl Drop for Live {
 }
 
 // A wakeup reaches only FreeRTOS tasks, which the test's own thread is not.
-pub(super) fn in_task<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+pub(crate) fn in_task<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
     thread::spawn(f).join()
 }
 

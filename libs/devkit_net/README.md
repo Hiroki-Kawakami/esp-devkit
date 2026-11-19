@@ -2,7 +2,7 @@
 
 An IPv4 network stack in Rust that replaces lwIP: ARP, IPv4 with reassembly,
 ICMP, UDP, TCP, a DHCP client and a DNS resolver, behind a std-like socket API,
-with TLS 1.3 from `devkit_crypto` and an HTTP/1.1 client on top. It runs the same
+with TLS 1.3 from `devkit_crypto` and an HTTP/1.1 and HTTP/2 client on top. It runs the same
 over the chip's own Wi-Fi, a Wi-Fi coprocessor registered by a board, and the
 simulator's network. How each protocol behaves is in
 [`docs/protocols.md`](docs/protocols.md); how the stack spends its time and how
@@ -29,7 +29,7 @@ stream.write_all(b"hello")?;
 | `wifi_manager` | saved networks, joining them by itself, the Wi-Fi on/off switch |
 | `udp_socket`, `tcp_socket` | `UdpSocket`, `TcpListener`, `TcpStream` and its split halves, with their builders |
 | `tls` | `TlsStream`: a `devkit_crypto` TLS 1.3 client connection over a `TcpStream`, and its split halves |
-| `http` | `Client`, `Response`, `BodyWriter`, and `get` for a single request: HTTP/1.1 over TCP or TLS |
+| `http` | `Client`, `Response`, `BodyWriter`, and `get` for a single request: HTTP/1.1 over TCP or TLS, HTTP/2 over TLS |
 | `link` | the `Link` trait a network interface implements, `LinkRx` and `RxFrame` |
 | `stack` | the sans-IO `Stack` that does all protocol work |
 | `net` | the stack's task, the lock around the `Stack`, and the wakeups between them |
@@ -156,11 +156,13 @@ A handshake verifies the server's chain on the calling task: with
 
 ## HTTP
 
-`http::Client` sends HTTP/1.1 requests to `http://` and `https://` URLs and
-keeps each connection whose response was read to its end, up to `max_idle`
-(4), for the next request to the same scheme, host and port. A kept
-connection the server closed meanwhile gets the request again on a new one.
+`http::Client` sends requests to `http://` and `https://` URLs and keeps each
+HTTP/1.1 connection whose response was read to its end, up to `max_idle` (4),
+for the next request to the same scheme, host and port. A kept connection the
+server closed meanwhile gets the request again on a new one.
 `http::get(url)` makes a client for one request; it goes with the response.
+The API is the same whichever version a connection speaks;
+`Response::version()` tells which it was.
 
 ```rust
 let client = http::Client::new();
@@ -172,9 +174,22 @@ up.write_all(&chunk)?;
 let resp = up.finish()?;
 ```
 
+- **HTTP/2.** With `DEVKIT_NET_HTTP2`, the default TLS config offers ALPN
+  `h2` before `http/1.1`; a config of one's own (`tls`) offers what it lists.
+  A connection that chose h2 stays shared in the client: every request to its
+  origin, `start()` included, opens a stream on it, as many at once as the
+  server allows and 8 at most, the rest waiting for a slot. There is no task
+  per connection: whichever request waits reads the frames and hands them
+  out, so PING and SETTINGS from the server are answered while some request
+  waits on it. Each stream may hold 64 KB unread and the connection 128 KB
+  (`http2_windows`); a reader that falls behind stops only its own stream.
+  A stream the server refuses, or that a GOAWAY leaves out, is sent again,
+  on a new connection after GOAWAY. HPACK headers are decoded with a 4 KB
+  table and sent without one, credentials never indexed.
 - **Bodies.** `Response::read` streams the body, `bytes(limit)` collects it and
   `save(path)` writes it to a file, leaving what it wrote when it fails. A
-  response dropped before its end closes its connection.
+  response dropped before its end closes its HTTP/1.1 connection, or resets
+  its HTTP/2 stream.
   `content_length()` is the field as sent and `received()` counts the same
   bytes, so the two give progress even while the body is decoded.
 - **Compression.** With `DEVKIT_NET_HTTP_DECOMPRESS` the client sends
@@ -192,8 +207,9 @@ let resp = up.finish()?;
   URL go out as Basic with the first request; a 401 that offers Digest
   (MD5 or SHA-256, `-sess` too, qop `auth`) gets one answer.
 - **Request bodies.** `body(bytes)` is sent again when a redirect or a Digest
-  challenge asks. `start()` streams one on a connection of its own, chunked
-  unless `content_length` is given. A body over 1 MB, a streamed one of unknown
+  challenge asks. `start()` streams one on an HTTP/2 connection there is, or
+  else on a connection of its own; over HTTP/1.1 it is chunked unless
+  `content_length` is given. A body over 1 MB, a streamed one of unknown
   length and one sent with credentials ask with `Expect: 100-continue` first;
   the body goes after 100 Continue or a second of silence. A server that
   answers before it gets the body hands `start` its response instead
@@ -247,6 +263,7 @@ tasks, never from an interrupt.
 | `DEVKIT_NET_WIFI` | y where the chip has Wi-Fi | registers the chip's own Wi-Fi as `sta` |
 | `DEVKIT_NET_IRAM_OPT` | n | places the code every frame goes through in IRAM (about 19 KB) |
 | `DEVKIT_NET_HTTP_DECOMPRESS` | y | decodes gzip and deflate HTTP bodies; off, `devkit_compression` stays out of the link |
+| `DEVKIT_NET_HTTP2` | y | speaks HTTP/2 to TLS servers whose ALPN chooses h2 |
 
 `DEVKIT_NET_IRAM_OPT` trades heap for speed where flash cache misses dominate;
 see [`docs/performance.md`](docs/performance.md). A new Kconfig symbol reaches an
@@ -270,6 +287,7 @@ cmake --build firmware/rust_hello/simulator/build --target rust_test_devkit_net
 ```
 
 `firmware/rust_hello` is the board check firmware: it joins the network saved
-with `wifi join`, serves the netbench ports, and looks names up with
-`dns <host>`. `firmware/lwip_netbench` serves
+with `wifi join`, serves the netbench ports, looks names up with
+`dns <host>`, and GETs a URL with `http <url> [h1]` (`h1` offers only
+`http/1.1`), logging the status and the version it spoke. `firmware/lwip_netbench` serves
 the same ports from lwIP for comparison.

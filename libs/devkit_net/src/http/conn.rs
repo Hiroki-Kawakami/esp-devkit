@@ -5,6 +5,8 @@
 
 use alloc::boxed::Box;
 use alloc::string::String;
+#[cfg(CONFIG_DEVKIT_NET_HTTP2)]
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::future::Future;
 use core::time::Duration;
@@ -148,16 +150,46 @@ impl Conn {
     }
 }
 
-/// Connections whose last response was read to its end, to send the next
-/// request on.
+/// HTTP/1.1 connections whose last response was read to its end, to send the
+/// next request on, and HTTP/2 ones, shared by the requests they carry.
 pub(crate) struct Pool {
     idle: Mutex<Vec<Conn>>,
+    #[cfg(CONFIG_DEVKIT_NET_HTTP2)]
+    shared: Mutex<Vec<Arc<super::h2::H2>>>,
     max: usize,
 }
 
 impl Pool {
     pub fn new(max: usize) -> Self {
-        Self { idle: Mutex::new(Vec::new()), max }
+        Self {
+            idle: Mutex::new(Vec::new()),
+            #[cfg(CONFIG_DEVKIT_NET_HTTP2)]
+            shared: Mutex::new(Vec::new()),
+            max,
+        }
+    }
+
+    /// An HTTP/2 connection to `origin` that takes new streams; the ones that
+    /// no longer do are dropped.
+    #[cfg(CONFIG_DEVKIT_NET_HTTP2)]
+    pub fn h2(&self, origin: &Origin) -> Option<Arc<super::h2::H2>> {
+        let mut shared = self.shared.lock();
+        let gone: Vec<_> = shared.extract_if(.., |c| !c.usable()).collect();
+        let found = shared.iter().find(|c| c.origin == *origin).cloned();
+        drop(shared);
+        drop(gone);
+        found
+    }
+
+    #[cfg(CONFIG_DEVKIT_NET_HTTP2)]
+    pub fn put_h2(&self, conn: Arc<super::h2::H2>) {
+        let old = {
+            let mut shared = self.shared.lock();
+            let old = if shared.len() >= self.max.max(1) { Some(shared.remove(0)) } else { None };
+            shared.push(conn);
+            old
+        };
+        drop(old);
     }
 
     pub fn take(&self, origin: &Origin) -> Option<Conn> {

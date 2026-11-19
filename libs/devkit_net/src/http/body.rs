@@ -13,7 +13,9 @@ use idf::fs::File;
 
 use super::conn::{Conn, Limits, Pool};
 use super::h1::{self, Framing, Head};
-use super::Headers;
+#[cfg(CONFIG_DEVKIT_NET_HTTP2)]
+use super::h2::H2;
+use super::{Headers, Version};
 use crate::tcp_socket::{blocking, blocking_timeout};
 use crate::{Error, Result};
 
@@ -42,12 +44,28 @@ struct Raw {
     pool: Arc<Pool>,
     state: State,
     keep_alive: bool,
+    #[cfg(CONFIG_DEVKIT_NET_HTTP2)]
+    stream: Option<(Arc<H2>, u32)>,
     received: u64,
+}
+
+impl Drop for Raw {
+    fn drop(&mut self) {
+        self.close();
+    }
 }
 
 impl Raw {
     fn ended(&self) -> bool {
         self.state == State::Done
+    }
+
+    fn close(&mut self) {
+        self.conn = None;
+        #[cfg(CONFIG_DEVKIT_NET_HTTP2)]
+        if let Some((h2, id)) = self.stream.take() {
+            h2.cancel(id);
+        }
     }
 
     fn finish(&mut self) {
@@ -60,6 +78,16 @@ impl Raw {
     }
 
     async fn read(&mut self, out: &mut [u8], limits: &Limits) -> Result<usize> {
+        #[cfg(CONFIG_DEVKIT_NET_HTTP2)]
+        if let Some((h2, id)) = &self.stream {
+            let n = h2.read(*id, out, limits).await?;
+            if n == 0 {
+                self.stream = None;
+                self.state = State::Done;
+            }
+            self.received += n as u64;
+            return Ok(n);
+        }
         loop {
             match self.state {
                 State::Done => return Ok(0),
@@ -265,6 +293,7 @@ use decode::Coding;
 /// A response: its status and header fields, and the body to read.
 pub struct Response {
     pub(crate) status: u16,
+    version: Version,
     reason: String,
     headers: Headers,
     url: String,
@@ -286,18 +315,56 @@ pub(crate) struct Parts {
     pub decode: bool,
 }
 
+/// What a response's body comes over.
+pub(crate) enum Carrier {
+    H1(Conn),
+    #[cfg(CONFIG_DEVKIT_NET_HTTP2)]
+    H2(Arc<H2>, u32),
+}
+
 impl Response {
-    pub(crate) fn new(conn: Conn, pool: Arc<Pool>, parts: Parts, limits: Limits) -> Result<Self> {
+    pub(crate) fn new(carrier: Carrier, pool: Arc<Pool>, parts: Parts, limits: Limits) -> Result<Self> {
         let Parts { head, url, head_request, complete, decode } = parts;
         let framing = h1::framing(&head, head_request)?;
         let content_length = h1::content_length(&head.headers)?;
-        let keep_alive = complete && h1::keep_alive(&head) && framing != Framing::Close;
-        let state = match framing {
-            Framing::Empty => State::Length(0),
-            Framing::Length(n) => State::Length(n),
-            Framing::Chunked => State::Chunked(Chunk::Size),
-            Framing::Close => State::Close,
+        let mut raw = Raw {
+            conn: None,
+            pool,
+            state: State::Close,
+            keep_alive: false,
+            #[cfg(CONFIG_DEVKIT_NET_HTTP2)]
+            stream: None,
+            received: 0,
         };
+        let version = match carrier {
+            Carrier::H1(_) if head.minor == 0 => Version::Http10,
+            Carrier::H1(_) => Version::Http11,
+            #[cfg(CONFIG_DEVKIT_NET_HTTP2)]
+            Carrier::H2(..) => Version::Http2,
+        };
+        match carrier {
+            Carrier::H1(conn) => {
+                raw.conn = Some(conn);
+                raw.keep_alive = complete && h1::keep_alive(&head) && framing != Framing::Close;
+                raw.state = match framing {
+                    Framing::Empty => State::Length(0),
+                    Framing::Length(n) => State::Length(n),
+                    Framing::Chunked => State::Chunked(Chunk::Size),
+                    Framing::Close => State::Close,
+                };
+                if framing == Framing::Empty {
+                    raw.finish();
+                }
+            }
+            #[cfg(CONFIG_DEVKIT_NET_HTTP2)]
+            Carrier::H2(h2, id) => {
+                raw.stream = Some((h2, id));
+                if framing == Framing::Empty {
+                    raw.close();
+                    raw.state = State::Done;
+                }
+            }
+        }
         #[cfg(not(CONFIG_DEVKIT_NET_HTTP_DECOMPRESS))]
         let _ = decode;
         #[cfg(CONFIG_DEVKIT_NET_HTTP_DECOMPRESS)]
@@ -305,12 +372,9 @@ impl Response {
             Some(value) if decode && framing != Framing::Empty => Coding::of(value),
             _ => None,
         };
-        let mut raw = Raw { conn: Some(conn), pool, state, keep_alive, received: 0 };
-        if state == State::Length(0) {
-            raw.finish();
-        }
         Ok(Self {
             status: head.status,
+            version,
             reason: head.reason,
             headers: head.headers,
             url,
@@ -326,6 +390,10 @@ impl Response {
 
     pub fn status(&self) -> u16 {
         self.status
+    }
+
+    pub fn version(&self) -> Version {
+        self.version
     }
 
     pub fn reason(&self) -> &str {
@@ -425,7 +493,7 @@ impl Response {
         let mut out = Vec::new();
         if let Some(len) = self.content_length.filter(|_| !self.raw.ended()) {
             if len > bound(limit as u64) {
-                self.raw.conn = None;
+                self.raw.close();
                 return Err(Error::MessageTooLarge);
             }
             if !self.encoded() {
@@ -437,6 +505,17 @@ impl Response {
             if !self.encoded() && self.raw.ended() {
                 return Ok(out);
             }
+            // The end of a stream that has all its Content-Length is a read
+            // away; a probe keeps the exact allocation.
+            if len == out.capacity() && !self.encoded() && self.content_length == Some(len as u64) {
+                let mut probe = [0u8; 1];
+                if self.read_async(&mut probe).await? == 0 {
+                    return Ok(out);
+                }
+                out.try_reserve(1).map_err(|_| Error::NoMemory)?;
+                out.push(probe[0]);
+                continue;
+            }
             if len == out.capacity() {
                 out.try_reserve_exact(len.max(4096).min(limit + 1 - len)).map_err(|_| Error::NoMemory)?;
             }
@@ -447,7 +526,7 @@ impl Response {
                 return Ok(out);
             }
             if out.len() > limit {
-                self.raw.conn = None;
+                self.raw.close();
                 return Err(Error::MessageTooLarge);
             }
         }
