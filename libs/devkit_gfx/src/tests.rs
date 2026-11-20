@@ -1044,6 +1044,51 @@ fn copy_turns_the_image_onto_the_stored_picture() {
 }
 
 #[test]
+fn copy_puts_every_pixel_where_the_turn_maps_it_in_every_width() {
+    let formats = [
+        (ImageFormat::Rgb565, ImageFormat::Rgb565),
+        (ImageFormat::Rgb565, ImageFormat::Rgb565Be),
+        (ImageFormat::Bgr888, ImageFormat::Bgr888),
+        (ImageFormat::Argb8888, ImageFormat::Argb8888),
+        (ImageFormat::A8, ImageFormat::A8),
+    ];
+    // Even sizes let a quarter turn write two rows as one word; offsets put the
+    // pixels, or the pairs, off their alignment.
+    let places = [(Size::new(7, 5), Rect::new(1, 1, 3, 4)), (Size::new(8, 6), Rect::new(1, 1, 4, 5)), (Size::new(8, 6), Rect::new(2, 2, 4, 4))];
+    for (size, area) in places {
+        for (from, to) in formats {
+            for offset in [0, 1, 2] {
+                for rotation in [Rotation::R0, Rotation::R90, Rotation::R180, Rotation::R270] {
+                    check_copy(size, area, from, to, offset, rotation);
+                }
+            }
+        }
+    }
+}
+
+fn check_copy(size: Size, area: Rect, from: ImageFormat, to: ImageFormat, offset: usize, rotation: Rotation) {
+    let bpp = to.bits() / 8;
+    let src: Vec<u8> = (0..(area.w * area.h) as usize * bpp).map(|v| v as u8).collect();
+    let image = Image::from_pixels(from, area.w as u16, area.h as u16, area.w as usize, &src);
+    let mut memory = vec![0u8; offset + size.width as usize * size.height as usize * bpp];
+    let mut target = Target::new(&mut memory[offset..], to, size, size.width as usize).unwrap().rotated(rotation).crop(area).unwrap();
+    assert!(copy(&image, &mut target), "{to:?} {rotation:?}");
+    let mut scratch = vec![0u8; memory.len()];
+    let probe = Target::new(&mut scratch, to, size, size.width as usize).unwrap().rotated(rotation);
+    for j in 0..area.h {
+        for i in 0..area.w {
+            let at = probe.stored_rect(Rect::new(area.x + i, area.y + j, 1, 1)).unwrap();
+            let stored = &memory[offset + (at.y as usize * size.width as usize + at.x as usize) * bpp..][..bpp];
+            let mut want = src[(j * area.w + i) as usize * bpp..][..bpp].to_vec();
+            if from != to {
+                want.reverse();
+            }
+            assert_eq!(stored, &want[..], "{size:?} {to:?} {rotation:?} offset {offset} at {i},{j}");
+        }
+    }
+}
+
+#[test]
 fn copy_refuses_other_formats_and_sizes() {
     let pixels = [0u8; 6 * 2];
     let mut stored = vec![0u8; 4 * 4 * 3];

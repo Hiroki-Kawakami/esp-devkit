@@ -3484,6 +3484,36 @@ fn strips_stay_on_a_grid_of_columns_and_rows() {
     assert_eq!(strips.iter().map(|s| s.w as i32 * s.h as i32).sum::<i32>(), 466 * 10);
 }
 
+#[test]
+fn a_panel_takes_what_turns_it_can_and_the_rest_is_left_over() {
+    use bsp_rs::display::{Rotation as R, Rotations};
+    use crate::presenter::split_turn;
+    let halves = Rotations::R0.union(Rotations::R180);
+    assert_eq!(split_turn(R::R0, halves), Some((R::R0, R::R0)));
+    assert_eq!(split_turn(R::R90, halves), Some((R::R0, R::R90)));
+    assert_eq!(split_turn(R::R180, halves), Some((R::R180, R::R0)));
+    assert_eq!(split_turn(R::R270, halves), Some((R::R180, R::R90)));
+    assert_eq!(split_turn(R::R270, Rotations::all()), Some((R::R270, R::R0)));
+    assert_eq!(split_turn(R::R180, Rotations::R0), Some((R::R0, R::R180)));
+    assert_eq!(split_turn(R::R90, Rotations::empty()), None);
+}
+
+#[test]
+fn a_turned_strip_lands_where_the_turned_picture_puts_it() {
+    use bsp_rs::display::{ImageFormat, Rotation as R, Size};
+    use crate::presenter::panel_rect;
+    let panel = Size::new(6, 4);
+    let mut pixels = [0u8; 6 * 4 * 2];
+    for turn in [R::R0, R::R90, R::R180, R::R270] {
+        let picture = devkit_gfx::Target::new(&mut pixels, ImageFormat::Rgb565, panel, 6).unwrap().rotated(turn);
+        let area = picture.area();
+        for rect in [area, Rect::new(0, 0, area.w, 2), Rect::new(2, 2, 2, area.h - 2)] {
+            assert_eq!(panel_rect(rect, turn, panel), picture.stored_rect(rect), "{turn:?} {rect:?}");
+        }
+        assert_eq!(panel_rect(Rect::new(0, 0, area.w + 2, 2), turn, panel), None);
+    }
+}
+
 fn record_touches(video: &ExternalSurface) -> alloc::sync::Arc<idf::sync::Mutex<Vec<Vec<TouchPoint>>>> {
     let log = alloc::sync::Arc::new(idf::sync::Mutex::new(Vec::new()));
     let sink = log.clone();

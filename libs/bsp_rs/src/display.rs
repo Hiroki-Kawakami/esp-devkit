@@ -22,9 +22,33 @@ pub struct Config {
     pub fb_num: u8,
     /// `None` selects the board default.
     pub pixel_format: Option<ImageFormat>,
-    /// `None` selects R0. Only a panel that turns the picture itself takes
-    /// another.
+    /// `None` selects R0. Only one of `Display::rotations` is taken.
     pub rotation: Option<Rotation>,
+}
+
+devkit_core::bitflags! {
+    /// Turns a panel shows by itself.
+    pub struct Rotations: u8 {
+        const R0 = 1 << 0;
+        const R90 = 1 << 1;
+        const R180 = 1 << 2;
+        const R270 = 1 << 3;
+    }
+}
+
+impl Rotations {
+    pub const fn of(rotation: Rotation) -> Self {
+        match rotation {
+            Rotation::R0 => Self::R0,
+            Rotation::R90 => Self::R90,
+            Rotation::R180 => Self::R180,
+            Rotation::R270 => Self::R270,
+        }
+    }
+
+    pub const fn has(&self, rotation: Rotation) -> bool {
+        self.contains(Self::of(rotation))
+    }
 }
 
 /// A transfer queued by `Display::write`.
@@ -106,6 +130,10 @@ pub(crate) trait Driver: Send + Sync {
 
     fn rotation(&self) -> Rotation {
         Rotation::R0
+    }
+
+    fn rotations(&self) -> Rotations {
+        Rotations::R0
     }
 
     fn alignment(&self) -> u16 {
@@ -196,6 +224,10 @@ macro_rules! driver_enum {
 
             fn rotation(&self) -> $crate::display::Rotation {
                 match self { $(Self::$variant(d) => d.rotation()),+ }
+            }
+
+            fn rotations(&self) -> $crate::display::Rotations {
+                match self { $(Self::$variant(d) => d.rotations()),+ }
             }
 
             fn alignment(&self) -> u16 {
@@ -296,6 +328,11 @@ impl Display {
     /// How the panel turns the picture it is given.
     pub fn rotation(&self) -> Rotation {
         self.driver().rotation()
+    }
+
+    /// What `reconfigure` takes for the rotation.
+    pub fn rotations(&self) -> Rotations {
+        self.driver().rotations()
     }
 
     /// The origin and size of what `draw` and `write` take are multiples of

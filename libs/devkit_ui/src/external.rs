@@ -383,11 +383,11 @@ impl ExternalFrame {
         unsafe { fb?.target() }?.rotated(rotation).crop(area)
     }
 
-    /// `Display::write` into `rect`, which must lie in what `begin` handed
-    /// out: on a panel without framebuffers. `pixels` must stay unchanged
-    /// until `wait` for the ticket returns.
+    /// `Display::write`, in the panel's coordinates: on a panel without
+    /// framebuffers. `pixels` must stay unchanged until `wait` for the ticket
+    /// returns.
     pub unsafe fn write(&self, rect: Rect, pixels: &[u8]) -> Result<Ticket> {
-        if self.granted.0.is_some() || !self.granted.1.contains(&rect) {
+        if self.granted.0.is_some() {
             return Err(Error::INVALID_ARG);
         }
         unsafe { self.display.write(rect, pixels) }

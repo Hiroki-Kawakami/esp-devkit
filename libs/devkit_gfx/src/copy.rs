@@ -3,8 +3,6 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
-use core::ptr;
-
 use crate::format::ImageFormat;
 use crate::geom::Rotation;
 use crate::image::Image;
@@ -36,27 +34,108 @@ pub fn copy(image: &Image, target: &mut Target) -> bool {
         Rotation::R270 => ((w - 1 - y, x), stride, -step),
     };
     let base = target.as_ptr();
-    for j in 0..usize::from(image.height()) {
-        let src = &image.pixels()[j * image.stride_bytes()..][..row];
-        let mut at = sy * stride + sx * step + j as isize * down;
-        if along == step && !swap {
-            unsafe { ptr::copy_nonoverlapping(src.as_ptr(), base.offset(at), row) };
-            continue;
-        }
-        for px in src.chunks_exact(bpp) {
-            unsafe {
-                let dst = base.offset(at);
-                if swap {
-                    *dst = px[1];
-                    *dst.add(1) = px[0];
-                } else {
-                    ptr::copy_nonoverlapping(px.as_ptr(), dst, bpp);
-                }
+    let first = sy * stride + sx * step;
+    if along == step {
+        for j in 0..usize::from(image.height()) {
+            let src = &image.pixels()[j * image.stride_bytes()..][..row];
+            let dst = unsafe { core::slice::from_raw_parts_mut(base.offset(first + j as isize * down), row) };
+            dst.copy_from_slice(src);
+            if swap {
+                swap_rgb565(dst);
             }
-            at += along;
+        }
+        return true;
+    }
+    let walk = Walk {
+        src: image.pixels().as_ptr(),
+        src_stride: image.stride_bytes(),
+        width: usize::from(image.width()),
+        height: usize::from(image.height()),
+        dst: unsafe { base.offset(first) },
+        along,
+        down,
+    };
+    // Xtensa faults on a misaligned 16-bit access rather than splitting it.
+    let aligned = |align: usize| {
+        (walk.src as usize | walk.dst as usize | walk.src_stride | stride as usize) % align == 0
+    };
+    unsafe {
+        match (bpp, swap) {
+            (1, _) => walk.run(|s: *const u8, d: *mut u8| *d = *s),
+            (2, false) if aligned(2) => walk.run16::<false>(),
+            (2, true) if aligned(2) => walk.run16::<true>(),
+            (4, _) if aligned(4) => walk.run(|s: *const u32, d: *mut u32| *d = *s),
+            (2, true) => walk.run(|s: *const [u8; 2], d: *mut [u8; 2]| *d = [(*s)[1], (*s)[0]]),
+            (2, false) => walk.run(|s: *const [u8; 2], d: *mut [u8; 2]| *d = *s),
+            (3, _) => walk.run(|s: *const [u8; 3], d: *mut [u8; 3]| *d = *s),
+            (4, _) => walk.run(|s: *const [u8; 4], d: *mut [u8; 4]| *d = *s),
+            _ => return false,
         }
     }
     true
+}
+
+/// An image walked row by row, each row laid down `along` bytes a pixel from
+/// where the last began plus `down`.
+struct Walk {
+    src: *const u8,
+    src_stride: usize,
+    width: usize,
+    height: usize,
+    dst: *mut u8,
+    along: isize,
+    down: isize,
+}
+
+impl Walk {
+    /// `put` moves one pixel of type `T`.
+    #[inline(always)]
+    unsafe fn run<T>(&self, put: impl Fn(*const T, *mut T)) {
+        for j in 0..self.height {
+            unsafe { self.row(j, &put) };
+        }
+    }
+
+    #[inline(always)]
+    unsafe fn row<T>(&self, j: usize, put: &impl Fn(*const T, *mut T)) {
+        let src = unsafe { self.src.add(j * self.src_stride) }.cast::<T>();
+        let mut dst = unsafe { self.dst.offset(j as isize * self.down) };
+        for i in 0..self.width {
+            put(unsafe { src.add(i) }, dst.cast::<T>());
+            dst = dst.wrapping_offset(self.along);
+        }
+    }
+
+    /// 16-bit pixels, the source and destination aligned to them. On a quarter
+    /// turn two source rows fall side by side, so a pair goes out as one word.
+    unsafe fn run16<const SWAP: bool>(&self) {
+        let put = |s: *const u16, d: *mut u16| unsafe { *d = if SWAP { (*s).swap_bytes() } else { *s } };
+        let pairs = self.down.unsigned_abs() == 2 && (self.along as usize) % 4 == 0;
+        let mut j = 0;
+        while pairs && j + 1 < self.height {
+            let first = unsafe { self.dst.offset(j as isize * self.down) };
+            // The pair's lower address holds the row that comes first in memory.
+            let (low, high, at) = if self.down > 0 { (j, j + 1, first) } else { (j + 1, j, first.wrapping_offset(-2)) };
+            if at as usize % 4 != 0 {
+                break;
+            }
+            let (low, high) = unsafe {
+                (self.src.add(low * self.src_stride).cast::<u16>(), self.src.add(high * self.src_stride).cast::<u16>())
+            };
+            let mut at = at.cast::<u32>();
+            for i in 0..self.width {
+                let word = unsafe { u32::from(*low.add(i)) | u32::from(*high.add(i)) << 16 };
+                let word = if SWAP { (word & 0x00FF_00FF) << 8 | (word >> 8) & 0x00FF_00FF } else { word };
+                unsafe { *at = word };
+                at = at.wrapping_byte_offset(self.along);
+            }
+            j += 2;
+        }
+        while j < self.height {
+            unsafe { self.row(j, &put) };
+            j += 1;
+        }
+    }
 }
 
 /// Turns `Rgb565` pixels into `Rgb565Be` in place, and back.

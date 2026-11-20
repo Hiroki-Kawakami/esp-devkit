@@ -10,14 +10,16 @@ use core::ffi::CStr;
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 use bsp_rs::display::{self, Display, FrameBuffer, ImageFormat, Rotation, Ticket};
-use devkit_gfx::{Bgr888, ClipStore, Damage, DisplayList, GlyphCache, Pixel, Prepared, Rect, Rgb565, Surface, draw, swap_rgb565};
+use devkit_gfx::{
+    Bgr888, ClipStore, Damage, DisplayList, GlyphCache, Image, Pixel, Prepared, Rect, Rgb565, Size, Surface, Target, copy, draw, swap_rgb565,
+};
 use idf::heap::Caps;
 use idf::log::{error, warn};
 use idf::sync::Semaphore;
 use idf::time::Instant;
 use idf::{Error, Result, thread};
 
-use super::{Config, Grid, MAX_LANES, Presenter, STRIPS_PER_LANE, Stats, StripSource, Strips, cut};
+use super::{Config, Grid, MAX_LANES, Presenter, STRIPS_PER_LANE, Stats, StripSource, Strips, cut, panel_rect, split_turn};
 use crate::blit::NewBlitter;
 use crate::external::{Buffers, NO_BACK};
 
@@ -30,7 +32,13 @@ struct Job {
     list: *const DisplayList<'static, Caps>,
     strips: Vec<Rect, Caps>,
     format: ImageFormat,
+    /// What is left after the panel's own turn, done here.
+    turn: Rotation,
+    /// The panel's picture, before `turn`.
+    panel: Size,
     buffers: [[*mut u8; STRIPS_PER_LANE]; MAX_LANES],
+    /// Where a lane draws a strip it then turns into `buffers`.
+    scratch: [*mut u8; MAX_LANES],
     /// The writes still reading each buffer.
     sent: [[Option<Ticket>; STRIPS_PER_LANE]; MAX_LANES],
 }
@@ -103,25 +111,49 @@ impl Lane {
             }
             let t = Instant::now();
             let buffer = job.buffers[self.id][turn];
+            let drawn = if job.turn == Rotation::R0 { buffer } else { job.scratch[self.id] };
             let bytes = strip.w as usize * strip.h as usize * P::BYTES;
-            let surface = unsafe { Surface::new(buffer, strip.w as usize * P::BYTES, strip) };
+            let surface = unsafe { Surface::new(drawn, strip.w as usize * P::BYTES, strip) };
             draw::<P, _, _, _>(list, prepared, &mut self.clips, &surface);
             let pixels = unsafe { core::slice::from_raw_parts_mut(buffer, bytes) };
-            if job.format == ImageFormat::Rgb565Be {
-                swap_rgb565(pixels);
-            }
+            let area = if job.turn == Rotation::R0 {
+                if job.format == ImageFormat::Rgb565Be {
+                    swap_rgb565(pixels);
+                }
+                Some(strip)
+            } else {
+                let drawn = unsafe { core::slice::from_raw_parts_mut(drawn, bytes) };
+                turn_strip(job, strip, drawn, pixels)
+            };
             self.raster += t.elapsed().as_micros() as u32;
-            match unsafe { shared.display.write(strip, pixels) } {
+            let Some(area) = area else {
+                error!(TAG, "turn {strip:?}: outside the panel");
+                continue;
+            };
+            match unsafe { shared.display.write(area, pixels) } {
                 Ok(ticket) => job.sent[self.id][turn] = Some(ticket),
-                Err(err) => error!(TAG, "write {strip:?}: {err}"),
+                Err(err) => error!(TAG, "write {area:?}: {err}"),
             }
         }
     }
 }
 
-/// Puts display lists on a panel that keeps the picture in its own memory and
-/// turns it itself: damaged rows are drawn into strips and written while the
-/// next ones are drawn.
+/// Copies `drawn`, `strip` of the logical picture, into `out` as the panel
+/// holds it, and says where on the panel that lies.
+fn turn_strip(job: &Job, strip: Rect, drawn: &mut [u8], out: &mut [u8]) -> Option<Rect> {
+    let area = panel_rect(strip, job.turn, job.panel)?;
+    // Swapping in place first is faster than `copy` swapping as it turns.
+    if job.format == ImageFormat::Rgb565Be {
+        swap_rgb565(drawn);
+    }
+    let image = Image::from_pixels(job.format, strip.w as u16, strip.h as u16, strip.w as usize, drawn);
+    let mut target = Target::new(out, job.format, Size::new(area.w as u16, area.h as u16), area.w as usize)?.rotated(job.turn);
+    copy(&image, &mut target).then_some(area)
+}
+
+/// Puts display lists on a panel that keeps the picture in its own memory:
+/// damaged rows are drawn into strips and written while the next ones are
+/// drawn. A turn the panel cannot take is done on each strip before it goes.
 pub(crate) struct GramPresenter {
     shared: Arc<Shared>,
     grid: Grid,
@@ -129,6 +161,7 @@ pub(crate) struct GramPresenter {
     lanes: usize,
     strips: Strips,
     buffer_bytes: usize,
+    turn: Rotation,
     hole: Option<Rect>,
     over: Option<Rect>,
     fresh: bool,
@@ -152,7 +185,7 @@ impl GramPresenter {
             StripSource::Allocate { bytes, caps } => Strips::allocate(bytes, caps)?,
             StripSource::Given(strips) => strips,
         };
-        let buffer_bytes = fit(&strips, config.lanes, format).ok_or(Error::INVALID_SIZE)?;
+        let buffer_bytes = fit(&strips, config.lanes, format, false).ok_or(Error::INVALID_SIZE)?;
         let shared = Arc::new(Shared {
             display,
             start: [Semaphore::try_new(0, 1)?, Semaphore::try_new(0, 1)?],
@@ -164,7 +197,10 @@ impl GramPresenter {
                 list: core::ptr::null(),
                 strips: Vec::with_capacity_in(64, config.data_caps),
                 format,
+                turn: Rotation::R0,
+                panel: display.size(),
                 buffers: [[core::ptr::null_mut(); STRIPS_PER_LANE]; MAX_LANES],
+                scratch: [core::ptr::null_mut(); MAX_LANES],
                 sent: [[None; STRIPS_PER_LANE]; MAX_LANES],
             }),
             prepared: UnsafeCell::new(Prepared::new_in(config.data_caps)),
@@ -188,6 +224,7 @@ impl GramPresenter {
             lanes: config.lanes,
             strips,
             buffer_bytes,
+            turn: Rotation::R0,
             hole: None,
             over: None,
             fresh: true,
@@ -207,12 +244,13 @@ impl GramPresenter {
     }
 }
 
-/// Bytes per buffer of `strips` split for `lanes`, when one holds a row.
-fn fit(strips: &Strips, lanes: usize, format: ImageFormat) -> Option<usize> {
+/// Bytes per buffer of `strips` split for `lanes`, with room to draw before
+/// turning when `turns`, when one holds a row.
+fn fit(strips: &Strips, lanes: usize, format: ImageFormat, turns: bool) -> Option<usize> {
     if !(1..=MAX_LANES).contains(&lanes) {
         return None;
     }
-    let (_, buffer_bytes) = strips.buffers(lanes);
+    let buffer_bytes = if turns { strips.buffers_with_scratch(lanes).2 } else { strips.buffers(lanes).1 };
     if buffer_bytes < format.row_bytes(1) {
         error!(TAG, "strips of {buffer_bytes} bytes hold no pixel of {format:?}");
         return None;
@@ -223,7 +261,8 @@ fn fit(strips: &Strips, lanes: usize, format: ImageFormat) -> Option<usize> {
 impl Presenter for GramPresenter {
     fn area(&self) -> Rect {
         let size = self.display().size();
-        Rect::new(0, 0, size.width as i16, size.height as i16)
+        let (w, h) = (size.width as i16, size.height as i16);
+        if self.turn.swaps_axes() { Rect::new(0, 0, h, w) } else { Rect::new(0, 0, w, h) }
     }
 
     fn grid(&self) -> Grid {
@@ -270,7 +309,12 @@ impl Presenter for GramPresenter {
 
         let job = unsafe { &mut *shared.job.get() };
         job.list = core::ptr::from_ref(list).cast();
-        job.buffers = self.strips.buffers(self.lanes).0;
+        (job.turn, job.panel) = (self.turn, self.display().size());
+        if self.turn == Rotation::R0 {
+            job.buffers = self.strips.buffers(self.lanes).0;
+        } else {
+            (job.buffers, job.scratch, _) = self.strips.buffers_with_scratch(self.lanes);
+        }
         job.strips.clear();
         let hole = self.hole.unwrap_or_default();
         let over = self.over.unwrap_or_default();
@@ -299,16 +343,31 @@ impl Presenter for GramPresenter {
     }
 
     fn set_rotation(&mut self, rotation: Rotation) -> Result<()> {
+        let display = self.display();
+        let Some((panel, turn)) = split_turn(rotation, display.rotations()) else {
+            error!(TAG, "the panel takes no rotation");
+            return Err(Error::NOT_SUPPORTED);
+        };
+        let size = display.size();
+        let align = self.grid.columns as u16;
+        if turn.swaps_axes() && (size.width % align != 0 || size.height % align != 0) {
+            error!(TAG, "a {}x{} panel turned here leaves its {align}-pixel grid", size.width, size.height);
+            return Err(Error::INVALID_SIZE);
+        }
+        let buffer_bytes = fit(&self.strips, self.lanes, display.pixel_format(), turn != Rotation::R0).ok_or(Error::INVALID_SIZE)?;
         self.shared.drain();
         let mut config = display::Config::default();
-        config.rotation = Some(rotation);
-        let result = unsafe { self.display().reconfigure(&config) };
+        config.rotation = Some(panel);
+        let result = unsafe { display.reconfigure(&config) };
+        if result.is_ok() {
+            (self.turn, self.buffer_bytes) = (turn, buffer_bytes);
+        }
         self.reset();
         result
     }
 
     fn set_strips(&mut self, strips: Strips, lanes: usize) -> core::result::Result<Strips, Strips> {
-        let Some(buffer_bytes) = fit(&strips, lanes, self.display().pixel_format()) else {
+        let Some(buffer_bytes) = fit(&strips, lanes, self.display().pixel_format(), self.turn != Rotation::R0) else {
             return Err(strips);
         };
         self.shared.drain();
@@ -323,7 +382,7 @@ impl Presenter for GramPresenter {
 
     fn fits_display(&self, config: &display::Config, strips: &Strips, lanes: usize) -> bool {
         let format = config.pixel_format.unwrap_or_else(|| self.display().pixel_format());
-        fit(strips, lanes, format).is_some()
+        fit(strips, lanes, format, self.turn != Rotation::R0).is_some()
     }
 
     unsafe fn set_display(&mut self, config: &display::Config, strips: Strips, lanes: usize) -> core::result::Result<Strips, Strips> {

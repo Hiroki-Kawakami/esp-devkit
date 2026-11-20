@@ -18,6 +18,12 @@ kind = "idf"
 [targets.simulator_core2]
 kind = "sim"
 
+[targets.stopwatch]
+kind = "idf"
+
+[targets.simulator_stopwatch]
+kind = "sim"
+
 [targets.test]
 kind = "sim"
 dir = "simulator"

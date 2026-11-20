@@ -46,9 +46,10 @@ let board = bsp_rs::init(&bsp_rs::Config::default())?;
   the same reason as `as_mut_slice`. The display takes only its own format;
   `devkit_gfx::copy` and `swap_rgb565` convert above it.
 - `Config::rotation` is taken only by a panel that turns the picture itself:
-  `size()` is then the turned picture and `rotation()` the turn. A panel that
-  shows framebuffers takes R0 alone, and one that cannot exchange its rows and
-  columns takes R0 and R180.
+  `size()` is then the turned picture and `rotation()` the turn.
+  `rotations()` is the set it takes: a panel that shows framebuffers takes R0
+  alone, and one that cannot exchange its rows and columns takes R0 and R180.
+  `devkit_ui` turns the rest itself.
 - `set_brightness` takes 0..=100; the backlight starts off.
 - `ppi()` is the panel's pixels per inch, the same along both axes; the board
   gives it next to the panel's size.

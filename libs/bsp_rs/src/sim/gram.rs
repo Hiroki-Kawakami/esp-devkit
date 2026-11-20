@@ -15,7 +15,7 @@ use idf::{Error, Result, thread};
 
 use super::Host;
 use super::protocol::{Event, PixelFormat};
-use crate::display::{Driver, Image, ImageFormat, Rect, Rotation, Size, Ticket};
+use crate::display::{Driver, Image, ImageFormat, Rect, Rotation, Rotations, Size, Ticket};
 
 const TAG: &CStr = c"sim_gram";
 const QUEUE_DEPTH: usize = 10;
@@ -141,6 +141,10 @@ impl Driver for SimGram {
 
     fn rotation(&self) -> Rotation {
         self.rotation
+    }
+
+    fn rotations(&self) -> Rotations {
+        if self.quarter_turns { Rotations::all() } else { Rotations::R0.union(Rotations::R180) }
     }
 
     fn alignment(&self) -> u16 {

@@ -15,7 +15,7 @@ use core::any::Any;
 use core::ops::{Deref, DerefMut};
 
 use bsp_rs::display::{self, FrameBuffer, ImageFormat, Rotation};
-use devkit_gfx::{DisplayList, GlyphCache, Rect};
+use devkit_gfx::{DisplayList, GlyphCache, Rect, Size};
 use idf::heap::Caps;
 use idf::{Error, Result};
 
@@ -165,16 +165,31 @@ impl Strips {
 
     /// Two aligned buffers per lane.
     pub(crate) fn buffers(&self, lanes: usize) -> ([[*mut u8; STRIPS_PER_LANE]; MAX_LANES], usize) {
+        let (buffers, _, size) = self.carve(lanes, STRIPS_PER_LANE);
+        (buffers, size)
+    }
+
+    /// Two aligned buffers per lane and a third to draw into, all of a size.
+    pub(crate) fn buffers_with_scratch(&self, lanes: usize) -> ([[*mut u8; STRIPS_PER_LANE]; MAX_LANES], [*mut u8; MAX_LANES], usize) {
+        self.carve(lanes, STRIPS_PER_LANE + 1)
+    }
+
+    fn carve(&self, lanes: usize, per_lane: usize) -> ([[*mut u8; STRIPS_PER_LANE]; MAX_LANES], [*mut u8; MAX_LANES], usize) {
         let offset = self.ptr.align_offset(size_of::<Line>());
         let usable = self.len.saturating_sub(offset);
-        let size = usable / (lanes * STRIPS_PER_LANE) / size_of::<Line>() * size_of::<Line>();
+        let size = usable / (lanes * per_lane) / size_of::<Line>() * size_of::<Line>();
+        let at = |lane: usize, i: usize| unsafe { self.ptr.add(offset + (lane * per_lane + i) * size) };
         let mut buffers = [[core::ptr::null_mut(); STRIPS_PER_LANE]; MAX_LANES];
-        for (lane, pair) in buffers.iter_mut().enumerate().take(lanes) {
-            for (i, buffer) in pair.iter_mut().enumerate() {
-                *buffer = unsafe { self.ptr.add(offset + (lane * STRIPS_PER_LANE + i) * size) };
+        let mut scratch = [core::ptr::null_mut(); MAX_LANES];
+        for lane in 0..lanes.min(MAX_LANES) {
+            for (i, buffer) in buffers[lane].iter_mut().enumerate() {
+                *buffer = at(lane, i);
+            }
+            if per_lane > STRIPS_PER_LANE {
+                scratch[lane] = at(lane, STRIPS_PER_LANE);
             }
         }
-        (buffers, size)
+        (buffers, scratch, size)
     }
 }
 
@@ -207,6 +222,39 @@ impl Grid {
         let (right, bottom) = (floor_to(rect.right(), self.columns), floor_to(rect.bottom(), self.rows));
         Rect::new(left, top, (right - left).max(0), (bottom - top).max(0))
     }
+}
+
+const TURNS: [Rotation; 4] = [Rotation::R0, Rotation::R90, Rotation::R180, Rotation::R270];
+
+fn turn_index(rotation: Rotation) -> usize {
+    TURNS.iter().position(|r| *r == rotation).unwrap_or(0)
+}
+
+/// The turn among `rotations` for the panel, and what is left of `rotation`
+/// after it; the panel takes as much as it can.
+pub(crate) fn split_turn(rotation: Rotation, rotations: display::Rotations) -> Option<(Rotation, Rotation)> {
+    let wanted = turn_index(rotation);
+    (0..TURNS.len()).find_map(|left| {
+        let panel = TURNS[(wanted + TURNS.len() - left) % TURNS.len()];
+        rotations.has(panel).then_some((panel, TURNS[left]))
+    })
+}
+
+/// Where `rect` of the logical picture lies on a `panel` that `turn` maps it
+/// onto; `None` when it leaves the picture.
+pub(crate) fn panel_rect(rect: Rect, turn: Rotation, panel: Size) -> Option<Rect> {
+    let (width, height) = (panel.width as i16, panel.height as i16);
+    let logical = if turn.swaps_axes() { Rect::new(0, 0, height, width) } else { Rect::new(0, 0, width, height) };
+    if rect.is_empty() || !logical.contains(&rect) {
+        return None;
+    }
+    let Rect { x, y, w, h } = rect;
+    Some(match turn {
+        Rotation::R0 => rect,
+        Rotation::R90 => Rect::new(y, height - x - w, h, w),
+        Rotation::R180 => Rect::new(width - x - w, height - y - h, w, h),
+        Rotation::R270 => Rect::new(width - y - h, x, h, w),
+    })
 }
 
 /// Strips of `area`, which lies on `grid`, row by row from the top: whole

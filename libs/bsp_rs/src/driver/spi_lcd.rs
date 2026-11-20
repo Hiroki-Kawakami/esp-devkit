@@ -15,7 +15,7 @@ use idf::spi::Bus;
 use idf::sync::{Mutex, Semaphore};
 use idf::{Error, Result, sys};
 
-use crate::display::{Driver, Image, ImageFormat, Rect, Rotation, Size, Ticket};
+use crate::display::{Driver, Image, ImageFormat, Rect, Rotation, Rotations, Size, Ticket};
 
 const TAG: &CStr = c"spi_lcd";
 
@@ -473,6 +473,10 @@ impl Driver for SpiLcd {
 
     fn rotation(&self) -> Rotation {
         self.rotation
+    }
+
+    fn rotations(&self) -> Rotations {
+        if self.exchanges { Rotations::all() } else { Rotations::R0.union(Rotations::R180) }
     }
 
     fn alignment(&self) -> u16 {
