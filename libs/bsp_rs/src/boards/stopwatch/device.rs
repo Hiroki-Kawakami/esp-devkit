@@ -3,6 +3,8 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
+use alloc::boxed::Box;
+use alloc::vec::Vec;
 use core::time::Duration;
 
 use idf::i2c::{BusConfig, MasterBus};
@@ -12,11 +14,14 @@ use idf::sync::{Mutex, OnceLock};
 use idf::{Error, Result, gpio, thread};
 
 use super::{PANEL_PPI, PANEL_SIZE, TAG, resolve_rotation};
+use crate::button::{self, Buttons, Provider};
 use crate::devices::co5300;
 use crate::devices::cst820::{self, Cst820};
 use crate::devices::cst9217::{self, Cst9217};
 use crate::devices::m5ioe1::M5Ioe1;
+use crate::devices::m5pm1::{M5pm1, PowerButton};
 use crate::display::{self, Rotation, Size};
+use crate::driver::gpio_button::{GpioButtons, Pin};
 use crate::driver::spi_lcd::SpiLcd;
 use crate::power;
 use crate::touch::{self, Touch};
@@ -52,8 +57,14 @@ const LCD_MEMORY: Size = Size { width: 480, height: 466 };
 const TOUCH_PIN_INT: i32 = 13;
 const TOUCH_PROBE_TIMEOUT: Duration = Duration::from_millis(50);
 
+// KEYA, then KEYB; pulled up on the board.
+static KEYS: [Pin; 2] = [Pin { gpio: 2, active_low: true, pull: false }, Pin { gpio: 1, active_low: true, pull: false }];
+const PM1_IRQ_OUT: u8 = 1;
+const PM1_PIN_IRQ: i32 = 12;
+
 static I2C: OnceLock<MasterBus> = OnceLock::new();
 static IOE: OnceLock<Mutex<M5Ioe1<'static>>> = OnceLock::new();
+static PM1: OnceLock<Mutex<M5pm1<'static>>> = OnceLock::new();
 static DISPLAY: OnceLock<display::Display> = OnceLock::new();
 
 struct UnknownPower;
@@ -76,10 +87,12 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
     let ioe = IOE.get_or_try_init(|| expander_init(bus).map(Mutex::new)).inspect_err(|err| error!(TAG, "m5ioe1: {err}"))?;
     let display = panel_init(rotation, ioe).inspect_err(|err| error!(TAG, "panel: {err}"))?;
     let touch = touch_init(bus, ioe, rotation).inspect_err(|err| warn!(TAG, "touch unavailable: {err}")).ok();
+    let pm1 = PM1.get_or_try_init(|| M5pm1::new(bus).map(Mutex::new)).inspect_err(|err| warn!(TAG, "m5pm1 unavailable: {err}")).ok();
+    let buttons = buttons_init(pm1).inspect_err(|err| warn!(TAG, "buttons unavailable: {err}")).ok();
     let power = power::start(UnknownPower, None);
     Ok(Board {
         audio: None,
-        buttons: None,
+        buttons,
         display: Some(DISPLAY.get_or_init(|| display::Display::new(display))),
         imu: None,
         power,
@@ -182,4 +195,16 @@ fn touch_init(bus: &'static MasterBus, ioe: &Mutex<M5Ioe1>, rotation: Rotation) 
         error!(TAG, "no touch controller on 0x{:02x} or 0x{:02x}", cst820::ADDR, cst9217::ADDR);
         Err(Error::NOT_FOUND)
     }
+}
+
+fn buttons_init(pm1: Option<&'static Mutex<M5pm1<'static>>>) -> Result<&'static Buttons> {
+    let mut providers = Vec::new();
+    providers.push(Provider::Level(Box::new(GpioButtons::new(&KEYS)?)));
+    if let Some(pm1) = pm1 {
+        match PowerButton::new(pm1, PM1_IRQ_OUT, PM1_PIN_IRQ) {
+            Ok(pwr) => providers.push(Provider::Judged(Box::new(pwr))),
+            Err(err) => warn!(TAG, "power button unavailable: {err}"),
+        }
+    }
+    button::start(providers)
 }

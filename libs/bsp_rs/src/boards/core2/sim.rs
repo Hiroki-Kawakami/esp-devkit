@@ -3,6 +3,9 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
+use alloc::boxed::Box;
+use alloc::vec;
+
 use idf::Result;
 use idf::log::{info, warn};
 use idf::sync::OnceLock;
@@ -60,7 +63,7 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
     .inspect_err(|err| warn!(TAG, "touch unavailable: {err}"))
     .ok();
     // The host shows no area below the picture: only a harness presses these.
-    let buttons = touch.and_then(|_| button::start(ZoneButtons).inspect_err(|err| warn!(TAG, "buttons unavailable: {err}")).ok());
+    let buttons = touch.and_then(|_| button::start(vec![button::Provider::Level(Box::new(ZoneButtons))]).inspect_err(|err| warn!(TAG, "buttons unavailable: {err}")).ok());
     let audio = SimAudio::new(host)
         .and_then(|driver| audio::start(driver, &config.audio))
         .inspect_err(|err| warn!(TAG, "audio unavailable: {err}"))

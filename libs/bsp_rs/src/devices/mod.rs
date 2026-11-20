@@ -37,6 +37,8 @@ pub(crate) mod ili9342c;
 pub(crate) mod ili9881c;
 #[cfg(CONFIG_BSP_RS_DEVICE_M5IOE1)]
 pub(crate) mod m5ioe1;
+#[cfg(CONFIG_BSP_RS_DEVICE_M5PM1)]
+pub(crate) mod m5pm1;
 #[cfg(CONFIG_BSP_RS_DEVICE_NS4168)]
 pub(crate) mod ns4168;
 #[cfg(CONFIG_BSP_RS_DEVICE_PI4IO)]

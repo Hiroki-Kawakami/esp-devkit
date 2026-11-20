@@ -7,11 +7,13 @@
 
 extern crate alloc;
 
+use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::ffi::CStr;
 use core::time::Duration;
 
+use bsp_rs::button::Buttons;
 use bsp_rs::display::{Display, Image, ImageFormat, Rect, Rotation};
 use bsp_rs::touch::{MAX_POINTS, Point, Touch};
 use devkit_gfx::swap_rgb565;
@@ -41,6 +43,7 @@ const HOLD: Duration = Duration::from_secs(3);
 const FRAME_HOLD: Duration = Duration::from_millis(1500);
 const DOT: i16 = 8;
 const TOUCH_POLL: Duration = Duration::from_millis(10);
+const LONG_PRESS: Duration = Duration::from_millis(800);
 const RED: (u8, u8, u8) = (255, 0, 0);
 const GREEN: (u8, u8, u8) = (0, 255, 0);
 const BLUE: (u8, u8, u8) = (0, 0, 255);
@@ -61,6 +64,9 @@ pub fn run() {
     };
     if let Err(err) = display.set_brightness(100) {
         error!(TAG, "set_brightness: {err}");
+    }
+    if let Some(buttons) = board.buttons {
+        log_buttons(buttons);
     }
     for rotation in ROTATIONS.iter().cycle() {
         let mut config = bsp_rs::display::Config::default();
@@ -84,6 +90,15 @@ pub fn run() {
             None => thread::sleep(HOLD),
         }
     }
+}
+
+// Every event of every button, with long presses on.
+fn log_buttons(buttons: &Buttons) {
+    info!(TAG, "buttons: {}", buttons.count());
+    for id in 0..buttons.count() as u8 {
+        buttons.set_long_press(id, Some(LONG_PRESS));
+    }
+    buttons.set_event_cb(Some(Box::new(|id, event| info!(TAG, "button {id}: {event:?}"))));
 }
 
 // A dot under each finger, for `HOLD`. Logs where a touch starts and ends, so

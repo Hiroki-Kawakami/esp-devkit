@@ -3,11 +3,15 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
+use alloc::boxed::Box;
+use alloc::vec;
+
 use idf::Result;
 use idf::log::{info, warn};
 use idf::sync::OnceLock;
 
 use super::{PANEL_PPI, PANEL_SIZE, PIXEL_FORMAT, TAG, resolve_rotation};
+use crate::button::{self, Provider};
 use crate::display;
 use crate::power;
 use crate::sim::gram::{GramConfig, SimGram};
@@ -29,6 +33,24 @@ const PANEL: GramConfig = GramConfig {
 };
 
 static DISPLAY: OnceLock<display::Display> = OnceLock::new();
+
+// KEYA, KEYB and the power button, which only a harness presses.
+struct Keys;
+
+impl button::Driver for Keys {
+    fn count(&self) -> usize {
+        3
+    }
+
+    fn sample(&mut self, pressed: &mut [bool]) -> Result<()> {
+        pressed.fill(false);
+        Ok(())
+    }
+
+    fn notifies(&self) -> bool {
+        true
+    }
+}
 
 // Without the simulator host there is nothing to show or touch.
 pub(crate) fn init(config: &Config) -> Result<Board> {
@@ -53,10 +75,11 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
     })
     .inspect_err(|err| warn!(TAG, "touch unavailable: {err}"))
     .ok();
+    let buttons = button::start(vec![Provider::Level(Box::new(Keys))]).inspect_err(|err| warn!(TAG, "buttons unavailable: {err}")).ok();
     let power = power::start(SimPower::new(Some(host)), None);
     Ok(Board {
         audio: None,
-        buttons: None,
+        buttons,
         display: Some(DISPLAY.get_or_init(|| display::Display::new(panel))),
         imu: None,
         power,

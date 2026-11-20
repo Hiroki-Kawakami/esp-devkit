@@ -38,6 +38,8 @@ choice BSP_RS_BOARD
         select BSP_RS_DEVICE_CST820 if !DEVKIT_SIMULATOR
         select BSP_RS_DEVICE_CST9217 if !DEVKIT_SIMULATOR
         select BSP_RS_DEVICE_M5IOE1 if !DEVKIT_SIMULATOR
+        select BSP_RS_DEVICE_M5PM1 if !DEVKIT_SIMULATOR
+        select BSP_RS_DRIVER_GPIO_BUTTON if !DEVKIT_SIMULATOR
 
     config BSP_RS_BOARD_TAB5
         bool "M5Stack Tab5 (ESP32-P4)"
@@ -111,6 +113,9 @@ config BSP_RS_DEVICE_INA226
 config BSP_RS_DEVICE_M5IOE1
     bool
 
+config BSP_RS_DEVICE_M5PM1
+    bool
+
 config BSP_RS_DEVICE_NS4168
     bool
     select BSP_RS_DRIVER_I2S_OUT
@@ -135,6 +140,9 @@ config BSP_RS_DEVICE_ST712X_TOUCH
 config BSP_RS_DRIVER_ESP_HOSTED
     bool
     select BSP_RS_DRIVER_SDMMC
+
+config BSP_RS_DRIVER_GPIO_BUTTON
+    bool
 
 config BSP_RS_DRIVER_I2S_OUT
     bool

@@ -4,6 +4,7 @@
  */
 
 use alloc::boxed::Box;
+use alloc::vec;
 use core::time::Duration;
 
 use idf::i2c::{BusConfig, MasterBus};
@@ -142,7 +143,7 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
     }
     let display = panel_init(rotation, pmu).inspect_err(|err| error!(TAG, "panel: {err}"))?;
     let touch = touch_init(bus, rotation).inspect_err(|err| warn!(TAG, "touch unavailable: {err}")).ok();
-    let buttons = touch.and_then(|_| button::start(ZoneButtons).inspect_err(|err| warn!(TAG, "buttons unavailable: {err}")).ok());
+    let buttons = touch.and_then(|_| button::start(vec![button::Provider::Level(Box::new(ZoneButtons))]).inspect_err(|err| warn!(TAG, "buttons unavailable: {err}")).ok());
     let audio = audio_init(config, pmu);
     let rtc = rtc_init(bus);
     let power = power::start(PowerDriver::new(pmu), audio);

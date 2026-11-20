@@ -44,6 +44,11 @@ pub fn set_level(pin: i32, high: bool) -> Result<()> {
     Error::check(unsafe { sys::gpio_set_level(pin as _, high as u32) })
 }
 
+/// The input level; low on a pin that is not an input.
+pub fn level(pin: i32) -> bool {
+    unsafe { sys::gpio_get_level(pin as _) != 0 }
+}
+
 pub fn set_pull(pin: i32, pull: Pull) -> Result<()> {
     let pull = match pull {
         Pull::None => sys::gpio_pull_mode_t_GPIO_FLOATING,
