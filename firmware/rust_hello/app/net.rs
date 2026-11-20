@@ -429,10 +429,12 @@ fn crypto_bench() {
             let _ = rsa.verify_pkcs1v15(HashAlg::Sha256, b"m", &sig);
         });
     }
-    let ec = devkit_crypto::ecdsa::SigningKey::generate(devkit_crypto::ecdsa::Curve::P256).unwrap();
-    let ec_sig = ec.sign(HashAlg::Sha256, b"m").unwrap();
-    let ec_pub = ec.verifying_key().unwrap();
-    time("ECDSA P-256 verify", 4, 0, &mut || ec_pub.verify(HashAlg::Sha256, b"m", &ec_sig).unwrap());
+    for curve in [devkit_crypto::ecdsa::Curve::P256, devkit_crypto::ecdsa::Curve::P384] {
+        let ec = devkit_crypto::ecdsa::SigningKey::generate(curve).unwrap();
+        let ec_sig = ec.sign(curve.hash(), b"m").unwrap();
+        let ec_pub = ec.verifying_key().unwrap();
+        time(&format!("ECDSA {curve:?} verify"), 4, 0, &mut || ec_pub.verify(curve.hash(), b"m", &ec_sig).unwrap());
+    }
     let ed = devkit_crypto::ed25519::SigningKey::from_seed(&[1; 32]);
     let ed_sig = ed.sign(b"m");
     let ed_pub = ed.verifying_key();

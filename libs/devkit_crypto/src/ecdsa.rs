@@ -6,9 +6,9 @@
 use alloc::vec::Vec;
 
 use crate::der::{self, Reader, Writer};
-use crate::hash::HashAlg;
+use crate::hash::{Hash, HashAlg, Sha1, Sha256, Sha384, Sha512};
 use crate::psa::{self, Key, Policy};
-use crate::{Error, Result};
+use crate::{Error, Result, weierstrass};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Curve {
@@ -101,9 +101,9 @@ impl SigningKey {
 }
 
 pub struct VerifyingKey {
-    key: Key,
     curve: Curve,
     point: Vec<u8>,
+    key: Option<Key>,
 }
 
 impl VerifyingKey {
@@ -112,14 +112,21 @@ impl VerifyingKey {
         if point.len() != curve.point_len() {
             return Err(Error::InvalidKey);
         }
-        let policy = Policy {
-            ty: psa::KEY_TYPE_ECC_PUBLIC_KEY_BASE | psa::ECC_FAMILY_SECP_R1,
-            bits: curve.bits(),
-            usage: psa::USAGE_VERIFY_HASH,
-            alg: ALG_ANY,
-            alg2: 0,
+        let key = match curve {
+            Curve::P521 => {
+                let policy = Policy {
+                    ty: psa::KEY_TYPE_ECC_PUBLIC_KEY_BASE | psa::ECC_FAMILY_SECP_R1,
+                    bits: curve.bits(),
+                    usage: psa::USAGE_VERIFY_HASH,
+                    alg: ALG_ANY,
+                    alg2: 0,
+                };
+                Some(Key::import(&policy, point)?)
+            }
+            _ if weierstrass::on_curve(curve, point) => None,
+            _ => return Err(Error::InvalidKey),
         };
-        Ok(Self { key: Key::import(&policy, point)?, curve, point: point.to_vec() })
+        Ok(Self { curve, point: point.to_vec(), key })
     }
 
     pub fn curve(&self) -> Curve {
@@ -132,10 +139,16 @@ impl VerifyingKey {
 
     /// `signature` is `r || s`.
     pub fn verify(&self, hash: HashAlg, message: &[u8], signature: &[u8]) -> Result<()> {
-        if signature.len() != 2 * self.curve.scalar_len() {
+        let n = self.curve.scalar_len();
+        if signature.len() != 2 * n {
             return Err(Error::Verify);
         }
-        self.key.verify_message(alg(hash), message, signature)
+        if let Some(key) = &self.key {
+            return key.verify_message(alg(hash), message, signature);
+        }
+        let digest = digest(hash, message);
+        let (r, s) = signature.split_at(n);
+        if weierstrass::verify(self.curve, &self.point, &digest, r, s) { Ok(()) } else { Err(Error::Verify) }
     }
 
     /// `signature` is a DER Ecdsa-Sig-Value, as X.509 and TLS carry it.
@@ -148,6 +161,15 @@ impl VerifyingKey {
 impl Clone for VerifyingKey {
     fn clone(&self) -> Self {
         Self::from_sec1(self.curve, &self.point).expect("re-importing a valid key")
+    }
+}
+
+fn digest(hash: HashAlg, message: &[u8]) -> Vec<u8> {
+    match hash {
+        HashAlg::Sha1 => Sha1::digest(message).to_vec(),
+        HashAlg::Sha256 => Sha256::digest(message).to_vec(),
+        HashAlg::Sha384 => Sha384::digest(message).to_vec(),
+        HashAlg::Sha512 => Sha512::digest(message).to_vec(),
     }
 }
 

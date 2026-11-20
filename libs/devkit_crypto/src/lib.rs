@@ -18,6 +18,7 @@ pub mod ecdh;
 pub mod ecdsa;
 pub mod ed25519;
 mod error;
+mod fe25519;
 pub mod hash;
 #[cfg(all(target_os = "none", CONFIG_SOC_AES_SUPPORT_GCM, CONFIG_SOC_AES_GDMA))]
 mod hw_gcm;
@@ -27,7 +28,10 @@ mod psa;
 pub mod rand;
 pub mod rsa;
 pub mod tls;
+mod weierstrass;
+mod wnaf;
 pub mod x509;
+mod x25519;
 #[cfg(test)]
 mod tests;
 

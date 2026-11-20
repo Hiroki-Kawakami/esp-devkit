@@ -96,6 +96,65 @@ fn ecdsa_verifies_the_references_and_its_own() {
 }
 
 #[test]
+fn ecdsa_verify_agrees_with_the_signer_on_every_hash() {
+    for curve in [Curve::P256, Curve::P384] {
+        let key = SigningKey::generate(curve).unwrap();
+        let public = key.verifying_key().unwrap();
+        for (i, hash) in [HashAlg::Sha1, HashAlg::Sha256, HashAlg::Sha384, HashAlg::Sha512].into_iter().enumerate() {
+            for n in 0..8 {
+                let message = noise(n * 37, (i * 8 + n) as u32);
+                let sig = key.sign(hash, &message).unwrap();
+                public.verify(hash, &message, &sig).unwrap();
+                let len = curve.scalar_len();
+                for flip in [0, len - 1, len, 2 * len - 1] {
+                    let mut bad = sig.clone();
+                    bad[flip] ^= 1;
+                    assert_eq!(public.verify(hash, &message, &bad).err(), Some(Error::Verify), "{curve:?} {hash:?}");
+                }
+            }
+        }
+        let len = curve.scalar_len();
+        let sig = key.sign(HashAlg::Sha256, b"m").unwrap();
+        let mut zero_r = sig.clone();
+        zero_r[..len].fill(0);
+        let mut big_s = sig.clone();
+        big_s[len..].fill(0xff);
+        for bad in [zero_r, big_s] {
+            assert_eq!(public.verify(HashAlg::Sha256, b"m", &bad).err(), Some(Error::Verify));
+        }
+        let mut off_curve = public.to_sec1().to_vec();
+        *off_curve.last_mut().unwrap() ^= 1;
+        assert_eq!(VerifyingKey::from_sec1(curve, &off_curve).err(), Some(Error::InvalidKey));
+        let mut compressed = public.to_sec1().to_vec();
+        compressed[0] = 2;
+        assert_eq!(VerifyingKey::from_sec1(curve, &compressed).err(), Some(Error::InvalidKey));
+    }
+}
+
+#[test]
+fn x25519_matches_rfc7748() {
+    let alice = EphemeralSecret::from_private(Group::X25519, &hex("77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a")).unwrap();
+    let bob = EphemeralSecret::from_private(Group::X25519, &hex("5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb")).unwrap();
+    assert_eq!(alice.public_key().unwrap(), hex("8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a"));
+    assert_eq!(bob.public_key().unwrap(), hex("de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f"));
+    let shared = hex("4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742");
+    assert_eq!(alice.agree(&bob.public_key().unwrap()).unwrap(), shared);
+    assert_eq!(bob.agree(&alice.public_key().unwrap()).unwrap(), shared);
+    let (mut k, mut u) = (crate::x25519::BASE, crate::x25519::BASE);
+    for i in 1..=1000 {
+        let next = crate::x25519::x25519(&k, &u);
+        u = k;
+        k = next;
+        if i == 1 {
+            assert_eq!(k.to_vec(), hex("422c8e7a6227d7bca1350b3e2bb7279f7897b87bb6854b783c60e80311ae3079"));
+        }
+    }
+    assert_eq!(k.to_vec(), hex("684cf59ba83309552800ef566f2f4d3c1c3887c49360e3875f2eb94d99532c51"));
+    assert_eq!(alice.agree(&[0; 32]).err(), Some(Error::InvalidKey));
+    assert_eq!(alice.agree(&[9; 31]).err(), Some(Error::InvalidKey));
+}
+
+#[test]
 fn rsa_matches_the_references() {
     let key_row = &vectors("rsa_key")[0];
     let private = PrivateKey::from_pkcs1_der(&hex(&key_row[0])).unwrap();

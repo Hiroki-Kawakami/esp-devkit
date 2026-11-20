@@ -3,7 +3,10 @@
 Cryptography for the firmware: hashes, MACs, KDFs, ciphers, AEADs, key
 agreement, signatures, X.509, a sans-IO TLS 1.3 client and Mozilla's root CAs.
 What mbedTLS's PSA Crypto API has is a thin wrapper over it, so the device gets
-IDF's hardware accelerators and their locking; the rest is implemented here. The
+IDF's hardware accelerators and their locking; the rest is implemented here.
+X25519 and P-256/P-384 ECDSA verification are implemented here too: mbedTLS's
+software versions are several times slower, and on chips without matching
+hardware they made up most of a TLS handshake. The
 simulator and host tests link the same PSA API from nixpkgs' `mbedtls_4`, the
 version IDF ships.
 
@@ -26,8 +29,8 @@ Hkdf::<Sha256>::new(b"salt", b"input key material").expand(&[b"label", b"context
 | `kdf` | `Hkdf<H>` over any `Hash` | own |
 | `cipher` | `chacha20` from any block counter | own |
 | `aead` | `Aead`: AES-128/256-GCM, ChaCha20-Poly1305 | PSA |
-| `ecdh` | `EphemeralSecret`: X25519, P-256, P-384 | PSA |
-| `ecdsa` | `SigningKey`, `VerifyingKey`: P-256, P-384, P-521; DER signature conversion | PSA |
+| `ecdh` | `EphemeralSecret`: X25519, P-256, P-384 | own (X25519, constant time), PSA |
+| `ecdsa` | `SigningKey`, `VerifyingKey`: P-256, P-384, P-521; DER signature conversion | own (P-256 and P-384 verify), PSA |
 | `rsa` | `PrivateKey` (generate, PKCS #1 DER, PSS and v1.5 signing, v1.5 over a digest already taken), `PublicKey` | PSA |
 | `ed25519` | `Point` and `Scalar` on edwards25519, `SigningKey`, `VerifyingKey` (RFC 8032) | own |
 | `der` | ASN.1 DER `Reader` and `Writer` | own |
@@ -60,9 +63,10 @@ Hkdf::<Sha256>::new(b"salt", b"input key material").expand(&[b"label", b"context
 8032 checks, addition, negation, multiplication by a `Scalar` or by
 `mul_bits`, which takes a 256-bit integer as it is, without reducing it modulo
 the group order, for protocols that multiply by a cofactor-cleared or clamped
-value. Point operations take the same time for any input. The field arithmetic
-uses 16-bit limbs, which keeps it simple and slow; what it costs on the devices
-is in [`docs/performance.md`](docs/performance.md).
+value. Point operations take the same time for any input; only signature
+verification, whose inputs are public, uses a faster variable-time double
+multiplication. The field (ten limbs of 25.5 bits) is shared with X25519. What
+it costs on the devices is in [`docs/performance.md`](docs/performance.md).
 
 ## X.509
 
@@ -74,6 +78,11 @@ DNS and IP name constraints, the root's distrust-after date, and the server's
 name against the subject alternative names (no Common Name fallback; a `*`
 only as the whole leftmost label). A leaf whose key is itself in the store is
 trusted as it is. Signatures: RSA PKCS #1 v1.5 and PSS, ECDSA, Ed25519.
+
+An intermediate's signature that checked out is remembered, keyed by the
+SHA-256 of the certificate and of the signer's SubjectPublicKeyInfo, so a chain
+seen again skips it; every other check still runs. The cache holds the 16 most
+recently used entries, in RAM only, shared by every `TrustStore`.
 
 `CertificateBuilder` writes version 3 certificates, self-signed or for another
 key: subject `Name`, serial, validity, basicConstraints, DNS names.

@@ -3,158 +3,40 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
+use alloc::vec::Vec;
+
 use crate::ct;
+use crate::fe25519::{self as fe, Fe, add, from_bytes, invert, is_negative, mul, pow22523, square, sub, to_bytes};
 use crate::hash::{Hash, Sha512};
+use crate::wnaf::wnaf;
 use crate::{Error, Result};
 
-type Fe = [i64; 16];
-
-const FE0: Fe = [0; 16];
-const FE1: Fe = fe1();
-const D: Fe = [
+const FE0: Fe = fe::ZERO;
+const FE1: Fe = fe::ONE;
+const D: Fe = fe::from_words(&[
     0x78a3, 0x1359, 0x4dca, 0x75eb, 0xd8ab, 0x4141, 0x0a4d, 0x0070, 0xe898, 0x7779, 0x4079, 0x8cc7, 0xfe73, 0x2b6f, 0x6cee,
     0x5203,
-];
-const D2: Fe = [
+]);
+const D2: Fe = fe::from_words(&[
     0xf159, 0x26b2, 0x9b94, 0xebd6, 0xb156, 0x8283, 0x149a, 0x00e0, 0xd130, 0xeef3, 0x80f2, 0x198e, 0xfce7, 0x56df, 0xd9dc,
     0x2406,
-];
-const BASE_X: Fe = [
+]);
+const BASE_X: Fe = fe::from_words(&[
     0xd51a, 0x8f25, 0x2d60, 0xc956, 0xa7b2, 0x9525, 0xc760, 0x692c, 0xdc5c, 0xfdd6, 0xe231, 0xc0a4, 0x53fe, 0xcd6e, 0x36d3,
     0x2169,
-];
-const BASE_Y: Fe = [
+]);
+const BASE_Y: Fe = fe::from_words(&[
     0x6658, 0x6666, 0x6666, 0x6666, 0x6666, 0x6666, 0x6666, 0x6666, 0x6666, 0x6666, 0x6666, 0x6666, 0x6666, 0x6666, 0x6666,
     0x6666,
-];
-const SQRT_M1: Fe = [
+]);
+const SQRT_M1: Fe = fe::from_words(&[
     0xa0b0, 0x4a0e, 0x1b27, 0xc4ee, 0xe478, 0xad2f, 0x1806, 0x2f43, 0xd7a7, 0x3dfb, 0x0099, 0x2b4d, 0xdf0b, 0x4fc1, 0x2480,
     0x2b83,
-];
+]);
 const L: [i64; 32] = [
     0xed, 0xd3, 0xf5, 0x5c, 0x1a, 0x63, 0x12, 0x58, 0xd6, 0x9c, 0xf7, 0xa2, 0xde, 0xf9, 0xde, 0x14, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, 0, 0, 0, 0, 0, 0x10,
 ];
-
-const fn fe1() -> Fe {
-    let mut f = [0; 16];
-    f[0] = 1;
-    f
-}
-
-fn carry(o: &mut Fe) {
-    for i in 0..16 {
-        o[i] += 1 << 16;
-        let c = o[i] >> 16;
-        if i < 15 {
-            o[i + 1] += c - 1;
-        } else {
-            o[0] += 38 * (c - 1);
-        }
-        o[i] -= c << 16;
-    }
-}
-
-fn select(p: &mut Fe, q: &mut Fe, b: i64) {
-    let mask = !(b - 1);
-    for i in 0..16 {
-        let t = mask & (p[i] ^ q[i]);
-        p[i] ^= t;
-        q[i] ^= t;
-    }
-}
-
-fn pack_fe(n: &Fe) -> [u8; 32] {
-    let mut t = *n;
-    carry(&mut t);
-    carry(&mut t);
-    carry(&mut t);
-    let mut m = [0i64; 16];
-    for _ in 0..2 {
-        m[0] = t[0] - 0xffed;
-        for i in 1..15 {
-            m[i] = t[i] - 0xffff - ((m[i - 1] >> 16) & 1);
-            m[i - 1] &= 0xffff;
-        }
-        m[15] = t[15] - 0x7fff - ((m[14] >> 16) & 1);
-        let b = (m[15] >> 16) & 1;
-        m[14] &= 0xffff;
-        select(&mut t, &mut m, 1 - b);
-    }
-    let mut o = [0u8; 32];
-    for i in 0..16 {
-        o[2 * i] = t[i] as u8;
-        o[2 * i + 1] = (t[i] >> 8) as u8;
-    }
-    o
-}
-
-fn unpack_fe(n: &[u8; 32]) -> Fe {
-    let mut o = [0i64; 16];
-    for i in 0..16 {
-        o[i] = n[2 * i] as i64 + ((n[2 * i + 1] as i64) << 8);
-    }
-    o[15] &= 0x7fff;
-    o
-}
-
-fn fe_eq(a: &Fe, b: &Fe) -> bool {
-    ct::eq(&pack_fe(a), &pack_fe(b))
-}
-
-fn parity(a: &Fe) -> u8 {
-    pack_fe(a)[0] & 1
-}
-
-fn add(a: &Fe, b: &Fe) -> Fe {
-    core::array::from_fn(|i| a[i] + b[i])
-}
-
-fn sub(a: &Fe, b: &Fe) -> Fe {
-    core::array::from_fn(|i| a[i] - b[i])
-}
-
-fn mul(a: &Fe, b: &Fe) -> Fe {
-    let mut t = [0i64; 31];
-    for i in 0..16 {
-        for j in 0..16 {
-            t[i + j] += a[i] * b[j];
-        }
-    }
-    for i in 0..15 {
-        t[i] += 38 * t[i + 16];
-    }
-    let mut o: Fe = core::array::from_fn(|i| t[i]);
-    carry(&mut o);
-    carry(&mut o);
-    o
-}
-
-fn square(a: &Fe) -> Fe {
-    mul(a, a)
-}
-
-fn invert(i: &Fe) -> Fe {
-    let mut c = *i;
-    for a in (0..=253).rev() {
-        c = square(&c);
-        if a != 2 && a != 4 {
-            c = mul(&c, i);
-        }
-    }
-    c
-}
-
-fn pow2523(i: &Fe) -> Fe {
-    let mut c = *i;
-    for a in (0..=250).rev() {
-        c = square(&c);
-        if a != 1 {
-            c = mul(&c, i);
-        }
-    }
-    c
-}
 
 /// A point on edwards25519, in extended coordinates. Operations on it take the
 /// same time for any input.
@@ -171,8 +53,8 @@ impl Point {
     /// RFC 8032 decoding; `None` for a non-canonical `y`, `x = 0` with the sign
     /// bit set, or a `y` with no point.
     pub fn decode(bytes: &[u8; 32]) -> Option<Point> {
-        let y = unpack_fe(bytes);
-        let mut canonical = pack_fe(&y);
+        let y = from_bytes(bytes);
+        let mut canonical = to_bytes(&y);
         canonical[31] |= bytes[31] & 0x80;
         if canonical != *bytes {
             return None;
@@ -184,20 +66,20 @@ impl Point {
         let den4 = square(&den2);
         let den6 = mul(&den4, &den2);
         let mut t = mul(&mul(&den6, &num), &den);
-        t = pow2523(&t);
+        t = pow22523(&t);
         t = mul(&mul(&mul(&t, &num), &den), &den);
         let mut x = mul(&t, &den);
-        if !fe_eq(&mul(&square(&x), &den), &num) {
+        if !fe::eq(&mul(&square(&x), &den), &num) {
             x = mul(&x, &SQRT_M1);
         }
-        if !fe_eq(&mul(&square(&x), &den), &num) {
+        if !fe::eq(&mul(&square(&x), &den), &num) {
             return None;
         }
         let sign = bytes[31] >> 7;
-        if fe_eq(&x, &FE0) && sign == 1 {
+        if fe::eq(&x, &FE0) && sign == 1 {
             return None;
         }
-        if parity(&x) != sign {
+        if is_negative(&x) != sign {
             x = sub(&FE0, &x);
         }
         Some(Point([x, y, FE1, mul(&x, &y)]))
@@ -207,8 +89,8 @@ impl Point {
         let zi = invert(&self.0[2]);
         let x = mul(&self.0[0], &zi);
         let y = mul(&self.0[1], &zi);
-        let mut out = pack_fe(&y);
-        out[31] ^= parity(&x) << 7;
+        let mut out = to_bytes(&y);
+        out[31] ^= is_negative(&x) << 7;
         out
     }
 
@@ -227,6 +109,20 @@ impl Point {
         Point([mul(&e, &f), mul(&h, &g), mul(&g, &f), mul(&e, &h)])
     }
 
+    fn double(&self) -> Point {
+        let [x, y, z, _] = &self.0;
+        let a = square(x);
+        let b = square(y);
+        let c = square(z);
+        let c = add(&c, &c);
+        let d = fe::neg(&a);
+        let e = sub(&sub(&square(&add(x, y)), &a), &b);
+        let g = add(&d, &b);
+        let f = sub(&g, &c);
+        let h = sub(&d, &b);
+        Point([mul(&e, &f), mul(&g, &h), mul(&f, &g), mul(&e, &h)])
+    }
+
     pub fn neg(&self) -> Point {
         let [x, y, z, t] = self.0;
         Point([sub(&FE0, &x), y, z, sub(&FE0, &t)])
@@ -242,10 +138,10 @@ impl Point {
         let mut p = Point::IDENTITY;
         let mut q = *self;
         for i in (0..256).rev() {
-            let bit = ((scalar[i / 8] >> (i & 7)) & 1) as i64;
+            let bit = ((scalar[i / 8] >> (i & 7)) & 1) as i32;
             swap(&mut p, &mut q, bit);
             q = q.add(&p);
-            p = p.add(&p);
+            p = p.double();
             swap(&mut p, &mut q, bit);
         }
         p
@@ -257,6 +153,35 @@ impl Point {
 
     pub fn mul_base(scalar: &Scalar) -> Point {
         Point::base().mul(scalar)
+    }
+
+    /// `a·B + b·self` in variable time, for public scalars only.
+    #[inline(never)]
+    fn mul2_vartime(&self, a: &Scalar, b: &Scalar) -> Point {
+        fn odd_multiples(p: &Point) -> Vec<Point> {
+            let p2 = p.double();
+            let mut t = Vec::with_capacity(8);
+            t.push(*p);
+            for i in 1..8 {
+                t.push(t[i - 1].add(&p2));
+            }
+            t
+        }
+        let limbs = |s: &Scalar| -> [u32; 8] { core::array::from_fn(|i| u32::from_le_bytes(s.0[4 * i..4 * i + 4].try_into().unwrap())) };
+        let (na, nb) = (wnaf(&limbs(a), 5), wnaf(&limbs(b), 5));
+        let (ta, tb) = (odd_multiples(&Point::base()), odd_multiples(self));
+        let mut r = Point::IDENTITY;
+        for i in (0..na.len()).rev() {
+            r = r.double();
+            for (d, t) in [(na[i], &ta), (nb[i], &tb)] {
+                if d > 0 {
+                    r = r.add(&t[(d / 2) as usize]);
+                } else if d < 0 {
+                    r = r.sub(&t[(-d / 2) as usize]);
+                }
+            }
+        }
+        r
     }
 }
 
@@ -274,9 +199,10 @@ impl core::fmt::Debug for Point {
     }
 }
 
-fn swap(p: &mut Point, q: &mut Point, bit: i64) {
+fn swap(p: &mut Point, q: &mut Point, bit: i32) {
+    let (p, q) = (&mut p.0, &mut q.0);
     for i in 0..4 {
-        select(&mut p.0[i], &mut q.0[i], bit);
+        fe::cswap(&mut p[i], &mut q[i], bit);
     }
 }
 
@@ -464,7 +390,7 @@ impl VerifyingKey {
         let s = Scalar::from_canonical_bytes(&sig[32..].try_into().unwrap()).ok_or(Error::Verify)?;
         let k = hash_to_scalar(&[&r, &self.bytes, message]);
         let point = Point::decode(&self.bytes).ok_or(Error::Verify)?;
-        let check = Point::mul_base(&s).sub(&point.mul(&k)).encode();
+        let check = point.neg().mul2_vartime(&s, &k).encode();
         if ct::eq(&check, &r) { Ok(()) } else { Err(Error::Verify) }
     }
 }

@@ -4,6 +4,7 @@
  */
 
 mod builder;
+pub(crate) mod cache;
 pub(crate) mod oid;
 pub(crate) mod trust;
 mod verify;

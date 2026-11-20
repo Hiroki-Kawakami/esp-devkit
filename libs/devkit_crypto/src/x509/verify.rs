@@ -6,7 +6,7 @@
 use alloc::vec::Vec;
 use core::net::IpAddr;
 
-use super::{Certificate, KEY_USAGE_DIGITAL_SIGNATURE, KEY_USAGE_KEY_CERT_SIGN, PublicKey, TrustStore, oid};
+use super::{Certificate, KEY_USAGE_DIGITAL_SIGNATURE, KEY_USAGE_KEY_CERT_SIGN, PublicKey, TrustStore, cache, oid};
 use crate::der::{self, Reader};
 use crate::{CertError, Error, Result};
 
@@ -67,7 +67,7 @@ fn build<'a>(
 ) -> bool {
     for anchor in store.anchors().filter(|a| a.subject == cert.issuer) {
         let Ok(key) = PublicKey::from_spki(anchor.spki) else { continue };
-        if let Err(e) = cert.verify_signed_by(&key) {
+        if let Err(e) = signed_by(cert, anchor.spki, &key, path) {
             *best = e;
             continue;
         }
@@ -90,7 +90,7 @@ fn build<'a>(
             continue;
         }
         let Ok(key) = issuer.public_key() else { continue };
-        if let Err(e) = cert.verify_signed_by(&key) {
+        if let Err(e) = signed_by(cert, issuer.spki, &key, path) {
             *best = e;
             continue;
         }
@@ -101,6 +101,11 @@ fn build<'a>(
         path.pop();
     }
     false
+}
+
+/// Only intermediates go through the cache: `path` is empty for the leaf.
+fn signed_by(cert: &Certificate, spki: &[u8], key: &PublicKey, path: &[usize]) -> Result<()> {
+    if path.is_empty() { cert.verify_signed_by(key) } else { cache::signed_by(cert, spki, key) }
 }
 
 fn check_time(cert: &Certificate, now: Option<i64>) -> Result<()> {

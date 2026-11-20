@@ -72,6 +72,20 @@ fn bad_chains_fail() {
 }
 
 #[test]
+fn checked_intermediates_are_remembered_by_their_bytes() {
+    let (leaf, inter, root) = (fixture("leaf_rsa.der"), fixture("inter.der"), fixture("root.der"));
+    let root_spki = Certificate::parse(&root).unwrap().spki;
+    check(&["leaf_rsa", "inter"], "localhost").unwrap();
+    assert!(crate::x509::cache::contains(&inter, root_spki));
+    assert!(!crate::x509::cache::contains(&leaf, Certificate::parse(&inter).unwrap().spki));
+    check(&["leaf_rsa", "inter"], "localhost").unwrap();
+    let mut forged = inter.clone();
+    *forged.last_mut().unwrap() ^= 1;
+    let now = Some(Certificate::parse(&leaf).unwrap().not_before + 1);
+    assert!(verify_chain(&[&leaf, &forged], &root_store(), now, None).is_err());
+}
+
+#[test]
 fn a_trusted_leaf_needs_no_issuer() {
     let mut store = TrustStore::new();
     store.add_der(&fixture("leaf_ec.der")).unwrap();

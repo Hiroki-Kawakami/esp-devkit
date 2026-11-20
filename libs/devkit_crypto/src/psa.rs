@@ -33,7 +33,6 @@ pub(crate) const KEY_TYPE_RSA_KEY_PAIR: u16 = 0x7001;
 pub(crate) const KEY_TYPE_ECC_PUBLIC_KEY_BASE: u16 = 0x4100;
 pub(crate) const KEY_TYPE_ECC_KEY_PAIR_BASE: u16 = 0x7100;
 pub(crate) const ECC_FAMILY_SECP_R1: u16 = 0x12;
-pub(crate) const ECC_FAMILY_MONTGOMERY: u16 = 0x41;
 
 pub(crate) const USAGE_EXPORT: u32 = 0x0001;
 pub(crate) const USAGE_ENCRYPT: u32 = 0x0100;
