@@ -23,10 +23,12 @@ use crate::devices::cst820::{self, Cst820};
 use crate::devices::cst9217::{self, Cst9217};
 use crate::devices::m5ioe1::M5Ioe1;
 use crate::devices::m5pm1::{M5pm1, PowerButton};
+use crate::devices::rx8130::{self, Rx8130};
 use crate::display::{self, Rotation, Size};
 use crate::driver::gpio_button::{GpioButtons, Pin};
 use crate::driver::spi_lcd::SpiLcd;
 use crate::power;
+use crate::rtc::{self, Rtc};
 use crate::touch::{self, Touch};
 use crate::{Board, Config};
 
@@ -67,6 +69,10 @@ static KEYS: [Pin; 2] = [Pin { gpio: 2, active_low: true, pull: false }, Pin { g
 const PM1_IRQ_OUT: u8 = 1;
 const PM1_PIN_IRQ: i32 = 12;
 
+// The clock's interrupt reaches only the PMIC, which leaves it unused, so no
+// period can misfire.
+const RTC_TIMER_MIN: Duration = Duration::ZERO;
+
 static I2C: OnceLock<MasterBus> = OnceLock::new();
 static IOE: OnceLock<Mutex<M5Ioe1<'static>>> = OnceLock::new();
 static PM1: OnceLock<Mutex<M5pm1<'static>>> = OnceLock::new();
@@ -103,13 +109,14 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
         }
         None => power::start(UnknownPower, audio),
     };
+    let rtc = rtc_init(bus, pm1);
     Ok(Board {
         audio,
         buttons,
         display: Some(DISPLAY.get_or_init(|| display::Display::new(display))),
         imu: None,
         power,
-        rtc: None,
+        rtc,
         sd: None,
         touch,
     })
@@ -208,6 +215,26 @@ fn touch_init(bus: &'static MasterBus, ioe: &Mutex<M5Ioe1>, rotation: Rotation) 
         error!(TAG, "no touch controller on 0x{:02x} or 0x{:02x}", cst820::ADDR, cst9217::ADDR);
         Err(Error::NOT_FOUND)
     }
+}
+
+// Non-fatal: the board comes up without a clock. Its backup is a capacitor
+// that lasts moments, so the clock keeps time through power off only on the
+// held LDO.
+fn rtc_init(bus: &'static MasterBus, pm1: Option<&'static Mutex<M5pm1<'static>>>) -> Option<&'static Rtc> {
+    match pm1.map(|pm1| pm1.lock().set_ldo_hold(true)) {
+        Some(Ok(())) => {}
+        Some(Err(err)) => warn!(TAG, "rtc ldo hold: {err}"),
+        None => warn!(TAG, "rtc: without the PMIC the clock stops at power off"),
+    }
+    let config = rx8130::Config { charge_backup: false, timer_min: RTC_TIMER_MIN };
+    let rtc = Rx8130::new(bus, rx8130::ADDR, &config)
+        .and_then(rtc::start)
+        .inspect_err(|err| warn!(TAG, "rtc unavailable: {err}"))
+        .ok()?;
+    if let Err(err) = rtc.stop_timer() {
+        error!(TAG, "rtc timer stop: {err}");
+    }
+    Some(rtc)
 }
 
 fn audio_init(config: &Config, bus: &'static MasterBus, ioe: &'static Mutex<M5Ioe1<'static>>) -> Result<&'static Audio> {

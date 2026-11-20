@@ -98,6 +98,12 @@ pub fn run() {
             Ok(state) => info!(TAG, "power: {state:?}"),
             Err(err) => error!(TAG, "power: {err}"),
         }
+        if let Some(rtc) = board.rtc {
+            match rtc.is_valid().and_then(|valid| Ok((valid, rtc.now()?))) {
+                Ok((valid, now)) => info!(TAG, "rtc: {now:?} valid={valid}"),
+                Err(err) => error!(TAG, "rtc: {err}"),
+            }
+        }
         full_frame_from_psram(display);
         thread::sleep(FRAME_HOLD);
         draw_bars(display);

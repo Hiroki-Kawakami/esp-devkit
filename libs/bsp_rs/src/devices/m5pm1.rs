@@ -26,6 +26,7 @@ const WAKE_POLL: Duration = Duration::from_millis(10);
 const REG_ID: u8 = 0x00;
 const REG_PWR_SRC: u8 = 0x04;
 const REG_PWR_CFG: u8 = 0x06;
+const REG_HOLD_CFG: u8 = 0x07;
 const REG_I2C_CFG: u8 = 0x09;
 const REG_WDT_CNT: u8 = 0x0A;
 const REG_SYS_CMD: u8 = 0x0C;
@@ -47,6 +48,7 @@ const REG_BTN_CFG_2: u8 = 0x4A;
 
 const ID: [u8; 2] = [0x50, 0x20];
 const PWR_CFG_CHG_EN: u8 = 1 << 0;
+const HOLD_CFG_LDO: u8 = 1 << 5;
 const SYS_CMD_OFF: u8 = 0xA1;
 const FUNC_GPIO: u8 = 0b00;
 const FUNC_IRQ: u8 = 0b01;
@@ -119,6 +121,12 @@ impl<'bus> M5pm1<'bus> {
 
     pub(crate) fn set_charge_enabled(&self, enabled: bool) -> Result<()> {
         self.update(REG_PWR_CFG, PWR_CFG_CHG_EN, if enabled { PWR_CFG_CHG_EN } else { 0 })
+    }
+
+    /// Keeps the 3.3 V LDO up while the board is off. The chip clears this on
+    /// its own reset and in download mode.
+    pub(crate) fn set_ldo_hold(&self, hold: bool) -> Result<()> {
+        self.update(REG_HOLD_CFG, HOLD_CFG_LDO, if hold { HOLD_CFG_LDO } else { 0 })
     }
 
     /// The board loses power shortly after this returns.
