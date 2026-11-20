@@ -94,6 +94,10 @@ pub fn run() {
         }
         let size = display.size();
         info!(TAG, "{:?}: {}x{} {:?} align {}", display.rotation(), size.width, size.height, display.pixel_format(), display.alignment());
+        match board.power.read() {
+            Ok(state) => info!(TAG, "power: {state:?}"),
+            Err(err) => error!(TAG, "power: {err}"),
+        }
         full_frame_from_psram(display);
         thread::sleep(FRAME_HOLD);
         draw_bars(display);

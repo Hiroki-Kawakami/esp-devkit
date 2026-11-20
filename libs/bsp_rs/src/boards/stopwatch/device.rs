@@ -14,6 +14,7 @@ use idf::sync::{Mutex, OnceLock};
 use idf::{Error, Result, gpio, thread};
 
 use super::audio::AudioDriver;
+use super::power::PowerDriver;
 use super::{PANEL_PPI, PANEL_SIZE, TAG, resolve_rotation};
 use crate::audio::{self, Audio};
 use crate::button::{self, Buttons, Provider};
@@ -94,7 +95,14 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
     let pm1 = PM1.get_or_try_init(|| M5pm1::new(bus).map(Mutex::new)).inspect_err(|err| warn!(TAG, "m5pm1 unavailable: {err}")).ok();
     let buttons = buttons_init(pm1).inspect_err(|err| warn!(TAG, "buttons unavailable: {err}")).ok();
     let audio = audio_init(config, bus, ioe).inspect_err(|err| warn!(TAG, "audio unavailable: {err}")).ok();
-    let power = power::start(UnknownPower, audio);
+    let power = match pm1.map(PowerDriver::new) {
+        Some(Ok(driver)) => power::start(driver, audio),
+        Some(Err(err)) => {
+            warn!(TAG, "power: {err}");
+            power::start(UnknownPower, audio)
+        }
+        None => power::start(UnknownPower, audio),
+    };
     Ok(Board {
         audio,
         buttons,

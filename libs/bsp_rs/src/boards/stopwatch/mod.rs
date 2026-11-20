@@ -16,6 +16,8 @@ mod audio;
 #[cfg(target_os = "none")]
 mod device;
 #[cfg(target_os = "none")]
+mod power;
+#[cfg(target_os = "none")]
 pub(crate) use audio::AudioDriver;
 #[cfg(target_os = "none")]
 pub(crate) use device::{Display, init};
