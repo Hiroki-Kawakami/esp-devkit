@@ -108,6 +108,10 @@ pub(crate) trait Driver: Send + Sync {
         Rotation::R0
     }
 
+    fn alignment(&self) -> u16 {
+        1
+    }
+
     fn frame_buffer_count(&self) -> usize {
         0
     }
@@ -192,6 +196,10 @@ macro_rules! driver_enum {
 
             fn rotation(&self) -> $crate::display::Rotation {
                 match self { $(Self::$variant(d) => d.rotation()),+ }
+            }
+
+            fn alignment(&self) -> u16 {
+                match self { $(Self::$variant(d) => d.alignment()),+ }
             }
 
             fn frame_buffer_count(&self) -> usize {
@@ -290,6 +298,12 @@ impl Display {
         self.driver().rotation()
     }
 
+    /// The origin and size of what `draw` and `write` take are multiples of
+    /// this, along both axes.
+    pub fn alignment(&self) -> u16 {
+        self.driver().alignment()
+    }
+
     /// Puts `image`, in the panel's format, at `area` of what the panel shows.
     /// Tasks drawing to overlapping areas at the same time is the caller's to
     /// prevent.
@@ -336,6 +350,10 @@ impl Display {
         let size = self.size();
         let (x, y, w, h) = unsigned(area).ok_or(Error::INVALID_ARG)?;
         if x + w > u32::from(size.width) || y + h > u32::from(size.height) || format.bits() % 8 != 0 {
+            return Err(Error::INVALID_ARG);
+        }
+        let align = u32::from(self.alignment());
+        if [x, y, w, h].iter().any(|v| v % align != 0) {
             return Err(Error::INVALID_ARG);
         }
         Ok(())

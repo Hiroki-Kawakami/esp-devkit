@@ -9,7 +9,7 @@ use idf::spi::Bus;
 use idf::{Result, sys, thread};
 
 use crate::display::{ImageFormat, Rotation, Size};
-use crate::driver::spi_lcd::{self, Backlight, Io, SpiLcd};
+use crate::driver::spi_lcd::{self, Backlight, Brightness, Io, Link, SpiLcd};
 
 const PCLK_HZ: u32 = 40_000_000;
 
@@ -30,15 +30,19 @@ pub(crate) fn create(config: Config) -> Result<SpiLcd> {
     SpiLcd::new(spi_lcd::Config {
         bus: config.bus,
         cs: config.cs,
-        dc: config.dc,
+        link: Link::Dc(config.dc),
         pclk_hz: PCLK_HZ,
         size: config.size,
+        memory: config.size,
+        offset: (0, 0),
+        alignment: 1,
         ppi: config.ppi,
         pixel_format: ImageFormat::Rgb565Be,
         madctl: config.madctl,
+        exchanges: true,
         rotation: config.rotation,
         init: if config.invert { |io| init(io, true) } else { |io| init(io, false) },
-        backlight: config.backlight,
+        brightness: config.backlight.map_or(Brightness::Fixed, Brightness::Backlight),
     })
 }
 

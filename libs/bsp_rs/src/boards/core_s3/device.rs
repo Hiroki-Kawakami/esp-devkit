@@ -146,6 +146,7 @@ fn panel_init(rotation: Rotation, axp: &'static Axp2101, aw: &Mutex<Aw9523>) -> 
         sclk: LCD_PIN_SCLK,
         mosi: LCD_PIN_MOSI,
         miso: None,
+        quad: None,
         max_transfer_bytes: LCD_MAX_TRANSFER,
     })?;
     reset_panel(aw)?;

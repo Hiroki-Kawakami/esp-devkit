@@ -211,6 +211,7 @@ fn panel_init(rotation: Rotation, pmu: &'static Pmu) -> Result<SpiLcd> {
         sclk: LCD_PIN_SCLK,
         mosi: LCD_PIN_MOSI,
         miso: None,
+        quad: None,
         max_transfer_bytes: LCD_MAX_TRANSFER,
     })?;
     reset_panel(pmu)?;

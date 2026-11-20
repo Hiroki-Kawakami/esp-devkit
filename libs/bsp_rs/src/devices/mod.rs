@@ -17,6 +17,8 @@ pub(crate) mod bm8563;
 pub(crate) mod bmi270;
 #[cfg(CONFIG_BSP_RS_DEVICE_BMI270)]
 mod bmi270_config;
+#[cfg(CONFIG_BSP_RS_DEVICE_CO5300)]
+pub(crate) mod co5300;
 #[cfg(CONFIG_BSP_RS_DEVICE_ES8388)]
 pub(crate) mod es8388;
 #[cfg(CONFIG_BSP_RS_DEVICE_FT6336U)]
@@ -29,6 +31,8 @@ pub(crate) mod ina226;
 pub(crate) mod ili9342c;
 #[cfg(CONFIG_BSP_RS_DEVICE_ILI9881C)]
 pub(crate) mod ili9881c;
+#[cfg(CONFIG_BSP_RS_DEVICE_M5IOE1)]
+pub(crate) mod m5ioe1;
 #[cfg(CONFIG_BSP_RS_DEVICE_NS4168)]
 pub(crate) mod ns4168;
 #[cfg(CONFIG_BSP_RS_DEVICE_PI4IO)]

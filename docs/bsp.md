@@ -2,8 +2,8 @@
 
 The board support package in Rust (`libs/bsp_rs`). The board is chosen with
 `CONFIG_BSP_RS_BOARD_*`, independent of the C `bsp`'s `CONFIG_BSP_BOARD_*`.
-`firmware/tab5_rs` builds it for the Tab5 and `firmware/core_s3_rs` for the
-CoreS3, each with its simulator.
+`firmware/tab5_rs` builds it for the Tab5, `firmware/core_s3_rs` for the
+CoreS3 and `firmware/stopwatch_rs` for the StopWatch, each with its simulator.
 
 ```rust
 let board = bsp_rs::init(&bsp_rs::Config::default())?;
@@ -38,13 +38,17 @@ let board = bsp_rs::init(&bsp_rs::Config::default())?;
   back to back in the panel's format, and returns a `Ticket` without waiting;
   the pixels stay unchanged until `wait(ticket)` returns. Writes go out in the
   order they were queued.
+- `alignment()` is what the origin and size of a `write` or `draw` area are
+  multiples of, along both axes; other areas return `INVALID_ARG`. It is 1 on
+  most panels and 2 on one that takes only windows of whole pixel pairs.
 - `draw(area, image)` puts an `Image` in the panel's format on any panel: into
   the framebuffer on the panel, or written and waited for. It is `unsafe` for
   the same reason as `as_mut_slice`. The display takes only its own format;
   `devkit_gfx::copy` and `swap_rgb565` convert above it.
 - `Config::rotation` is taken only by a panel that turns the picture itself:
   `size()` is then the turned picture and `rotation()` the turn. A panel that
-  shows framebuffers takes R0 alone.
+  shows framebuffers takes R0 alone, and one that cannot exchange its rows and
+  columns takes R0 and R180.
 - `set_brightness` takes 0..=100; the backlight starts off.
 - `ppi()` is the panel's pixels per inch, the same along both axes; the board
   gives it next to the panel's size.

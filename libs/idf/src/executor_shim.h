@@ -2,10 +2,12 @@
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 Hiroki Kawakami
  *
- * Macros behind idf::cache, idf::executor, idf::sync and idf::thread.
+ * Macros behind idf::cache, idf::executor, idf::heap, idf::sync and idf::thread.
  */
 
 #pragma once
+
+#include <stdbool.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -24,3 +26,6 @@ void idf_sync_critical_exit(void);
 /* The non-cacheable alias of internal RAM at `cached`; `cached` itself where
    internal RAM is not cached. */
 void *idf_cache_uncached(void *cached);
+
+/* Whether DMA reads `p` where it is, without being told it is in PSRAM. */
+bool idf_ptr_dma_capable(const void *p);

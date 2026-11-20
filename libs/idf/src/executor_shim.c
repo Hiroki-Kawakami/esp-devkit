@@ -6,6 +6,7 @@
 #include "executor_shim.h"
 
 #ifdef ESP_PLATFORM
+#include "esp_memory_utils.h"
 #include "hal/cache_ll.h"
 #endif
 
@@ -45,5 +46,14 @@ void *idf_cache_uncached(void *cached) {
     return (void *)CACHE_LL_L2MEM_NON_CACHE_ADDR(cached);
 #else
     return cached;
+#endif
+}
+
+bool idf_ptr_dma_capable(const void *p) {
+#ifdef ESP_PLATFORM
+    return esp_ptr_dma_capable(p);
+#else
+    (void)p;
+    return true;
 #endif
 }

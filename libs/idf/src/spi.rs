@@ -11,8 +11,12 @@ use crate::{Error, Result, sys};
 pub struct BusConfig {
     pub host: i32,
     pub sclk: i32,
+    /// Data 0 on a quad bus.
     pub mosi: i32,
+    /// Data 1 on a quad bus.
     pub miso: Option<i32>,
+    /// Data 2 and 3, for quad transfers.
+    pub quad: Option<[i32; 2]>,
     /// The largest single transfer; longer ones are split by the devices.
     pub max_transfer_bytes: usize,
 }
@@ -37,6 +41,10 @@ impl Bus {
         pins[0] = config.mosi;
         pins[1] = config.miso.unwrap_or(-1);
         pins[2] = config.sclk;
+        if let Some([data2, data3]) = config.quad {
+            pins[3] = data2;
+            pins[4] = data3;
+        }
         cfg.max_transfer_sz = config.max_transfer_bytes as _;
         let host = config.host as sys::spi_host_device_t;
         Error::check(unsafe { sys::spi_bus_initialize(host, &cfg, sys::spi_common_dma_t_SPI_DMA_CH_AUTO) })?;

@@ -178,19 +178,51 @@ impl Strips {
     }
 }
 
-/// Strips of `area` row by row from the top, whole runs of `grid` rows each,
-/// split across where `grid` rows of its width do not fit one buffer.
-pub(crate) fn cut(area: Rect, format: ImageFormat, buffer_bytes: usize, grid: i16, out: &mut Vec<Rect, Caps>) -> Result<()> {
+/// Whole runs of this many columns and rows from the origin.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct Grid {
+    pub columns: i16,
+    pub rows: i16,
+}
+
+fn floor_to(v: i16, step: i16) -> i16 {
+    v.div_euclid(step) * step
+}
+
+fn ceil_to(v: i16, step: i16) -> i16 {
+    floor_to(v + step - 1, step)
+}
+
+impl Grid {
+    /// The smallest rectangle on the grid that holds `rect`.
+    pub(crate) fn around(self, rect: Rect) -> Rect {
+        let (left, top) = (floor_to(rect.x, self.columns), floor_to(rect.y, self.rows));
+        let (right, bottom) = (ceil_to(rect.right(), self.columns), ceil_to(rect.bottom(), self.rows));
+        Rect::new(left, top, right - left, bottom - top)
+    }
+
+    /// The largest rectangle on the grid inside `rect`.
+    pub(crate) fn inside(self, rect: Rect) -> Rect {
+        let (left, top) = (ceil_to(rect.x, self.columns), ceil_to(rect.y, self.rows));
+        let (right, bottom) = (floor_to(rect.right(), self.columns), floor_to(rect.bottom(), self.rows));
+        Rect::new(left, top, (right - left).max(0), (bottom - top).max(0))
+    }
+}
+
+/// Strips of `area`, which lies on `grid`, row by row from the top: whole
+/// cells of `grid` each, split across where a run of its rows that wide does
+/// not fit one buffer.
+pub(crate) fn cut(area: Rect, format: ImageFormat, buffer_bytes: usize, grid: Grid, out: &mut Vec<Rect, Caps>) -> Result<()> {
     if area.is_empty() {
         return Ok(());
     }
-    let widest = (buffer_bytes / (format.row_bytes(1) * grid as usize)).min(i16::MAX as usize) as i16;
+    let widest = floor_to((buffer_bytes / (format.row_bytes(1) * grid.rows as usize)).min(i16::MAX as usize) as i16, grid.columns);
     if widest == 0 {
         return Err(Error::INVALID_SIZE);
     }
     let columns = (area.w + widest - 1) / widest;
-    let w = (area.w + columns - 1) / columns;
-    let rows = (buffer_bytes / format.row_bytes(w as usize)).min(i16::MAX as usize) as i16 / grid * grid;
+    let w = ceil_to((area.w + columns - 1) / columns, grid.columns);
+    let rows = floor_to((buffer_bytes / format.row_bytes(w as usize)).min(i16::MAX as usize) as i16, grid.rows);
     let mut y = area.y;
     while y < area.bottom() {
         let h = rows.min(area.bottom() - y);
@@ -210,8 +242,8 @@ pub(crate) fn cut(area: Rect, format: ImageFormat, buffer_bytes: usize, grid: i1
 pub(crate) trait Presenter {
     /// The logical picture.
     fn area(&self) -> Rect;
-    /// Damage and external rectangles are kept to whole runs of this many rows.
-    fn row_grid(&self) -> i16;
+    /// What damage and external rectangles are kept to.
+    fn grid(&self) -> Grid;
     fn invalidate(&mut self, rect: Rect);
     fn invalidate_all(&mut self);
     /// Whether a frame is due without new damage: the first one, or one after

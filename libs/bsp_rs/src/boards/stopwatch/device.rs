@@ -1,0 +1,144 @@
+/*
+ * SPDX-License-Identifier: MIT
+ * Copyright (c) 2026 Hiroki Kawakami
+ */
+
+use core::time::Duration;
+
+use idf::i2c::{BusConfig, MasterBus};
+use idf::log::{error, warn};
+use idf::spi;
+use idf::sync::{Mutex, OnceLock};
+use idf::{Error, Result, thread};
+
+use super::{PANEL_PPI, PANEL_SIZE, TAG, resolve_rotation};
+use crate::devices::co5300;
+use crate::devices::m5ioe1::M5Ioe1;
+use crate::display::{self, Rotation, Size};
+use crate::driver::spi_lcd::SpiLcd;
+use crate::power;
+use crate::{Board, Config};
+
+pub(crate) type Display = SpiLcd;
+
+const I2C_PORT: i32 = 0;
+const I2C_PIN_SDA: i32 = 47;
+const I2C_PIN_SCL: i32 = 48;
+
+// The schematic puts it at 0x4F; M5Stack's own firmware falls back to 0x6F.
+const IOE_ADDRS: [u16; 2] = [0x4F, 0x6F];
+const IOE_OLED_RST: u8 = 5;
+const IOE_L3B_EN: u8 = 8;
+const L3B_RETRIES: u32 = 10;
+const L3B_SETTLE: Duration = Duration::from_millis(80);
+
+const LCD_SPI_HOST: i32 = 1;
+const LCD_PIN_CS: i32 = 39;
+const LCD_PIN_SCLK: i32 = 40;
+const LCD_PIN_D0: i32 = 41;
+const LCD_PIN_D1: i32 = 42;
+const LCD_PIN_D2: i32 = 46;
+const LCD_PIN_D3: i32 = 45;
+const LCD_MAX_TRANSFER: usize = 32 * 1024;
+const LCD_OFFSET: (u16, u16) = (6, 0);
+// The panel flips rows within the 466 lines it scans, not all 480 of its
+// memory: the picture stays at row 0 when turned.
+const LCD_MEMORY: Size = Size { width: 480, height: 466 };
+
+static I2C: OnceLock<MasterBus> = OnceLock::new();
+static IOE: OnceLock<Mutex<M5Ioe1<'static>>> = OnceLock::new();
+static DISPLAY: OnceLock<display::Display> = OnceLock::new();
+
+struct UnknownPower;
+
+impl power::Driver for UnknownPower {}
+
+pub(crate) fn init(config: &Config) -> Result<Board> {
+    let rotation = resolve_rotation(config)?;
+    let bus = I2C
+        .get_or_try_init(|| {
+            MasterBus::new(&BusConfig {
+                port: I2C_PORT,
+                sda: I2C_PIN_SDA,
+                scl: I2C_PIN_SCL,
+                glitch_ignore_cnt: 7,
+                internal_pullup: true,
+            })
+        })
+        .inspect_err(|err| error!(TAG, "i2c bus: {err}"))?;
+    let ioe = IOE.get_or_try_init(|| expander_init(bus).map(Mutex::new)).inspect_err(|err| error!(TAG, "m5ioe1: {err}"))?;
+    let display = panel_init(rotation, ioe).inspect_err(|err| error!(TAG, "panel: {err}"))?;
+    let power = power::start(UnknownPower, None);
+    Ok(Board {
+        audio: None,
+        buttons: None,
+        display: Some(DISPLAY.get_or_init(|| display::Display::new(display))),
+        imu: None,
+        power,
+        rtc: None,
+        sd: None,
+        touch: None,
+    })
+}
+
+fn expander_init(bus: &'static MasterBus) -> Result<M5Ioe1<'static>> {
+    let mut last = Error::NOT_FOUND;
+    for addr in IOE_ADDRS {
+        match M5Ioe1::new(bus, addr) {
+            Ok(ioe) => return Ok(ioe),
+            Err(err) => last = err,
+        }
+    }
+    Err(last)
+}
+
+// M5Stack's own firmware reads the rail enable back and drives it again until
+// it holds, so this does too.
+fn panel_power_on(ioe: &mut M5Ioe1) -> Result<()> {
+    ioe.set_output_mode(IOE_L3B_EN, true)?;
+    for _ in 0..L3B_RETRIES {
+        thread::sleep(L3B_SETTLE);
+        if ioe.level(IOE_L3B_EN)? {
+            return Ok(());
+        }
+        warn!(TAG, "panel rail enable did not hold; driving it again");
+        ioe.set_output(IOE_L3B_EN, true)?;
+    }
+    Err(Error::TIMEOUT)
+}
+
+fn reset_panel(ioe: &mut M5Ioe1) -> Result<()> {
+    let ms = |ms| thread::sleep(Duration::from_millis(ms));
+    ioe.set_output_mode(IOE_OLED_RST, true)?;
+    ms(10);
+    ioe.set_output(IOE_OLED_RST, false)?;
+    ms(10);
+    ioe.set_output(IOE_OLED_RST, true)?;
+    ms(10);
+    Ok(())
+}
+
+fn panel_init(rotation: Rotation, ioe: &Mutex<M5Ioe1>) -> Result<SpiLcd> {
+    {
+        let mut ioe = ioe.lock();
+        panel_power_on(&mut ioe).inspect_err(|err| error!(TAG, "panel power: {err}"))?;
+        reset_panel(&mut ioe)?;
+    }
+    let bus = spi::Bus::new(&spi::BusConfig {
+        host: LCD_SPI_HOST,
+        sclk: LCD_PIN_SCLK,
+        mosi: LCD_PIN_D0,
+        miso: Some(LCD_PIN_D1),
+        quad: Some([LCD_PIN_D2, LCD_PIN_D3]),
+        max_transfer_bytes: LCD_MAX_TRANSFER,
+    })?;
+    co5300::create(co5300::Config {
+        bus,
+        cs: LCD_PIN_CS,
+        size: PANEL_SIZE,
+        offset: LCD_OFFSET,
+        memory: LCD_MEMORY,
+        ppi: PANEL_PPI,
+        rotation,
+    })
+}

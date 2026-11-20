@@ -17,7 +17,7 @@ use idf::sync::Semaphore;
 use idf::time::Instant;
 use idf::{Error, Result, thread};
 
-use super::{Config, MAX_LANES, Presenter, STRIPS_PER_LANE, Stats, StripSource, Strips, cut};
+use super::{Config, Grid, MAX_LANES, Presenter, STRIPS_PER_LANE, Stats, StripSource, Strips, cut};
 use crate::blit::NewBlitter;
 use crate::external::{Buffers, NO_BACK};
 
@@ -124,6 +124,7 @@ impl Lane {
 /// next ones are drawn.
 pub(crate) struct GramPresenter {
     shared: Arc<Shared>,
+    grid: Grid,
     damage: Damage<MAX_REGIONS>,
     lanes: usize,
     strips: Strips,
@@ -179,8 +180,10 @@ impl GramPresenter {
                 .stack_caps(config.lane_stack_caps);
             builder.spawn(move || lane.run(shared))?;
         }
+        let align = display.alignment() as i16;
         let mut presenter = Self {
             shared,
+            grid: Grid { columns: align, rows: align },
             damage: Damage::new(Rect::default()),
             lanes: config.lanes,
             strips,
@@ -223,12 +226,12 @@ impl Presenter for GramPresenter {
         Rect::new(0, 0, size.width as i16, size.height as i16)
     }
 
-    fn row_grid(&self) -> i16 {
-        1
+    fn grid(&self) -> Grid {
+        self.grid
     }
 
     fn invalidate(&mut self, rect: Rect) {
-        self.damage.add(rect);
+        self.damage.add(self.grid.around(rect));
     }
 
     fn invalidate_all(&mut self) {
@@ -273,7 +276,7 @@ impl Presenter for GramPresenter {
         let over = self.over.unwrap_or_default();
         for region in self.damage.regions() {
             for area in region.subtract(&hole).chain([region.intersect(&over)]) {
-                cut(area, job.format, self.buffer_bytes, 1, &mut job.strips)?;
+                cut(area, job.format, self.buffer_bytes, self.grid, &mut job.strips)?;
             }
         }
         stats.strips = job.strips.len() as u32;

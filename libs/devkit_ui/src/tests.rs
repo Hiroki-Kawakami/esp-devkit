@@ -17,6 +17,7 @@ use crate::id;
 use crate::erased::Erased;
 use crate::node::TextNode;
 use crate::external::ExternalSurface;
+use crate::presenter::Grid;
 use crate::nav::SplitRole;
 use crate::rotation::Rotations;
 use crate::gesture::{Gesture, Gestures};
@@ -3455,13 +3456,32 @@ fn a_surface_keeps_to_the_row_grid_and_sees_what_lies_over_it() {
     let video = ExternalSurface::new().unwrap();
     let mut tree = Tree::new(Player { video, menu: false }, SCREEN, Caps::INTERNAL, theme());
     run(&mut tree);
-    let (_, hole) = tree.external(16).unwrap();
+    let (_, hole) = tree.external(Grid { columns: 1, rows: 16 }).unwrap();
     let hole = hole.unwrap();
     assert_eq!((hole.y, hole.bottom()), (32, 112));
     assert_eq!(overlap_of(&tree, hole), None);
     tap(&mut tree, "open");
     run(&mut tree);
     assert_eq!(overlap_of(&tree, hole), Some(Rect::new(10, 40, 50, 20)));
+}
+
+#[test]
+fn a_grid_rounds_out_around_and_in_inside() {
+    let grid = Grid { columns: 2, rows: 4 };
+    assert_eq!(grid.around(Rect::new(3, 5, 4, 2)), Rect::new(2, 4, 6, 4));
+    assert_eq!(grid.inside(Rect::new(3, 5, 8, 9)), Rect::new(4, 8, 6, 4));
+    assert!(grid.inside(Rect::new(3, 5, 2, 2)).is_empty());
+}
+
+#[test]
+fn strips_stay_on_a_grid_of_columns_and_rows() {
+    let grid = Grid { columns: 2, rows: 2 };
+    let mut strips = Vec::new_in(Caps::INTERNAL);
+    let area = Rect::new(2, 4, 466, 10);
+    crate::presenter::cut(area, bsp_rs::display::ImageFormat::Rgb565Be, 2 * 2 * 101, grid, &mut strips).unwrap();
+    assert!(strips.iter().all(|s| s.x % 2 == 0 && s.y % 2 == 0 && s.w % 2 == 0 && s.h % 2 == 0));
+    assert!(strips.iter().all(|s| s.w as usize * s.h as usize * 2 <= 2 * 2 * 101));
+    assert_eq!(strips.iter().map(|s| s.w as i32 * s.h as i32).sum::<i32>(), 466 * 10);
 }
 
 fn record_touches(video: &ExternalSurface) -> alloc::sync::Arc<idf::sync::Mutex<Vec<Vec<TouchPoint>>>> {

@@ -213,6 +213,12 @@ pub fn minimum_free_size(caps: Caps) -> usize {
     unsafe { sys::heap_caps_get_minimum_free_size(caps.bits()) }
 }
 
+/// Whether DMA reads `ptr` where it is, as internal RAM it can reach; false in
+/// PSRAM and flash.
+pub fn dma_capable(ptr: *const u8) -> bool {
+    unsafe { sys::idf_ptr_dma_capable(ptr.cast()) }
+}
+
 pub fn largest_free_block(caps: Caps) -> usize {
     unsafe { sys::heap_caps_get_largest_free_block(caps.bits()) }
 }

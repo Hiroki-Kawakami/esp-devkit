@@ -31,6 +31,12 @@ choice BSP_RS_BOARD
         select BSP_RS_DEVICE_FT6336U if !DEVKIT_SIMULATOR
         select BSP_RS_DEVICE_ILI9342C if !DEVKIT_SIMULATOR
 
+    config BSP_RS_BOARD_STOPWATCH
+        bool "M5Stack StopWatch (ESP32-S3)"
+        depends on DEVKIT_SIMULATOR || IDF_TARGET_ESP32S3
+        select BSP_RS_DEVICE_CO5300 if !DEVKIT_SIMULATOR
+        select BSP_RS_DEVICE_M5IOE1 if !DEVKIT_SIMULATOR
+
     config BSP_RS_BOARD_TAB5
         bool "M5Stack Tab5 (ESP32-P4)"
         depends on DEVKIT_SIMULATOR || IDF_TARGET_ESP32P4
@@ -69,6 +75,10 @@ config BSP_RS_DEVICE_BM8563
 config BSP_RS_DEVICE_BMI270
     bool
 
+config BSP_RS_DEVICE_CO5300
+    bool
+    select BSP_RS_DRIVER_SPI_LCD
+
 config BSP_RS_DEVICE_ES8388
     bool
     select BSP_RS_DRIVER_I2S_OUT
@@ -88,6 +98,9 @@ config BSP_RS_DEVICE_ILI9881C
     select BSP_RS_DRIVER_MIPI_DSI
 
 config BSP_RS_DEVICE_INA226
+    bool
+
+config BSP_RS_DEVICE_M5IOE1
     bool
 
 config BSP_RS_DEVICE_NS4168

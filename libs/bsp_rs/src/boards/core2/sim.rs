@@ -16,15 +16,23 @@ use crate::rtc;
 use crate::sim::audio::SimAudio;
 use crate::sim::power::SimPower;
 use crate::sim::rtc::SimRtc;
-use crate::sim::{self, gram::SimGram, protocol::Event, touch as sim_touch};
+use crate::sim::gram::{GramConfig, SimGram};
+use crate::sim::{self, protocol::Event, touch as sim_touch};
 use crate::touch::{self, ZoneButtons};
 use crate::{Board, Config};
 
 pub(crate) type AudioDriver = SimAudio;
 pub(crate) type Display = SimGram;
 
-// The ILI9342C's 40 MHz SPI clock.
-const PANEL_BYTES_PER_SECOND: u32 = 40_000_000 / 8;
+// The ILI9342C, on its 40 MHz SPI clock.
+const PANEL: GramConfig = GramConfig {
+    size: PANEL_SIZE,
+    ppi: PANEL_PPI,
+    format: PIXEL_FORMAT,
+    alignment: 1,
+    quarter_turns: true,
+    bytes_per_second: 40_000_000 / 8,
+};
 
 static DISPLAY: OnceLock<display::Display> = OnceLock::new();
 
@@ -38,7 +46,7 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
     };
     info!(TAG, "board: Core2 (simulator)");
     host.send(&Event::device("M5Stack Core2"));
-    let panel = SimGram::new(host, PANEL_SIZE, PANEL_PPI, PIXEL_FORMAT, rotation, PANEL_BYTES_PER_SECOND)?;
+    let panel = SimGram::new(host, &PANEL, rotation)?;
     let touch = sim_touch::start(host, touch::Config {
         width: PANEL_SIZE.width,
         height: PANEL_SIZE.height,

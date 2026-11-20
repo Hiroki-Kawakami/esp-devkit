@@ -20,7 +20,7 @@ use idf::time::Instant;
 use idf::{Error, Result, thread};
 
 use super::ppa::PpaBlitter;
-use super::{Config, MAX_FRAME_BUFFERS, MAX_LANES, PresentMode, Presenter, STRIPS_PER_LANE, Stats, StripSource, Strips, cut};
+use super::{Config, Grid, MAX_FRAME_BUFFERS, MAX_LANES, PresentMode, Presenter, STRIPS_PER_LANE, Stats, StripSource, Strips, cut};
 use crate::blit::{self, Blit, Blitter, NewBlitter};
 use crate::external::{Buffers, NO_BACK};
 
@@ -32,6 +32,7 @@ const STALL_TIMEOUT: Duration = Duration::from_secs(1);
 // The 2D engine's cost steps every 16 rows, and it hangs on short rotated
 // copies, so damage and strips stay on this grid.
 const ROW_GRID: i16 = 16;
+const GRID: Grid = Grid { columns: 1, rows: ROW_GRID };
 
 struct Job {
     list: *const DisplayList<'static, Caps>,
@@ -320,9 +321,7 @@ impl FbPresenter {
     }
 
     pub fn invalidate(&mut self, rect: Rect) {
-        let top = rect.y.div_euclid(ROW_GRID) * ROW_GRID;
-        let bottom = (rect.bottom() + ROW_GRID - 1).div_euclid(ROW_GRID) * ROW_GRID;
-        let aligned = Rect::new(rect.x, top, rect.w, bottom - top);
+        let aligned = GRID.around(rect);
         for damage in &mut self.damage {
             damage.add(aligned);
         }
@@ -397,7 +396,7 @@ impl FbPresenter {
         let over = self.over.filter(|_| !self.hold).unwrap_or_default();
         for region in self.damage[target].regions() {
             for area in region.subtract(&hole).chain([region.intersect(&over)]) {
-                cut(area, fb.format(), self.buffer_bytes, ROW_GRID, &mut job.strips)?;
+                cut(area, fb.format(), self.buffer_bytes, GRID, &mut job.strips)?;
             }
         }
         stats.strips = job.strips.len() as u32;
@@ -440,8 +439,8 @@ impl Presenter for FbPresenter {
         FbPresenter::area(self)
     }
 
-    fn row_grid(&self) -> i16 {
-        ROW_GRID
+    fn grid(&self) -> Grid {
+        GRID
     }
 
     fn invalidate(&mut self, rect: Rect) {

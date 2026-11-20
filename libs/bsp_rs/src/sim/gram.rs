@@ -50,6 +50,8 @@ pub(crate) struct SimGram {
     size: Size,
     ppi: u16,
     format: ImageFormat,
+    alignment: u16,
+    quarter_turns: bool,
     rotation: Rotation,
     issued: Mutex<u32>,
     queue: Sender<Command>,
@@ -85,9 +87,24 @@ fn send(host: &Host, queue: Receiver<Command>) {
     }
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct GramConfig {
+    /// Unturned.
+    pub size: Size,
+    pub ppi: u16,
+    pub format: ImageFormat,
+    pub alignment: u16,
+    /// Whether it turns by quarters as well as halves.
+    pub quarter_turns: bool,
+    pub bytes_per_second: u32,
+}
+
 impl SimGram {
-    /// `size` is unturned.
-    pub(crate) fn new(host: &'static Host, size: Size, ppi: u16, format: ImageFormat, rotation: Rotation, bytes_per_second: u32) -> Result<Self> {
+    pub(crate) fn new(host: &'static Host, config: &GramConfig, rotation: Rotation) -> Result<Self> {
+        let GramConfig { size, ppi, format, alignment, quarter_turns, bytes_per_second } = *config;
+        if rotation.swaps_axes() && !quarter_turns {
+            return Err(Error::NOT_SUPPORTED);
+        }
         let wire = match format {
             ImageFormat::Rgb565 => PixelFormat::Rgb565,
             ImageFormat::Rgb565Be => PixelFormat::Rgb565Be,
@@ -105,7 +122,7 @@ impl SimGram {
         host.send(&Event::GramOpen { width: size.width, height: size.height, format: wire, rotation: quarters(rotation), bytes_per_second });
         let (queue, commands) = channel(QUEUE_DEPTH);
         thread::Builder::new().name("sim_gram").stack_size(4096).spawn(move || send(host, commands))?;
-        Ok(Self { host, size, ppi, format, rotation, issued: Mutex::new(0), queue, progress })
+        Ok(Self { host, size, ppi, format, alignment, quarter_turns, rotation, issued: Mutex::new(0), queue, progress })
     }
 }
 
@@ -124,6 +141,10 @@ impl Driver for SimGram {
 
     fn rotation(&self) -> Rotation {
         self.rotation
+    }
+
+    fn alignment(&self) -> u16 {
+        self.alignment
     }
 
     unsafe fn write(&self, area: Rect, pixels: &[u8]) -> Result<Ticket> {
@@ -161,7 +182,7 @@ impl Driver for SimGram {
     }
 
     fn reconfigure(&mut self, format: ImageFormat, fb_num: u8, rotation: Rotation) -> Result<()> {
-        if format != self.format || fb_num != 0 {
+        if format != self.format || fb_num != 0 || (rotation.swaps_axes() && !self.quarter_turns) {
             return Err(Error::NOT_SUPPORTED);
         }
         self.queue.send(Command::Rotate(rotation));

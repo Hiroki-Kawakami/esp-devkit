@@ -315,12 +315,6 @@ fn rotation_code(rotation: Rotation) -> u8 {
     ROTATIONS.iter().position(|r| *r == rotation).unwrap_or(0) as u8
 }
 
-/// Keeps a picture to whole runs of the presenter's `grid` rows.
-fn grid_rows(rect: Rect, grid: i16) -> Rect {
-    let top = rect.y.div_euclid(grid) * grid;
-    let bottom = (rect.bottom() + grid - 1).div_euclid(grid) * grid;
-    Rect::new(rect.x, top, rect.w, bottom - top)
-}
 
 fn render_overlay(
     presenter: &dyn Presenter,
@@ -671,7 +665,7 @@ impl<C: Screen> AppState<C> {
     }
 
     fn attach_surface(&mut self) -> Option<(ExternalSurface, Option<Rect>)> {
-        let shown = self.tree.external(self.presenter.row_grid()).map(|(surface, hole)| (surface.clone(), hole));
+        let shown = self.tree.external(self.presenter.grid()).map(|(surface, hole)| (surface.clone(), hole));
         let attached = self.surface.as_ref();
         if attached.is_none_or(|a| shown.as_ref().is_none_or(|s| !s.0.same(a))) {
             self.release_surface();
@@ -783,8 +777,8 @@ impl<C: Screen> AppState<C> {
         self.tree.paint(&mut self.effects, regions, &mut list);
         let mut overlap = None;
         if let Some((surface, hole)) = &shown {
-            let grid = self.presenter.row_grid();
-            overlap = hole.and_then(|h| devkit_gfx::overlap(list.ops(), self.tree.external_split.get(), &h).map(|o| grid_rows(o, grid).intersect(&h)));
+            let grid = self.presenter.grid();
+            overlap = hole.and_then(|h| devkit_gfx::overlap(list.ops(), self.tree.external_split.get(), &h).map(|o| grid.around(o).intersect(&h)));
             let composite = (surface.policy() == Policy::Stamp || overlap.is_some()) && self.composites();
             let over = overlap.filter(|_| !self.composites());
             surface.set_composite(composite);
@@ -820,9 +814,9 @@ impl<C: Screen> AppState<C> {
                 }
                 return;
             }
-            let grid = self.presenter.row_grid();
+            let grid = self.presenter.grid();
             let slide = hole.and_then(|h| self.tree.sliding_over(h).map(|s| (h, s))).filter(|&(h, (_, home, (dx, dy)))| {
-                overlap.is_none_or(|o| grid_rows(home.offset(dx, dy), grid).intersect(&h).contains(&o))
+                overlap.is_none_or(|o| grid.around(home.offset(dx, dy)).intersect(&h).contains(&o))
             });
             if let Some((hole, (id, home, offset))) = slide {
                 drop(list);
