@@ -35,6 +35,8 @@ choice BSP_RS_BOARD
         bool "M5Stack StopWatch (ESP32-S3)"
         depends on DEVKIT_SIMULATOR || IDF_TARGET_ESP32S3
         select BSP_RS_DEVICE_CO5300 if !DEVKIT_SIMULATOR
+        select BSP_RS_DEVICE_CST820 if !DEVKIT_SIMULATOR
+        select BSP_RS_DEVICE_CST9217 if !DEVKIT_SIMULATOR
         select BSP_RS_DEVICE_M5IOE1 if !DEVKIT_SIMULATOR
 
     config BSP_RS_BOARD_TAB5
@@ -78,6 +80,12 @@ config BSP_RS_DEVICE_BMI270
 config BSP_RS_DEVICE_CO5300
     bool
     select BSP_RS_DRIVER_SPI_LCD
+
+config BSP_RS_DEVICE_CST820
+    bool
+
+config BSP_RS_DEVICE_CST9217
+    bool
 
 config BSP_RS_DEVICE_ES8388
     bool

@@ -13,6 +13,7 @@ use core::ffi::CStr;
 use core::time::Duration;
 
 use bsp_rs::display::{Display, Image, ImageFormat, Rect, Rotation};
+use bsp_rs::touch::{MAX_POINTS, Point, Touch};
 use devkit_gfx::swap_rgb565;
 use idf::heap::Caps;
 use idf::log::{error, info};
@@ -38,6 +39,8 @@ const EDGE: i16 = 2;
 const EDGE_SPAN: i16 = 64;
 const HOLD: Duration = Duration::from_secs(3);
 const FRAME_HOLD: Duration = Duration::from_millis(1500);
+const DOT: i16 = 8;
+const TOUCH_POLL: Duration = Duration::from_millis(10);
 const RED: (u8, u8, u8) = (255, 0, 0);
 const GREEN: (u8, u8, u8) = (0, 255, 0);
 const BLUE: (u8, u8, u8) = (0, 0, 255);
@@ -66,6 +69,9 @@ pub fn run() {
             info!(TAG, "rotation {rotation:?}: {err}");
             continue;
         }
+        if let Some(touch) = board.touch {
+            touch.set_rotation(*rotation);
+        }
         let size = display.size();
         info!(TAG, "{:?}: {}x{} {:?} align {}", display.rotation(), size.width, size.height, display.pixel_format(), display.alignment());
         full_frame_from_psram(display);
@@ -73,7 +79,43 @@ pub fn run() {
         draw_bars(display);
         mark_top(display);
         mark_edges(display);
-        thread::sleep(HOLD);
+        match board.touch {
+            Some(touch) => follow_touch(display, touch),
+            None => thread::sleep(HOLD),
+        }
+    }
+}
+
+// A dot under each finger, for `HOLD`. Logs where a touch starts and ends, so
+// a drag to the rim shows the reach of the coordinates.
+fn follow_touch(display: &Display, touch: &Touch) {
+    let size = display.size();
+    let dot = pixels(display, DOT, DOT, (0, 0, 0));
+    let mut points = [Point::default(); MAX_POINTS];
+    let mut last = 0;
+    let mut latest = Point::default();
+    let start = Instant::now();
+    while start.elapsed() < HOLD {
+        let n = touch.read(&mut points);
+        for p in &points[..n] {
+            let x = snap(display, (p.x as i16 - DOT / 2).clamp(0, size.width as i16 - DOT));
+            let y = snap(display, (p.y as i16 - DOT / 2).clamp(0, size.height as i16 - DOT));
+            let written = unsafe { display.write(Rect::new(x, y, DOT, DOT), &dot) }.and_then(|t| display.wait(t));
+            if let Err(err) = written {
+                error!(TAG, "dot at {},{}: {err}", p.x, p.y);
+            }
+        }
+        if n != last {
+            match points[..n].first() {
+                Some(p) => info!(TAG, "touch: {n} at {},{}", p.x, p.y),
+                None => info!(TAG, "touch: released at {},{}", latest.x, latest.y),
+            }
+            last = n;
+        }
+        if let Some(p) = points[..n].first() {
+            latest = *p;
+        }
+        thread::sleep(TOUCH_POLL);
     }
 }
 

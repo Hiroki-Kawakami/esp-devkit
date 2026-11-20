@@ -9,14 +9,17 @@ use idf::i2c::{BusConfig, MasterBus};
 use idf::log::{error, warn};
 use idf::spi;
 use idf::sync::{Mutex, OnceLock};
-use idf::{Error, Result, thread};
+use idf::{Error, Result, gpio, thread};
 
 use super::{PANEL_PPI, PANEL_SIZE, TAG, resolve_rotation};
 use crate::devices::co5300;
+use crate::devices::cst820::{self, Cst820};
+use crate::devices::cst9217::{self, Cst9217};
 use crate::devices::m5ioe1::M5Ioe1;
 use crate::display::{self, Rotation, Size};
 use crate::driver::spi_lcd::SpiLcd;
 use crate::power;
+use crate::touch::{self, Touch};
 use crate::{Board, Config};
 
 pub(crate) type Display = SpiLcd;
@@ -27,6 +30,7 @@ const I2C_PIN_SCL: i32 = 48;
 
 // The schematic puts it at 0x4F; M5Stack's own firmware falls back to 0x6F.
 const IOE_ADDRS: [u16; 2] = [0x4F, 0x6F];
+const IOE_TP_RST: u8 = 4;
 const IOE_OLED_RST: u8 = 5;
 const IOE_L3B_EN: u8 = 8;
 const L3B_RETRIES: u32 = 10;
@@ -44,6 +48,9 @@ const LCD_OFFSET: (u16, u16) = (6, 0);
 // The panel flips rows within the 466 lines it scans, not all 480 of its
 // memory: the picture stays at row 0 when turned.
 const LCD_MEMORY: Size = Size { width: 480, height: 466 };
+
+const TOUCH_PIN_INT: i32 = 13;
+const TOUCH_PROBE_TIMEOUT: Duration = Duration::from_millis(50);
 
 static I2C: OnceLock<MasterBus> = OnceLock::new();
 static IOE: OnceLock<Mutex<M5Ioe1<'static>>> = OnceLock::new();
@@ -68,6 +75,7 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
         .inspect_err(|err| error!(TAG, "i2c bus: {err}"))?;
     let ioe = IOE.get_or_try_init(|| expander_init(bus).map(Mutex::new)).inspect_err(|err| error!(TAG, "m5ioe1: {err}"))?;
     let display = panel_init(rotation, ioe).inspect_err(|err| error!(TAG, "panel: {err}"))?;
+    let touch = touch_init(bus, ioe, rotation).inspect_err(|err| warn!(TAG, "touch unavailable: {err}")).ok();
     let power = power::start(UnknownPower, None);
     Ok(Board {
         audio: None,
@@ -77,7 +85,7 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
         power,
         rtc: None,
         sd: None,
-        touch: None,
+        touch,
     })
 }
 
@@ -141,4 +149,37 @@ fn panel_init(rotation: Rotation, ioe: &Mutex<M5Ioe1>) -> Result<SpiLcd> {
         ppi: PANEL_PPI,
         rotation,
     })
+}
+
+fn reset_touch(ioe: &mut M5Ioe1) -> Result<()> {
+    let ms = |ms| thread::sleep(Duration::from_millis(ms));
+    ioe.set_output_mode(IOE_TP_RST, false)?;
+    ms(10);
+    ioe.set_output(IOE_TP_RST, true)?;
+    ms(50);
+    Ok(())
+}
+
+fn touch_init(bus: &'static MasterBus, ioe: &Mutex<M5Ioe1>, rotation: Rotation) -> Result<&'static Touch> {
+    reset_touch(&mut ioe.lock())?;
+    gpio::set_direction(TOUCH_PIN_INT, gpio::Mode::Input)?;
+    gpio::set_pull(TOUCH_PIN_INT, gpio::Pull::Up)?;
+    let config = touch::Config {
+        width: PANEL_SIZE.width,
+        height: PANEL_SIZE.height,
+        swap_xy: false,
+        mirror_x: false,
+        mirror_y: false,
+        rotation,
+        int: touch::Int::Gpio(TOUCH_PIN_INT),
+        zones: &[],
+    };
+    if bus.probe(cst820::ADDR, TOUCH_PROBE_TIMEOUT).is_ok() {
+        touch::start(Cst820::new(bus, cst820::DEFAULT_HZ)?, config)
+    } else if bus.probe(cst9217::ADDR, TOUCH_PROBE_TIMEOUT).is_ok() {
+        touch::start(Cst9217::new(bus, cst9217::DEFAULT_HZ)?, config)
+    } else {
+        error!(TAG, "no touch controller on 0x{:02x} or 0x{:02x}", cst820::ADDR, cst9217::ADDR);
+        Err(Error::NOT_FOUND)
+    }
 }

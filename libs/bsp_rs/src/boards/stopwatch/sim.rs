@@ -4,7 +4,7 @@
  */
 
 use idf::Result;
-use idf::log::info;
+use idf::log::{info, warn};
 use idf::sync::OnceLock;
 
 use super::{PANEL_PPI, PANEL_SIZE, PIXEL_FORMAT, TAG, resolve_rotation};
@@ -12,7 +12,8 @@ use crate::display;
 use crate::power;
 use crate::sim::gram::{GramConfig, SimGram};
 use crate::sim::power::SimPower;
-use crate::sim::{self, protocol::Event};
+use crate::sim::{self, protocol::Event, touch as sim_touch};
+use crate::touch;
 use crate::{Board, Config};
 
 pub(crate) type Display = SimGram;
@@ -29,7 +30,7 @@ const PANEL: GramConfig = GramConfig {
 
 static DISPLAY: OnceLock<display::Display> = OnceLock::new();
 
-// Without the simulator host there is nothing to show.
+// Without the simulator host there is nothing to show or touch.
 pub(crate) fn init(config: &Config) -> Result<Board> {
     let rotation = resolve_rotation(config)?;
     let Some(host) = sim::host() else {
@@ -40,6 +41,18 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
     info!(TAG, "board: StopWatch (simulator)");
     host.send(&Event::device("M5Stack StopWatch"));
     let panel = SimGram::new(host, &PANEL, rotation)?;
+    let touch = sim_touch::start(host, touch::Config {
+        width: PANEL_SIZE.width,
+        height: PANEL_SIZE.height,
+        swap_xy: false,
+        mirror_x: false,
+        mirror_y: false,
+        rotation,
+        int: touch::Int::External,
+        zones: &[],
+    })
+    .inspect_err(|err| warn!(TAG, "touch unavailable: {err}"))
+    .ok();
     let power = power::start(SimPower::new(Some(host)), None);
     Ok(Board {
         audio: None,
@@ -49,6 +62,6 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
         power,
         rtc: None,
         sd: None,
-        touch: None,
+        touch,
     })
 }
