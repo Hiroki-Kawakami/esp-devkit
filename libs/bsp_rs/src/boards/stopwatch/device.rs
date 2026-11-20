@@ -18,6 +18,7 @@ use super::power::PowerDriver;
 use super::{PANEL_PPI, PANEL_SIZE, TAG, resolve_rotation};
 use crate::audio::{self, Audio};
 use crate::button::{self, Buttons, Provider};
+use crate::devices::bmi270::{self, Bmi270};
 use crate::devices::co5300;
 use crate::devices::cst820::{self, Cst820};
 use crate::devices::cst9217::{self, Cst9217};
@@ -27,6 +28,7 @@ use crate::devices::rx8130::{self, Rx8130};
 use crate::display::{self, Rotation, Size};
 use crate::driver::gpio_button::{GpioButtons, Pin};
 use crate::driver::spi_lcd::SpiLcd;
+use crate::imu::{self, AxisMap, Imu};
 use crate::power;
 use crate::rtc::{self, Rtc};
 use crate::touch::{self, Touch};
@@ -69,6 +71,8 @@ static KEYS: [Pin; 2] = [Pin { gpio: 2, active_low: true, pull: false }, Pin { g
 const PM1_IRQ_OUT: u8 = 1;
 const PM1_PIN_IRQ: i32 = 12;
 
+const IMU_AXIS_MAP: AxisMap = AxisMap { x: 2, y: 1, z: -3 };
+
 // The clock's interrupt reaches only the PMIC, which leaves it unused, so no
 // period can misfire.
 const RTC_TIMER_MIN: Duration = Duration::ZERO;
@@ -110,11 +114,12 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
         None => power::start(UnknownPower, audio),
     };
     let rtc = rtc_init(bus, pm1);
+    let imu = imu_init(bus);
     Ok(Board {
         audio,
         buttons,
         display: Some(DISPLAY.get_or_init(|| display::Display::new(display))),
-        imu: None,
+        imu,
         power,
         rtc,
         sd: None,
@@ -235,6 +240,14 @@ fn rtc_init(bus: &'static MasterBus, pm1: Option<&'static Mutex<M5pm1<'static>>>
         error!(TAG, "rtc timer stop: {err}");
     }
     Some(rtc)
+}
+
+// Non-fatal: the board comes up without orientation tracking.
+fn imu_init(bus: &'static MasterBus) -> Option<&'static Imu> {
+    Bmi270::new(bus, bmi270::ADDR, bmi270::DEFAULT_HZ)
+        .and_then(|chip| imu::start(chip, IMU_AXIS_MAP))
+        .inspect_err(|err| warn!(TAG, "imu unavailable: {err}"))
+        .ok()
 }
 
 fn audio_init(config: &Config, bus: &'static MasterBus, ioe: &'static Mutex<M5Ioe1<'static>>) -> Result<&'static Audio> {

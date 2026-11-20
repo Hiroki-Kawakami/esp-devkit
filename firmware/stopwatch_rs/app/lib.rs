@@ -77,6 +77,10 @@ pub fn run() {
     if let Some(buttons) = board.buttons {
         log_buttons(buttons);
     }
+    if let Some(imu) = board.imu {
+        imu.set_orientation_cb(Some(Box::new(|orientation| info!(TAG, "orientation: {orientation:?}"))));
+        imu.set_orientation_enabled(true);
+    }
     if let Some(audio) = board.audio
         && let Err(err) = audio.set_volume(BEEP_VOLUME)
     {
@@ -97,6 +101,12 @@ pub fn run() {
         match board.power.read() {
             Ok(state) => info!(TAG, "power: {state:?}"),
             Err(err) => error!(TAG, "power: {err}"),
+        }
+        if let Some(imu) = board.imu {
+            match imu.read() {
+                Ok(sample) => info!(TAG, "imu: accel {:?} gyro {:?}", sample.accel, sample.gyro),
+                Err(err) => error!(TAG, "imu: {err}"),
+            }
         }
         if let Some(rtc) = board.rtc {
             match rtc.is_valid().and_then(|valid| Ok((valid, rtc.now()?))) {
