@@ -11,15 +11,18 @@ use idf::log::{info, warn};
 use idf::sync::OnceLock;
 
 use super::{PANEL_PPI, PANEL_SIZE, PIXEL_FORMAT, TAG, resolve_rotation};
+use crate::audio;
 use crate::button::{self, Provider};
 use crate::display;
 use crate::power;
+use crate::sim::audio::SimAudio;
 use crate::sim::gram::{GramConfig, SimGram};
 use crate::sim::power::SimPower;
 use crate::sim::{self, protocol::Event, touch as sim_touch};
 use crate::touch;
 use crate::{Board, Config};
 
+pub(crate) type AudioDriver = SimAudio;
 pub(crate) type Display = SimGram;
 
 // The CO5300, on four lines of its 80 MHz QSPI clock.
@@ -76,9 +79,13 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
     .inspect_err(|err| warn!(TAG, "touch unavailable: {err}"))
     .ok();
     let buttons = button::start(vec![Provider::Level(Box::new(Keys))]).inspect_err(|err| warn!(TAG, "buttons unavailable: {err}")).ok();
-    let power = power::start(SimPower::new(Some(host)), None);
+    let audio = SimAudio::new(host)
+        .and_then(|driver| audio::start(driver, &config.audio))
+        .inspect_err(|err| warn!(TAG, "audio unavailable: {err}"))
+        .ok();
+    let power = power::start(SimPower::new(Some(host)), audio);
     Ok(Board {
-        audio: None,
+        audio,
         buttons,
         display: Some(DISPLAY.get_or_init(|| display::Display::new(panel))),
         imu: None,

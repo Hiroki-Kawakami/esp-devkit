@@ -23,6 +23,8 @@ pub(crate) mod co5300;
 pub(crate) mod cst820;
 #[cfg(CONFIG_BSP_RS_DEVICE_CST9217)]
 pub(crate) mod cst9217;
+#[cfg(CONFIG_BSP_RS_DEVICE_ES8311)]
+pub(crate) mod es8311;
 #[cfg(CONFIG_BSP_RS_DEVICE_ES8388)]
 pub(crate) mod es8388;
 #[cfg(CONFIG_BSP_RS_DEVICE_FT6336U)]

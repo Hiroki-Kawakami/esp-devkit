@@ -13,7 +13,9 @@ use idf::spi;
 use idf::sync::{Mutex, OnceLock};
 use idf::{Error, Result, gpio, thread};
 
+use super::audio::AudioDriver;
 use super::{PANEL_PPI, PANEL_SIZE, TAG, resolve_rotation};
+use crate::audio::{self, Audio};
 use crate::button::{self, Buttons, Provider};
 use crate::devices::co5300;
 use crate::devices::cst820::{self, Cst820};
@@ -35,9 +37,11 @@ const I2C_PIN_SCL: i32 = 48;
 
 // The schematic puts it at 0x4F; M5Stack's own firmware falls back to 0x6F.
 const IOE_ADDRS: [u16; 2] = [0x4F, 0x6F];
+const IOE_AU_EN: u8 = 3;
 const IOE_TP_RST: u8 = 4;
 const IOE_OLED_RST: u8 = 5;
 const IOE_L3B_EN: u8 = 8;
+const IOE_SPK_EN: u8 = 10;
 const L3B_RETRIES: u32 = 10;
 const L3B_SETTLE: Duration = Duration::from_millis(80);
 
@@ -89,9 +93,10 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
     let touch = touch_init(bus, ioe, rotation).inspect_err(|err| warn!(TAG, "touch unavailable: {err}")).ok();
     let pm1 = PM1.get_or_try_init(|| M5pm1::new(bus).map(Mutex::new)).inspect_err(|err| warn!(TAG, "m5pm1 unavailable: {err}")).ok();
     let buttons = buttons_init(pm1).inspect_err(|err| warn!(TAG, "buttons unavailable: {err}")).ok();
-    let power = power::start(UnknownPower, None);
+    let audio = audio_init(config, bus, ioe).inspect_err(|err| warn!(TAG, "audio unavailable: {err}")).ok();
+    let power = power::start(UnknownPower, audio);
     Ok(Board {
-        audio: None,
+        audio,
         buttons,
         display: Some(DISPLAY.get_or_init(|| display::Display::new(display))),
         imu: None,
@@ -195,6 +200,17 @@ fn touch_init(bus: &'static MasterBus, ioe: &Mutex<M5Ioe1>, rotation: Rotation) 
         error!(TAG, "no touch controller on 0x{:02x} or 0x{:02x}", cst820::ADDR, cst9217::ADDR);
         Err(Error::NOT_FOUND)
     }
+}
+
+fn audio_init(config: &Config, bus: &'static MasterBus, ioe: &'static Mutex<M5Ioe1<'static>>) -> Result<&'static Audio> {
+    {
+        let mut ioe = ioe.lock();
+        ioe.set_output_mode(IOE_SPK_EN, false)?;
+        ioe.set_output_mode(IOE_AU_EN, false)?;
+    }
+    let power = Box::new(move |on| ioe.lock().set_output(IOE_AU_EN, on));
+    let amp = Box::new(move |on| ioe.lock().set_output(IOE_SPK_EN, on));
+    audio::start(AudioDriver::new(bus, power, amp)?, &config.audio)
 }
 
 fn buttons_init(pm1: Option<&'static Mutex<M5pm1<'static>>>) -> Result<&'static Buttons> {
