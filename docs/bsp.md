@@ -9,6 +9,11 @@ CoreS3 and `firmware/stopwatch_rs` for the StopWatch, each with its simulator.
 let board = bsp_rs::init(&bsp_rs::Config::default())?;
 ```
 
+`CONFIG_BSP_RS_BOARD_PAPER_S3` also runs the LilyGo T5 4.7" S3, which has
+the same glass; `init` tells them apart before driving either. GPIO41 pulled
+up (the PaperS3's I2C SDA) is a PaperS3, a PCF8563 answering on GPIO18/17
+(the T5's I2C) a T5, and anything else panics.
+
 - `init` brings the board up once; later calls return `INVALID_STATE`.
 - `Board` holds a handle per capability: `&'static T` for handles shared
   between tasks, owned values where the caller holds the state.
@@ -32,8 +37,8 @@ let board = bsp_rs::init(&bsp_rs::Config::default())?;
   `refresh(area, waveform, all)` drives an area once from the panel's memory,
   every pixel of it with `all` to clear ghosting; `clear()` drives the whole
   glass to white; `wait_idle()` blocks until everything has reached the glass.
-- A glass driven without a controller of its own (the PaperS3's ED047TC1,
-  through `driver/epd_ll`) takes a `Gram::write` before returning, its ticket
+- A glass driven without a controller of its own (the ED047TC1 of the
+  PaperS3 and the T5, through `driver/epd_ll`) takes a `Gram::write` before returning, its ticket
   already done; the write waits while pixels of the area are still being
   driven to another gray. Every pixel replays its own waveform, so areas
   refresh independently. `init` takes the glass as white without driving it.

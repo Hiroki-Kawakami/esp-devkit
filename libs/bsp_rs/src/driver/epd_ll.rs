@@ -4,8 +4,8 @@
  */
 
 //! A grayscale EPD without a controller, driven line by line from an 8-bit
-//! i80 bus: the source data on D0..D7, STH on CS and CL on WR, with CKV, SPV,
-//! LE, OE and the power rail on GPIOs. Each pixel replays its own waveform
+//! i80 bus: the source data on D0..D7, STH on CS and CL on WR, the rest
+//! through the board's `Control`. Each pixel replays its own waveform
 //! (`epd_waveform`) on a task of its own.
 
 use alloc::boxed::Box;
@@ -36,6 +36,23 @@ const ACT_POOL: usize = 16;
 const ACT_HOLD: usize = ACT_POOL;
 const TASK_STACK: usize = 6144;
 
+/// The gate driver, the source latch and the power, as a board wires them.
+pub(crate) trait Control: Send + Sync {
+    /// Leaves everything off.
+    fn init(&self) -> Result<()>;
+    fn power_on(&self);
+    fn power_off(&self);
+    /// Scans the gate driver back to the top row.
+    fn frame_begin(&self);
+    /// After the last line has gone out.
+    fn frame_end(&self);
+    /// Before a line goes out.
+    fn line_begin(&self);
+    /// Once a line has gone out, from the bus interrupt.
+    fn line_latch(&self);
+}
+
+/// CKV, SPV, LE, OE and the power rail each on a GPIO.
 #[derive(Clone, Copy)]
 pub(crate) struct ControlPins {
     pub ckv: i32,
@@ -43,6 +60,62 @@ pub(crate) struct ControlPins {
     pub le: i32,
     pub oe: i32,
     pub pwr: i32,
+}
+
+impl Control for ControlPins {
+    fn init(&self) -> Result<()> {
+        let pins = [self.ckv, self.spv, self.le, self.oe, self.pwr];
+        gpio::configure(&pins, gpio::Mode::Output)?;
+        for pin in pins {
+            level(pin, false);
+        }
+        Ok(())
+    }
+
+    fn power_on(&self) {
+        level(self.oe, true);
+        delay_us(100);
+        level(self.pwr, true);
+        delay_us(100);
+    }
+
+    fn power_off(&self) {
+        level(self.pwr, false);
+        delay_us(1000);
+        level(self.oe, false);
+        delay_us(100);
+    }
+
+    fn frame_begin(&self) {
+        level(self.spv, false);
+        delay_us(1);
+        level(self.ckv, false);
+        delay_us(3);
+        level(self.ckv, true);
+        delay_us(1);
+        level(self.spv, true);
+        for _ in 0..3 {
+            delay_us(3);
+            level(self.ckv, false);
+            delay_us(3);
+            level(self.ckv, true);
+        }
+    }
+
+    fn frame_end(&self) {
+        level(self.le, false);
+        level(self.ckv, true);
+    }
+
+    fn line_begin(&self) {
+        level(self.le, false);
+        level(self.ckv, true);
+    }
+
+    fn line_latch(&self) {
+        level(self.ckv, false);
+        level(self.le, true);
+    }
 }
 
 pub(crate) struct Waveforms {
@@ -57,10 +130,10 @@ pub(crate) struct Config {
     pub data: [i32; 8],
     pub sph: i32,
     pub cl: i32,
-    /// The bus takes a D/C pin the panel lacks: a spare one, or one of
-    /// `control` that is set again once the bus is up.
+    /// The bus takes a D/C pin the panel lacks: a spare one, or one that
+    /// `control` sets again in `power_off`.
     pub dc_dummy: i32,
-    pub control: ControlPins,
+    pub control: Box<dyn Control>,
     pub pclk_hz: u32,
     pub size: Size,
     pub ppi: u16,
@@ -80,55 +153,56 @@ fn level(pin: i32, high: bool) {
 
 /// Read by the bus interrupt.
 struct Latch {
-    ckv: i32,
-    le: i32,
+    control: Box<dyn Control>,
     busy: AtomicBool,
 }
 
 // The bus interrupt is not allocated IRAM-safe, so this may stay in flash.
 unsafe extern "C" fn line_sent(_io: sys::esp_lcd_panel_io_handle_t, _data: *mut sys::esp_lcd_panel_io_event_data_t, ctx: *mut c_void) -> bool {
     let latch = unsafe { &*ctx.cast::<Latch>() };
-    level(latch.ckv, false);
-    level(latch.le, true);
+    latch.control.line_latch();
     latch.busy.store(false, Ordering::Release);
     false
+}
+
+/// What the bus is built from.
+struct Wiring {
+    data: [i32; 8],
+    sph: i32,
+    cl: i32,
+    dc_dummy: i32,
+    pclk_hz: u32,
+    tx_len: usize,
 }
 
 struct Bus {
     io: Io,
     latch: Box<Latch>,
-    pins: ControlPins,
     tx_len: usize,
 }
 
 impl Bus {
-    fn new(config: &Config) -> Result<Self> {
-        let pins = config.control;
-        gpio::configure(&[pins.ckv, pins.spv, pins.le, pins.oe, pins.pwr], gpio::Mode::Output)?;
-        for pin in [pins.ckv, pins.spv, pins.le, pins.oe, pins.pwr] {
-            level(pin, false);
-        }
-        for &pin in config.data.iter().chain(&[config.cl, config.sph]) {
+    fn new(wiring: &Wiring, latch: Box<Latch>) -> Result<Self> {
+        latch.control.init()?;
+        for &pin in wiring.data.iter().chain(&[wiring.cl, wiring.sph]) {
             gpio::set_direction(pin, gpio::Mode::Output)?;
         }
-        let tx_len = usize::from(config.line_bytes) + usize::from(config.line_padding);
         let bus = i80::Bus::new(&i80::BusConfig {
-            dc: config.dc_dummy,
-            wr: config.cl,
-            data: &config.data,
-            max_transfer_bytes: tx_len,
+            dc: wiring.dc_dummy,
+            wr: wiring.cl,
+            data: &wiring.data,
+            max_transfer_bytes: wiring.tx_len,
             dma_burst_size: DMA_BURST,
         })?;
         // Back to a plain output; resetting the pin would pull it up for a
         // moment, a glitch on a power rail.
-        gpio::set_direction(config.dc_dummy, gpio::Mode::Output)?;
-        let latch = Box::new(Latch { ckv: pins.ckv, le: pins.le, busy: AtomicBool::new(false) });
+        gpio::set_direction(wiring.dc_dummy, gpio::Mode::Output)?;
         let ctx = (&*latch as *const Latch).cast_mut().cast();
         let io = unsafe {
             bus.new_io(
                 &i80::IoConfig {
-                    cs: config.sph,
-                    pclk_hz: config.pclk_hz,
+                    cs: wiring.sph,
+                    pclk_hz: wiring.pclk_hz,
                     queue_depth: QUEUE_DEPTH,
                     cmd_bits: 0,
                     param_bits: 0,
@@ -139,24 +213,25 @@ impl Bus {
                 ctx,
             )
         }?;
-        Ok(Self { io, latch, pins, tx_len })
+        Ok(Self { io, latch, tx_len: wiring.tx_len })
     }
 
     /// The bus interrupt lands on the core that creates the bus, and runs
     /// inline in `tx_color` there: on the other core it overlaps the next
     /// line's packing instead.
-    fn new_off(config: &Config) -> Result<Self> {
+    fn new_off(wiring: &Wiring, latch: Box<Latch>, core: Option<u32>) -> Result<Self> {
         let cores = system::CORE_COUNT;
-        let core = match config.core {
+        let core = match core {
             Some(core) if core < cores => (core + 1) % cores,
             _ => (system::core_id() + 1) % cores,
         };
         thread::scope(|scope| {
-            match thread::Builder::new().name("epd_bus").stack_size(4096).core(Some(core)).spawn_scoped(scope, || Self::new(config)) {
-                Ok(handle) => handle.join(),
-                Err(_) => Self::new(config),
-            }
-        })
+            thread::Builder::new().name("epd_bus").stack_size(4096).core(Some(core)).spawn_scoped(scope, || Self::new(wiring, latch)).map(|h| h.join())
+        })?
+    }
+
+    fn control(&self) -> &dyn Control {
+        &*self.latch.control
     }
 
     fn wait(&self) {
@@ -165,37 +240,9 @@ impl Bus {
         }
     }
 
-    fn power_on(&self) {
-        level(self.pins.oe, true);
-        delay_us(100);
-        level(self.pins.pwr, true);
-        delay_us(100);
-    }
-
-    fn power_off(&self) {
-        level(self.pins.pwr, false);
-        delay_us(1000);
-        level(self.pins.oe, false);
-        delay_us(100);
-    }
-
-    /// Scans the gate driver back to the top row.
     fn frame_begin(&self) {
-        let p = &self.pins;
         self.wait();
-        level(p.spv, false);
-        delay_us(1);
-        level(p.ckv, false);
-        delay_us(3);
-        level(p.ckv, true);
-        delay_us(1);
-        level(p.spv, true);
-        for _ in 0..3 {
-            delay_us(3);
-            level(p.ckv, false);
-            delay_us(3);
-            level(p.ckv, true);
-        }
+        self.control().frame_begin();
     }
 
     /// Waits for the line before, which the bus interrupt latched; `line`
@@ -203,8 +250,7 @@ impl Bus {
     fn write_line(&self, line: &DmaBuffer) {
         self.wait();
         self.latch.busy.store(true, Ordering::Release);
-        level(self.pins.le, false);
-        level(self.pins.ckv, true);
+        self.control().line_begin();
         let data = unsafe { slice::from_raw_parts(line.as_ptr(), self.tx_len) };
         if let Err(err) = unsafe { self.io.tx_color(-1, data) } {
             error!(TAG, "line: {err}");
@@ -214,8 +260,7 @@ impl Bus {
 
     fn frame_end(&self) {
         self.wait();
-        level(self.pins.le, false);
-        level(self.pins.ckv, true);
+        self.control().frame_end();
     }
 }
 
@@ -547,14 +592,14 @@ fn refresh_task(shared: Arc<Shared>, mut scan: Scan) {
         };
         if !active {
             if powered {
-                scan.bus.power_off();
+                scan.bus.control().power_off();
                 powered = false;
             }
             shared.wake.take();
             continue;
         }
         if !powered {
-            scan.bus.power_on();
+            scan.bus.control().power_on();
             powered = true;
         }
         run_frame(&shared, &mut scan);
@@ -589,8 +634,17 @@ impl EpdLl {
         let mut row_nonidle = heap::try_vec(height, Caps::SPIRAM)?;
         row_nonidle.extend((0..height).map(|_| AtomicU16::new(0)));
 
-        let bus = Bus::new_off(&config).inspect_err(|err| error!(TAG, "bus: {err}"))?;
-        bus.power_off();
+        let wiring = Wiring {
+            data: config.data,
+            sph: config.sph,
+            cl: config.cl,
+            dc_dummy: config.dc_dummy,
+            pclk_hz: config.pclk_hz,
+            tx_len: usize::from(line_bytes) + usize::from(config.line_padding),
+        };
+        let latch = Box::new(Latch { control: config.control, busy: AtomicBool::new(false) });
+        let bus = Bus::new_off(&wiring, latch, config.core).inspect_err(|err| error!(TAG, "bus: {err}"))?;
+        bus.control().power_off();
         let tx_len = bus.tx_len;
         let line = || bus.io.alloc_buffer(tx_len, Caps::DMA | Caps::INTERNAL);
         let (lines, hold_line, uni_line) = ([line()?, line()?], line()?, line()?);

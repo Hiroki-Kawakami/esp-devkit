@@ -14,6 +14,8 @@ use crate::{Absent, Config};
 #[cfg(target_os = "none")]
 mod device;
 #[cfg(target_os = "none")]
+mod t5;
+#[cfg(target_os = "none")]
 pub(crate) use device::{Display, init};
 
 #[cfg(not(target_os = "none"))]

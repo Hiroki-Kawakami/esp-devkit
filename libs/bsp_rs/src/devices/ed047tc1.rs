@@ -5,10 +5,12 @@
 
 //! The ED047TC1 4.7" 960x540 EPD: its timing and waveforms on `epd_ll`.
 
+use alloc::boxed::Box;
+
 use idf::Result;
 
 use crate::display::Size;
-use crate::driver::epd_ll::{self, ControlPins, EpdLl, Waveforms};
+use crate::driver::epd_ll::{self, Control, EpdLl, Waveforms};
 use crate::driver::epd_waveform::{B, Frame, SETTLE, STOP, W, Waveform, by_from as f, by_to as t};
 
 pub(crate) const SIZE: Size = Size { width: 960, height: 540 };
@@ -21,7 +23,7 @@ pub(crate) struct Config {
     pub sph: i32,
     pub cl: i32,
     pub dc_dummy: i32,
-    pub control: ControlPins,
+    pub control: Box<dyn Control>,
     pub ppi: u16,
     pub priority: u32,
     pub core: Option<u32>,
