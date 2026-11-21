@@ -9,6 +9,8 @@
 
 extern crate alloc;
 
+#[cfg(target_os = "none")]
+pub mod adc;
 pub mod cache;
 mod error;
 pub mod executor;

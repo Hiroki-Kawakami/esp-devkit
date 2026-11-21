@@ -2,14 +2,14 @@
 idf_component_register(
     SRCS "src/executor_shim.c"
     PRIV_INCLUDE_DIRS "src"
-    REQUIRES esp_app_format esp_common esp_system esp_timer freertos heap log nvs_flash esp_driver_i2c esp_driver_gpio
+    REQUIRES esp_adc esp_app_format esp_common esp_system esp_timer freertos heap log nvs_flash esp_driver_i2c esp_driver_gpio
              esp_driver_ledc esp_driver_i2s esp_driver_spi esp_partition esp_driver_sdmmc esp_hw_support esp_lcd esp_mm sdmmc fatfs vfs
     PRIV_REQUIRES devkit_core hal rust_rt)
 if(ESP_PLATFORM)
     set(log_headers "esp_log.h" "esp_log_config.h" "esp_log_level.h" "esp_log_timestamp.h"
                     "esp_log_write.h")
     set(target_headers "esp_cache.h" "esp_private/esp_cache_private.h" "spinlock.h" "esp_intr_alloc.h" "esp_rom_sys.h")
-    set(driver_headers "driver/i2c_master.h" "driver/gpio.h" "driver/ledc.h"
+    set(driver_headers "driver/i2c_master.h" "driver/gpio.h" "driver/ledc.h" "esp_adc/adc_oneshot.h" "esp_adc/adc_cali.h"
                        "esp_ldo_regulator.h" "esp_lcd_types.h" "esp_lcd_panel_io.h"
                        "esp_lcd_panel_ops.h" "esp_lcd_panel_commands.h" "driver/spi_common.h" "driver/spi_master.h" "esp_lcd_io_spi.h")
     if(CONFIG_SOC_MIPI_DSI_SUPPORTED)

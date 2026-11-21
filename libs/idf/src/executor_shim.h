@@ -2,7 +2,8 @@
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 Hiroki Kawakami
  *
- * Macros behind idf::cache, idf::executor, idf::heap, idf::sync and idf::thread.
+ * Macros behind idf::adc, idf::cache, idf::executor, idf::heap, idf::sync and
+ * idf::thread.
  */
 
 #pragma once
@@ -29,3 +30,12 @@ void *idf_cache_uncached(void *cached);
 
 /* Whether DMA reads `p` where it is, without being told it is in PSRAM. */
 bool idf_ptr_dma_capable(const void *p);
+
+#ifdef ESP_PLATFORM
+#include "esp_adc/adc_cali.h"
+
+/* The chip's calibration scheme for an ADC channel; ESP_ERR_NOT_SUPPORTED
+   when it has none or its eFuse values are missing. */
+esp_err_t idf_adc_cali_create(adc_unit_t unit, adc_channel_t channel, adc_atten_t atten, adc_cali_handle_t *out);
+void idf_adc_cali_delete(adc_cali_handle_t handle);
+#endif

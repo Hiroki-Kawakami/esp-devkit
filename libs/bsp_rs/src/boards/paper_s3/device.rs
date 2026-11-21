@@ -12,6 +12,7 @@ use idf::sync::OnceLock;
 use idf::time::delay_us;
 use idf::{Result, gpio};
 
+use super::power::PowerDriver;
 use super::t5::{self, ShiftControl};
 use super::{PANEL_PPI, PANEL_SIZE, TAG, check_display};
 use crate::devices::ed047tc1;
@@ -71,10 +72,6 @@ impl Model {
     }
 }
 
-struct UnknownPower;
-
-impl power::Driver for UnknownPower {}
-
 /// Reads the pins as inputs and talks only on the T5's own I2C, so neither
 /// panel is driven before the board is known. The T5's bus stays open.
 fn detect() -> Model {
@@ -128,7 +125,13 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
     };
     let panel = ed047tc1::create(panel).inspect_err(|err| error!(TAG, "panel: {err}"))?;
     let touch = i2c_init(model).and_then(|bus| touch_init(bus, model)).inspect_err(|err| warn!(TAG, "touch unavailable: {err}")).ok();
-    let power = power::start(UnknownPower, None);
+    let power = power::start(
+        match model {
+            Model::PaperS3 => PowerDriver::paper_s3(),
+            Model::T5 => PowerDriver::t5(),
+        },
+        None,
+    );
     Ok(Board {
         audio: None,
         buttons: None,
