@@ -15,6 +15,9 @@ use crate::Absent;
 pub use devkit_gfx::{Image, ImageFormat, Rect, Rotation, Size};
 use devkit_gfx::Target;
 
+#[cfg(all(target_os = "none", CONFIG_BSP_RS_DRIVER_EPD_LL))]
+pub mod epd_ll;
+
 #[derive(Default)]
 #[non_exhaustive]
 pub struct Config {

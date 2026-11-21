@@ -10,8 +10,8 @@ use alloc::boxed::Box;
 
 use idf::{Error, Result};
 
-use crate::display::Display;
-use crate::driver::epd_waveform;
+use super::Display;
+use crate::driver::epd_ll::waveform;
 
 /// One row per frame: 16 words by the gray on the glass, each holding 2 bits
 /// per target gray, `to * 2` up (0 hold, 1 toward black, 2 toward white). A
@@ -19,7 +19,7 @@ use crate::driver::epd_waveform;
 /// draw waits; only a tail of them may be.
 pub type Lut = Box<[[u32; 16]]>;
 
-pub const STEP_MAX: usize = epd_waveform::STEP_MAX;
+pub const STEP_MAX: usize = waveform::STEP_MAX;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Slot {

@@ -149,7 +149,7 @@
       <fieldset>
         <legend>image</legend>
         <div class="row">
-          <input type="file" id="imgfile" accept=".jpg,.jpeg,.png,image/jpeg,image/png">
+          <input type="file" id="imgfile" accept="image/*">
         </div>
         <div class="row">
           <button id="imgsend" disabled>Send &amp; show</button>
@@ -178,6 +178,7 @@
 const SETTLE_WORD = 0xFFFFFFFF;
 const SLOT_NAMES = ['FAST', 'QUALITY', 'TEXT', 'CLEAR'];
 let stepMax = 62;
+let panelW = 0, panelH = 0;
 let luts = SLOT_NAMES.map(() => []);
 let curSlot = 1;
 let paintAct = 1;
@@ -417,6 +418,8 @@ document.getElementById('connect').onclick = async () => {
     document.getElementById('connect').textContent = 'Disconnect';
     readLoop();
     const info = (await send('info')).split(' ');   // #OK info w h ...
+    panelW = +info[2];
+    panelH = +info[3];
     const tweak = await send('tweak').then(r => +r.split(' ')[2], () => 0);   // #OK tweak stepmax
     if (tweak) stepMax = tweak;
     document.getElementById('devinfo').textContent =
@@ -475,10 +478,114 @@ document.getElementById('rf').onclick = () => send(refreshCmd('fast'),    30000)
 
 // ---------- image upload ----------
 const imgBtn = document.getElementById('imgsend');
+// The board's weights for L8 (BT.709 in 1/256); transparency shows white.
+function toGray(rgba, n) {
+  const gray = new Float32Array(n);
+  for (let i = 0, p = 0; i < n; i++, p += 4) {
+    const l = (rgba[p] * 54 + rgba[p + 1] * 183 + rgba[p + 2] * 19) / 256;
+    const a = rgba[p + 3] / 255;
+    gray[i] = l * a + 255 * (1 - a);
+  }
+  return gray;
+}
+
+// A quarter turn clockwise.
+function rotateCw(src, w, h) {
+  const dst = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) dst[x * h + (h - 1 - y)] = src[y * w + x];
+  }
+  return dst;
+}
+
+function cubic(x) {
+  const a = -0.5;
+  x = Math.abs(x);
+  if (x < 1) return ((a + 2) * x - (a + 3)) * x * x + 1;
+  if (x < 2) return (((x - 5) * x + 8) * x - 4) * a;
+  return 0;
+}
+
+// Taps of every output position along one axis. Shrinking widens the kernel
+// by the ratio, so each output averages all the input it covers.
+function taps(src, dst) {
+  const ratio = src / dst, stretch = Math.max(1, ratio), support = 2 * stretch;
+  return Array.from({ length: dst }, (_, i) => {
+    const center = (i + 0.5) * ratio;
+    const first = Math.max(0, Math.floor(center - support));
+    const last = Math.min(src - 1, Math.ceil(center + support));
+    const weights = [];
+    let sum = 0;
+    for (let j = first; j <= last; j++) {
+      const w = cubic((j + 0.5 - center) / stretch);
+      weights.push(w);
+      sum += w;
+    }
+    return { first, weights: weights.map(w => w / sum) };
+  });
+}
+
+function bicubic(src, sw, sh, dw, dh) {
+  const across = taps(sw, dw), down = taps(sh, dh);
+  const mid = new Float32Array(dw * sh);
+  for (let y = 0; y < sh; y++) {
+    const row = y * sw;
+    for (let x = 0; x < dw; x++) {
+      const { first, weights } = across[x];
+      let v = 0;
+      for (let k = 0; k < weights.length; k++) v += src[row + first + k] * weights[k];
+      mid[y * dw + x] = v;
+    }
+  }
+  const dst = new Float32Array(dw * dh);
+  for (let y = 0; y < dh; y++) {
+    const { first, weights } = down[y];
+    for (let x = 0; x < dw; x++) {
+      let v = 0;
+      for (let k = 0; k < weights.length; k++) v += mid[(first + k) * dw + x] * weights[k];
+      dst[y * dw + x] = v;
+    }
+  }
+  return dst;
+}
+
+// Gray, turned a quarter clockwise when that shows it larger, and scaled
+// bicubic to fit the panel, so the board only decodes a panel-sized PNG.
+async function fitToPanel(file) {
+  const bmp = await createImageBitmap(file);
+  const [bw, bh] = [bmp.width, bmp.height];
+  const source = new OffscreenCanvas(bw, bh).getContext('2d');
+  source.drawImage(bmp, 0, 0);
+  bmp.close();
+  let gray = toGray(source.getImageData(0, 0, bw, bh).data, bw * bh);
+
+  const fit = (w, h) => Math.min(panelW / w, panelH / h);
+  const rotate = fit(bh, bw) > fit(bw, bh);
+  const [sw, sh] = rotate ? [bh, bw] : [bw, bh];
+  if (rotate) gray = rotateCw(gray, bw, bh);
+  const scale = fit(sw, sh);
+  const w = Math.max(1, Math.min(panelW, Math.round(sw * scale)));
+  const h = Math.max(1, Math.min(panelH, Math.round(sh * scale)));
+  const out = bicubic(gray, sw, sh, w, h);
+
+  const canvas = new OffscreenCanvas(w, h);
+  const ctx = canvas.getContext('2d');
+  const image = ctx.createImageData(w, h);
+  for (let i = 0, p = 0; i < w * h; i++, p += 4) {
+    const v = Math.max(0, Math.min(255, Math.round(out[i])));
+    image.data[p] = image.data[p + 1] = image.data[p + 2] = v;
+    image.data[p + 3] = 255;
+  }
+  ctx.putImageData(image, 0, 0);
+  const blob = await canvas.convertToBlob({ type: 'image/png' });
+  log(`image ${bw}x${bh} -> ${w}x${h}${rotate ? ' (rotated)' : ''}, ${blob.size} bytes`);
+  return new Uint8Array(await blob.arrayBuffer());
+}
+
 imgBtn.onclick = guard(imgBtn, async () => {
   const file = document.getElementById('imgfile').files[0];
   if (!file) throw new Error('画像ファイルを選択してください');
-  const data = new Uint8Array(await file.arrayBuffer());
+  const data = await fitToPanel(file);
   const prog = document.getElementById('imgprog');
   prog.hidden = false;
   prog.value = 0;

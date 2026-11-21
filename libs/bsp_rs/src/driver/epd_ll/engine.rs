@@ -3,10 +3,7 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
-//! A grayscale EPD without a controller, driven line by line from an 8-bit
-//! i80 bus: the source data on D0..D7, STH on CS and CL on WR, the rest
-//! through the board's `Control`. Each pixel replays its own waveform
-//! (`epd_waveform`) on a task of its own.
+//! The i80 bus, the board's `Control` and the task replaying the waveforms.
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
@@ -21,7 +18,7 @@ use idf::sync::{Mutex, MutexGuard, Semaphore};
 use idf::time::delay_us;
 use idf::{Error, Result, gpio, sys, system, thread};
 
-use super::epd_waveform::{self as wf, B1_IDLE, B1_PENDING, Frame, Pixel, Rowset, SLOTS, Waveform};
+use super::waveform::{self as wf, B1_IDLE, B1_PENDING, Frame, Pixel, Rowset, SLOTS, Waveform};
 use crate::Absent;
 use crate::display::{self, Driver, EpdDriver, EpdMode, GramDriver, Image, ImageFormat, Rect, Rotation, Size, Ticket};
 

@@ -42,7 +42,7 @@ up (the PaperS3's I2C SDA) is a PaperS3, a PCF8563 answering on GPIO18/17
   already done; the write waits while pixels of the area are still being
   driven to another gray. Every pixel replays its own waveform, so areas
   refresh independently. `init` takes the glass as white without driving it.
-- On such a board, `bsp_rs::epd_ll::Waveforms::of(display)` replaces a
+- On such a board, `display::epd_ll::Waveforms::of(display)` replaces a
   waveform while the firmware runs (`firmware/epd_tweak`): `set` waits until
   nothing is being driven and hands back the table it replaces, `get` copies
   one out. Only device builds with `driver/epd_ll` have it.

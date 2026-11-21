@@ -120,7 +120,7 @@ fn base64(text: &str, data: &mut Vec<u8>) -> bool {
 
 #[cfg(all(target_os = "none", CONFIG_BSP_RS_DRIVER_EPD_LL))]
 fn waveforms(display: &'static Display) {
-    use bsp_rs::epd_ll::{STEP_MAX, Slot, Waveforms};
+    use bsp_rs::display::epd_ll::{STEP_MAX, Slot, Waveforms};
 
     struct Upload {
         slot: usize,

@@ -113,6 +113,7 @@ impl Waveform {
         Some(Self { lut, first_skippable })
     }
 
+    #[allow(dead_code)]
     pub(crate) fn lut(&self) -> &'static [Frame] {
         self.lut
     }

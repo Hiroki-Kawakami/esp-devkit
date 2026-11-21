@@ -11,7 +11,7 @@ use idf::Result;
 
 use crate::display::Size;
 use crate::driver::epd_ll::{self, Control, EpdLl, Waveforms};
-use crate::driver::epd_waveform::{B, Frame, SETTLE, STOP, W, Waveform, by_from as f, by_to as t};
+use crate::driver::epd_ll::waveform::{B, Frame, SETTLE, STOP, W, Waveform, by_from as f, by_to as t};
 
 pub(crate) const SIZE: Size = Size { width: 960, height: 540 };
 const PCLK_HZ: u32 = 20_000_000;
