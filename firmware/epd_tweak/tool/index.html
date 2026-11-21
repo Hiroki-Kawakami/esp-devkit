@@ -2,7 +2,7 @@
 <!--
   EPD waveform tuning tool for the epd_tweak firmware.
   Open in Chrome/Edge (Web Serial), Connect to the board's serial port, and
-  edit / apply waveform LUTs live. See SerialCmd.cpp for the wire protocol.
+  edit / apply waveform LUTs live. See app/serial.rs for the wire protocol.
 -->
 <html lang="ja">
 <head>
@@ -130,7 +130,7 @@
           <button id="apply" class="primary" disabled>Apply</button>
         </div>
         <div class="row">
-          <button id="exportc">Export C</button>
+          <button id="exportrs">Export Rust</button>
         </div>
       </fieldset>
       <fieldset>
@@ -161,12 +161,12 @@
   </div>
 </main>
 
-<dialog id="cdialog">
-  <p>ed047tc1.c に貼り戻せる LUT テーブル:</p>
-  <textarea id="ctext" readonly></textarea>
+<dialog id="rsdialog">
+  <p>libs/bsp_rs/src/devices/ed047tc1.rs に貼り戻せる LUT テーブル:</p>
+  <textarea id="rstext" readonly></textarea>
   <p style="text-align:right">
-    <button id="ccopy">Copy</button>
-    <button onclick="document.getElementById('cdialog').close()">Close</button>
+    <button id="rscopy">Copy</button>
+    <button onclick="document.getElementById('rsdialog').close()">Close</button>
   </p>
 </dialog>
 
@@ -416,9 +416,9 @@ document.getElementById('connect').onclick = async () => {
     setConnected(true);
     document.getElementById('connect').textContent = 'Disconnect';
     readLoop();
-    const info = (await send('info')).split(' ');   // #OK info w h tweak stepmax
-    const tweak = info[4] === '1';
-    if (tweak) stepMax = +info[5] || 62;
+    const info = (await send('info')).split(' ');   // #OK info w h ...
+    const tweak = await send('tweak').then(r => +r.split(' ')[2], () => 0);   // #OK tweak stepmax
+    if (tweak) stepMax = tweak;
     document.getElementById('devinfo').textContent =
       `${info[2]}x${info[3]}` + (tweak ? '' : ' (LUT 書き換え非対応ボード)');
     document.getElementById('read').disabled = !tweak;
@@ -454,7 +454,16 @@ const applyBtn = document.getElementById('apply');
 applyBtn.onclick = guard(applyBtn, async () => {
   const rows = luts[curSlot];
   if (!rows.length) throw new Error('empty LUT');
-  await send(`wf ${curSlot} ${rows.length} ${lutToHex(rows)}`, 30000);
+  const hex = lutToHex(rows);
+  const CHUNK = 56 * 8;                          // words per line, within the 512-byte line
+  await send(`wf begin ${curSlot} ${rows.length}`);
+  try {
+    for (let o = 0; o < hex.length; o += CHUNK) await send('wf data ' + hex.slice(o, o + CHUNK));
+    await send('wf end', 30000);                 // waits until nothing is being driven
+  } catch (e) {
+    await send('wf abort').catch(() => {});
+    throw e;
+  }
 });
 
 document.getElementById('pattern').onclick = () => send('pattern').catch(e => log(e.message, 'err'));
@@ -475,7 +484,7 @@ imgBtn.onclick = guard(imgBtn, async () => {
   prog.value = 0;
   try {
     await send(`img begin ${data.length}`);
-    const CHUNK = 2304;                          // -> 3072 base64 chars per line
+    const CHUNK = 360;                           // -> 480 base64 chars, within the 512-byte line
     for (let o = 0; o < data.length; o += CHUNK) {
       let bin = '';
       for (const b of data.subarray(o, o + CHUNK)) bin += String.fromCharCode(b);
@@ -488,27 +497,27 @@ imgBtn.onclick = guard(imgBtn, async () => {
   }
 });
 
-// ---------- C export ----------
-document.getElementById('exportc').onclick = () => {
+// ---------- Rust export ----------
+document.getElementById('exportrs').onclick = () => {
   const rows = luts[curSlot];
-  const lines = ['/*         0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15   (gray column) */'];
+  const lines = ['//   0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15'];
   const sym = a => a === 1 ? 'B' : a === 2 ? 'W' : '0';
-  rows.forEach((row, i) => {
-    const n = `/* ${String(i + 1).padStart(2)} */ `;
-    if (row.type === 'SETTLE')    lines.push(n + 'SETTLE,');
-    else if (row.type === 'STOP') lines.push(n + 'STOP,');
+  rows.forEach(row => {
+    if (row.type === 'SETTLE')    lines.push('SETTLE,');
+    else if (row.type === 'STOP') lines.push('STOP,');
     else if (row.type === 'RAW')
-      lines.push(n + '{ ' + Array.from(row.raw, w => '0x' + w.toString(16).padStart(8, '0')).join(', ') + ' },');
+      lines.push('[' + Array.from(row.raw, w => '0x' + w.toString(16).padStart(8, '0')).join(', ') + '],');
     else
-      lines.push(n + `${row.type}(` + Array.from(row.acts, sym).join(', ') + '),');
+      lines.push(`${row.type.toLowerCase()}([` + Array.from(row.acts, sym).join(', ') + ']),');
   });
-  document.getElementById('ctext').value =
-    `static const uint32_t lut_${SLOT_NAMES[curSlot].toLowerCase()}[][16] = {\n` +
-    lines.map(l => '    ' + l).join('\n') + '\n};\n';
-  document.getElementById('cdialog').showModal();
+  document.getElementById('rstext').value =
+    '#[rustfmt::skip]\n' +
+    `static ${SLOT_NAMES[curSlot]}: [Frame; ${rows.length}] = [\n` +
+    lines.map(l => '    ' + l).join('\n') + '\n];\n';
+  document.getElementById('rsdialog').showModal();
 };
-document.getElementById('ccopy').onclick = () =>
-  navigator.clipboard.writeText(document.getElementById('ctext').value);
+document.getElementById('rscopy').onclick = () =>
+  navigator.clipboard.writeText(document.getElementById('rstext').value);
 
 // initial content: an empty single T row per slot (Read from device to import)
 for (const l of luts) l.push(newRow('T'));

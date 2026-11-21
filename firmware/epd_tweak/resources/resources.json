@@ -1,0 +1,8 @@
+{
+  "font": {
+    "label_32": {
+      "size": 32, "font": "@montserrat", "variation": { "wght": 400 },
+      "glyph": ["0123456789"]
+    }
+  }
+}

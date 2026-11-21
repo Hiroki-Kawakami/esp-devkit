@@ -37,6 +37,10 @@ let board = bsp_rs::init(&bsp_rs::Config::default())?;
   already done; the write waits while pixels of the area are still being
   driven to another gray. Every pixel replays its own waveform, so areas
   refresh independently. `init` takes the glass as white without driving it.
+- On such a board, `bsp_rs::epd_ll::Waveforms::of(display)` replaces a
+  waveform while the firmware runs (`firmware/epd_tweak`): `set` waits until
+  nothing is being driven and hands back the table it replaces, `get` copies
+  one out. Only device builds with `driver/epd_ll` have it.
 - `FrameBuffers::frame_buffer(i)` returns a `FrameBuffer`: a raw, `Copy`able view of a
   host framebuffer, sendable to other tasks. Writing through `as_mut_slice` /
   `row_mut` is `unsafe`: tasks drawing to overlapping areas at the same time

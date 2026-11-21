@@ -17,15 +17,15 @@ use crate::{Board, Config};
 
 pub(crate) type Display = SimGram;
 
-// The glass takes what is drawn at once; the host shows the panel's memory,
-// not the drives.
+// The panel's memory is the chip's own, so writes land as fast as it copies;
+// the host shows that memory, not the drives.
 const PANEL: GramConfig = GramConfig {
     size: Size { width: 960, height: 540 },
     ppi: PANEL_PPI,
     format: PIXEL_FORMAT,
     alignment: 1,
     rotations: Rotations::R0,
-    bytes_per_second: 0,
+    bytes_per_second: u32::MAX,
     epd: true,
 };
 

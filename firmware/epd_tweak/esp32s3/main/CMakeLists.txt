@@ -1,7 +1,7 @@
 idf_component_register(
-    SRCS "main.cpp"
-    INCLUDE_DIRS "."
-    PRIV_REQUIRES app)
+    SRCS "/dev/null"
+    PRIV_REQUIRES app rust_rt)
+devkit_rust_crate(ROOT "main.rs")
 
 # Keep app_main() (referenced across the main<->app component link group) from
 # being garbage-collected.

@@ -26,6 +26,8 @@ pub mod dispatch;
 #[allow(dead_code)]
 pub mod display;
 mod driver;
+#[cfg(all(target_os = "none", CONFIG_BSP_RS_DRIVER_EPD_LL))]
+pub mod epd_ll;
 #[allow(dead_code)]
 pub mod imu;
 pub mod power;

@@ -98,7 +98,6 @@ pub(crate) struct GramConfig {
     pub format: ImageFormat,
     pub alignment: u16,
     pub rotations: Rotations,
-    /// 0 takes every write at once.
     pub bytes_per_second: u32,
     /// Has `Epd`, whose drives the host does not show.
     pub epd: bool,

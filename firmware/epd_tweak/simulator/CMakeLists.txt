@@ -1,4 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
 include(${CMAKE_CURRENT_SOURCE_DIR}/../../../devkit.cmake)
-devkit_idf_init(COMPONENT_DIRS ../app)
-project(epd_tweak)
+devkit_simulator_init()
+project(simulator C CXX)
+devkit_simulator(COMPONENT_DIRS ../app main)

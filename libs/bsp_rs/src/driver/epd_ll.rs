@@ -21,7 +21,7 @@ use idf::sync::{Mutex, MutexGuard, Semaphore};
 use idf::time::delay_us;
 use idf::{Error, Result, gpio, sys, system, thread};
 
-use super::epd_waveform::{self as wf, B1_IDLE, B1_PENDING, Frame, Pixel, SLOTS, Waveform};
+use super::epd_waveform::{self as wf, B1_IDLE, B1_PENDING, Frame, Pixel, Rowset, SLOTS, Waveform};
 use crate::Absent;
 use crate::display::{self, Driver, EpdDriver, EpdMode, GramDriver, Image, ImageFormat, Rect, Rotation, Size, Ticket};
 
@@ -229,12 +229,15 @@ struct Counters {
     /// The task is driving rather than waiting on `wake`.
     running: bool,
     mode: EpdMode,
+    wf: [Option<Waveform>; SLOTS],
+    /// The table of the slot was a `Box` given to `set_waveform`, leaked
+    /// while in use.
+    owned: [bool; SLOTS],
 }
 
 struct Shared {
     width: usize,
     height: usize,
-    wf: [Option<Waveform>; SLOTS],
     /// Written under `lock`; the scan reads it without.
     state: Box<[Pixel], Caps>,
     /// Pixels per row that are not idle; written under `lock`.
@@ -336,12 +339,12 @@ impl Shared {
             display::Waveform::Quality => 1,
             display::Waveform::Text => 2,
         };
-        if self.wf[slot].is_none() {
-            return Ok(());
-        }
         let (x0, y0) = (area.x as usize, area.y as usize);
         let (x1, y1) = (x0 + area.w as usize, y0 + area.h as usize);
         let mut guard = self.lock.lock();
+        if guard.wf[slot].is_none() {
+            return Ok(());
+        }
         if all {
             while self.area_has_active(x0, y0, x1, y1) {
                 guard = self.wait_retire(guard);
@@ -422,7 +425,7 @@ impl Shared {
 /// What only the refresh task touches.
 struct Scan {
     bus: Bus,
-    rowset_tab: [&'static Frame; 256],
+    rowset_tab: [Rowset; 256],
     retire_tab: [bool; 256],
     act_index: [usize; 256],
     /// Internal RAM, so the scan never reaches the waveforms in flash; the
@@ -434,17 +437,21 @@ struct Scan {
     line_bytes: usize,
 }
 
+// `rowset_tab` points into tables that are only replaced while nothing
+// replays, between frames.
+unsafe impl Send for Scan {}
+
 fn run_frame(shared: &Shared, scan: &mut Scan) {
     let (w, h) = (shared.width, shared.height);
     let mut guard = shared.lock.lock();
     guard.frame = (guard.frame + 1) & 63;
     let skip_settle = shared.waiters.load(Ordering::SeqCst) > 0;
-    wf::build_frame_tab(&shared.wf, guard.frame, skip_settle, &mut scan.rowset_tab, &mut scan.retire_tab);
+    wf::build_frame_tab(&guard.wf, guard.frame, skip_settle, &mut scan.rowset_tab, &mut scan.retire_tab);
 
     // Whether anything finishes, and whether one frame that drives every
     // pixel alike is all that replays, so one line serves every full row.
     let (mut any_retire, mut multiple) = (false, false);
-    let mut only: Option<&Frame> = None;
+    let mut only: Option<Rowset> = None;
     for b1 in 0..256 {
         if guard.group[b1] == 0 {
             continue;
@@ -456,7 +463,7 @@ fn run_frame(shared: &Shared, scan: &mut Scan) {
         }
     }
     let uniform = match only {
-        Some(f) if !multiple && guard.group[usize::from(B1_PENDING)] == 0 => wf::rowset_uniform(f),
+        Some(f) if !multiple && guard.group[usize::from(B1_PENDING)] == 0 => wf::rowset_uniform(unsafe { &*f }),
         _ => None,
     };
     if let Some(byte) = uniform {
@@ -467,14 +474,14 @@ fn run_frame(shared: &Shared, scan: &mut Scan) {
     let mut used = 0;
     scan.act_index = [ACT_HOLD; 256];
     for b1 in 0..256 {
-        if guard.group[b1] == 0 || core::ptr::eq(scan.rowset_tab[b1], &wf::HOLD) {
+        if guard.group[b1] == 0 || core::ptr::eq(scan.rowset_tab[b1], wf::hold()) {
             continue;
         }
         if used == ACT_POOL {
             flat = false;
             break;
         }
-        wf::build_act256(scan.rowset_tab[b1], &mut scan.act_pool[used]);
+        wf::build_act256(unsafe { &*scan.rowset_tab[b1] }, &mut scan.act_pool[used]);
         scan.act_index[b1] = used;
         used += 1;
     }
@@ -496,7 +503,7 @@ fn run_frame(shared: &Shared, scan: &mut Scan) {
             if flat {
                 wf::blit_line_tab(shared.row(y), &tabs, dst);
             } else {
-                wf::blit_line(shared.row(y), &scan.rowset_tab, dst);
+                unsafe { wf::blit_line(shared.row(y), &scan.rowset_tab, dst) };
             }
             line
         };
@@ -590,7 +597,7 @@ impl EpdLl {
         let act_pool = heap::zeroed_box::<[[u8; 256]; ACT_POOL + 1]>(Caps::INTERNAL)?;
         let scan = Scan {
             bus,
-            rowset_tab: [&wf::HOLD; 256],
+            rowset_tab: [wf::hold(); 256],
             retire_tab: [false; 256],
             act_index: [ACT_HOLD; 256],
             act_pool,
@@ -603,10 +610,17 @@ impl EpdLl {
         let shared = Arc::new(Shared {
             width,
             height,
-            wf: slots,
             state: state.into_boxed_slice(),
             row_nonidle: row_nonidle.into_boxed_slice(),
-            lock: Mutex::new(Counters { group: [0; 256], active_px: 0, frame: 0, running: false, mode: EpdMode::Hold }),
+            lock: Mutex::new(Counters {
+                group: [0; 256],
+                active_px: 0,
+                frame: 0,
+                running: false,
+                mode: EpdMode::Hold,
+                wf: slots,
+                owned: [false; SLOTS],
+            }),
             waiters: AtomicU32::new(0),
             retired: Semaphore::try_new(0, 1)?,
             wake: Semaphore::try_new(0, 1)?,
@@ -620,6 +634,30 @@ impl EpdLl {
             .spawn(move || refresh_task(task, scan))
             .inspect_err(|err| error!(TAG, "task: {err}"))?;
         Ok(Self { shared, size, ppi: config.ppi })
+    }
+
+    /// Waits until nothing replays, then binds `lut` to `slot` and returns the
+    /// table it replaces when that one was given here too.
+    pub(crate) fn set_waveform(&self, slot: usize, lut: Box<[Frame]>) -> Result<Option<Box<[Frame]>>> {
+        if slot >= SLOTS || !wf::check(&lut) {
+            return Err(Error::INVALID_ARG);
+        }
+        let lut: &'static [Frame] = Box::leak(lut);
+        let Some(waveform) = Waveform::new(lut) else { unreachable!() };
+        let mut guard = self.shared.lock.lock();
+        while guard.active_px != 0 {
+            guard = self.shared.wait_retire(guard);
+        }
+        let old = guard.wf[slot].replace(waveform);
+        let owned = core::mem::replace(&mut guard.owned[slot], true);
+        drop(guard);
+        Ok(old.filter(|_| owned).map(|old| unsafe { Box::from_raw(core::ptr::from_ref(old.lut()).cast_mut()) }))
+    }
+
+    /// A copy of the table bound to `slot`.
+    pub(crate) fn waveform(&self, slot: usize) -> Option<Box<[Frame]>> {
+        let guard = self.shared.lock.lock();
+        guard.wf.get(slot)?.map(|w| Box::from(w.lut()))
     }
 }
 

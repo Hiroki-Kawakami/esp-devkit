@@ -317,7 +317,7 @@ impl Display {
         Self { size: AtomicU32::new(pack(driver.size())), driver: UnsafeCell::new(driver) }
     }
 
-    fn driver(&self) -> &BoardDriver {
+    pub(crate) fn driver(&self) -> &BoardDriver {
         unsafe { &*self.driver.get() }
     }
 
