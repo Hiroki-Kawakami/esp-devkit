@@ -15,11 +15,13 @@ use idf::{Result, gpio};
 use super::power::PowerDriver;
 use super::t5::{self, ShiftControl};
 use super::{PANEL_PPI, PANEL_SIZE, TAG, check_display};
+use crate::devices::bm8563::{self, Bm8563};
 use crate::devices::ed047tc1;
 use crate::devices::gt911::{self, Gt911};
 use crate::display::{self, Rotation};
 use crate::driver::epd_ll::{ControlPins, EpdLl};
 use crate::power;
+use crate::rtc::{self, Rtc};
 use crate::touch::{self, Touch};
 use crate::{Board, Config};
 
@@ -124,7 +126,9 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
         }
     };
     let panel = ed047tc1::create(panel).inspect_err(|err| error!(TAG, "panel: {err}"))?;
-    let touch = i2c_init(model).and_then(|bus| touch_init(bus, model)).inspect_err(|err| warn!(TAG, "touch unavailable: {err}")).ok();
+    let bus = i2c_init(model).ok();
+    let touch = bus.and_then(|bus| touch_init(bus, model).inspect_err(|err| warn!(TAG, "touch unavailable: {err}")).ok());
+    let rtc = bus.and_then(rtc_init);
     let power = power::start(
         match model {
             Model::PaperS3 => PowerDriver::paper_s3(),
@@ -138,7 +142,7 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
         display: Some(DISPLAY.get_or_init(|| display::Display::new(panel))),
         imu: None,
         power,
-        rtc: None,
+        rtc,
         sd: None,
         touch,
     })
@@ -146,6 +150,16 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
 
 fn i2c_init(model: Model) -> Result<&'static MasterBus> {
     I2C.get_or_try_init(|| MasterBus::new(&model.i2c())).inspect_err(|err| error!(TAG, "i2c bus: {err}"))
+}
+
+// A BM8563 on the PaperS3, whose INT reaches the power controller; a PCF8563,
+// the same registers, on the T5.
+fn rtc_init(bus: &'static MasterBus) -> Option<&'static Rtc> {
+    let rtc = Bm8563::new(bus, bm8563::ADDR).and_then(rtc::start).inspect_err(|err| warn!(TAG, "rtc unavailable: {err}")).ok()?;
+    if let Err(err) = rtc.stop_timer() {
+        error!(TAG, "rtc timer stop: {err}");
+    }
+    Some(rtc)
 }
 
 // On both boards the chip reports the panel's portrait axes, its Y mirrored,

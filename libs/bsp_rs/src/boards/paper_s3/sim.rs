@@ -10,8 +10,10 @@ use idf::sync::OnceLock;
 use super::{PANEL_PPI, PANEL_SIZE, PIXEL_FORMAT, TAG, check_display};
 use crate::display::{self, Rotation, Rotations};
 use crate::power;
+use crate::rtc;
 use crate::sim::gram::{GramConfig, SimGram};
 use crate::sim::power::SimPower;
+use crate::sim::rtc::SimRtc;
 use crate::sim::{self, protocol::Event, touch as sim_touch};
 use crate::touch;
 use crate::{Board, Config};
@@ -56,13 +58,14 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
     .inspect_err(|err| warn!(TAG, "touch unavailable: {err}"))
     .ok();
     let power = power::start(SimPower::new(Some(host)), None);
+    let rtc = SimRtc::new(host).and_then(|driver| rtc::start(driver).inspect_err(|err| warn!(TAG, "rtc unavailable: {err}")).ok());
     Ok(Board {
         audio: None,
         buttons: None,
         display: Some(DISPLAY.get_or_init(|| display::Display::new(panel))),
         imu: None,
         power,
-        rtc: None,
+        rtc,
         sd: None,
         touch,
     })
