@@ -18,6 +18,13 @@ pub(crate) const PIN_SPH: i32 = 40;
 pub(crate) const PIN_CL: i32 = 41;
 pub(crate) const PIN_DC_DUMMY: i32 = 45;
 
+// Shared by the touch and the RTC.
+pub(crate) const I2C_PORT: i32 = 0;
+pub(crate) const I2C_PIN_SDA: i32 = 18;
+pub(crate) const I2C_PIN_SCL: i32 = 17;
+pub(crate) const PIN_TOUCH_INT: i32 = 47;
+pub(crate) const RTC_ADDR: u16 = 0x51;
+
 const PIN_SR_DATA: i32 = 13;
 const PIN_SR_CLK: i32 = 12;
 const PIN_SR_STR: i32 = 0;

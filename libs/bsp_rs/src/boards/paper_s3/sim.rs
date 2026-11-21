@@ -4,15 +4,16 @@
  */
 
 use idf::Result;
-use idf::log::info;
+use idf::log::{info, warn};
 use idf::sync::OnceLock;
 
-use super::{PANEL_PPI, PIXEL_FORMAT, TAG, check_display};
-use crate::display::{self, Rotations, Size};
+use super::{PANEL_PPI, PANEL_SIZE, PIXEL_FORMAT, TAG, check_display};
+use crate::display::{self, Rotation, Rotations};
 use crate::power;
 use crate::sim::gram::{GramConfig, SimGram};
 use crate::sim::power::SimPower;
-use crate::sim::{self, protocol::Event};
+use crate::sim::{self, protocol::Event, touch as sim_touch};
+use crate::touch;
 use crate::{Board, Config};
 
 pub(crate) type Display = SimGram;
@@ -20,7 +21,7 @@ pub(crate) type Display = SimGram;
 // The panel's memory is the chip's own, so writes land as fast as it copies;
 // the host shows that memory, not the drives.
 const PANEL: GramConfig = GramConfig {
-    size: Size { width: 960, height: 540 },
+    size: PANEL_SIZE,
     ppi: PANEL_PPI,
     format: PIXEL_FORMAT,
     alignment: 1,
@@ -31,7 +32,7 @@ const PANEL: GramConfig = GramConfig {
 
 static DISPLAY: OnceLock<display::Display> = OnceLock::new();
 
-// Without the simulator host there is nothing to show.
+// Without the simulator host there is nothing to show or touch.
 pub(crate) fn init(config: &Config) -> Result<Board> {
     check_display(config)?;
     let Some(host) = sim::host() else {
@@ -41,7 +42,19 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
     };
     info!(TAG, "board: PaperS3 (simulator)");
     host.send(&Event::device("M5Stack PaperS3"));
-    let panel = SimGram::new(host, &PANEL, display::Rotation::R0)?;
+    let panel = SimGram::new(host, &PANEL, Rotation::R0)?;
+    let touch = sim_touch::start(host, touch::Config {
+        width: PANEL_SIZE.width,
+        height: PANEL_SIZE.height,
+        swap_xy: false,
+        mirror_x: false,
+        mirror_y: false,
+        rotation: Rotation::R0,
+        int: touch::Int::External,
+        zones: &[],
+    })
+    .inspect_err(|err| warn!(TAG, "touch unavailable: {err}"))
+    .ok();
     let power = power::start(SimPower::new(Some(host)), None);
     Ok(Board {
         audio: None,
@@ -51,6 +64,6 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
         power,
         rtc: None,
         sd: None,
-        touch: None,
+        touch,
     })
 }
