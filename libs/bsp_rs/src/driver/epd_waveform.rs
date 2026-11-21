@@ -1,0 +1,572 @@
+/*
+ * SPDX-License-Identifier: MIT
+ * Copyright (c) 2026 Hiroki Kawakami
+ */
+
+//! The per-pixel waveform engine of a direct-drive EPD, apart from the bus.
+//!
+//! A pixel is a `u16`: `[15:14]` waveform slot, `[13:8]` start frame mod 64,
+//! `[7:4]` the gray on the glass, `[3:0]` the target gray. The high byte
+//! (`b1`) is its life cycle: [`B1_IDLE`], [`B1_PENDING`] (drawn, not yet
+//! armed), or replaying its slot at step `(frame - start) & 63`. Step 63 is
+//! armed but not started, so a pixel armed during a scan starts on the next
+//! frame whole.
+//!
+//! A waveform is one [`Frame`] per step: 16 words indexed by the gray on the
+//! glass, each holding a 2-bit action per target gray (0 hold, 1 black,
+//! 2 white). A frame of [`SETTLE_WORD`]s drives nothing and may be cut short
+//! while a draw waits; a frame of zeros drives nothing but always runs.
+
+use core::sync::atomic::{AtomicU16, Ordering};
+
+/// The scan reads pixels while draws write them.
+pub(crate) type Pixel = AtomicU16;
+pub(crate) type Frame = [u32; 16];
+
+pub(crate) const SLOTS: usize = 4;
+pub(crate) const STEP_MAX: usize = 62;
+pub(crate) const B1_IDLE: u8 = 0xFF;
+pub(crate) const B1_PENDING: u8 = 0xFE;
+pub(crate) const SETTLE_WORD: u32 = 0xFFFF_FFFF;
+
+pub(crate) const B: u8 = 1;
+pub(crate) const W: u8 = 2;
+
+const fn word(actions: [u8; 16]) -> u32 {
+    let mut w = 0;
+    let mut to = 0;
+    while to < 16 {
+        w |= (actions[to] as u32) << (to * 2);
+        to += 1;
+    }
+    w
+}
+
+/// A frame whose action depends only on the gray on the glass.
+pub(crate) const fn by_from(actions: [u8; 16]) -> Frame {
+    let mut frame = [0; 16];
+    let mut from = 0;
+    while from < 16 {
+        frame[from] = word([actions[from]; 16]);
+        from += 1;
+    }
+    frame
+}
+
+/// A frame whose action depends only on the target gray.
+pub(crate) const fn by_to(actions: [u8; 16]) -> Frame {
+    [word(actions); 16]
+}
+
+/// Drives nothing and always runs.
+pub(crate) const STOP: Frame = [0; 16];
+/// Drives nothing and may be cut short.
+pub(crate) const SETTLE: Frame = [SETTLE_WORD; 16];
+
+pub(crate) static HOLD: Frame = [0; 16];
+
+#[derive(Clone, Copy)]
+pub(crate) struct Waveform {
+    lut: &'static [Frame],
+    /// The first step of the tail of SETTLE frames; the length without one.
+    first_skippable: usize,
+}
+
+impl Waveform {
+    /// `None` for an empty or too long table, or a frame mixing SETTLE words
+    /// with others.
+    pub(crate) const fn new(lut: &'static [Frame]) -> Option<Self> {
+        if lut.is_empty() || lut.len() > STEP_MAX {
+            return None;
+        }
+        let mut f = 0;
+        while f < lut.len() {
+            let settle = lut[f][0] == SETTLE_WORD;
+            let mut i = 1;
+            while i < 16 {
+                if (lut[f][i] == SETTLE_WORD) != settle {
+                    return None;
+                }
+                i += 1;
+            }
+            f += 1;
+        }
+        let mut first_skippable = lut.len();
+        while first_skippable > 0 && lut[first_skippable - 1][0] == SETTLE_WORD {
+            first_skippable -= 1;
+        }
+        Some(Self { lut, first_skippable })
+    }
+
+    pub(crate) fn steps(&self) -> usize {
+        self.lut.len()
+    }
+}
+
+pub(crate) fn is_active(px: u16) -> bool {
+    (px >> 8) < u16::from(B1_PENDING)
+}
+
+/// `b1` for a pixel armed while the engine is at `frame`. Slot 3 must not be
+/// armed at frames 61 and 62: its `b1` would be one of the markers.
+pub(crate) fn armed(slot: usize, frame: u8) -> u8 {
+    (slot << 6) as u8 | (frame.wrapping_add(1) & 63)
+}
+
+pub(crate) struct Drawn {
+    pub px: u16,
+    /// The pixel replays toward another gray; it is left as it was.
+    pub conflict: bool,
+    /// It went from idle to pending.
+    pub now_nonidle: bool,
+}
+
+/// Stamps `gray` as the target of `px` unless it is already, never touching
+/// one that replays.
+pub(crate) fn draw_px(px: u16, gray: u8) -> Drawn {
+    let gray = u16::from(gray);
+    if is_active(px) {
+        return Drawn { px, conflict: px & 15 != gray, now_nonidle: false };
+    }
+    if px & 15 == gray {
+        return Drawn { px, conflict: false, now_nonidle: false };
+    }
+    let now_nonidle = (px >> 8) as u8 == B1_IDLE;
+    Drawn { px: u16::from(B1_PENDING) << 8 | (px & 0x00F0) | gray, conflict: false, now_nonidle }
+}
+
+/// For each `b1` at `frame`: the frame to drive, and whether its pixels finish
+/// with it. With `skip_settle`, pixels left with only SETTLE frames finish.
+pub(crate) fn build_frame_tab(
+    wf: &[Option<Waveform>; SLOTS],
+    frame: u8,
+    skip_settle: bool,
+    rowset_tab: &mut [&'static Frame; 256],
+    retire_tab: &mut [bool; 256],
+) {
+    for b1 in 0..256 {
+        let mut rowset = &HOLD;
+        let mut retire = false;
+        if b1 < usize::from(B1_PENDING) {
+            let step = usize::from(frame.wrapping_sub(b1 as u8) & 63);
+            match &wf[b1 >> 6] {
+                Some(w) if step < w.steps() => {
+                    let row = &w.lut[step];
+                    if row[0] != SETTLE_WORD {
+                        rowset = row;
+                    }
+                    retire = step + 1 >= w.steps() || (skip_settle && step + 1 >= w.first_skippable);
+                }
+                // An empty slot or a stale step goes back to idle.
+                _ => retire = step != 63,
+            }
+        }
+        rowset_tab[b1] = rowset;
+        retire_tab[b1] = retire;
+    }
+}
+
+fn pack(a: [u32; 4]) -> u8 {
+    (a[0] << 6 | a[1] << 4 | a[2] << 2 | a[3]) as u8
+}
+
+fn get(px: &Pixel) -> u16 {
+    px.load(Ordering::Relaxed)
+}
+
+/// Packs a row's actions 4 pixels a byte, the leftmost in the top bits, and
+/// returns whether any drives. `dst` holds a byte per 4 pixels of `row`.
+/// Unrolled by 8 so the table lookups overlap.
+fn blit(row: &[Pixel], dst: &mut [u8], act: impl Fn(u16) -> u32) -> bool {
+    let act = |px: &Pixel| act(get(px));
+    let mut acc = 0;
+    let mut chunks = row.chunks_exact(8);
+    for (px, d) in (&mut chunks).zip(dst.chunks_exact_mut(2)) {
+        let a = [act(&px[0]), act(&px[1]), act(&px[2]), act(&px[3]), act(&px[4]), act(&px[5]), act(&px[6]), act(&px[7])];
+        d[0] = pack([a[0], a[1], a[2], a[3]]);
+        d[1] = pack([a[4], a[5], a[6], a[7]]);
+        acc |= a.iter().fold(0, |acc, a| acc | a);
+    }
+    let rest = chunks.remainder();
+    if rest.len() == 4 {
+        let a = [act(&rest[0]), act(&rest[1]), act(&rest[2]), act(&rest[3])];
+        dst[row.len() / 4 - 1] = pack(a);
+        acc |= a.iter().fold(0, |acc, a| acc | a);
+    }
+    acc != 0
+}
+
+/// `row.len()` is a multiple of 4.
+pub(crate) fn blit_line(row: &[Pixel], rowset_tab: &[&Frame; 256], dst: &mut [u8]) -> bool {
+    blit(row, dst, |v| {
+        let v = usize::from(v);
+        (rowset_tab[v >> 8][(v >> 4) & 15] >> ((v & 15) * 2)) & 3
+    })
+}
+
+/// Flattens a frame into an action per `gray on the glass << 4 | target`.
+pub(crate) fn build_act256(rowset: &Frame, act: &mut [u8; 256]) {
+    for (from, &w) in rowset.iter().enumerate() {
+        for to in 0..16 {
+            act[from << 4 | to] = ((w >> (to * 2)) & 3) as u8;
+        }
+    }
+}
+
+/// [`blit_line`] through a table from [`build_act256`] per `b1`.
+pub(crate) fn blit_line_tab(row: &[Pixel], tabs: &[&[u8; 256]; 256], dst: &mut [u8]) -> bool {
+    blit(row, dst, |v| u32::from(tabs[usize::from(v >> 8)][usize::from(v & 0xFF)]))
+}
+
+/// Puts the pixels that finish this frame back to idle, showing their target,
+/// and returns how many did.
+pub(crate) fn retire_row(row: &[Pixel], retire_tab: &[bool; 256]) -> u16 {
+    let mut freed = 0;
+    for px in row {
+        let v = get(px);
+        if retire_tab[usize::from(v >> 8)] {
+            let t = v & 15;
+            px.store(0xFF00 | t << 4 | t, Ordering::Relaxed);
+            freed += 1;
+        }
+    }
+    freed
+}
+
+/// The byte of a line that drives every pixel alike, when `rowset` does.
+pub(crate) fn rowset_uniform(rowset: &Frame) -> Option<u8> {
+    let w = rowset[0];
+    if !matches!(w, 0 | 0x5555_5555 | 0xAAAA_AAAA) || rowset.iter().any(|&r| r != w) {
+        return None;
+    }
+    Some(w as u8)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn a4(a: u8, b: u8, c: u8, d: u8) -> u8 {
+        a << 6 | b << 4 | c << 2 | d
+    }
+
+    fn px(confirmed: u16, target: u16, b1: u8) -> u16 {
+        u16::from(b1) << 8 | confirmed << 4 | target
+    }
+
+    static LUT_Q: [Frame; 4] = [
+        by_from([B, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, W]),
+        by_to([B, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, W]),
+        SETTLE,
+        SETTLE,
+    ];
+
+    static LUT_C: [Frame; 2] = [by_to([W; 16]), STOP];
+
+    fn slots(q: Option<usize>, c: Option<usize>) -> [Option<Waveform>; SLOTS] {
+        let mut wf = [None; SLOTS];
+        if let Some(i) = q {
+            wf[i] = Waveform::new(&LUT_Q);
+        }
+        if let Some(i) = c {
+            wf[i] = Waveform::new(&LUT_C);
+        }
+        wf
+    }
+
+    fn tables(wf: &[Option<Waveform>; SLOTS], frame: u8, skip: bool) -> ([&'static Frame; 256], [bool; 256]) {
+        let mut rowset = [&HOLD; 256];
+        let mut retire = [false; 256];
+        build_frame_tab(wf, frame, skip, &mut rowset, &mut retire);
+        (rowset, retire)
+    }
+
+    fn same(a: &Frame, b: &Frame) -> bool {
+        core::ptr::eq(a, b)
+    }
+
+    fn cells<const N: usize>(v: [u16; N]) -> [Pixel; N] {
+        v.map(AtomicU16::new)
+    }
+
+    fn values(row: &[Pixel]) -> Vec<u16> {
+        row.iter().map(get).collect()
+    }
+
+    #[test]
+    fn lut_helpers() {
+        assert_eq!(word([B, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, W]), 1 | 2 << 30);
+        for i in 0..16 {
+            assert_eq!(LUT_Q[2][i], SETTLE_WORD);
+            assert_eq!(LUT_C[1][i], 0);
+        }
+        assert_eq!((LUT_Q[0][0] >> 30) & 3, u32::from(B));
+        assert_eq!(LUT_Q[0][15] & 3, u32::from(W));
+        assert_eq!(LUT_Q[1][7] & 3, u32::from(B));
+        assert_eq!((LUT_Q[1][7] >> 30) & 3, u32::from(W));
+        assert_eq!((LUT_Q[1][7] >> 10) & 3, 0);
+    }
+
+    #[test]
+    fn waveform_new() {
+        let q = Waveform::new(&LUT_Q).unwrap();
+        assert_eq!((q.steps(), q.first_skippable), (4, 2));
+        let c = Waveform::new(&LUT_C).unwrap();
+        assert_eq!((c.steps(), c.first_skippable), (2, 2));
+        assert!(Waveform::new(&[]).is_none());
+        static LONG: [Frame; STEP_MAX + 1] = [STOP; STEP_MAX + 1];
+        assert!(Waveform::new(&LONG).is_none());
+        static MIXED: [Frame; 1] = [[SETTLE_WORD, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]];
+        assert!(Waveform::new(&MIXED).is_none());
+    }
+
+    #[test]
+    fn draw() {
+        let idle9 = px(9, 9, B1_IDLE);
+        let d = draw_px(idle9, 9);
+        assert!(d.px == idle9 && !d.conflict && !d.now_nonidle);
+
+        let d = draw_px(idle9, 4);
+        assert!(d.px == px(9, 4, B1_PENDING) && !d.conflict && d.now_nonidle);
+
+        let pend = px(9, 4, B1_PENDING);
+        let d = draw_px(pend, 7);
+        assert!(d.px == px(9, 7, B1_PENDING) && !d.conflict && !d.now_nonidle);
+        let d = draw_px(pend, 4);
+        assert!(d.px == pend && !d.conflict && !d.now_nonidle);
+
+        let act = px(9, 4, armed(0, 10));
+        assert!(is_active(act));
+        let d = draw_px(act, 4);
+        assert!(d.px == act && !d.conflict && !d.now_nonidle);
+        let d = draw_px(act, 12);
+        assert!(d.px == act && d.conflict && !d.now_nonidle);
+
+        assert!(!is_active(idle9));
+        assert!(!is_active(pend));
+    }
+
+    #[test]
+    fn frame_tab() {
+        let wf = slots(Some(0), Some(1));
+        let (rowset, retire) = tables(&wf, 10, false);
+        let idle = usize::from(B1_IDLE);
+        let pending = usize::from(B1_PENDING);
+        assert!(same(rowset[idle], &HOLD) && !retire[idle]);
+        assert!(same(rowset[pending], &HOLD) && !retire[pending]);
+
+        let a = usize::from(armed(0, 10));
+        assert!(same(rowset[a], &HOLD) && !retire[a]);
+
+        assert!(same(rowset[10], &LUT_Q[0]) && !retire[10]);
+        assert!(same(rowset[9], &LUT_Q[1]) && !retire[9]);
+        assert!(same(rowset[8], &HOLD) && !retire[8]);
+        assert!(same(rowset[7], &HOLD) && retire[7]);
+
+        let (rowset, retire) = tables(&wf, 10, true);
+        assert!(!retire[10]);
+        assert!(retire[9]);
+        assert!(retire[8]);
+        assert!(!retire[1 << 6 | 10]);
+        assert!(same(rowset[1 << 6 | 9], &LUT_C[1]));
+        assert!(retire[1 << 6 | 9]);
+
+        assert!(retire[2 << 6 | 10] && same(rowset[2 << 6 | 10], &HOLD));
+    }
+
+    #[test]
+    fn blit_packs_actions() {
+        let wf = slots(Some(0), None);
+        let (rowset, _) = tables(&wf, 0, false);
+        let (s0, s1) = (0, 63);
+        let row = cells([
+            px(0, 15, s0),
+            px(15, 0, s0),
+            px(15, 0, s1),
+            px(0, 15, s1),
+            px(5, 9, s0),
+            px(9, 4, B1_PENDING),
+            px(9, 9, B1_IDLE),
+            px(0, 15, armed(0, 0)),
+        ]);
+        let mut dst = [0xEE; 2];
+        assert!(blit_line(&row, &rowset, &mut dst));
+        assert_eq!(dst, [a4(B, W, B, W), 0]);
+
+        let idle = cells([px(9, 9, 0xFF), px(1, 1, 0xFF), px(15, 15, 0xFF), px(3, 3, 0xFF)]);
+        assert!(!blit_line(&idle, &rowset, &mut dst[..1]));
+        assert_eq!(dst[0], 0);
+    }
+
+    #[test]
+    fn blit_tab_matches_blit() {
+        let wf = slots(Some(0), Some(1));
+        let mut t = [0; 256];
+        build_act256(&LUT_Q[0], &mut t);
+        assert_eq!(t[15], B);
+        assert_eq!(t[15 << 4], W);
+        assert_eq!(t[5 << 4 | 9], 0);
+        build_act256(&LUT_Q[1], &mut t);
+        assert!(t[7 << 4] == B && t[7 << 4 | 15] == W);
+
+        static HOLD256: [u8; 256] = [0; 256];
+        let mut seed: u32 = 12345;
+        for frame in 0..12 {
+            let (rowset, _) = tables(&wf, frame, false);
+            let mut seen: Vec<&Frame> = Vec::new();
+            let mut pool: Vec<Box<[u8; 256]>> = Vec::new();
+            let mut index = [usize::MAX; 256];
+            for b1 in 0..256 {
+                if same(rowset[b1], &HOLD) {
+                    continue;
+                }
+                let j = match seen.iter().position(|f| same(f, rowset[b1])) {
+                    Some(j) => j,
+                    None => {
+                        assert!(seen.len() < 16);
+                        let mut act = Box::new([0; 256]);
+                        build_act256(rowset[b1], &mut act);
+                        seen.push(rowset[b1]);
+                        pool.push(act);
+                        seen.len() - 1
+                    }
+                };
+                index[b1] = j;
+            }
+            let tabs: [&[u8; 256]; 256] = core::array::from_fn(|b1| if index[b1] == usize::MAX { &HOLD256 } else { &*pool[index[b1]] });
+            let row: [Pixel; 64] = core::array::from_fn(|_| {
+                seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
+                AtomicU16::new((seed >> 8) as u16)
+            });
+            let (mut d1, mut d2) = ([0; 16], [0; 16]);
+            assert_eq!(blit_line(&row, &rowset, &mut d1), blit_line_tab(&row, &tabs, &mut d2));
+            assert_eq!(d1, d2);
+        }
+    }
+
+    #[test]
+    fn blit_tail_of_four() {
+        let wf = slots(Some(0), None);
+        let (rowset, _) = tables(&wf, 0, false);
+        let mut row = [px(9, 9, B1_IDLE); 12];
+        row[11] = px(0, 15, 0);
+        let row = cells(row);
+        let mut dst = [0xEE; 3];
+        assert!(blit_line(&row, &rowset, &mut dst));
+        assert_eq!(dst, [0, 0, a4(0, 0, 0, B)]);
+    }
+
+    #[test]
+    fn retire() {
+        let wf = slots(Some(0), None);
+        let (_, retire) = tables(&wf, 3, false);
+        let (ending, running) = (0, 2);
+        let row = cells([px(9, 9, B1_IDLE), px(15, 4, ending), px(15, 2, running), px(15, 7, ending)]);
+        assert_eq!(retire_row(&row, &retire), 2);
+        assert_eq!(values(&row), [px(9, 9, B1_IDLE), px(4, 4, B1_IDLE), px(15, 2, running), px(7, 7, B1_IDLE)]);
+    }
+
+    #[test]
+    fn lifecycle_across_wrap() {
+        let wf = slots(Some(0), None);
+        let mut state = [px(15, 15, B1_IDLE); 8];
+        let mut row_nonidle = 0;
+        for p in &mut state[..4] {
+            let d = draw_px(*p, 0);
+            assert!(!d.conflict);
+            *p = d.px;
+            row_nonidle += u16::from(d.now_nonidle);
+        }
+        assert_eq!(row_nonidle, 4);
+
+        let mut frame = 61u8;
+        let b1 = armed(0, frame);
+        assert_eq!(b1, 62);
+        for p in &mut state[..4] {
+            *p = (*p & 0xFF) | u16::from(b1) << 8;
+        }
+        let row = cells(state);
+
+        let mut dst = [0; 2];
+        let mut frames_driven = 0;
+        for _ in 0..10 {
+            if row_nonidle == 0 {
+                break;
+            }
+            frame = (frame + 1) & 63;
+            let (rowset, retire) = tables(&wf, frame, false);
+            let driven = blit_line(&row, &rowset, &mut dst);
+            match frame {
+                62 => assert!(driven && dst == [a4(W, W, W, W), 0]),
+                63 => assert!(driven && dst == [a4(B, B, B, B), 0]),
+                0 | 1 => assert!(!driven),
+                _ => {}
+            }
+            frames_driven += u32::from(driven);
+            row_nonidle -= retire_row(&row, &retire);
+        }
+        assert_eq!(frames_driven, 2);
+        assert_eq!(row_nonidle, 0);
+        let state = values(&row);
+        assert!(state[..4].iter().all(|&p| p == px(0, 0, B1_IDLE)));
+        assert!(state[4..].iter().all(|&p| p == px(15, 15, B1_IDLE)));
+
+        let d = draw_px(state[0], 0);
+        assert!(d.px == state[0] && !d.now_nonidle);
+    }
+
+    #[test]
+    fn pixels_progress_independently() {
+        let wf = slots(Some(0), None);
+        let state = cells([px(15, 0, 1), px(15, 15, B1_IDLE), px(15, 15, B1_IDLE), px(15, 15, B1_IDLE)]);
+        let mut dst = [0];
+
+        let (rowset, retire) = tables(&wf, 1, false);
+        assert!(blit_line(&state, &rowset, &mut dst));
+        assert_eq!(dst[0], a4(W, 0, 0, 0));
+        state[2].store(px(15, 0, armed(0, 1)), Ordering::Relaxed);
+        assert_eq!(retire_row(&state, &retire), 0);
+
+        let (rowset, retire) = tables(&wf, 2, false);
+        assert!(blit_line(&state, &rowset, &mut dst));
+        assert_eq!(dst[0], a4(B, 0, W, 0));
+        retire_row(&state, &retire);
+
+        let (rowset, retire) = tables(&wf, 3, false);
+        assert!(!blit_line(&state, &rowset, &mut dst) || dst[0] == a4(0, 0, B, 0));
+        retire_row(&state, &retire);
+        let (_, retire) = tables(&wf, 4, false);
+        retire_row(&state, &retire);
+        assert_eq!(get(&state[0]), px(0, 0, B1_IDLE));
+        assert!(is_active(get(&state[2])));
+        let (_, retire) = tables(&wf, 5, false);
+        retire_row(&state, &retire);
+        assert_eq!(get(&state[2]), px(0, 0, B1_IDLE));
+    }
+
+    #[test]
+    fn settle_skip() {
+        let wf = slots(Some(0), Some(1));
+        let state = cells([px(15, 0, 1), px(15, 15, 1 << 6 | 1), px(15, 15, B1_IDLE), px(15, 15, B1_IDLE)]);
+
+        let (_, retire) = tables(&wf, 1, true);
+        assert_eq!(retire_row(&state, &retire), 0);
+        let (_, retire) = tables(&wf, 2, true);
+        assert_eq!(retire_row(&state, &retire), 2);
+        assert_eq!(get(&state[0]), px(0, 0, B1_IDLE));
+        assert_eq!(get(&state[1]), px(15, 15, B1_IDLE));
+
+        let s2 = cells([px(15, 0, 1)]);
+        let (_, retire) = tables(&wf, 2, false);
+        assert_eq!(retire_row(&s2, &retire), 0);
+    }
+
+    #[test]
+    fn uniform() {
+        assert_eq!(rowset_uniform(&LUT_C[0]), Some(0xAA));
+        assert_eq!(rowset_uniform(&LUT_C[1]), Some(0));
+        assert_eq!(rowset_uniform(&HOLD), Some(0));
+        assert_eq!(rowset_uniform(&LUT_Q[0]), None);
+        assert_eq!(rowset_uniform(&LUT_Q[1]), None);
+    }
+}

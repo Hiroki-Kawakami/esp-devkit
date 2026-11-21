@@ -3,6 +3,10 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
+#[cfg(CONFIG_BSP_RS_DRIVER_EPD_LL)]
+pub(crate) mod epd_ll;
+#[cfg(any(test, CONFIG_BSP_RS_DRIVER_EPD_LL))]
+pub(crate) mod epd_waveform;
 #[cfg(CONFIG_BSP_RS_DRIVER_ESP_HOSTED)]
 pub(crate) mod esp_hosted;
 #[cfg(CONFIG_BSP_RS_DRIVER_GPIO_BUTTON)]

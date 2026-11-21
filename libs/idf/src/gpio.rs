@@ -31,13 +31,24 @@ pub enum Interrupt {
     HighLevel,
 }
 
-pub fn set_direction(pin: i32, mode: Mode) -> Result<()> {
-    let mode = match mode {
+fn raw_mode(mode: Mode) -> sys::gpio_mode_t {
+    match mode {
         Mode::Disable => sys::gpio_mode_t_GPIO_MODE_DISABLE,
         Mode::Input => sys::gpio_mode_t_GPIO_MODE_INPUT,
         Mode::Output => sys::gpio_mode_t_GPIO_MODE_OUTPUT,
-    };
-    Error::check(unsafe { sys::gpio_set_direction(pin as _, mode) })
+    }
+}
+
+pub fn set_direction(pin: i32, mode: Mode) -> Result<()> {
+    Error::check(unsafe { sys::gpio_set_direction(pin as _, raw_mode(mode)) })
+}
+
+/// Routes each pin to plain GPIO in `mode`, with pulls and interrupts off.
+pub fn configure(pins: &[i32], mode: Mode) -> Result<()> {
+    let mut cfg: sys::gpio_config_t = unsafe { core::mem::zeroed() };
+    cfg.pin_bit_mask = pins.iter().fold(0u64, |mask, &pin| mask | 1 << pin);
+    cfg.mode = raw_mode(mode);
+    Error::check(unsafe { sys::gpio_config(&cfg) })
 }
 
 pub fn set_level(pin: i32, high: bool) -> Result<()> {

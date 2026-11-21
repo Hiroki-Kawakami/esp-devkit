@@ -5,6 +5,7 @@
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
+use alloc::vec;
 use core::ffi::CStr;
 use core::sync::atomic::{AtomicU32, Ordering};
 use core::time::Duration;
@@ -16,7 +17,7 @@ use idf::{Error, Result, thread};
 use super::Host;
 use super::protocol::{Event, PixelFormat};
 use crate::Absent;
-use crate::display::{Driver, GramDriver, Image, ImageFormat, Rect, Rotation, Rotations, Size, Ticket};
+use crate::display::{Driver, EpdDriver, EpdMode, GramDriver, Image, ImageFormat, Rect, Rotation, Rotations, Size, Ticket, Waveform};
 
 const TAG: &CStr = c"sim_gram";
 const QUEUE_DEPTH: usize = 10;
@@ -52,7 +53,8 @@ pub(crate) struct SimGram {
     ppi: u16,
     format: ImageFormat,
     alignment: u16,
-    quarter_turns: bool,
+    rotations: Rotations,
+    epd: bool,
     rotation: Rotation,
     issued: Mutex<u32>,
     queue: Sender<Command>,
@@ -95,15 +97,17 @@ pub(crate) struct GramConfig {
     pub ppi: u16,
     pub format: ImageFormat,
     pub alignment: u16,
-    /// Whether it turns by quarters as well as halves.
-    pub quarter_turns: bool,
+    pub rotations: Rotations,
+    /// 0 takes every write at once.
     pub bytes_per_second: u32,
+    /// Has `Epd`, whose drives the host does not show.
+    pub epd: bool,
 }
 
 impl SimGram {
     pub(crate) fn new(host: &'static Host, config: &GramConfig, rotation: Rotation) -> Result<Self> {
-        let GramConfig { size, ppi, format, alignment, quarter_turns, bytes_per_second } = *config;
-        if rotation.swaps_axes() && !quarter_turns {
+        let GramConfig { size, ppi, format, alignment, rotations, bytes_per_second, epd } = *config;
+        if !rotations.has(rotation) {
             return Err(Error::NOT_SUPPORTED);
         }
         let wire = match format {
@@ -124,14 +128,14 @@ impl SimGram {
         host.send(&Event::GramOpen { width: size.width, height: size.height, format: wire, rotation: quarters(rotation), bytes_per_second });
         let (queue, commands) = channel(QUEUE_DEPTH);
         thread::Builder::new().name("sim_gram").stack_size(4096).spawn(move || send(host, commands))?;
-        Ok(Self { host, size, ppi, format, alignment, quarter_turns, rotation, issued: Mutex::new(0), queue, progress })
+        Ok(Self { host, size, ppi, format, alignment, rotations, epd, rotation, issued: Mutex::new(0), queue, progress })
     }
 }
 
 impl Driver for SimGram {
     type FrameBuffers = Absent;
     type Gram = Self;
-    type Epd = Absent;
+    type Epd = Self;
 
     fn size(&self) -> Size {
         if self.rotation.swaps_axes() { Size::new(self.size.height, self.size.width) } else { self.size }
@@ -150,7 +154,7 @@ impl Driver for SimGram {
     }
 
     fn rotations(&self) -> Rotations {
-        if self.quarter_turns { Rotations::all() } else { Rotations::R0.union(Rotations::R180) }
+        self.rotations
     }
 
     fn alignment(&self) -> u16 {
@@ -159,6 +163,10 @@ impl Driver for SimGram {
 
     fn gram(&self) -> Option<&Self> {
         Some(self)
+    }
+
+    fn epd(&self) -> Option<&Self> {
+        self.epd.then_some(self)
     }
 
     fn draw(&self, area: Rect, image: &Image) -> Result<()> {
@@ -177,7 +185,7 @@ impl Driver for SimGram {
     }
 
     fn reconfigure(&mut self, format: ImageFormat, rotation: Rotation) -> Result<()> {
-        if format != self.format || (rotation.swaps_axes() && !self.quarter_turns) {
+        if format != self.format || !self.rotations.has(rotation) {
             return Err(Error::NOT_SUPPORTED);
         }
         self.queue.send(Command::Rotate(rotation));
@@ -204,5 +212,29 @@ impl GramDriver for SimGram {
             progress.waiters.fetch_sub(1, Ordering::SeqCst);
         }
         Ok(())
+    }
+}
+
+impl EpdDriver for SimGram {
+    fn set_mode(&self, _mode: EpdMode) -> Result<()> {
+        Ok(())
+    }
+
+    fn refresh(&self, _area: Rect, _waveform: Waveform, _all: bool) -> Result<()> {
+        Ok(())
+    }
+
+    fn clear(&self) -> Result<()> {
+        let size = Driver::size(self);
+        let white = vec![0xFF; self.format.row_bytes(usize::from(size.width))];
+        let mut last = None;
+        for y in 0..size.height as i16 {
+            last = Some(unsafe { self.write(Rect::new(0, y, size.width as i16, 1), &white) }?);
+        }
+        last.map_or(Ok(()), |ticket| self.wait(ticket))
+    }
+
+    fn wait_idle(&self) -> Result<()> {
+        self.wait(Ticket(*self.issued.lock()))
     }
 }

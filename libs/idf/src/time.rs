@@ -75,6 +75,12 @@ pub fn set_utc_offset(minutes: i32) -> Result<()> {
     Ok(())
 }
 
+/// Spins for `us` microseconds without yielding; callable from interrupts.
+#[cfg(target_os = "none")]
+pub fn delay_us(us: u32) {
+    unsafe { sys::esp_rom_delay_us(us) }
+}
+
 /// A NUL-terminated POSIX `TZ` for a fixed offset, whose sign is the opposite
 /// of the offset's.
 #[cfg_attr(not(target_os = "none"), allow(dead_code))]

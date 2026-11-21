@@ -31,6 +31,11 @@ choice BSP_RS_BOARD
         select BSP_RS_DEVICE_FT6336U if !DEVKIT_SIMULATOR
         select BSP_RS_DEVICE_ILI9342C if !DEVKIT_SIMULATOR
 
+    config BSP_RS_BOARD_PAPER_S3
+        bool "M5Stack PaperS3 (ESP32-S3)"
+        depends on DEVKIT_SIMULATOR || IDF_TARGET_ESP32S3
+        select BSP_RS_DEVICE_ED047TC1 if !DEVKIT_SIMULATOR
+
     config BSP_RS_BOARD_STOPWATCH
         bool "M5Stack StopWatch (ESP32-S3)"
         depends on DEVKIT_SIMULATOR || IDF_TARGET_ESP32S3
@@ -92,6 +97,10 @@ config BSP_RS_DEVICE_CST820
 config BSP_RS_DEVICE_CST9217
     bool
 
+config BSP_RS_DEVICE_ED047TC1
+    bool
+    select BSP_RS_DRIVER_EPD_LL
+
 config BSP_RS_DEVICE_ES8311
     bool
     select BSP_RS_DRIVER_I2S_OUT
@@ -147,6 +156,9 @@ config BSP_RS_DEVICE_ST712X_TOUCH
 config BSP_RS_DRIVER_ESP_HOSTED
     bool
     select BSP_RS_DRIVER_SDMMC
+
+config BSP_RS_DRIVER_EPD_LL
+    bool
 
 config BSP_RS_DRIVER_GPIO_BUTTON
     bool

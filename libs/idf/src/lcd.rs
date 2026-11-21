@@ -189,6 +189,175 @@ pub mod spi {
     }
 }
 
+#[cfg(CONFIG_SOC_LCD_I80_SUPPORTED)]
+pub mod i80 {
+    use alloc::sync::Arc;
+    use core::ffi::c_void;
+    use core::mem;
+    use core::ptr::{self, NonNull};
+
+    use super::PanelIo;
+    use crate::heap::Caps;
+    use crate::{Error, Result, sys};
+
+    /// Runs in interrupt context when a color transfer has gone out; returns
+    /// whether it woke a higher-priority task.
+    pub type ColorDone = unsafe extern "C" fn(
+        io: sys::esp_lcd_panel_io_handle_t,
+        data: *mut sys::esp_lcd_panel_io_event_data_t,
+        ctx: *mut c_void,
+    ) -> bool;
+
+    struct BusHandle(sys::esp_lcd_i80_bus_handle_t);
+
+    unsafe impl Send for BusHandle {}
+    unsafe impl Sync for BusHandle {}
+
+    impl Drop for BusHandle {
+        fn drop(&mut self) {
+            unsafe { sys::esp_lcd_del_i80_bus(self.0) };
+        }
+    }
+
+    pub struct BusConfig<'a> {
+        pub dc: i32,
+        pub wr: i32,
+        /// 8 or 16 lines, D0 first.
+        pub data: &'a [i32],
+        pub max_transfer_bytes: usize,
+        pub dma_burst_size: usize,
+    }
+
+    #[derive(Clone, Copy, Default)]
+    pub struct DcLevels {
+        pub idle: bool,
+        pub cmd: bool,
+        pub dummy: bool,
+        pub data: bool,
+    }
+
+    #[derive(Clone, Copy, Default)]
+    pub struct IoFlags {
+        pub cs_active_high: bool,
+        pub reverse_color_bits: bool,
+        pub swap_color_bytes: bool,
+        pub pclk_active_neg: bool,
+        pub pclk_idle_low: bool,
+    }
+
+    pub struct IoConfig {
+        /// -1 when the device has the bus to itself.
+        pub cs: i32,
+        pub pclk_hz: u32,
+        pub queue_depth: usize,
+        pub cmd_bits: i32,
+        pub param_bits: i32,
+        pub dc_levels: DcLevels,
+        pub flags: IoFlags,
+    }
+
+    pub struct Bus(Arc<BusHandle>);
+
+    impl Bus {
+        /// The bus interrupt lands on the core that calls this.
+        pub fn new(config: &BusConfig) -> Result<Self> {
+            let mut cfg: sys::esp_lcd_i80_bus_config_t = unsafe { mem::zeroed() };
+            if !matches!(config.data.len(), 8 | 16) {
+                return Err(Error::INVALID_ARG);
+            }
+            cfg.dc_gpio_num = config.dc;
+            cfg.wr_gpio_num = config.wr;
+            cfg.clk_src = sys::soc_periph_lcd_clk_src_t_LCD_CLK_SRC_DEFAULT;
+            for (slot, &pin) in cfg.data_gpio_nums.iter_mut().zip(config.data) {
+                *slot = pin;
+            }
+            cfg.bus_width = config.data.len();
+            cfg.max_transfer_bytes = config.max_transfer_bytes;
+            cfg.dma_burst_size = config.dma_burst_size;
+            let mut handle = ptr::null_mut();
+            Error::check(unsafe { sys::esp_lcd_new_i80_bus(&cfg, &mut handle) })?;
+            Ok(Self(Arc::new(BusHandle(handle))))
+        }
+
+        /// `on_color_done` gets `ctx`, which must stay valid as long as the IO.
+        pub unsafe fn new_io(&self, config: &IoConfig, on_color_done: Option<ColorDone>, ctx: *mut c_void) -> Result<Io> {
+            let mut cfg: sys::esp_lcd_panel_io_i80_config_t = unsafe { mem::zeroed() };
+            cfg.cs_gpio_num = config.cs;
+            cfg.pclk_hz = config.pclk_hz;
+            cfg.trans_queue_depth = config.queue_depth;
+            cfg.on_color_trans_done = on_color_done;
+            cfg.user_ctx = ctx;
+            cfg.lcd_cmd_bits = config.cmd_bits;
+            cfg.lcd_param_bits = config.param_bits;
+            let levels = config.dc_levels;
+            cfg.dc_levels.set_dc_idle_level(levels.idle.into());
+            cfg.dc_levels.set_dc_cmd_level(levels.cmd.into());
+            cfg.dc_levels.set_dc_dummy_level(levels.dummy.into());
+            cfg.dc_levels.set_dc_data_level(levels.data.into());
+            let flags = config.flags;
+            cfg.flags.set_cs_active_high(flags.cs_active_high.into());
+            cfg.flags.set_reverse_color_bits(flags.reverse_color_bits.into());
+            cfg.flags.set_swap_color_bytes(flags.swap_color_bytes.into());
+            cfg.flags.set_pclk_active_neg(flags.pclk_active_neg.into());
+            cfg.flags.set_pclk_idle_low(flags.pclk_idle_low.into());
+            let mut handle = ptr::null_mut();
+            Error::check(unsafe { sys::esp_lcd_new_panel_io_i80(self.0.0, &cfg, &mut handle) })?;
+            Ok(Io(PanelIo { handle, _parent: Some(self.0.clone()) }))
+        }
+    }
+
+    pub struct Io(PanelIo);
+
+    impl Io {
+        pub fn tx_param(&self, cmd: i32, param: &[u8]) -> Result<()> {
+            self.0.tx_param(cmd, param)
+        }
+
+        /// Queues `data` after `cmd`, -1 for none. `data` must stay unchanged
+        /// until the color-done callback for it has run.
+        pub unsafe fn tx_color(&self, cmd: i32, data: &[u8]) -> Result<()> {
+            Error::check(unsafe { sys::esp_lcd_panel_io_tx_color(self.0.handle, cmd, data.as_ptr().cast(), data.len()) })
+        }
+
+        /// A buffer this IO's DMA can send, aligned as it needs.
+        pub fn alloc_buffer(&self, len: usize, caps: Caps) -> Result<DmaBuffer> {
+            let ptr = unsafe { sys::esp_lcd_i80_alloc_draw_buffer(self.0.handle, len, caps.bits()) };
+            let ptr = NonNull::new(ptr.cast::<u8>()).ok_or(Error::NO_MEM)?;
+            unsafe { ptr.as_ptr().write_bytes(0, len) };
+            Ok(DmaBuffer { ptr, len })
+        }
+    }
+
+    /// Zeroed when allocated.
+    pub struct DmaBuffer {
+        ptr: NonNull<u8>,
+        len: usize,
+    }
+
+    unsafe impl Send for DmaBuffer {}
+    unsafe impl Sync for DmaBuffer {}
+
+    impl DmaBuffer {
+        pub fn as_ptr(&self) -> *mut u8 {
+            self.ptr.as_ptr()
+        }
+
+        pub fn len(&self) -> usize {
+            self.len
+        }
+
+        pub fn is_empty(&self) -> bool {
+            self.len == 0
+        }
+    }
+
+    impl Drop for DmaBuffer {
+        fn drop(&mut self) {
+            unsafe { sys::heap_caps_free(self.ptr.as_ptr().cast()) };
+        }
+    }
+}
+
 #[cfg(CONFIG_SOC_MIPI_DSI_SUPPORTED)]
 pub mod dsi {
     use alloc::boxed::Box;

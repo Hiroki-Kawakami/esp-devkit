@@ -125,7 +125,8 @@ Only `GramWrite` carries more: its pixels follow the record on the socket.
 The host reads the presented frame straight from the region each refresh, so a
 frame drawn while shown tears as it would on the panel. A panel with its own
 memory keeps it in the host instead, turning each write in as the panel would.
-The firmware reads a write's pixels when it sends them, not when it queues
+An EPD panel shows its memory as written; the drives of the glass are not
+shown. The firmware reads a write's pixels when it sends them, not when it queues
 them, so pixels changed before `Gram::wait` show up changed, as with DMA;
 `GramDone` comes once the link's bytes per second would have carried the
 write. Audio works the same

@@ -32,6 +32,11 @@ let board = bsp_rs::init(&bsp_rs::Config::default())?;
   `refresh(area, waveform, all)` drives an area once from the panel's memory,
   every pixel of it with `all` to clear ghosting; `clear()` drives the whole
   glass to white; `wait_idle()` blocks until everything has reached the glass.
+- A glass driven without a controller of its own (the PaperS3's ED047TC1,
+  through `driver/epd_ll`) takes a `Gram::write` before returning, its ticket
+  already done; the write waits while pixels of the area are still being
+  driven to another gray. Every pixel replays its own waveform, so areas
+  refresh independently. `init` takes the glass as white without driving it.
 - `FrameBuffers::frame_buffer(i)` returns a `FrameBuffer`: a raw, `Copy`able view of a
   host framebuffer, sendable to other tasks. Writing through `as_mut_slice` /
   `row_mut` is `unsafe`: tasks drawing to overlapping areas at the same time

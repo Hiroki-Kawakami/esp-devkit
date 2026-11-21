@@ -8,12 +8,15 @@ idf_component_register(
 if(ESP_PLATFORM)
     set(log_headers "esp_log.h" "esp_log_config.h" "esp_log_level.h" "esp_log_timestamp.h"
                     "esp_log_write.h")
-    set(target_headers "esp_cache.h" "esp_private/esp_cache_private.h" "spinlock.h" "esp_intr_alloc.h")
+    set(target_headers "esp_cache.h" "esp_private/esp_cache_private.h" "spinlock.h" "esp_intr_alloc.h" "esp_rom_sys.h")
     set(driver_headers "driver/i2c_master.h" "driver/gpio.h" "driver/ledc.h"
                        "esp_ldo_regulator.h" "esp_lcd_types.h" "esp_lcd_panel_io.h"
                        "esp_lcd_panel_ops.h" "esp_lcd_panel_commands.h" "driver/spi_common.h" "driver/spi_master.h" "esp_lcd_io_spi.h")
     if(CONFIG_SOC_MIPI_DSI_SUPPORTED)
         list(APPEND driver_headers "esp_lcd_mipi_dsi.h")
+    endif()
+    if(CONFIG_SOC_LCD_I80_SUPPORTED)
+        list(APPEND driver_headers "esp_lcd_io_i80.h")
     endif()
     if(CONFIG_SOC_SDMMC_HOST_SUPPORTED)
         list(APPEND driver_headers "driver/sdmmc_host.h" "sd_protocol_types.h" "sd_pwr_ctrl_by_on_chip_ldo.h"

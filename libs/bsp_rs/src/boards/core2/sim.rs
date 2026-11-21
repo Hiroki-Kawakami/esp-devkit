@@ -13,7 +13,7 @@ use idf::sync::OnceLock;
 use super::{BUTTON_ZONES, PANEL_PPI, PANEL_SIZE, PIXEL_FORMAT, TAG, resolve_rotation};
 use crate::audio;
 use crate::button;
-use crate::display;
+use crate::display::{self, Rotations};
 use crate::power;
 use crate::rtc;
 use crate::sim::audio::SimAudio;
@@ -33,8 +33,9 @@ const PANEL: GramConfig = GramConfig {
     ppi: PANEL_PPI,
     format: PIXEL_FORMAT,
     alignment: 1,
-    quarter_turns: true,
+    rotations: Rotations::all(),
     bytes_per_second: 40_000_000 / 8,
+    epd: false,
 };
 
 static DISPLAY: OnceLock<display::Display> = OnceLock::new();

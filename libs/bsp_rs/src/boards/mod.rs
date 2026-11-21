@@ -9,6 +9,8 @@ pub(crate) mod atom_s3_lite;
 pub(crate) mod core2;
 #[cfg(CONFIG_BSP_RS_BOARD_CORE_S3)]
 pub(crate) mod core_s3;
+#[cfg(CONFIG_BSP_RS_BOARD_PAPER_S3)]
+pub(crate) mod paper_s3;
 #[cfg(CONFIG_BSP_RS_BOARD_STOPWATCH)]
 pub(crate) mod stopwatch;
 #[cfg(CONFIG_BSP_RS_BOARD_TAB5)]
