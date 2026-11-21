@@ -15,7 +15,8 @@ use idf::{Error, Result, thread};
 
 use super::Host;
 use super::protocol::{Event, PixelFormat};
-use crate::display::{Driver, Image, ImageFormat, Rect, Rotation, Rotations, Size, Ticket};
+use crate::Absent;
+use crate::display::{Driver, GramDriver, Image, ImageFormat, Rect, Rotation, Rotations, Size, Ticket};
 
 const TAG: &CStr = c"sim_gram";
 const QUEUE_DEPTH: usize = 10;
@@ -106,6 +107,7 @@ impl SimGram {
             return Err(Error::NOT_SUPPORTED);
         }
         let wire = match format {
+            ImageFormat::L8 => PixelFormat::L8,
             ImageFormat::Rgb565 => PixelFormat::Rgb565,
             ImageFormat::Rgb565Be => PixelFormat::Rgb565Be,
             ImageFormat::Bgr888 => PixelFormat::Bgr888,
@@ -127,6 +129,10 @@ impl SimGram {
 }
 
 impl Driver for SimGram {
+    type FrameBuffers = Absent;
+    type Gram = Self;
+    type Epd = Absent;
+
     fn size(&self) -> Size {
         if self.rotation.swaps_axes() { Size::new(self.size.height, self.size.width) } else { self.size }
     }
@@ -151,23 +157,8 @@ impl Driver for SimGram {
         self.alignment
     }
 
-    unsafe fn write(&self, area: Rect, pixels: &[u8]) -> Result<Ticket> {
-        let mut issued = self.issued.lock();
-        *issued = issued.wrapping_add(1);
-        self.queue.send(Command::Write { ticket: *issued, area, pixels: pixels.as_ptr(), len: pixels.len() });
-        Ok(Ticket(*issued))
-    }
-
-    fn wait(&self, ticket: Ticket) -> Result<()> {
-        let progress = &*self.progress;
-        while !progress.reached(ticket.0) {
-            progress.waiters.fetch_add(1, Ordering::SeqCst);
-            if !progress.reached(ticket.0) && !progress.wake.take_timeout(STALL_TIMEOUT) {
-                error!(TAG, "ticket {} not answered, at {}", ticket.0, progress.done.load(Ordering::SeqCst));
-            }
-            progress.waiters.fetch_sub(1, Ordering::SeqCst);
-        }
-        Ok(())
+    fn gram(&self) -> Option<&Self> {
+        Some(self)
     }
 
     fn draw(&self, area: Rect, image: &Image) -> Result<()> {
@@ -185,12 +176,33 @@ impl Driver for SimGram {
         Ok(())
     }
 
-    fn reconfigure(&mut self, format: ImageFormat, fb_num: u8, rotation: Rotation) -> Result<()> {
-        if format != self.format || fb_num != 0 || (rotation.swaps_axes() && !self.quarter_turns) {
+    fn reconfigure(&mut self, format: ImageFormat, rotation: Rotation) -> Result<()> {
+        if format != self.format || (rotation.swaps_axes() && !self.quarter_turns) {
             return Err(Error::NOT_SUPPORTED);
         }
         self.queue.send(Command::Rotate(rotation));
         self.rotation = rotation;
+        Ok(())
+    }
+}
+
+impl GramDriver for SimGram {
+    unsafe fn write(&self, area: Rect, pixels: &[u8]) -> Result<Ticket> {
+        let mut issued = self.issued.lock();
+        *issued = issued.wrapping_add(1);
+        self.queue.send(Command::Write { ticket: *issued, area, pixels: pixels.as_ptr(), len: pixels.len() });
+        Ok(Ticket(*issued))
+    }
+
+    fn wait(&self, ticket: Ticket) -> Result<()> {
+        let progress = &*self.progress;
+        while !progress.reached(ticket.0) {
+            progress.waiters.fetch_add(1, Ordering::SeqCst);
+            if !progress.reached(ticket.0) && !progress.wake.take_timeout(STALL_TIMEOUT) {
+                error!(TAG, "ticket {} not answered, at {}", ticket.0, progress.done.load(Ordering::SeqCst));
+            }
+            progress.waiters.fetch_sub(1, Ordering::SeqCst);
+        }
         Ok(())
     }
 }

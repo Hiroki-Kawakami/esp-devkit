@@ -11,7 +11,7 @@ use core::ffi::CStr;
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use core::time::Duration;
 
-use bsp_rs::display::{self, Display, FrameBuffer, ImageFormat, Rotation};
+use bsp_rs::display::{self, Display, FrameBuffer, FrameBuffers, ImageFormat, Rotation};
 use devkit_gfx::{Bgr888, ClipStore, Damage, DisplayList, GlyphCache, Pixel, Prepared, Rect, Rgb565, Size, Surface, draw};
 use idf::heap::Caps;
 use idf::log::{error, warn};
@@ -149,6 +149,7 @@ impl Lane {
 /// into internal RAM strips and copied, rotated as needed, by the PPA.
 pub struct FbPresenter {
     display: &'static Display,
+    frames: FrameBuffers<'static>,
     shared: Arc<Shared>,
     damage: [Damage<MAX_REGIONS>; MAX_FRAME_BUFFERS],
     mode: PresentMode,
@@ -184,7 +185,8 @@ fn holds_block(format: ImageFormat, buffer_bytes: usize) -> bool {
 
 impl FbPresenter {
     /// Refused when a strip buffer cannot hold a 16x16 block.
-    pub fn new(display: &'static Display, config: Config) -> Result<Self> {
+    pub fn new(frames: FrameBuffers<'static>, config: Config) -> Result<Self> {
+        let display = frames.display();
         if !(1..=MAX_LANES).contains(&config.lanes) {
             return Err(Error::INVALID_ARG);
         }
@@ -234,6 +236,7 @@ impl FbPresenter {
         }
         let mut presenter = Self {
             display,
+            frames,
             shared,
             damage: [Damage::new(Rect::default()); MAX_FRAME_BUFFERS],
             mode: config.mode,
@@ -243,7 +246,7 @@ impl FbPresenter {
             strips,
             buffer_bytes,
             buffers: Buffers {
-                latest: Arc::new(AtomicUsize::new(display.scanning().unwrap_or(0))),
+                latest: Arc::new(AtomicUsize::new(frames.scanning().unwrap_or(0))),
                 back: Arc::new(AtomicUsize::new(NO_BACK)),
                 count: 1,
             },
@@ -266,7 +269,7 @@ impl FbPresenter {
         if self.mode == PresentMode::InPlace {
             let latest = self.latest() % self.frame_buffers();
             self.buffers.latest.store(latest, Ordering::Release);
-            self.display.present(latest)?;
+            self.frames.present(latest)?;
         }
         Ok(())
     }
@@ -280,7 +283,7 @@ impl FbPresenter {
     }
 
     fn frame_buffers(&self) -> usize {
-        self.frame_buffers.min(self.display.frame_buffer_count()).max(1)
+        self.frame_buffers.min(self.frames.count()).max(1)
     }
 
     pub fn configure(&mut self, mode: PresentMode, frame_buffers: usize, rotation: Rotation, lanes: usize) -> Result<()> {
@@ -334,8 +337,8 @@ impl FbPresenter {
     }
 
     fn wait_flip(&self) -> Result<()> {
-        while self.display.scanning().is_some_and(|i| i != self.latest()) {
-            self.display.wait_frame()?;
+        while self.frames.scanning().is_some_and(|i| i != self.latest()) {
+            self.frames.wait_frame()?;
         }
         Ok(())
     }
@@ -350,13 +353,13 @@ impl FbPresenter {
         let target = if self.in_place() || count < 2 {
             self.latest()
         } else if self.hold {
-            self.buffers().claim_back(self.display)
+            self.buffers().claim_back(self.frames)
         } else if count == 2 {
             self.wait_flip()?;
             (self.latest() + 1) % count
         } else {
             let latest = self.latest();
-            let scanning = self.display.scanning().unwrap_or(latest);
+            let scanning = self.frames.scanning().unwrap_or(latest);
             (0..count).find(|&i| i != scanning && i != latest).unwrap_or((latest + 1) % count)
         };
         self.target = Some(target);
@@ -373,7 +376,7 @@ impl FbPresenter {
         if self.damage[target].is_empty() {
             return Ok(stats);
         }
-        let fb = self.display.frame_buffer(target).ok_or(Error::INVALID_STATE)?;
+        let fb = self.frames.frame_buffer(target).ok_or(Error::INVALID_STATE)?;
         let shared = &*self.shared;
         let t0 = Instant::now();
         let prepared = unsafe { &mut *shared.prepared.get() };
@@ -418,7 +421,7 @@ impl FbPresenter {
 
         if !self.in_place() && !self.hold && self.frame_buffers() >= 2 {
             self.wait_flip()?;
-            self.display.present(target)?;
+            self.frames.present(target)?;
             self.buffers.latest.store(target, Ordering::Release);
         }
         let t3 = Instant::now();
@@ -480,7 +483,7 @@ impl Presenter for FbPresenter {
 
     fn changes_display(&self, config: &display::Config) -> bool {
         self.format_after(config) != self.display.pixel_format()
-            || (config.fb_num != 0 && usize::from(config.fb_num) != self.display.frame_buffer_count())
+            || (config.fb_num != 0 && usize::from(config.fb_num) != self.frames.count())
     }
 
     fn fits_display(&self, config: &display::Config, strips: &Strips, lanes: usize) -> bool {
@@ -492,8 +495,11 @@ impl Presenter for FbPresenter {
             return Err(strips);
         };
         (self.hole, self.hold, self.over) = (None, false, None);
-        let result = unsafe { self.display.reconfigure(config) };
-        self.buffers.latest.store(self.display.scanning().unwrap_or(0), Ordering::Release);
+        let mut result = unsafe { self.display.reconfigure(config.pixel_format, config.rotation) };
+        if result.is_ok() && config.fb_num != 0 && usize::from(config.fb_num) != self.frames.count() {
+            result = unsafe { self.frames.set_count(config.fb_num) };
+        }
+        self.buffers.latest.store(self.frames.scanning().unwrap_or(0), Ordering::Release);
         self.buffers.back.store(NO_BACK, Ordering::Release);
         if let Err(err) = self.reset() {
             error!(TAG, "reset: {err}");
@@ -532,7 +538,7 @@ impl Presenter for FbPresenter {
     }
 
     fn shown(&self) -> Option<FrameBuffer> {
-        self.display.frame_buffer(self.latest() % self.frame_buffers())
+        self.frames.frame_buffer(self.latest() % self.frame_buffers())
     }
 
     fn blitter(&self) -> Option<NewBlitter> {

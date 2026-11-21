@@ -331,14 +331,15 @@ fn render_overlay(
 
 /// The presenter for what `display` is.
 fn presenter(display: &'static Display, config: Config) -> idf::Result<Box<dyn Presenter>> {
-    if display.frame_buffer_count() == 0 {
-        return Ok(Box::new(GramPresenter::new(display, config)?));
-    }
+    let Some(frame_buffers) = display.frame_buffers() else {
+        let gram = display.gram().ok_or(idf::Error::NOT_SUPPORTED)?;
+        return Ok(Box::new(GramPresenter::new(gram, config)?));
+    };
     #[cfg(any(not(target_os = "none"), CONFIG_SOC_PPA_SUPPORTED))]
-    return Ok(Box::new(crate::presenter::FbPresenter::new(display, config)?));
+    return Ok(Box::new(crate::presenter::FbPresenter::new(frame_buffers, config)?));
     #[cfg(not(any(not(target_os = "none"), CONFIG_SOC_PPA_SUPPORTED)))]
     {
-        let _ = config;
+        let _ = (config, frame_buffers);
         error!(TAG, "no presenter for framebuffers without a 2D engine");
         Err(idf::Error::NOT_SUPPORTED)
     }

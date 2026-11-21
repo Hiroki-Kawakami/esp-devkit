@@ -126,7 +126,7 @@ The host reads the presented frame straight from the region each refresh, so a
 frame drawn while shown tears as it would on the panel. A panel with its own
 memory keeps it in the host instead, turning each write in as the panel would.
 The firmware reads a write's pixels when it sends them, not when it queues
-them, so pixels changed before `Display::wait` show up changed, as with DMA;
+them, so pixels changed before `Gram::wait` show up changed, as with DMA;
 `GramDone` comes once the link's bytes per second would have carried the
 write. Audio works the same
 way: the host reads samples from the ring, and the firmware only announces how

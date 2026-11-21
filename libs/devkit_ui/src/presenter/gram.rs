@@ -9,7 +9,7 @@ use core::cell::UnsafeCell;
 use core::ffi::CStr;
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
-use bsp_rs::display::{self, Display, FrameBuffer, ImageFormat, Rotation, Ticket};
+use bsp_rs::display::{self, Display, FrameBuffer, Gram, ImageFormat, Rotation, Ticket};
 use devkit_gfx::{
     Bgr888, ClipStore, Damage, DisplayList, GlyphCache, Image, Pixel, Prepared, Rect, Rgb565, Size, Surface, Target, copy, draw, swap_rgb565,
 };
@@ -44,7 +44,7 @@ struct Job {
 }
 
 struct Shared {
-    display: &'static Display,
+    gram: Gram<'static>,
     start: [Semaphore; MAX_LANES],
     done: Semaphore,
     next: AtomicUsize,
@@ -62,7 +62,7 @@ impl Shared {
     fn drain(&self) {
         let job = unsafe { &mut *self.job.get() };
         for ticket in job.sent.iter_mut().flatten().filter_map(Option::take) {
-            if let Err(err) = self.display.wait(ticket) {
+            if let Err(err) = self.gram.wait(ticket) {
                 error!(TAG, "write: {err}");
             }
         }
@@ -104,7 +104,7 @@ impl Lane {
             self.turn = (self.turn + 1) % STRIPS_PER_LANE;
             if let Some(ticket) = job.sent[self.id][turn].take() {
                 let t = Instant::now();
-                if let Err(err) = shared.display.wait(ticket) {
+                if let Err(err) = shared.gram.wait(ticket) {
                     error!(TAG, "write: {err}");
                 }
                 self.stall += t.elapsed().as_micros() as u32;
@@ -130,7 +130,7 @@ impl Lane {
                 error!(TAG, "turn {strip:?}: outside the panel");
                 continue;
             };
-            match unsafe { shared.display.write(area, pixels) } {
+            match unsafe { shared.gram.write(area, pixels) } {
                 Ok(ticket) => job.sent[self.id][turn] = Some(ticket),
                 Err(err) => error!(TAG, "write {area:?}: {err}"),
             }
@@ -172,7 +172,8 @@ fn draws(format: ImageFormat) -> bool {
 }
 
 impl GramPresenter {
-    pub(crate) fn new(display: &'static Display, config: Config) -> Result<Self> {
+    pub(crate) fn new(gram: Gram<'static>, config: Config) -> Result<Self> {
+        let display = gram.display();
         if !(1..=MAX_LANES).contains(&config.lanes) {
             return Err(Error::INVALID_ARG);
         }
@@ -187,7 +188,7 @@ impl GramPresenter {
         };
         let buffer_bytes = fit(&strips, config.lanes, format, false).ok_or(Error::INVALID_SIZE)?;
         let shared = Arc::new(Shared {
-            display,
+            gram,
             start: [Semaphore::try_new(0, 1)?, Semaphore::try_new(0, 1)?],
             done: Semaphore::try_new(0, MAX_LANES as u32)?,
             next: AtomicUsize::new(0),
@@ -234,7 +235,7 @@ impl GramPresenter {
     }
 
     fn display(&self) -> &'static Display {
-        self.shared.display
+        self.shared.gram.display()
     }
 
     fn reset(&mut self) {
@@ -356,9 +357,7 @@ impl Presenter for GramPresenter {
         }
         let buffer_bytes = fit(&self.strips, self.lanes, display.pixel_format(), turn != Rotation::R0).ok_or(Error::INVALID_SIZE)?;
         self.shared.drain();
-        let mut config = display::Config::default();
-        config.rotation = Some(panel);
-        let result = unsafe { display.reconfigure(&config) };
+        let result = unsafe { display.reconfigure(None, Some(panel)) };
         if result.is_ok() {
             (self.turn, self.buffer_bytes) = (turn, buffer_bytes);
         }

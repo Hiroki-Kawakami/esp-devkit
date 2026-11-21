@@ -87,9 +87,7 @@ pub fn run() {
         error!(TAG, "set_volume: {err}");
     }
     for rotation in ROTATIONS.iter().cycle() {
-        let mut config = bsp_rs::display::Config::default();
-        config.rotation = Some(*rotation);
-        if let Err(err) = unsafe { display.reconfigure(&config) } {
+        if let Err(err) = unsafe { display.reconfigure(None, Some(*rotation)) } {
             info!(TAG, "rotation {rotation:?}: {err}");
             continue;
         }
@@ -183,7 +181,7 @@ fn follow_touch(display: &Display, touch: &Touch) {
         for p in &points[..n] {
             let x = snap(display, (p.x as i16 - DOT / 2).clamp(0, size.width as i16 - DOT));
             let y = snap(display, (p.y as i16 - DOT / 2).clamp(0, size.height as i16 - DOT));
-            let written = unsafe { display.write(Rect::new(x, y, DOT, DOT), &dot) }.and_then(|t| display.wait(t));
+            let written = write(display, Rect::new(x, y, DOT, DOT), &dot);
             if let Err(err) = written {
                 error!(TAG, "dot at {},{}: {err}", p.x, p.y);
             }
@@ -223,7 +221,7 @@ fn full_frame_from_psram(display: &Display) {
         swap_rgb565(&mut pixels);
     }
     let start = Instant::now();
-    let written = unsafe { display.write(Rect::new(0, 0, w as i16, h as i16), &pixels) }.and_then(|t| display.wait(t));
+    let written = write(display, Rect::new(0, 0, w as i16, h as i16), &pixels);
     match written {
         Ok(()) => info!(TAG, "full frame from PSRAM: {} us for {} bytes", start.elapsed().as_micros(), pixels.len()),
         Err(err) => error!(TAG, "full frame: {err}"),
@@ -242,9 +240,14 @@ fn pixels(display: &Display, w: i16, h: i16, (r, g, b): (u8, u8, u8)) -> Vec<u8>
     pixels
 }
 
+fn write(display: &Display, rect: Rect, pixels: &[u8]) -> idf::Result<()> {
+    let gram = display.gram().ok_or(idf::Error::NOT_SUPPORTED)?;
+    unsafe { gram.write(rect, pixels) }.and_then(|t| gram.wait(t))
+}
+
 fn fill(display: &Display, rect: Rect, color: (u8, u8, u8)) {
     let pixels = pixels(display, rect.w, rect.h, color);
-    let written = unsafe { display.write(rect, &pixels) }.and_then(|t| display.wait(t));
+    let written = write(display, rect, &pixels);
     if let Err(err) = written {
         error!(TAG, "fill {rect:?}: {err}");
     }

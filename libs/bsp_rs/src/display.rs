@@ -51,7 +51,28 @@ impl Rotations {
     }
 }
 
-/// A transfer queued by `Display::write`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Waveform {
+    /// Two levels, fast.
+    Fast,
+    /// All grays, flashing, the cleanest picture.
+    Quality,
+    /// All grays with fewer flashes, for text and UI.
+    Text,
+}
+
+/// What a `draw` or `Gram::write` does to the glass.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum EpdMode {
+    /// Only the panel's memory changes, until `Epd::refresh`.
+    Hold,
+    /// The pixels are taken as already on the glass, which is not driven.
+    Seed,
+    /// The written area is driven with the waveform.
+    Refresh(Waveform),
+}
+
+/// A transfer queued by `Gram::write`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Ticket(pub(crate) u32);
 
@@ -122,7 +143,12 @@ fn unsigned(rect: Rect) -> Option<(u32, u32, u32, u32)> {
     Some((rect.x as u32, rect.y as u32, rect.w as u32, rect.h as u32))
 }
 
+/// A capability the panel lacks is `Absent`, and its accessor stays `None`.
 pub(crate) trait Driver: Send + Sync {
+    type FrameBuffers: FrameBufferDriver;
+    type Gram: GramDriver;
+    type Epd: EpdDriver;
+
     /// After the rotation.
     fn size(&self) -> Size;
     fn ppi(&self) -> u16;
@@ -140,41 +166,24 @@ pub(crate) trait Driver: Send + Sync {
         1
     }
 
-    fn frame_buffer_count(&self) -> usize {
-        0
-    }
-
-    fn frame_buffer(&self, _index: usize) -> Option<FrameBuffer> {
+    fn frame_buffers(&self) -> Option<&Self::FrameBuffers> {
         None
     }
 
-    fn present(&self, _index: usize) -> Result<()> {
-        Err(Error::NOT_SUPPORTED)
-    }
-
-    /// The framebuffer on the panel.
-    fn shown(&self) -> Option<FrameBuffer> {
+    fn frame_buffers_mut(&mut self) -> Option<&mut Self::FrameBuffers> {
         None
     }
 
-    fn scanning(&self) -> Option<usize> {
+    fn gram(&self) -> Option<&Self::Gram> {
         None
     }
 
-    fn wait_frame(&self) -> Result<()> {
-        Err(Error::NOT_SUPPORTED)
-    }
-
-    /// `area` is inside the panel and `pixels` holds its rows back to back.
-    unsafe fn write(&self, _area: Rect, _pixels: &[u8]) -> Result<Ticket> {
-        Err(Error::NOT_SUPPORTED)
-    }
-
-    fn wait(&self, _ticket: Ticket) -> Result<()> {
-        Err(Error::NOT_SUPPORTED)
+    fn epd(&self) -> Option<&Self::Epd> {
+        None
     }
 
     /// `area` is inside the panel, `image` its size in the panel's format.
+    /// Only called on a panel without framebuffers.
     fn draw(&self, _area: Rect, _image: &Image) -> Result<()> {
         Err(Error::NOT_SUPPORTED)
     }
@@ -183,12 +192,41 @@ pub(crate) trait Driver: Send + Sync {
         Err(Error::NOT_SUPPORTED)
     }
 
-    fn reconfigure(&mut self, _format: ImageFormat, _fb_num: u8, _rotation: Rotation) -> Result<()> {
+    fn reconfigure(&mut self, _format: ImageFormat, _rotation: Rotation) -> Result<()> {
         Err(Error::NOT_SUPPORTED)
     }
 }
 
+pub(crate) trait FrameBufferDriver {
+    fn count(&self) -> usize;
+    fn frame_buffer(&self, index: usize) -> Option<FrameBuffer>;
+    fn present(&self, index: usize) -> Result<()>;
+    /// The framebuffer on the panel.
+    fn shown(&self) -> Option<FrameBuffer>;
+    fn scanning(&self) -> Option<usize>;
+    fn wait_frame(&self) -> Result<()>;
+    fn set_count(&mut self, count: u8) -> Result<()>;
+}
+
+pub(crate) trait GramDriver {
+    /// `area` is inside the panel and `pixels` holds its rows back to back.
+    unsafe fn write(&self, area: Rect, pixels: &[u8]) -> Result<Ticket>;
+    fn wait(&self, ticket: Ticket) -> Result<()>;
+}
+
+pub(crate) trait EpdDriver {
+    fn set_mode(&self, mode: EpdMode) -> Result<()>;
+    /// `area` is inside the panel.
+    fn refresh(&self, area: Rect, waveform: Waveform, all: bool) -> Result<()>;
+    fn clear(&self) -> Result<()>;
+    fn wait_idle(&self) -> Result<()>;
+}
+
 impl Driver for Absent {
+    type FrameBuffers = Absent;
+    type Gram = Absent;
+    type Epd = Absent;
+
     fn size(&self) -> Size {
         match *self {}
     }
@@ -202,92 +240,65 @@ impl Driver for Absent {
     }
 }
 
-#[allow(unused_macros)]
-macro_rules! driver_enum {
-    ($vis:vis enum $name:ident { $($variant:ident($ty:ty)),+ $(,)? }) => {
-        $vis enum $name {
-            $($variant($ty)),+
-        }
+impl FrameBufferDriver for Absent {
+    fn count(&self) -> usize {
+        match *self {}
+    }
 
-        impl $crate::display::Driver for $name {
-            fn size(&self) -> $crate::display::Size {
-                match self { $(Self::$variant(d) => d.size()),+ }
-            }
+    fn frame_buffer(&self, _index: usize) -> Option<FrameBuffer> {
+        match *self {}
+    }
 
-            fn ppi(&self) -> u16 {
-                match self { $(Self::$variant(d) => d.ppi()),+ }
-            }
+    fn present(&self, _index: usize) -> Result<()> {
+        match *self {}
+    }
 
-            fn pixel_format(&self) -> $crate::display::ImageFormat {
-                match self { $(Self::$variant(d) => d.pixel_format()),+ }
-            }
+    fn shown(&self) -> Option<FrameBuffer> {
+        match *self {}
+    }
 
-            fn rotation(&self) -> $crate::display::Rotation {
-                match self { $(Self::$variant(d) => d.rotation()),+ }
-            }
+    fn scanning(&self) -> Option<usize> {
+        match *self {}
+    }
 
-            fn rotations(&self) -> $crate::display::Rotations {
-                match self { $(Self::$variant(d) => d.rotations()),+ }
-            }
+    fn wait_frame(&self) -> Result<()> {
+        match *self {}
+    }
 
-            fn alignment(&self) -> u16 {
-                match self { $(Self::$variant(d) => d.alignment()),+ }
-            }
-
-            fn frame_buffer_count(&self) -> usize {
-                match self { $(Self::$variant(d) => d.frame_buffer_count()),+ }
-            }
-
-            fn frame_buffer(&self, index: usize) -> Option<$crate::display::FrameBuffer> {
-                match self { $(Self::$variant(d) => d.frame_buffer(index)),+ }
-            }
-
-            fn present(&self, index: usize) -> idf::Result<()> {
-                match self { $(Self::$variant(d) => d.present(index)),+ }
-            }
-
-            fn shown(&self) -> Option<$crate::display::FrameBuffer> {
-                match self { $(Self::$variant(d) => d.shown()),+ }
-            }
-
-            fn scanning(&self) -> Option<usize> {
-                match self { $(Self::$variant(d) => d.scanning()),+ }
-            }
-
-            fn wait_frame(&self) -> idf::Result<()> {
-                match self { $(Self::$variant(d) => d.wait_frame()),+ }
-            }
-
-            unsafe fn write(&self, area: $crate::display::Rect, pixels: &[u8]) -> idf::Result<$crate::display::Ticket> {
-                match self { $(Self::$variant(d) => unsafe { d.write(area, pixels) }),+ }
-            }
-
-            fn wait(&self, ticket: $crate::display::Ticket) -> idf::Result<()> {
-                match self { $(Self::$variant(d) => d.wait(ticket)),+ }
-            }
-
-            fn draw(&self, area: $crate::display::Rect, image: &$crate::display::Image) -> idf::Result<()> {
-                match self { $(Self::$variant(d) => d.draw(area, image)),+ }
-            }
-
-            fn set_brightness(&self, level: u8) -> idf::Result<()> {
-                match self { $(Self::$variant(d) => d.set_brightness(level)),+ }
-            }
-
-            fn reconfigure(
-                &mut self,
-                format: $crate::display::ImageFormat,
-                fb_num: u8,
-                rotation: $crate::display::Rotation,
-            ) -> idf::Result<()> {
-                match self { $(Self::$variant(d) => d.reconfigure(format, fb_num, rotation)),+ }
-            }
-        }
-    };
+    fn set_count(&mut self, _count: u8) -> Result<()> {
+        match *self {}
+    }
 }
 
-#[allow(unused_imports)]
-pub(crate) use driver_enum;
+impl GramDriver for Absent {
+    unsafe fn write(&self, _area: Rect, _pixels: &[u8]) -> Result<Ticket> {
+        match *self {}
+    }
+
+    fn wait(&self, _ticket: Ticket) -> Result<()> {
+        match *self {}
+    }
+}
+
+impl EpdDriver for Absent {
+    fn set_mode(&self, _mode: EpdMode) -> Result<()> {
+        match *self {}
+    }
+
+    fn refresh(&self, _area: Rect, _waveform: Waveform, _all: bool) -> Result<()> {
+        match *self {}
+    }
+
+    fn clear(&self) -> Result<()> {
+        match *self {}
+    }
+
+    fn wait_idle(&self) -> Result<()> {
+        match *self {}
+    }
+}
+
+type BoardDriver = crate::board::Display;
 
 fn pack(size: Size) -> u32 {
     u32::from(size.width) << 16 | u32::from(size.height)
@@ -295,18 +306,18 @@ fn pack(size: Size) -> u32 {
 
 pub struct Display {
     size: AtomicU32,
-    driver: UnsafeCell<crate::board::Display>,
+    driver: UnsafeCell<BoardDriver>,
 }
 
 unsafe impl Sync for Display {}
 
 impl Display {
     #[allow(dead_code)]
-    pub(crate) fn new(driver: crate::board::Display) -> Self {
+    pub(crate) fn new(driver: BoardDriver) -> Self {
         Self { size: AtomicU32::new(pack(driver.size())), driver: UnsafeCell::new(driver) }
     }
 
-    fn driver(&self) -> &crate::board::Display {
+    fn driver(&self) -> &BoardDriver {
         unsafe { &*self.driver.get() }
     }
 
@@ -335,10 +346,25 @@ impl Display {
         self.driver().rotations()
     }
 
-    /// The origin and size of what `draw` and `write` take are multiples of
-    /// this, along both axes.
+    /// The origin and size of what `draw` and `Gram::write` take are multiples
+    /// of this, along both axes.
     pub fn alignment(&self) -> u16 {
         self.driver().alignment()
+    }
+
+    /// The framebuffers the panel scans out, when it has them.
+    pub fn frame_buffers(&self) -> Option<FrameBuffers<'_>> {
+        self.driver().frame_buffers().map(|_| FrameBuffers(self))
+    }
+
+    /// The panel's own memory, when it takes rectangles into it.
+    pub fn gram(&self) -> Option<Gram<'_>> {
+        self.driver().gram().map(|_| Gram(self))
+    }
+
+    /// The electrophoretic glass, whose picture changes only when driven.
+    pub fn epd(&self) -> Option<Epd<'_>> {
+        self.driver().epd().map(|_| Epd(self))
     }
 
     /// Puts `image`, in the panel's format, at `area` of what the panel shows.
@@ -349,10 +375,10 @@ impl Display {
         if i32::from(image.width()) != i32::from(area.w) || i32::from(image.height()) != i32::from(area.h) {
             return Err(Error::INVALID_ARG);
         }
-        if self.frame_buffer_count() == 0 {
+        let Some(frame_buffers) = self.driver().frame_buffers() else {
             return self.driver().draw(area, image);
-        }
-        let fb = self.driver().shown().ok_or(Error::INVALID_STATE)?;
+        };
+        let fb = frame_buffers.shown().ok_or(Error::INVALID_STATE)?;
         let format = fb.format();
         let (start, len) = (format.row_bytes(area.x as usize), format.row_bytes(area.w as usize));
         for (j, y) in (area.y..area.bottom()).enumerate() {
@@ -361,23 +387,6 @@ impl Display {
             row[start..start + len].copy_from_slice(src);
         }
         Ok(())
-    }
-
-    /// Queues `pixels`, `area`'s rows back to back in the panel's format, for a
-    /// panel without framebuffers, and returns without waiting for them to be
-    /// sent. They must stay unchanged until `wait` for the ticket returns.
-    pub unsafe fn write(&self, area: Rect, pixels: &[u8]) -> Result<Ticket> {
-        let format = self.pixel_format();
-        self.check(area, format)?;
-        if pixels.len() != format.row_bytes(area.w as usize) * area.h as usize {
-            return Err(Error::INVALID_ARG);
-        }
-        unsafe { self.driver().write(area, pixels) }
-    }
-
-    /// Blocks until what `write` queued for `ticket` has been sent.
-    pub fn wait(&self, ticket: Ticket) -> Result<()> {
-        self.driver().wait(ticket)
     }
 
     fn check(&self, area: Rect, format: ImageFormat) -> Result<()> {
@@ -396,58 +405,165 @@ impl Display {
         Ok(())
     }
 
-    pub fn frame_buffer_count(&self) -> usize {
-        self.driver().frame_buffer_count()
-    }
-
-    pub fn frame_buffer(&self, index: usize) -> Option<FrameBuffer> {
-        self.driver().frame_buffer(index)
-    }
-
-    pub fn present(&self, index: usize) -> Result<()> {
-        self.driver().present(index)
-    }
-
-    /// The framebuffer the panel is scanning; `present` takes effect at the
-    /// next frame boundary.
-    pub fn scanning(&self) -> Option<usize> {
-        self.driver().scanning()
-    }
-
-    /// Blocks until the next frame boundary.
-    pub fn wait_frame(&self) -> Result<()> {
-        self.driver().wait_frame()
-    }
-
     /// 0..=100; 0 turns the backlight off.
     pub fn set_brightness(&self, level: u8) -> Result<()> {
         self.driver().set_brightness(level)
     }
 
-    /// Rebuilds the panel with `config`, where 0 and `None` keep the current
-    /// value. On failure the previous configuration is rebuilt if it can be.
-    /// Either way every framebuffer handed out before is gone. Nothing but
-    /// `size` may be called on this display meanwhile.
-    pub unsafe fn reconfigure(&self, config: &Config) -> Result<()> {
+    /// Rebuilds the panel with `pixel_format` and `rotation`, where `None`
+    /// keeps the current value. On failure the previous configuration is
+    /// rebuilt if it can be. Either way every framebuffer handed out before is
+    /// gone. Nothing but `size` may be called on this display meanwhile.
+    pub unsafe fn reconfigure(&self, pixel_format: Option<ImageFormat>, rotation: Option<Rotation>) -> Result<()> {
         let driver = unsafe { &mut *self.driver.get() };
-        let format = config.pixel_format.unwrap_or_else(|| driver.pixel_format());
-        let fb_num = if config.fb_num != 0 { config.fb_num } else { driver.frame_buffer_count() as u8 };
-        let rotation = config.rotation.unwrap_or_else(|| driver.rotation());
-        let result = driver.reconfigure(format, fb_num, rotation);
+        let format = pixel_format.unwrap_or_else(|| driver.pixel_format());
+        let rotation = rotation.unwrap_or_else(|| driver.rotation());
+        let result = driver.reconfigure(format, rotation);
         self.size.store(pack(driver.size()), Ordering::Relaxed);
         result
+    }
+}
+
+/// The framebuffers of a [`Display`] that scans them out.
+#[derive(Clone, Copy)]
+pub struct FrameBuffers<'a>(&'a Display);
+
+impl<'a> FrameBuffers<'a> {
+    fn driver(self) -> &'a <BoardDriver as Driver>::FrameBuffers {
+        match self.0.driver().frame_buffers() {
+            Some(driver) => driver,
+            None => unreachable!(),
+        }
+    }
+
+    pub fn display(self) -> &'a Display {
+        self.0
+    }
+
+    pub fn count(self) -> usize {
+        self.driver().count()
+    }
+
+    pub fn frame_buffer(self, index: usize) -> Option<FrameBuffer> {
+        self.driver().frame_buffer(index)
+    }
+
+    pub fn present(self, index: usize) -> Result<()> {
+        self.driver().present(index)
+    }
+
+    /// The framebuffer the panel is scanning; `present` takes effect at the
+    /// next frame boundary.
+    pub fn scanning(self) -> Option<usize> {
+        self.driver().scanning()
+    }
+
+    /// Blocks until the next frame boundary.
+    pub fn wait_frame(self) -> Result<()> {
+        self.driver().wait_frame()
+    }
+
+    /// Rebuilds the panel with `count` framebuffers, the same way as
+    /// `Display::reconfigure` and under the same terms.
+    pub unsafe fn set_count(self, count: u8) -> Result<()> {
+        if count == 0 {
+            return Err(Error::INVALID_ARG);
+        }
+        let driver = unsafe { &mut *self.0.driver.get() };
+        match driver.frame_buffers_mut() {
+            Some(frame_buffers) => frame_buffers.set_count(count),
+            None => unreachable!(),
+        }
     }
 
     /// Reads what the panel shows, in its pixel format. Rows may be torn by
     /// concurrent drawing, and only one `Readback` may exist at a time.
-    pub unsafe fn readback(&self, area: Rect) -> Result<Readback<'_>> {
-        let fb = self.driver().shown().ok_or(Error::NOT_SUPPORTED)?;
+    pub unsafe fn readback(self, area: Rect) -> Result<Readback<'a>> {
+        let fb = self.driver().shown().ok_or(Error::INVALID_STATE)?;
         let size = fb.size();
         let (x, y, w, h) = unsigned(area).ok_or(Error::INVALID_ARG)?;
         if x + w > u32::from(size.width) || y + h > u32::from(size.height) {
             return Err(Error::INVALID_ARG);
         }
         Ok(Readback { fb, area, next_row: 0, _display: PhantomData })
+    }
+}
+
+/// The memory of a [`Display`] that keeps the picture itself.
+#[derive(Clone, Copy)]
+pub struct Gram<'a>(&'a Display);
+
+impl<'a> Gram<'a> {
+    fn driver(self) -> &'a <BoardDriver as Driver>::Gram {
+        match self.0.driver().gram() {
+            Some(driver) => driver,
+            None => unreachable!(),
+        }
+    }
+
+    pub fn display(self) -> &'a Display {
+        self.0
+    }
+
+    /// Queues `pixels`, `area`'s rows back to back in the panel's format, and
+    /// returns without waiting for them to be sent. They must stay unchanged
+    /// until `wait` for the ticket returns.
+    pub unsafe fn write(self, area: Rect, pixels: &[u8]) -> Result<Ticket> {
+        let format = self.0.pixel_format();
+        self.0.check(area, format)?;
+        if pixels.len() != format.row_bytes(area.w as usize) * area.h as usize {
+            return Err(Error::INVALID_ARG);
+        }
+        unsafe { self.driver().write(area, pixels) }
+    }
+
+    /// Blocks until what `write` queued for `ticket` has been sent.
+    pub fn wait(self, ticket: Ticket) -> Result<()> {
+        self.driver().wait(ticket)
+    }
+}
+
+/// The glass of a [`Display`] that keeps its picture unpowered.
+#[derive(Clone, Copy)]
+pub struct Epd<'a>(&'a Display);
+
+impl<'a> Epd<'a> {
+    fn driver(self) -> &'a <BoardDriver as Driver>::Epd {
+        match self.0.driver().epd() {
+            Some(driver) => driver,
+            None => unreachable!(),
+        }
+    }
+
+    pub fn display(self) -> &'a Display {
+        self.0
+    }
+
+    /// Stays until changed; the panel starts in `Hold`.
+    pub fn set_mode(self, mode: EpdMode) -> Result<()> {
+        self.driver().set_mode(mode)
+    }
+
+    /// Drives `area` from what the panel's memory holds, without changing the
+    /// mode. `all` drives every pixel of it, not only the changed ones, which
+    /// clears ghosting. Returns before the glass settles.
+    pub fn refresh(self, area: Rect, waveform: Waveform, all: bool) -> Result<()> {
+        let size = self.0.size();
+        let (x, y, w, h) = unsigned(area).ok_or(Error::INVALID_ARG)?;
+        if x + w > u32::from(size.width) || y + h > u32::from(size.height) {
+            return Err(Error::INVALID_ARG);
+        }
+        self.driver().refresh(area, waveform, all)
+    }
+
+    /// Drives the whole glass to white, the known start for later drives.
+    pub fn clear(self) -> Result<()> {
+        self.driver().clear()
+    }
+
+    /// Blocks until every draw, write and refresh has reached the glass.
+    pub fn wait_idle(self) -> Result<()> {
+        self.driver().wait_idle()
     }
 }
 

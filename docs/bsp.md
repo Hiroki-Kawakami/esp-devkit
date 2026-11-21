@@ -20,7 +20,19 @@ let board = bsp_rs::init(&bsp_rs::Config::default())?;
 `board.display` is shared by every task (`&'static Display`); its methods take
 `&self` and never lock.
 
-- `frame_buffer(i)` returns a `FrameBuffer`: a raw, `Copy`able view of a
+- What only some panels can do sits behind a handle: `frame_buffers()` for a
+  panel that scans out host framebuffers, `gram()` for one that takes
+  rectangles into its own memory, `epd()` for electrophoretic glass. Each is
+  `None` on a panel without it, and a `Copy` handle otherwise, with no cost per
+  call once taken. A panel may have more than one: an EPD has `gram()` and
+  `epd()`.
+- `Epd::set_mode` decides what a `draw` or `Gram::write` does to the glass:
+  `Hold` (the start) changes only the panel's memory, `Seed` takes the pixels
+  as already shown, `Refresh(waveform)` drives the written area.
+  `refresh(area, waveform, all)` drives an area once from the panel's memory,
+  every pixel of it with `all` to clear ghosting; `clear()` drives the whole
+  glass to white; `wait_idle()` blocks until everything has reached the glass.
+- `FrameBuffers::frame_buffer(i)` returns a `FrameBuffer`: a raw, `Copy`able view of a
   host framebuffer, sendable to other tasks. Writing through `as_mut_slice` /
   `row_mut` is `unsafe`: tasks drawing to overlapping areas at the same time
   is the caller's to prevent. DMA engines take `as_ptr()`.
@@ -33,18 +45,21 @@ let board = bsp_rs::init(&bsp_rs::Config::default())?;
   `crop`, with `media_engine` for the 2D engine. A rotated copy there must span
   at least 8 rows of the area: the engine stops completing shorter ones while
   the panel scans out.
-- A panel with no framebuffers (`frame_buffer_count()` is 0) keeps the
-  picture in its own memory. `write(area, pixels)` queues the area's rows,
+- `FrameBuffers::set_count(n)` rebuilds the panel with `n` framebuffers, on
+  the same terms as `reconfigure`; `Config::fb_num` is the count at `init`.
+- `Gram::write(area, pixels)` queues the area's rows,
   back to back in the panel's format, and returns a `Ticket` without waiting;
   the pixels stay unchanged until `wait(ticket)` returns. Writes go out in the
   order they were queued.
-- `alignment()` is what the origin and size of a `write` or `draw` area are
+- `alignment()` is what the origin and size of a `Gram::write` or `draw` area are
   multiples of, along both axes; other areas return `INVALID_ARG`. It is 1 on
   most panels and 2 on one that takes only windows of whole pixel pairs.
 - `draw(area, image)` puts an `Image` in the panel's format on any panel: into
   the framebuffer on the panel, or written and waited for. It is `unsafe` for
   the same reason as `as_mut_slice`. The display takes only its own format;
   `devkit_gfx::copy` and `swap_rgb565` convert above it.
+- `reconfigure(pixel_format, rotation)` rebuilds the panel, `None` keeping
+  the current value; every framebuffer handed out before is gone.
 - `Config::rotation` is taken only by a panel that turns the picture itself:
   `size()` is then the turned picture and `rotation()` the turn.
   `rotations()` is the set it takes: a panel that shows framebuffers takes R0
@@ -60,7 +75,7 @@ let board = bsp_rs::init(&bsp_rs::Config::default())?;
 - `FrameBuffer::target(rotation, area)` is a `devkit_gfx::Target` over an area
   of the logical picture, for writers that take one. It is `unsafe` for the
   same reason as `as_mut_slice`.
-- `readback(area)` lends what the panel shows, in its pixel format, as `Rows`
+- `FrameBuffers::readback(area)` lends what the panel shows, in its pixel format, as `Rows`
   from `next()`. It is `unsafe`: rows may be torn by concurrent drawing, and
   only one `Readback` may exist at a time.
 

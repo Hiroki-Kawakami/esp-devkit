@@ -70,7 +70,8 @@ impl Bench {
             &*Box::leak(Box::new(Assets::new(format, size.height as i16))),
         ];
         let config = Config { strips: StripSource::Given(sram), ..Config::default() };
-        let presenter = FbPresenter::new(display, config)?;
+        let frames = display.frame_buffers().ok_or(idf::Error::NOT_SUPPORTED)?;
+        let presenter = FbPresenter::new(frames, config)?;
         Ok(Self {
             presenter,
             assets,

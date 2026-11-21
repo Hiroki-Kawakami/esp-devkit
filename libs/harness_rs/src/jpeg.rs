@@ -20,7 +20,8 @@ pub(crate) fn encode(display: &Display, quality: u8, sink: Sink) -> Result<(), S
     let mut encoder = JpegEncoder::new(size.width, size.height, format, &options, write).map_err(encoder_error)?;
 
     let area = Rect::new(0, 0, size.width as i16, size.height as i16);
-    let mut rows = unsafe { display.readback(area) }.map_err(|e| e.to_string())?;
+    let frames = display.frame_buffers().ok_or_else(|| idf::Error::NOT_SUPPORTED.to_string())?;
+    let mut rows = unsafe { frames.readback(area) }.map_err(|e| e.to_string())?;
     while let Some(chunk) = rows.next().map_err(|e| e.to_string())? {
         for r in 0..usize::from(chunk.height) {
             encoder.push_row(&chunk.data[r * chunk.stride..]).map_err(encoder_error)?;

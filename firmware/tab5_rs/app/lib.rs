@@ -16,7 +16,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use bsp_rs::audio::{Audio, Format, Pcm, SampleFormat, SpeakerMode};
-use bsp_rs::display::{Display, FrameBuffer, ImageFormat};
+use bsp_rs::display::{FrameBuffer, FrameBuffers, ImageFormat};
 use bsp_rs::power::{Battery, Charge, Power};
 use bsp_rs::sd::MountConfig;
 use devkit_core::math::sinf;
@@ -61,6 +61,10 @@ pub fn run() {
         info!(TAG, "no display");
         return;
     };
+    let Some(frames) = display.frame_buffers() else {
+        error!(TAG, "no framebuffers");
+        return;
+    };
     let size = display.size();
     info!(
         TAG,
@@ -68,11 +72,11 @@ pub fn run() {
         size.width,
         size.height,
         display.pixel_format(),
-        display.frame_buffer_count()
+        frames.count()
     );
 
-    for index in 0..display.frame_buffer_count() {
-        if let Some(fb) = display.frame_buffer(index) {
+    for index in 0..frames.count() {
+        if let Some(fb) = frames.frame_buffer(index) {
             draw_pattern(&fb, index);
         }
     }
@@ -80,7 +84,7 @@ pub fn run() {
         error!(TAG, "set_brightness: {err}");
     }
     if let Some(touch) = board.touch {
-        trace_touches(display, touch);
+        trace_touches(frames, touch);
     }
     let power = board.power;
     harness_rs::register("battery", move |_| battery(power));
@@ -116,7 +120,7 @@ pub fn run() {
     }
     match board.touch {
         Some(touch) => log_touches(touch),
-        None => cycle(display),
+        None => cycle(frames),
     }
 }
 
@@ -180,27 +184,27 @@ fn tone(audio: &Audio, format: Format) -> idf::Result<()> {
     stream.close()
 }
 
-fn cycle(display: &Display) -> ! {
+fn cycle(frames: FrameBuffers<'_>) -> ! {
     let mut index = 0;
     loop {
-        if let Err(err) = display.present(index) {
+        if let Err(err) = frames.present(index) {
             error!(TAG, "present({index}): {err}");
         }
         thread::sleep(Duration::from_secs(2));
-        index = (index + 1) % display.frame_buffer_count();
+        index = (index + 1) % frames.count();
     }
 }
 
-fn trace_touches(display: &'static Display, touch: &Touch) {
-    if let Err(err) = display.present(0) {
+fn trace_touches(frames: FrameBuffers<'static>, touch: &Touch) {
+    if let Err(err) = frames.present(0) {
         error!(TAG, "present(0): {err}");
     }
     touch.set_event_cb(Some(Box::new(move |points: &[Point]| {
-        let Some(fb) = display.frame_buffer(0) else { return };
+        let Some(fb) = frames.frame_buffer(0) else { return };
         for p in points {
             fill_square(&fb, *p, 16, BARS[0]);
         }
-        if !points.is_empty() && let Err(err) = display.present(0) {
+        if !points.is_empty() && let Err(err) = frames.present(0) {
             error!(TAG, "present(0): {err}");
         }
     })));

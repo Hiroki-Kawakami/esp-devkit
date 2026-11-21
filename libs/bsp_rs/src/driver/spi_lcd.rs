@@ -15,7 +15,8 @@ use idf::spi::Bus;
 use idf::sync::{Mutex, Semaphore};
 use idf::{Error, Result, sys};
 
-use crate::display::{Driver, Image, ImageFormat, Rect, Rotation, Rotations, Size, Ticket};
+use crate::Absent;
+use crate::display::{Driver, GramDriver, Image, ImageFormat, Rect, Rotation, Rotations, Size, Ticket};
 
 const TAG: &CStr = c"spi_lcd";
 
@@ -459,6 +460,10 @@ impl SpiLcd {
 }
 
 impl Driver for SpiLcd {
+    type FrameBuffers = Absent;
+    type Gram = Self;
+    type Epd = Absent;
+
     fn size(&self) -> Size {
         if self.rotation.swaps_axes() { Size::new(self.size.height, self.size.width) } else { self.size }
     }
@@ -483,13 +488,8 @@ impl Driver for SpiLcd {
         self.alignment
     }
 
-    unsafe fn write(&self, area: Rect, pixels: &[u8]) -> Result<Ticket> {
-        unsafe { self.io.write_rows(self.place(area), [pixels].into_iter()) }
-    }
-
-    fn wait(&self, ticket: Ticket) -> Result<()> {
-        self.io.wait(ticket);
-        Ok(())
+    fn gram(&self) -> Option<&Self> {
+        Some(self)
     }
 
     fn draw(&self, area: Rect, image: &Image) -> Result<()> {
@@ -515,13 +515,24 @@ impl Driver for SpiLcd {
         }
     }
 
-    fn reconfigure(&mut self, format: ImageFormat, fb_num: u8, rotation: Rotation) -> Result<()> {
-        if format != self.format || fb_num != 0 {
+    fn reconfigure(&mut self, format: ImageFormat, rotation: Rotation) -> Result<()> {
+        if format != self.format {
             return Err(Error::NOT_SUPPORTED);
         }
         if rotation == self.rotation {
             return Ok(());
         }
         self.turn(rotation)
+    }
+}
+
+impl GramDriver for SpiLcd {
+    unsafe fn write(&self, area: Rect, pixels: &[u8]) -> Result<Ticket> {
+        unsafe { self.io.write_rows(self.place(area), [pixels].into_iter()) }
+    }
+
+    fn wait(&self, ticket: Ticket) -> Result<()> {
+        self.io.wait(ticket);
+        Ok(())
     }
 }

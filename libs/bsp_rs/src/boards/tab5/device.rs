@@ -69,12 +69,13 @@ const LCD_PIN_BL: i32 = 22;
 // brightness does not change below this duty at 5kHz.
 const LCD_BL_MIN_DUTY: u16 = 1300;
 
-crate::display::driver_enum! {
-    pub(crate) enum Display {
-        Ili9881c(MipiDsi),
-        St7121(MipiDsi),
-        St7123(MipiDsi),
-    }
+pub(crate) type Display = MipiDsi;
+
+#[derive(Clone, Copy)]
+enum Panel {
+    Ili9881c,
+    St7121,
+    St7123,
 }
 
 static I2C: OnceLock<MasterBus> = OnceLock::new();
@@ -104,8 +105,8 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
     reset?;
     let pi4ioe1 = PI4IOE1.get_or_init(|| Mutex::new(pi4ioe1));
 
-    let display = panel_init(config, bus)?;
-    let touch = touch_init(bus, &display);
+    let (display, panel) = panel_init(config, bus)?;
+    let touch = touch_init(bus, panel);
     let audio = audio_init(config, bus, pi4ioe1);
     let imu = imu_init(bus);
     let rtc = rtc_init(bus);
@@ -163,7 +164,7 @@ fn reset_panel_and_touch(pi4ioe1: &mut Pi4io) -> Result<()> {
     Ok(())
 }
 
-fn panel_init(config: &Config, bus: &MasterBus) -> Result<Display> {
+fn panel_init(config: &Config, bus: &MasterBus) -> Result<(Display, Panel)> {
     let probe = Duration::from_millis(10);
     let pixel_format = resolve_pixel_format(config)?;
     let fb_num = resolve_fb_num(config);
@@ -180,7 +181,7 @@ fn panel_init(config: &Config, bus: &MasterBus) -> Result<Display> {
                 backlight_min_duty: LCD_BL_MIN_DUTY,
             })
             .inspect_err(|err| error!(TAG, "st7121: {err}"))?;
-            return Ok(Display::St7121(lcd));
+            return Ok((lcd, Panel::St7121));
         }
         let lcd = st7123::create(&st7123::Config {
             size: PANEL_SIZE,
@@ -191,7 +192,7 @@ fn panel_init(config: &Config, bus: &MasterBus) -> Result<Display> {
             backlight_min_duty: LCD_BL_MIN_DUTY,
         })
         .inspect_err(|err| error!(TAG, "st7123: {err}"))?;
-        return Ok(Display::St7123(lcd));
+        return Ok((lcd, Panel::St7123));
     }
     if bus.probe(gt911::ADDR_PRIMARY, probe).is_ok() {
         info!(TAG, "panel: ILI9881C");
@@ -204,14 +205,14 @@ fn panel_init(config: &Config, bus: &MasterBus) -> Result<Display> {
             backlight_min_duty: LCD_BL_MIN_DUTY,
         })
         .inspect_err(|err| error!(TAG, "ili9881c: {err}"))?;
-        return Ok(Display::Ili9881c(lcd));
+        return Ok((lcd, Panel::Ili9881c));
     }
     error!(TAG, "no known panel found on I2C");
     Err(Error::NOT_FOUND)
 }
 
 // Non-fatal: the board still comes up with the display alone.
-fn touch_init(bus: &'static MasterBus, display: &Display) -> Option<&'static Touch> {
+fn touch_init(bus: &'static MasterBus, panel: Panel) -> Option<&'static Touch> {
     let config = touch::Config {
         width: PANEL_SIZE.width,
         height: PANEL_SIZE.height,
@@ -222,14 +223,14 @@ fn touch_init(bus: &'static MasterBus, display: &Display) -> Option<&'static Tou
         int: touch::Int::Gpio(TOUCH_PIN_INT),
         zones: &[],
     };
-    let result = match display {
-        Display::Ili9881c(_) => Gt911::new(bus, &gt911::Config {
+    let result = match panel {
+        Panel::Ili9881c => Gt911::new(bus, &gt911::Config {
             address: gt911::ADDR_PRIMARY,
             clock_hz: gt911::DEFAULT_HZ,
             int_pin: Some(TOUCH_PIN_INT),
         })
         .and_then(|gt911| touch::start(gt911, config)),
-        Display::St7121(_) | Display::St7123(_) => St712xTouch::new(bus, &st712x_touch::Config {
+        Panel::St7121 | Panel::St7123 => St712xTouch::new(bus, &st712x_touch::Config {
             clock_hz: st712x_touch::DEFAULT_HZ,
             int_pin: Some(TOUCH_PIN_INT),
         })

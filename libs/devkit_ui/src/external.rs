@@ -11,7 +11,7 @@ use core::ffi::CStr;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
 
-use bsp_rs::display::{Display, FrameBuffer, ImageFormat, Rotation, Ticket};
+use bsp_rs::display::{Display, FrameBuffer, FrameBuffers, ImageFormat, Rotation, Ticket};
 use devkit_gfx::{Argb8888, ClipStore, DisplayList, GlyphCache, Pixel, Prepared, Rect, Size, Surface, Target, draw_from};
 use idf::heap::Caps;
 use idf::log::error;
@@ -52,13 +52,13 @@ pub(crate) struct Buffers {
 impl Buffers {
     /// The framebuffer of the next presented frame, the same for whoever asks
     /// until it is presented.
-    pub(crate) fn claim_back(&self, display: &Display) -> usize {
+    pub(crate) fn claim_back(&self, frames: FrameBuffers<'_>) -> usize {
         let back = self.back.load(Ordering::Acquire);
         if back != NO_BACK {
             return back;
         }
         let latest = self.latest.load(Ordering::Acquire);
-        let scanning = display.scanning().unwrap_or(latest);
+        let scanning = frames.scanning().unwrap_or(latest);
         let free = (0..self.count).find(|&i| i != scanning && i != latest).unwrap_or((latest + 1) % self.count);
         match self.back.compare_exchange(NO_BACK, free, Ordering::AcqRel, Ordering::Acquire) {
             Ok(_) => free,
@@ -205,15 +205,16 @@ impl ExternalSurface {
         let link = state.link.as_ref()?;
         let rect = state.rect?;
         let (display, rotation) = (link.display, link.rotation);
-        let (fb, index) = if display.frame_buffer_count() == 0 {
-            (None, 0)
-        } else {
-            let index = if state.composite || state.policy == Policy::Exclusive {
-                link.buffers.claim_back(display)
-            } else {
-                link.buffers.latest.load(Ordering::Acquire)
-            };
-            (Some(display.frame_buffer(index)?), index)
+        let (fb, index) = match display.frame_buffers() {
+            None => (None, 0),
+            Some(frames) => {
+                let index = if state.composite || state.policy == Policy::Exclusive {
+                    link.buffers.claim_back(frames)
+                } else {
+                    link.buffers.latest.load(Ordering::Acquire)
+                };
+                (Some(frames.frame_buffer(index)?), index)
+            }
         };
         state.writing = true;
         state.writing_changes = state.rect_changes;
@@ -347,11 +348,12 @@ impl ExternalSurface {
             }
             self.stamp(frame.index, generation);
         }
+        let frames = display.frame_buffers().ok_or(Error::INVALID_STATE)?;
         let latest = buffers.latest.load(Ordering::Acquire);
-        while display.scanning().is_some_and(|i| i != latest) {
-            display.wait_frame()?;
+        while frames.scanning().is_some_and(|i| i != latest) {
+            frames.wait_frame()?;
         }
-        display.present(frame.index)?;
+        frames.present(frame.index)?;
         buffers.latest.store(frame.index, Ordering::Release);
         buffers.back.store(NO_BACK, Ordering::Release);
         Ok(())
@@ -383,19 +385,19 @@ impl ExternalFrame {
         unsafe { fb?.target() }?.rotated(rotation).crop(area)
     }
 
-    /// `Display::write`, in the panel's coordinates: on a panel without
+    /// `Gram::write`, in the panel's coordinates: on a panel without
     /// framebuffers. `pixels` must stay unchanged until `wait` for the ticket
     /// returns.
     pub unsafe fn write(&self, rect: Rect, pixels: &[u8]) -> Result<Ticket> {
         if self.granted.0.is_some() {
             return Err(Error::INVALID_ARG);
         }
-        unsafe { self.display.write(rect, pixels) }
+        unsafe { self.display.gram().ok_or(Error::NOT_SUPPORTED)?.write(rect, pixels) }
     }
 
     /// Blocks until what `write` queued for `ticket` has been sent.
     pub fn wait(&self, ticket: Ticket) -> Result<()> {
-        self.display.wait(ticket)
+        self.display.gram().ok_or(Error::NOT_SUPPORTED)?.wait(ticket)
     }
 
     /// The panel's pixel format.

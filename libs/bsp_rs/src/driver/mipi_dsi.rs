@@ -13,7 +13,8 @@ use idf::lcd::dsi::{self, ColorFormat, DpiPanel, VideoTiming};
 use idf::log::error;
 use idf::{Error, Result, ldo, ledc, thread};
 
-use crate::display::{Driver, FrameBuffer, ImageFormat, Rotation, Size};
+use crate::Absent;
+use crate::display::{Driver, FrameBuffer, FrameBufferDriver, ImageFormat, Rotation, Size};
 
 const TAG: &CStr = c"mipi_dsi";
 
@@ -178,6 +179,10 @@ impl MipiDsi {
 }
 
 impl Driver for MipiDsi {
+    type FrameBuffers = Self;
+    type Gram = Absent;
+    type Epd = Absent;
+
     fn size(&self) -> Size {
         self.size
     }
@@ -190,7 +195,40 @@ impl Driver for MipiDsi {
         self.format
     }
 
-    fn frame_buffer_count(&self) -> usize {
+    fn frame_buffers(&self) -> Option<&Self> {
+        Some(self)
+    }
+
+    fn frame_buffers_mut(&mut self) -> Option<&mut Self> {
+        Some(self)
+    }
+
+    fn set_brightness(&self, level: u8) -> Result<()> {
+        let Some(backlight) = &self.backlight else {
+            return Err(Error::NOT_SUPPORTED);
+        };
+        let level = u32::from(level.min(100));
+        let min = self.backlight_min_duty;
+        let duty = if level == 0 {
+            0
+        } else {
+            let t = (level - 1) as f32 / 99.0;
+            let duty = min + (t * t * (BACKLIGHT_MAX_DUTY - min) as f32 + 0.5) as u32;
+            duty.max(min + level - 1)
+        };
+        backlight.set_duty(duty)
+    }
+
+    fn reconfigure(&mut self, format: ImageFormat, rotation: Rotation) -> Result<()> {
+        if rotation != Rotation::R0 {
+            return Err(Error::NOT_SUPPORTED);
+        }
+        self.restart(format, self.fb_num)
+    }
+}
+
+impl FrameBufferDriver for MipiDsi {
+    fn count(&self) -> usize {
         usize::from(self.fb_num)
     }
 
@@ -229,26 +267,13 @@ impl Driver for MipiDsi {
         self.frame_buffer(self.shown.load(Ordering::Relaxed))
     }
 
-    fn set_brightness(&self, level: u8) -> Result<()> {
-        let Some(backlight) = &self.backlight else {
-            return Err(Error::NOT_SUPPORTED);
-        };
-        let level = u32::from(level.min(100));
-        let min = self.backlight_min_duty;
-        let duty = if level == 0 {
-            0
-        } else {
-            let t = (level - 1) as f32 / 99.0;
-            let duty = min + (t * t * (BACKLIGHT_MAX_DUTY - min) as f32 + 0.5) as u32;
-            duty.max(min + level - 1)
-        };
-        backlight.set_duty(duty)
+    fn set_count(&mut self, count: u8) -> Result<()> {
+        self.restart(self.format, count)
     }
+}
 
-    fn reconfigure(&mut self, format: ImageFormat, fb_num: u8, rotation: Rotation) -> Result<()> {
-        if rotation != Rotation::R0 {
-            return Err(Error::NOT_SUPPORTED);
-        }
+impl MipiDsi {
+    fn restart(&mut self, format: ImageFormat, fb_num: u8) -> Result<()> {
         color_format(format)?;
         if fb_num == 0 || usize::from(fb_num) > dsi::MAX_FRAME_BUFFERS {
             return Err(Error::INVALID_ARG);

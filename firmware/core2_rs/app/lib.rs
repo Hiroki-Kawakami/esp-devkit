@@ -75,9 +75,7 @@ pub fn run() {
         error!(TAG, "set_volume: {err}");
     }
     for rotation in ROTATIONS.iter().cycle() {
-        let mut config = bsp_rs::display::Config::default();
-        config.rotation = Some(*rotation);
-        if let Err(err) = unsafe { display.reconfigure(&config) } {
+        if let Err(err) = unsafe { display.reconfigure(None, Some(*rotation)) } {
             error!(TAG, "rotation {rotation:?}: {err}");
         }
         if let Some(touch) = board.touch {
@@ -140,6 +138,10 @@ fn beep(audio: &Audio) -> idf::Result<()> {
 
 // A dot under each finger, for `HOLD`.
 fn follow_touch(display: &Display, touch: &Touch) {
+    let Some(gram) = display.gram() else {
+        error!(TAG, "follow_touch: no gram");
+        return;
+    };
     let size = display.size();
     let dot = pixels(display, DOT, DOT, (0, 0, 0));
     let mut points = [Point::default(); MAX_POINTS];
@@ -150,7 +152,7 @@ fn follow_touch(display: &Display, touch: &Touch) {
         for p in &points[..n] {
             let x = (p.x as i16 - DOT / 2).clamp(0, size.width as i16 - DOT);
             let y = (p.y as i16 - DOT / 2).clamp(0, size.height as i16 - DOT);
-            let written = unsafe { display.write(Rect::new(x, y, DOT, DOT), &dot) }.and_then(|t| display.wait(t));
+            let written = unsafe { gram.write(Rect::new(x, y, DOT, DOT), &dot) }.and_then(|t| gram.wait(t));
             if let Err(err) = written {
                 error!(TAG, "dot at {},{}: {err}", p.x, p.y);
             }
@@ -194,10 +196,14 @@ fn draw_bars(display: &Display) {
 
 // Red at the top left and blue at the top right of the logical picture.
 fn mark_top(display: &Display) {
+    let Some(gram) = display.gram() else {
+        error!(TAG, "mark_top: no gram");
+        return;
+    };
     let w = display.size().width as i16;
     for (x, color) in [(0, (255, 0, 0)), (w - MARK, (0, 0, 255))] {
         let pixels = pixels(display, MARK, MARK, color);
-        let written = unsafe { display.write(Rect::new(x, 0, MARK, MARK), &pixels) }.and_then(|t| display.wait(t));
+        let written = unsafe { gram.write(Rect::new(x, 0, MARK, MARK), &pixels) }.and_then(|t| gram.wait(t));
         if let Err(err) = written {
             error!(TAG, "mark at {x}: {err}");
         }

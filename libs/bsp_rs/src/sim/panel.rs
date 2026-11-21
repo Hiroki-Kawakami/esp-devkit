@@ -14,7 +14,8 @@ use idf::log::error;
 use idf::{Error, Result, thread};
 use super::Host;
 use super::protocol::{self, Event};
-use crate::display::{Driver, FrameBuffer, ImageFormat, Rotation, Size};
+use crate::Absent;
+use crate::display::{Driver, FrameBuffer, FrameBufferDriver, ImageFormat, Rotation, Size};
 
 const TAG: &CStr = c"sim_panel";
 const MAX_FRAME_BUFFERS: usize = 3;
@@ -58,6 +59,10 @@ fn allocate(size: Size, formats: &[ImageFormat], format: ImageFormat, fb_num: u8
 }
 
 impl Driver for SimPanel {
+    type FrameBuffers = Self;
+    type Gram = Absent;
+    type Epd = Absent;
+
     fn size(&self) -> Size {
         self.size
     }
@@ -70,7 +75,29 @@ impl Driver for SimPanel {
         self.format
     }
 
-    fn frame_buffer_count(&self) -> usize {
+    fn frame_buffers(&self) -> Option<&Self> {
+        Some(self)
+    }
+
+    fn frame_buffers_mut(&mut self) -> Option<&mut Self> {
+        Some(self)
+    }
+
+    fn set_brightness(&self, level: u8) -> Result<()> {
+        self.host.send(&Event::Brightness { level: level.min(100) });
+        Ok(())
+    }
+
+    fn reconfigure(&mut self, format: ImageFormat, rotation: Rotation) -> Result<()> {
+        if rotation != Rotation::R0 {
+            return Err(Error::NOT_SUPPORTED);
+        }
+        self.reallocate(format, self.buffers.len() as u8)
+    }
+}
+
+impl FrameBufferDriver for SimPanel {
+    fn count(&self) -> usize {
         self.buffers.len()
     }
 
@@ -106,15 +133,13 @@ impl Driver for SimPanel {
         Ok(())
     }
 
-    fn set_brightness(&self, level: u8) -> Result<()> {
-        self.host.send(&Event::Brightness { level: level.min(100) });
-        Ok(())
+    fn set_count(&mut self, count: u8) -> Result<()> {
+        self.reallocate(self.format, count)
     }
+}
 
-    fn reconfigure(&mut self, format: ImageFormat, fb_num: u8, rotation: Rotation) -> Result<()> {
-        if rotation != Rotation::R0 {
-            return Err(Error::NOT_SUPPORTED);
-        }
+impl SimPanel {
+    fn reallocate(&mut self, format: ImageFormat, fb_num: u8) -> Result<()> {
         if format == self.format && usize::from(fb_num) == self.buffers.len() {
             return Ok(());
         }
