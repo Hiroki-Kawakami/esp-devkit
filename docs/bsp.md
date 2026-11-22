@@ -3,7 +3,8 @@
 The board support package in Rust (`libs/bsp_rs`). The board is chosen with
 `CONFIG_BSP_RS_BOARD_*`, independent of the C `bsp`'s `CONFIG_BSP_BOARD_*`.
 `firmware/tab5_rs` builds it for the Tab5, `firmware/core_s3_rs` for the
-CoreS3 and `firmware/stopwatch_rs` for the StopWatch, each with its simulator.
+CoreS3, `firmware/stopwatch_rs` for the StopWatch and `firmware/paper_rs` for
+the PaperS3 and the LilyGo T5, each with its simulator.
 
 ```rust
 let board = bsp_rs::init(&bsp_rs::Config::default())?;

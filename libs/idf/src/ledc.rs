@@ -25,6 +25,11 @@ pub fn configure_timer(config: &TimerConfig) -> Result<()> {
     Error::check(unsafe { sys::ledc_timer_config(&cfg) })
 }
 
+/// Keeps the timer's duty resolution, so `freq_hz` must fit it.
+pub fn set_freq(timer: u32, freq_hz: u32) -> Result<()> {
+    Error::check(unsafe { sys::ledc_set_freq(SPEED_MODE, timer as _, freq_hz) })
+}
+
 pub struct ChannelConfig {
     pub channel: u32,
     pub timer: u32,

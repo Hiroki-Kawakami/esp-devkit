@@ -38,6 +38,7 @@ choice BSP_RS_BOARD
         select BSP_RS_DEVICE_ED047TC1 if !DEVKIT_SIMULATOR
         select BSP_RS_DEVICE_GT911 if !DEVKIT_SIMULATOR
         select BSP_RS_DRIVER_ADC_BATTERY if !DEVKIT_SIMULATOR
+        select BSP_RS_DRIVER_PWM_BUZZER if !DEVKIT_SIMULATOR
 
     config BSP_RS_BOARD_STOPWATCH
         bool "M5Stack StopWatch (ESP32-S3)"
@@ -173,6 +174,9 @@ config BSP_RS_DRIVER_I2S_OUT
     bool
 
 config BSP_RS_DRIVER_MIPI_DSI
+    bool
+
+config BSP_RS_DRIVER_PWM_BUZZER
     bool
 
 config BSP_RS_DRIVER_SDMMC

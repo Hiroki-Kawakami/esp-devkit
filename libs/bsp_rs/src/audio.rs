@@ -26,6 +26,10 @@ use idf::{Error, Result, thread};
 use crate::Absent;
 use crate::dispatch::{self, Next, Notifier, Source};
 
+mod tone;
+
+pub use tone::Note;
+
 const TAG: &CStr = c"audio";
 
 pub const VOLUME_MAX: u8 = 150;
@@ -117,6 +121,8 @@ pub(crate) struct DspProfile {
 
 /// The closed provider holds the output muted and the amp off.
 pub(crate) trait Driver: Send + Sync + 'static {
+    type Buzzer: BuzzerDriver;
+
     /// Also changes the format of a running stream. The hardware mute stays set.
     fn open(&self, format: Format) -> Result<()>;
     fn close(&self) -> Result<()>;
@@ -177,9 +183,32 @@ pub(crate) trait Driver: Send + Sync + 'static {
     fn dsp_profile(&self, _headphone: bool, _sample_rate: u32) -> Option<DspProfile> {
         None
     }
+
+    /// Tones are synthesized on the stream without one.
+    fn buzzer(&self) -> Option<&Self::Buzzer> {
+        None
+    }
+
+    /// Whether apps may open streams; a tone may play on it regardless.
+    fn streams(&self) -> bool {
+        true
+    }
+}
+
+pub(crate) trait BuzzerDriver: Send + Sync {
+    /// Sounds `hz` until the next call; 0 is silence.
+    fn sound(&self, hz: u32) -> Result<()>;
+}
+
+impl BuzzerDriver for Absent {
+    fn sound(&self, _hz: u32) -> Result<()> {
+        match *self {}
+    }
 }
 
 impl Driver for Absent {
+    type Buzzer = Absent;
+
     fn open(&self, _format: Format) -> Result<()> {
         match *self {}
     }
@@ -295,6 +324,9 @@ struct Core<D> {
     callback: Mutex<Option<Option<HeadphoneCallback>>>,
     callback_changed: AtomicBool,
     notifier: OnceLock<Notifier>,
+    tone: OnceLock<tone::Player>,
+    /// The stream is the tone's, not an app's.
+    tone_streaming: AtomicBool,
 }
 
 impl<D: Driver> Core<D> {
@@ -333,6 +365,8 @@ impl<D: Driver> Core<D> {
             callback: Mutex::new(None),
             callback_changed: AtomicBool::new(false),
             notifier: OnceLock::new(),
+            tone: OnceLock::new(),
+            tone_streaming: AtomicBool::new(false),
         });
         let voiced = {
             let state = audio.state.lock();
@@ -794,9 +828,38 @@ pub struct Audio(Box<Core<crate::board::AudioDriver>>);
 
 impl Audio {
     /// Starts the only stream there can be: `INVALID_STATE` while another
-    /// exists. It fades in from silence.
+    /// exists, `NOT_SUPPORTED` on a board that only sounds tones. It fades in
+    /// from silence, and stops a tone playing on the stream.
     pub fn open(&self, format: Format) -> Result<Stream<'_>> {
+        if !self.0.driver.streams() {
+            return Err(Error::NOT_SUPPORTED);
+        }
+        if let Some(player) = self.0.tone.get() {
+            player.stop(true);
+        }
         self.0.open(format).map(Stream)
+    }
+
+    /// Plays `notes` one after another, in place of the ones playing, and
+    /// returns at once. A last note of 0 ms holds until `stop_tone`. On a
+    /// board without a buzzer they are sine waves at the stream's volume,
+    /// refused with `INVALID_STATE` while an app's stream is open.
+    pub fn tone(&self, notes: &[Note]) -> Result<()> {
+        tone::check(notes)?;
+        let core = &self.0;
+        if core.driver.buzzer().is_none() && core.claimed.load(Ordering::Acquire) && !core.tone_streaming.load(Ordering::Acquire) {
+            return Err(Error::INVALID_STATE);
+        }
+        let audio = AUDIO.get().ok_or(Error::INVALID_STATE)?;
+        audio.0.tone.get_or_try_init(|| tone::Player::start(&audio.0))?.play(notes);
+        Ok(())
+    }
+
+    /// Stops the tone, without waiting for it to fall silent.
+    pub fn stop_tone(&self) {
+        if let Some(player) = self.0.tone.get() {
+            player.stop(false);
+        }
     }
 
     /// `0..=VOLUME_MAX`, linear in dB: 0 is silence, 100 unity, and above that
@@ -857,6 +920,9 @@ impl Audio {
     }
 
     pub(crate) fn quiesce(&self) -> bool {
+        if let Some(player) = self.0.tone.get() {
+            player.stop(true);
+        }
         self.0.quiesce()
     }
 
@@ -985,6 +1051,8 @@ mod tests {
     }
 
     impl Driver for Stub {
+        type Buzzer = Absent;
+
         fn open(&self, _format: Format) -> Result<()> {
             self.record(Call::Open)
         }

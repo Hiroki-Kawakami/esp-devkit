@@ -1,0 +1,8 @@
+{
+  "font": {
+    "body_24": {
+      "size": 24, "font": "@montserrat", "variation": { "wght": 400 },
+      "glyph": [" !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"]
+    }
+  }
+}

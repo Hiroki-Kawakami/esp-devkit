@@ -9,8 +9,10 @@ use idf::sync::OnceLock;
 
 use super::{PANEL_PPI, PANEL_SIZE, PIXEL_FORMAT, TAG, check_display};
 use crate::display::{self, Rotation, Rotations};
+use crate::audio;
 use crate::power;
 use crate::rtc;
+use crate::sim::audio::SimAudio;
 use crate::sim::gram::{GramConfig, SimGram};
 use crate::sim::power::SimPower;
 use crate::sim::rtc::SimRtc;
@@ -19,6 +21,8 @@ use crate::touch;
 use crate::{Board, Config};
 
 pub(crate) type Display = SimGram;
+// The buzzer, played as the tones a speaker sings.
+pub(crate) type AudioDriver = SimAudio;
 
 // The panel's memory is the chip's own, so writes land as fast as it copies;
 // the host shows that memory, not the drives.
@@ -57,10 +61,14 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
     })
     .inspect_err(|err| warn!(TAG, "touch unavailable: {err}"))
     .ok();
-    let power = power::start(SimPower::new(Some(host)), None);
+    let audio = SimAudio::buzzer(host)
+        .and_then(|driver| audio::start(driver, &super::buzzer_config(config)))
+        .inspect_err(|err| warn!(TAG, "audio unavailable: {err}"))
+        .ok();
+    let power = power::start(SimPower::new(Some(host)), audio);
     let rtc = SimRtc::new(host).and_then(|driver| rtc::start(driver).inspect_err(|err| warn!(TAG, "rtc unavailable: {err}")).ok());
     Ok(Board {
-        audio: None,
+        audio,
         buttons: None,
         display: Some(DISPLAY.get_or_init(|| display::Display::new(panel))),
         imu: None,

@@ -15,17 +15,20 @@ use idf::{Result, gpio};
 use super::power::PowerDriver;
 use super::t5::{self, ShiftControl};
 use super::{PANEL_PPI, PANEL_SIZE, TAG, check_display};
+use crate::audio::{self, Audio};
 use crate::devices::bm8563::{self, Bm8563};
 use crate::devices::ed047tc1;
 use crate::devices::gt911::{self, Gt911};
 use crate::display::{self, Rotation};
 use crate::driver::epd_ll::{ControlPins, EpdLl};
+use crate::driver::pwm_buzzer::{self, PwmBuzzer};
 use crate::power;
 use crate::rtc::{self, Rtc};
 use crate::touch::{self, Touch};
 use crate::{Board, Config};
 
 pub(crate) type Display = EpdLl;
+pub(crate) type AudioDriver = PwmBuzzer;
 
 const EPD_PINS_DATA: [i32; 8] = [6, 14, 7, 12, 9, 11, 8, 10];
 const EPD_PIN_SPH: i32 = 13;
@@ -40,6 +43,10 @@ const I2C_PORT: i32 = 1;
 const I2C_PIN_SDA: i32 = 41;
 const I2C_PIN_SCL: i32 = 42;
 const TOUCH_PIN_INT: i32 = 48;
+
+const BUZZER_PIN: i32 = 21;
+const BUZZER_TIMER: u32 = 0;
+const BUZZER_CHANNEL: u32 = 0;
 
 // The PaperS3 pulls its I2C SDA up for good; on the T5 the pin is the
 // panel's CL, which nothing pulls.
@@ -129,15 +136,19 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
     let bus = i2c_init(model).ok();
     let touch = bus.and_then(|bus| touch_init(bus, model).inspect_err(|err| warn!(TAG, "touch unavailable: {err}")).ok());
     let rtc = bus.and_then(rtc_init);
+    let audio = match model {
+        Model::PaperS3 => audio_init(config),
+        Model::T5 => None,
+    };
     let power = power::start(
         match model {
             Model::PaperS3 => PowerDriver::paper_s3(),
             Model::T5 => PowerDriver::t5(),
         },
-        None,
+        audio,
     );
     Ok(Board {
-        audio: None,
+        audio,
         buttons: None,
         display: Some(DISPLAY.get_or_init(|| display::Display::new(panel))),
         imu: None,
@@ -146,6 +157,13 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
         sd: None,
         touch,
     })
+}
+
+fn audio_init(config: &Config) -> Option<&'static Audio> {
+    PwmBuzzer::new(&pwm_buzzer::Config { gpio: BUZZER_PIN, timer: BUZZER_TIMER, channel: BUZZER_CHANNEL })
+        .and_then(|buzzer| audio::start(buzzer, &super::buzzer_config(config)))
+        .inspect_err(|err| warn!(TAG, "audio unavailable: {err}"))
+        .ok()
 }
 
 fn i2c_init(model: Model) -> Result<&'static MasterBus> {

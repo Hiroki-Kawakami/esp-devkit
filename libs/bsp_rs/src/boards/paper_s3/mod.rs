@@ -8,8 +8,9 @@ use core::ffi::CStr;
 use idf::log::error;
 use idf::{Error, Result};
 
+use crate::audio::{self, DspMode};
 use crate::display::{ImageFormat, Rotation, Size};
-use crate::{Absent, Config};
+use crate::Config;
 
 #[cfg(target_os = "none")]
 mod device;
@@ -18,20 +19,23 @@ mod power;
 #[cfg(target_os = "none")]
 mod t5;
 #[cfg(target_os = "none")]
-pub(crate) use device::{Display, init};
+pub(crate) use device::{AudioDriver, Display, init};
 
 #[cfg(not(target_os = "none"))]
 mod sim;
 #[cfg(not(target_os = "none"))]
-pub(crate) use sim::{Display, init};
-
-pub(crate) type AudioDriver = Absent;
+pub(crate) use sim::{AudioDriver, Display, init};
 
 const TAG: &CStr = c"paper_s3";
 
 const PANEL_SIZE: Size = Size { width: 960, height: 540 };
 const PANEL_PPI: u16 = 234;
 const PIXEL_FORMAT: ImageFormat = ImageFormat::L8;
+
+/// The buzzer sounds at its one loudness, so there is no volume to process.
+fn buzzer_config(config: &Config) -> audio::Config {
+    audio::Config { dsp_mode: DspMode::Disable, speaker_mode: config.audio.speaker_mode }
+}
 
 fn check_display(config: &Config) -> Result<()> {
     if config.display.fb_num != 0 || config.display.pixel_format.is_some_and(|f| f != PIXEL_FORMAT) {

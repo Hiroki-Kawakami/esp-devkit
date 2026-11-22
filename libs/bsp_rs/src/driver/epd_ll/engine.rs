@@ -11,6 +11,7 @@ use core::ffi::{CStr, c_void};
 use core::slice;
 use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
 
+use devkit_core::boxed;
 use idf::heap::{self, Caps};
 use idf::lcd::i80::{self, DmaBuffer, Io};
 use idf::log::error;
@@ -264,7 +265,7 @@ impl Bus {
 /// Written under `Shared::lock`.
 struct Counters {
     /// Pixels per `b1`, idle ones aside.
-    group: [u32; 256],
+    group: Box<[u32; 256], Caps>,
     active_px: u32,
     /// Mod 64.
     frame: u8,
@@ -577,7 +578,7 @@ fn run_frame(shared: &Shared, scan: &mut Scan) {
 }
 
 /// Sleeps while nothing replays, and powers the panel while something does.
-fn refresh_task(shared: Arc<Shared>, mut scan: Scan) {
+fn refresh_task(shared: Arc<Shared>, mut scan: Box<Scan>) {
     let mut powered = false;
     loop {
         let active = {
@@ -646,7 +647,9 @@ impl EpdLl {
         let line = || bus.io.alloc_buffer(tx_len, Caps::DMA | Caps::INTERNAL);
         let (lines, hold_line, uni_line) = ([line()?, line()?], line()?, line()?);
         let act_pool = heap::zeroed_box::<[[u8; 256]; ACT_POOL + 1]>(Caps::INTERNAL)?;
-        let scan = Scan {
+        // Straight into the heap: on the stack it would take more than a
+        // default main task has.
+        let scan = boxed!(Scan {
             bus,
             rowset_tab: [wf::hold(); 256],
             retire_tab: [false; 256],
@@ -656,7 +659,7 @@ impl EpdLl {
             hold_line,
             uni_line,
             line_bytes: usize::from(line_bytes),
-        };
+        });
 
         let shared = Arc::new(Shared {
             width,
@@ -664,7 +667,7 @@ impl EpdLl {
             state: state.into_boxed_slice(),
             row_nonidle: row_nonidle.into_boxed_slice(),
             lock: Mutex::new(Counters {
-                group: [0; 256],
+                group: heap::zeroed_box(Caps::INTERNAL)?,
                 active_px: 0,
                 frame: 0,
                 running: false,

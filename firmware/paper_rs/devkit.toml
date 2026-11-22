@@ -1,0 +1,7 @@
+default = "esp32s3"
+
+[targets.esp32s3]
+kind = "idf"
+
+[targets.simulator]
+kind = "sim"

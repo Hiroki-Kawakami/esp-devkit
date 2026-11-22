@@ -16,6 +16,7 @@ use idf::{Error, Result};
 
 use super::Host;
 use super::protocol::Event;
+use crate::Absent;
 use crate::audio::{Driver, Format, HwMute};
 
 const TAG: &CStr = c"sim_audio";
@@ -46,9 +47,15 @@ pub(crate) struct SimAudio {
     tx: Mutex<Tx>,
     muted: AtomicBool,
     speaker: AtomicBool,
+    streams: bool,
 }
 
 impl SimAudio {
+    /// The board's buzzer: tones play here, apps open no streams.
+    pub(crate) fn buzzer(host: &'static Host) -> Result<Self> {
+        Ok(Self { streams: false, ..Self::new(host)? })
+    }
+
     pub(crate) fn new(host: &'static Host) -> Result<Self> {
         let ring = heap::zeroed_slice(RING_BYTES, Caps::SPIRAM)?;
         let offset = host.psram_offset(ring.as_ptr()).ok_or(Error::INVALID_STATE)?;
@@ -70,6 +77,7 @@ impl SimAudio {
             tx: Mutex::new(Tx { ring, offset, open: false, frame_bytes: 0, high_water: 0, written: 0 }),
             muted: AtomicBool::new(true),
             speaker: AtomicBool::new(false),
+            streams: true,
         })
     }
 
@@ -89,6 +97,12 @@ impl SimAudio {
 }
 
 impl Driver for SimAudio {
+    type Buzzer = Absent;
+
+    fn streams(&self) -> bool {
+        self.streams
+    }
+
     fn open(&self, format: Format) -> Result<()> {
         let sample_bytes = format.sample.bytes();
         let frame_bytes = usize::from(format.channels) * sample_bytes;

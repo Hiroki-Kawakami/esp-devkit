@@ -40,6 +40,8 @@ impl AudioDriver {
 }
 
 impl audio::Driver for AudioDriver {
+    type Buzzer = crate::Absent;
+
     fn open(&self, format: Format) -> Result<()> {
         self.codec.open(format)
     }
