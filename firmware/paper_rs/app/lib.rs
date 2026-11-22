@@ -38,7 +38,8 @@ const TAG: &CStr = c"paper_rs";
 
 const LEVELS: usize = 16;
 const MARGIN: usize = 12;
-const LEVELS_H: usize = 60;
+// The layout's lengths are multiples of the largest alignment a panel asks.
+const LEVELS_H: usize = 64;
 const MARK: usize = 48;
 const INFO_Y: usize = LEVELS_H + MARGIN;
 const LINE_H: usize = 36;
@@ -102,6 +103,7 @@ struct App {
     writer: Writer,
     w: usize,
     h: usize,
+    align: usize,
     last: String,
 }
 
@@ -138,6 +140,7 @@ fn start(board: Board) {
         writer: Writer::new(),
         w: usize::from(size.width),
         h: usize::from(size.height),
+        align: usize::from(display.alignment()),
         last: "-".to_string(),
     };
     app.log("set_mode", epd.set_mode(EpdMode::Hold));
@@ -153,8 +156,9 @@ fn rect(x: usize, y: usize, w: usize, h: usize) -> Rect {
     Rect::new(x as i16, y as i16, w as i16, h as i16)
 }
 
-fn button_rect(i: usize, w: usize) -> (usize, usize) {
+fn button_rect(i: usize, w: usize, align: usize) -> (usize, usize) {
     let bw = (w - MARGIN * (BUTTONS.len() + 1)) / BUTTONS.len();
+    let bw = bw - bw % align;
     (MARGIN + i * (bw + MARGIN), bw)
 }
 
@@ -249,7 +253,7 @@ impl App {
     }
 
     fn draw_button(&mut self, i: usize, pressed: bool) -> Rect {
-        let (x, bw) = button_rect(i, self.w);
+        let (x, bw) = button_rect(i, self.w, self.align);
         let (paper, ink) = if pressed { (0x00, 0xFF) } else { (0xFF, 0x00) };
         let mut canvas = Canvas::new(bw, BUTTON_H, 0x00);
         canvas.fill(BORDER, BORDER, bw - BORDER * 2, BUTTON_H - BORDER * 2, paper);
@@ -347,6 +351,7 @@ impl App {
         }
         let x = x.saturating_sub(DOT / 2).min(self.w - DOT);
         let y = (y - DOT / 2).min(self.h - DOT);
+        let (x, y) = (x - x % self.align, y - y % self.align);
         let area = self.put(x, y, &Canvas::new(DOT, DOT, 0x00));
         self.log("refresh", self.epd.refresh(area, Waveform::Fast, false));
     }
@@ -357,7 +362,7 @@ impl App {
             return None;
         }
         (0..BUTTONS.len()).find(|&i| {
-            let (bx, bw) = button_rect(i, self.w);
+            let (bx, bw) = button_rect(i, self.w, self.align);
             (bx..bx + bw).contains(&x)
         })
     }

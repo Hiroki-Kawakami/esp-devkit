@@ -35,6 +35,8 @@ pub(crate) mod ft6336u;
 pub(crate) mod gt911;
 #[cfg(CONFIG_BSP_RS_DEVICE_INA226)]
 pub(crate) mod ina226;
+#[cfg(CONFIG_BSP_RS_DEVICE_IT8951E)]
+pub(crate) mod it8951e;
 #[cfg(CONFIG_BSP_RS_DEVICE_ILI9342C)]
 pub(crate) mod ili9342c;
 #[cfg(CONFIG_BSP_RS_DEVICE_ILI9881C)]

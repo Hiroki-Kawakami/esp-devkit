@@ -5,3 +5,9 @@ kind = "idf"
 
 [targets.simulator]
 kind = "sim"
+
+[targets.esp32]
+kind = "idf"
+
+[targets.simulator_paper]
+kind = "sim"

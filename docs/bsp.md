@@ -4,7 +4,7 @@ The board support package in Rust (`libs/bsp_rs`). The board is chosen with
 `CONFIG_BSP_RS_BOARD_*`, independent of the C `bsp`'s `CONFIG_BSP_BOARD_*`.
 `firmware/tab5_rs` builds it for the Tab5, `firmware/core_s3_rs` for the
 CoreS3, `firmware/stopwatch_rs` for the StopWatch and `firmware/paper_rs` for
-the PaperS3 and the LilyGo T5, each with its simulator.
+the PaperS3, the LilyGo T5 and the M5Paper, each with its simulator.
 
 ```rust
 let board = bsp_rs::init(&bsp_rs::Config::default())?;
@@ -43,7 +43,13 @@ up (the PaperS3's I2C SDA) is a PaperS3, a PCF8563 answering on GPIO18/17
   already done; the write waits while pixels of the area are still being
   driven to another gray. Every pixel replays its own waveform, so areas
   refresh independently. `init` takes the glass as white without driving it.
-- On such a board, `display::epd_ll::Waveforms::of(display)` replaces a
+- The M5Paper's IT8951E has its own waveforms and tracks the glass itself, so
+  `Seed` only loads its memory, and `all` drives with its flashing waveform. A
+  write goes into that memory before returning, turned by the chip, in L8 or L4
+  (`reconfigure` switches; the alignment is 2 or 4 pixels). It waits only when
+  the area is still being driven. The chip stands by 3 s after the last command
+  and wakes on the next.
+- On a board driving the glass itself, `display::epd_ll::Waveforms::of(display)` replaces a
   waveform while the firmware runs (`firmware/epd_tweak`): `set` waits until
   nothing is being driven and hands back the table it replaces, `get` copies
   one out. Only device builds with `driver/epd_ll` have it.

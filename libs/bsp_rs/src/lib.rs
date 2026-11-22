@@ -44,6 +44,8 @@ use boards::atom_s3_lite as board;
 use boards::core2 as board;
 #[cfg(CONFIG_BSP_RS_BOARD_CORE_S3)]
 use boards::core_s3 as board;
+#[cfg(CONFIG_BSP_RS_BOARD_PAPER)]
+use boards::paper as board;
 #[cfg(CONFIG_BSP_RS_BOARD_PAPER_S3)]
 use boards::paper_s3 as board;
 #[cfg(CONFIG_BSP_RS_BOARD_STOPWATCH)]

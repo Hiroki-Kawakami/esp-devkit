@@ -398,7 +398,8 @@ impl Display {
         }
         let size = self.size();
         let (x, y, w, h) = unsigned(area).ok_or(Error::INVALID_ARG)?;
-        if x + w > u32::from(size.width) || y + h > u32::from(size.height) || format.bits() % 8 != 0 {
+        let bits = format.bits() as u32;
+        if x + w > u32::from(size.width) || y + h > u32::from(size.height) || x * bits % 8 != 0 || w * bits % 8 != 0 {
             return Err(Error::INVALID_ARG);
         }
         let align = u32::from(self.alignment());
