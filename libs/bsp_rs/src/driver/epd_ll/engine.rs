@@ -51,7 +51,8 @@ pub(crate) trait Control: Send + Sync {
     fn frame_begin(&self);
     /// After the last line has gone out.
     fn frame_end(&self);
-    /// Before a line goes out.
+    /// Before a line goes out; from the bus interrupt when lines are queued
+    /// back to back.
     fn line_begin(&self);
     /// Once a line has gone out, from the bus interrupt.
     fn line_latch(&self);
@@ -161,14 +162,22 @@ fn level(pin: i32, high: bool) {
 /// Read by the bus interrupt.
 struct Latch {
     control: Box<dyn Control>,
-    /// Held while a line is on the bus; the bus interrupt gives it back.
+    /// A token per line queued to the bus, `QUEUE_DEPTH` in all; the bus
+    /// interrupt gives each back once its line has gone out.
     free: Semaphore,
+    /// Lines queued and not yet sent. Whoever takes it from 0 begins the next
+    /// line; otherwise the interrupt of the line before begins it, before the
+    /// bus starts it.
+    queued: AtomicU32,
 }
 
 // The bus interrupt is not allocated IRAM-safe, so this may stay in flash.
 unsafe extern "C" fn line_sent(_io: sys::esp_lcd_panel_io_handle_t, _data: *mut sys::esp_lcd_panel_io_event_data_t, ctx: *mut c_void) -> bool {
     let latch = unsafe { &*ctx.cast::<Latch>() };
     latch.control.line_latch();
+    if latch.queued.fetch_sub(1, Ordering::AcqRel) > 1 {
+        latch.control.line_begin();
+    }
     latch.free.give_from_isr();
     false
 }
@@ -242,11 +251,15 @@ impl Bus {
         &*self.latch.control
     }
 
-    /// Blocks, rather than spinning, so the core stays with other tasks
-    /// whatever this one's priority.
+    /// Until every queued line has gone out. Blocks, rather than spinning, so
+    /// the core stays with other tasks whatever this one's priority.
     fn wait(&self) {
-        self.latch.free.take();
-        self.latch.free.give();
+        for _ in 0..QUEUE_DEPTH {
+            self.latch.free.take();
+        }
+        for _ in 0..QUEUE_DEPTH {
+            self.latch.free.give();
+        }
     }
 
     fn frame_begin(&self) {
@@ -254,14 +267,22 @@ impl Bus {
         self.control().frame_begin();
     }
 
-    /// Waits for the line before, which the bus interrupt latched; `line`
-    /// stays in use until the next call.
-    fn write_line(&self, line: &DmaBuffer) {
+    /// Waits for a token, so the line queued `QUEUE_DEPTH` before has gone out
+    /// and its buffer is free again.
+    fn reserve(&self) {
         self.latch.free.take();
-        self.control().line_begin();
+    }
+
+    /// Queues `line` after a `reserve`; it stays in use until `QUEUE_DEPTH`
+    /// more lines are reserved.
+    fn write_line(&self, line: &DmaBuffer) {
+        if self.latch.queued.fetch_add(1, Ordering::AcqRel) == 0 {
+            self.control().line_begin();
+        }
         let data = unsafe { slice::from_raw_parts(line.as_ptr(), self.tx_len) };
         if let Err(err) = unsafe { self.io.tx_color(-1, data) } {
             error!(TAG, "line: {err}");
+            self.latch.queued.fetch_sub(1, Ordering::AcqRel);
             self.latch.free.give();
         }
     }
@@ -698,7 +719,7 @@ struct Scan {
     /// Internal RAM, so the scan never reaches the waveforms in flash; the
     /// last one stays all hold.
     act_pool: Box<[[u8; 256]; ACT_POOL + 1], Caps>,
-    lines: [DmaBuffer; 2],
+    lines: [DmaBuffer; QUEUE_DEPTH],
     hold_line: DmaBuffer,
     uni_line: DmaBuffer,
     line_bytes: usize,
@@ -761,13 +782,14 @@ fn run_frame(shared: &Shared, scan: &mut Scan) {
     let bus = &scan.bus;
     bus.frame_begin();
     for y in 0..h {
+        bus.reserve();
         let nonidle = usize::from(shared.row_nonidle[y].load(Ordering::Relaxed));
         let line = if nonidle == 0 {
             &scan.hold_line
         } else if uniform.is_some() && nonidle == w {
             &scan.uni_line
         } else {
-            let line = &scan.lines[y & 1];
+            let line = &scan.lines[y % QUEUE_DEPTH];
             let dst = unsafe { slice::from_raw_parts_mut(line.as_ptr(), scan.line_bytes) };
             if flat {
                 wf::blit_line_tab(shared.row(y), &tabs, dst);
@@ -941,12 +963,13 @@ impl EpdLl {
             pclk_hz: config.pclk_hz,
             tx_len: usize::from(line_bytes) + usize::from(config.line_padding),
         };
-        let latch = Box::new(Latch { control: config.control, free: Semaphore::try_new(1, 1)? });
+        let depth = QUEUE_DEPTH as u32;
+        let latch = Box::new(Latch { control: config.control, free: Semaphore::try_new(depth, depth)?, queued: AtomicU32::new(0) });
         let bus = Bus::new_off(&wiring, latch, config.core).inspect_err(|err| error!(TAG, "bus: {err}"))?;
         bus.control().power_off();
         let tx_len = bus.tx_len;
         let line = || bus.io.alloc_buffer(tx_len, Caps::DMA | Caps::INTERNAL);
-        let (lines, hold_line, uni_line) = ([line()?, line()?], line()?, line()?);
+        let (lines, hold_line, uni_line) = ([line()?, line()?, line()?, line()?], line()?, line()?);
         let act_pool = heap::zeroed_box::<[[u8; 256]; ACT_POOL + 1]>(Caps::INTERNAL)?;
         // Straight into the heap: on the stack it would take more than a
         // default main task has.
