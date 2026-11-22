@@ -27,7 +27,7 @@
 //! a draw never stops a replay with one still ahead.
 
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU8, AtomicU16, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU16, AtomicU32, Ordering};
 
 use idf::heap::{self, Caps};
 use idf::{Error, Result};
@@ -387,9 +387,35 @@ fn blit(row: &[Pixel], dst: &mut [u8], act: impl Fn(u16) -> u32) -> bool {
     acc != 0
 }
 
+fn act_of(acts: &Acts, v: u32) -> u32 {
+    u32::from(acts[v as usize & (GROUPS * 256 - 1)])
+}
+
 /// `row.len()` is a multiple of 4.
 pub(crate) fn blit_line(row: &[Pixel], acts: &Acts, dst: &mut [u8]) -> bool {
-    blit(row, dst, |v| u32::from(acts[usize::from(v) & (GROUPS * 256 - 1)]))
+    if row.as_ptr() as usize % 4 != 0 {
+        return blit(row, dst, |v| act_of(acts, u32::from(v)));
+    }
+    // Two pixels a load, the first in the low half: each half is as one
+    // 16-bit store left it, which is all a pixel needs.
+    let pairs = unsafe { core::slice::from_raw_parts(row.as_ptr().cast::<AtomicU32>(), row.len() / 2) };
+    let mut acc = 0;
+    let mut chunks = pairs.chunks_exact(4);
+    for (p, d) in (&mut chunks).zip(dst.chunks_exact_mut(2)) {
+        let w = [p[0].load(Ordering::Relaxed), p[1].load(Ordering::Relaxed), p[2].load(Ordering::Relaxed), p[3].load(Ordering::Relaxed)];
+        let a = [act_of(acts, w[0]), act_of(acts, w[0] >> 16), act_of(acts, w[1]), act_of(acts, w[1] >> 16)];
+        let b = [act_of(acts, w[2]), act_of(acts, w[2] >> 16), act_of(acts, w[3]), act_of(acts, w[3] >> 16)];
+        d[0] = pack(a);
+        d[1] = pack(b);
+        acc |= d[0] | d[1];
+    }
+    if let [p0, p1] = chunks.remainder() {
+        let (w0, w1) = (p0.load(Ordering::Relaxed), p1.load(Ordering::Relaxed));
+        let last = pack([act_of(acts, w0), act_of(acts, w0 >> 16), act_of(acts, w1), act_of(acts, w1 >> 16)]);
+        dst[row.len() / 4 - 1] = last;
+        acc |= last;
+    }
+    acc != 0
 }
 
 /// Flattens a frame into an action per `dc << 4 | target`.
@@ -680,15 +706,19 @@ mod tests {
     fn blit_follows_the_frames() {
         let wf = slots(Some(0), Some(1));
         let gs = groups(&[(0, 0), (0, 1), (0, 2), (1, 0), (1, 1)]);
+        #[repr(align(4))]
+        struct Aligned([Pixel; 70]);
         let mut seed: u32 = 12345;
-        for frame in 0..12 {
+        for frame in 0..24 {
             let (acts, _) = tables(&wf, &gs, frame, false);
-            let row: [Pixel; 64] = core::array::from_fn(|_| {
+            let pixels = Aligned(core::array::from_fn(|_| {
                 seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
                 AtomicU16::new((seed >> 8) as u16 & 0x0FFF)
-            });
-            let mut dst = [0; 16];
-            line(&row, &acts, &mut dst);
+            }));
+            // In pairs, with a tail of four, and one pixel off the pairs.
+            let row = if frame % 2 == 0 { &pixels.0[..68] } else { &pixels.0[1..69] };
+            let mut dst = [0; 17];
+            line(row, &acts, &mut dst);
             for (i, px) in row.iter().enumerate() {
                 let v = usize::from(get(px));
                 let frame_of = |g: usize| match gs[g] {
