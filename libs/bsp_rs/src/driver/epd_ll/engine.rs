@@ -20,7 +20,7 @@ use idf::sync::{Mutex, MutexGuard, Receiver, Semaphore, Sender, channel};
 use idf::time::delay_us;
 use idf::{Error, Result, gpio, sys, system, thread};
 
-use super::waveform::{self as wf, B1_IDLE, B1_PENDING, DC_ZERO, Frame, Next, Pixel, Retire, Rowset, SLOTS, Waveform};
+use super::waveform::{self as wf, Acts, DC_ZERO, Frame, G_FIRST, G_IDLE, G_PENDING, GROUPS, Group, Next, Pixel, Retire, SLOTS, Waveform};
 use crate::Absent;
 use crate::display::{self, Driver, EpdDriver, EpdMode, GramDriver, Image, ImageFormat, Rect, RefreshUnit, Rotation, Size, Ticket};
 
@@ -30,10 +30,6 @@ const SLOT_QUALITY: usize = 1;
 const SLOT_CLEAR: usize = 3;
 const QUEUE_DEPTH: usize = 4;
 const DMA_BURST: usize = 64;
-/// Most distinct frames one frame flattens; beyond it the scan reads the
-/// waveforms themselves.
-const ACT_POOL: usize = 16;
-const ACT_HOLD: usize = ACT_POOL;
 const TASK_STACK: usize = 6144;
 const WRITE_STACK: usize = 4096;
 /// Writes, refreshes and the like a writer may have queued.
@@ -295,8 +291,10 @@ impl Bus {
 
 /// Written under `Shared::lock`.
 struct Counters {
-    /// Pixels per `b1`, idle ones aside.
-    group: Box<[u32; 256], Caps>,
+    /// The replaying groups, from `G_FIRST`.
+    groups: [Option<Group>; GROUPS],
+    /// Pixels per replaying group.
+    members: [u32; GROUPS],
     active_px: u32,
     /// Mod 64.
     frame: u8,
@@ -312,6 +310,58 @@ struct Counters {
     /// The table of the slot was a `Box` given to `set_waveform`, leaked
     /// while in use.
     owned: [bool; SLOTS],
+}
+
+impl Counters {
+    /// The group a pixel armed with `slot` now joins, to start with the next
+    /// frame; none while every group replays. It is given back once empty, so
+    /// its pixels are counted with `enter` at once.
+    fn join(&mut self, slot: usize) -> Option<u8> {
+        let group = Some(Group { slot, start: wf::start_after(self.frame) });
+        let replaying = usize::from(G_FIRST)..GROUPS;
+        let g = replaying.clone().find(|&g| self.groups[g] == group).or_else(|| replaying.clone().find(|&g| self.groups[g].is_none()))?;
+        self.groups[g] = group;
+        Some(g as u8)
+    }
+
+    fn enter(&mut self, g: u8, n: u32) {
+        self.members[usize::from(g)] += n;
+        self.active_px += n;
+    }
+
+    fn leave(&mut self, g: u8, n: u32) {
+        let g = usize::from(g);
+        self.members[g] -= n;
+        self.active_px -= n;
+        if self.members[g] == 0 {
+            self.groups[g] = None;
+        }
+    }
+
+    /// Gives back `g` if `join` gave it and no pixel entered.
+    fn unused(&mut self, g: u8) {
+        if self.members[usize::from(g)] == 0 {
+            self.groups[usize::from(g)] = None;
+        }
+    }
+
+    /// The waveform and start of a replaying `px`.
+    fn replay_of(&self, px: u16) -> (Option<&Waveform>, u8) {
+        match self.groups[usize::from(wf::group_of(px)) & (GROUPS - 1)] {
+            Some(Group { slot, start }) => (self.wf[slot].as_ref(), start),
+            None => (None, 0),
+        }
+    }
+
+    /// Defers a refresh with `slot` of `area` until its replaying pixels are
+    /// drawn, merged with one already deferred once there are too many.
+    fn defer(&mut self, area: Rect, slot: usize) {
+        let full = self.deferred.len() >= MAX_DEFERRED;
+        match self.deferred.iter_mut().find(|(_, s)| *s == slot) {
+            Some((kept, _)) if full => *kept = kept.union(&area),
+            _ => self.deferred.push((area, slot)),
+        }
+    }
 }
 
 struct Shared {
@@ -394,19 +444,17 @@ impl Shared {
             while self.area_has_active(x0, y0, x0 + w, y0 + h) {
                 guard = self.wait_retire(guard);
             }
-            let Counters { group, wf: waveforms, .. } = &mut *guard;
-            let end = waveforms[SLOT_QUALITY].as_ref().map_or(&wf::KEEP, |q| q.dc_after(q.steps()));
+            let end = guard.wf[SLOT_QUALITY].as_ref().map_or(&wf::KEEP, |q| q.dc_after(q.steps()));
             for r in 0..h {
                 let y = y0 + r;
                 let mut subsumed = 0;
                 for (x, g) in (x0..x0 + w).zip(grays(r)) {
                     let i = y * self.width + x;
                     let v = self.state[i].load(Ordering::Relaxed);
-                    subsumed += u16::from((v >> 8) as u8 == B1_PENDING);
+                    subsumed += u16::from(wf::group_of(v) == G_PENDING);
                     self.state[i].store(wf::seed_px(v, g, end), Ordering::Relaxed);
                 }
                 sub(&self.row_nonidle[y], subsumed);
-                group[usize::from(B1_PENDING)] -= u32::from(subsumed);
             }
             return Ok(());
         }
@@ -423,10 +471,18 @@ impl Shared {
             let start = y * self.width + x0;
             let (row, next) = (&self.state[start..][..w], &self.next[start..][..w]);
             let mut guard = self.lock.lock();
+            let slot = slot.filter(|&s| guard.wf[s].is_some());
+            let group = match slot {
+                Some(s) => loop {
+                    if let Some(g) = guard.join(s) {
+                        break Some(g);
+                    }
+                    guard = self.wait_retire(guard);
+                },
+                None => None,
+            };
             let counters = &mut *guard;
-            let slot = slot.filter(|&s| counters.wf[s].is_some());
-            let b1 = slot.map(|s| wf::armed(s, counters.frame));
-            let (mut gained, mut armed, mut pending, mut waiting) = (0u16, 0u32, 0i32, 0i32);
+            let (mut gained, mut armed, mut waiting) = (0u16, 0u32, 0i32);
             for ((px, n), g) in row.iter().zip(next).zip(grays(r)) {
                 let v = px.load(Ordering::Relaxed);
                 if wf::is_active(v) {
@@ -438,30 +494,28 @@ impl Shared {
                     }
                     continue;
                 }
-                let d = wf::draw_px(v, g, b1, all);
+                let d = wf::draw_px(v, g, group, all);
                 if d == v {
                     continue;
                 }
                 px.store(d, Ordering::Relaxed);
-                let (was, now) = ((v >> 8) as u8, (d >> 8) as u8);
-                gained += u16::from(was == B1_IDLE);
-                pending += i32::from(now == B1_PENDING) - i32::from(was == B1_PENDING);
-                if now < B1_PENDING {
+                gained += u16::from(wf::group_of(v) == G_IDLE);
+                if wf::is_active(d) {
                     n.store(g, Ordering::Relaxed);
                     armed += 1;
                 }
             }
             add(&self.row_nonidle[y], gained);
-            let p = &mut counters.group[usize::from(B1_PENDING)];
-            *p = p.wrapping_add_signed(pending);
             if waiting != 0 {
                 add(&self.row_waiting[y], waiting as u16);
                 counters.waiting_px = counters.waiting_px.wrapping_add_signed(waiting);
             }
-            if let Some(b1) = b1.filter(|_| armed != 0) {
-                counters.group[usize::from(b1)] += armed;
-                counters.active_px += armed;
-                wake |= self.start(counters);
+            if let Some(g) = group {
+                counters.enter(g, armed);
+                counters.unused(g);
+                if armed != 0 {
+                    wake |= self.start(counters);
+                }
             }
         }
         if wake {
@@ -485,8 +539,8 @@ impl Shared {
             let start = y * self.width;
             let (row, next) = (&self.state[start..][..self.width], &self.next[start..][..self.width]);
             let mut guard = self.lock.lock();
-            let Counters { group, wf: waveforms, frame, active_px, waiting_px, .. } = &mut *guard;
-            let (mut settled, mut rearmed) = (0u16, 0u32);
+            let mut joined = [None; SLOTS];
+            let mut settled = 0u16;
             for (px, cell) in row.iter().zip(next) {
                 let v = px.load(Ordering::Relaxed);
                 if !wf::is_active(v) {
@@ -497,93 +551,87 @@ impl Shared {
                 if u16::from(gray) == v & 15 {
                     continue;
                 }
-                let b1 = (v >> 8) as u8;
-                let Some(dc) = wf::cut_dc(waveforms[usize::from(b1 >> 6)].as_ref(), *frame, b1) else { continue };
+                let (replay, start) = guard.replay_of(v);
+                let Some(dc) = wf::cut_dc(replay, guard.frame, start) else { continue };
                 let cut = wf::cut_px(v, gray, dc);
-                group[usize::from(b1)] -= 1;
-                settled += 1;
-                match wf::next_slot(n).filter(|&s| waveforms[s].is_some()) {
+                // With every group replaying, it goes on and is cut a frame
+                // later.
+                match wf::next_slot(n).filter(|&s| guard.wf[s].is_some()) {
                     Some(slot) => {
-                        let armed = wf::armed(slot, *frame);
-                        px.store((cut & 0x00FF) | u16::from(armed) << 8, Ordering::Relaxed);
+                        let Some(g) = joined[slot].or_else(|| guard.join(slot)) else { continue };
+                        joined[slot] = Some(g);
+                        // In first, as it may be the group it leaves.
+                        guard.enter(g, 1);
+                        px.store(wf::in_group(cut, g), Ordering::Relaxed);
                         cell.store(gray, Ordering::Relaxed);
-                        group[usize::from(armed)] += 1;
-                        rearmed += 1;
                     }
-                    None => {
-                        px.store(cut, Ordering::Relaxed);
-                        group[usize::from(B1_PENDING)] += 1;
-                    }
+                    None => px.store(cut, Ordering::Relaxed),
                 }
+                guard.leave(wf::group_of(v), 1);
+                settled += 1;
             }
-            *active_px -= u32::from(settled) - rearmed;
             sub(&self.row_waiting[y], settled);
-            *waiting_px -= u32::from(settled);
+            guard.waiting_px -= u32::from(settled);
         }
     }
 
-    /// The refreshes pixels that were replaying missed, once those are drawn.
+    /// The refreshes pixels that were replaying missed, once those are drawn;
+    /// kept while every group replays.
     fn arm_deferred(&self, counters: &mut Counters) {
         for (area, slot) in core::mem::take(&mut counters.deferred) {
-            self.arm(counters, area, slot, false);
-            if self.waiting_in(area) {
+            let armed = counters.wf[slot].is_none() || counters.join(slot).is_some_and(|g| {
+                self.arm(counters, area, g, false);
+                true
+            });
+            if !armed || self.waiting_in(area) {
                 counters.deferred.push((area, slot));
             }
         }
     }
 
-    /// Arms the pending pixels of `area` with `slot`, and the idle ones too
-    /// with `all`; those replaying go on. Whether the scan is to be woken.
-    fn arm(&self, counters: &mut Counters, area: Rect, slot: usize, all: bool) -> bool {
-        if counters.wf[slot].is_none() {
-            return false;
-        }
+    /// Arms the pending pixels of `area` in `g`, from `join`, and the idle ones
+    /// too with `all`; those replaying go on. Whether the scan is to be woken.
+    fn arm(&self, counters: &mut Counters, area: Rect, g: u8, all: bool) -> bool {
         let (x0, y0) = (area.x as usize, area.y as usize);
         let (x1, y1) = (x0 + area.w as usize, y0 + area.h as usize);
-        let b1 = wf::armed(slot, counters.frame);
         let mut armed = 0;
         for y in y0..y1 {
             if !all && self.row_nonidle[y].load(Ordering::Relaxed) == 0 {
                 continue;
             }
+            let start = y * self.width + x0;
+            let (row, next) = (&self.state[start..][..x1 - x0], &self.next[start..][..x1 - x0]);
             let (mut row_armed, mut new_nonidle) = (0u32, 0u16);
-            for x in x0..x1 {
-                let i = y * self.width + x;
-                let px = &self.state[i];
+            for (px, n) in row.iter().zip(next) {
                 let v = px.load(Ordering::Relaxed);
-                let pb1 = (v >> 8) as u8;
-                if pb1 == B1_PENDING {
-                    counters.group[usize::from(B1_PENDING)] -= 1;
-                } else if !(all && pb1 == B1_IDLE) {
-                    continue;
-                } else {
-                    new_nonidle += 1;
+                match wf::group_of(v) {
+                    G_PENDING => {}
+                    G_IDLE if all => new_nonidle += 1,
+                    _ => continue,
                 }
-                px.store((v & 0x00FF) | u16::from(b1) << 8, Ordering::Relaxed);
-                self.next[i].store((v & 15) as u8, Ordering::Relaxed);
+                px.store(wf::in_group(v, g), Ordering::Relaxed);
+                n.store((v & 15) as u8, Ordering::Relaxed);
                 row_armed += 1;
             }
             add(&self.row_nonidle[y], new_nonidle);
             armed += row_armed;
         }
-        if armed == 0 {
-            return false;
-        }
-        counters.group[usize::from(b1)] += armed;
-        counters.active_px += armed;
-        self.start(counters)
+        counters.enter(g, armed);
+        counters.unused(g);
+        armed != 0 && self.start(counters)
     }
 
     /// `waveform::retire_row` for a row where some replaying pixels were
     /// written: those go on to what was written. How many finished, how many
     /// of them went idle, and how many replay again.
-    fn retire_waiting_row(&self, counters: &mut Counters, y: usize, retire_tab: &[Retire; 256]) -> (u16, u16, u32) {
-        let (mut retired, mut freed, mut pending, mut rearmed) = (0u16, 0u16, 0u32, 0u32);
+    fn retire_waiting_row(&self, counters: &mut Counters, y: usize, retire_tab: &[Retire; GROUPS]) -> (u16, u16) {
+        let (mut retired, mut freed, mut settled) = (0u16, 0u16, 0u16);
+        let mut joined = [None; SLOTS];
         let start = y * self.width;
         let (row, next) = (&self.state[start..][..self.width], &self.next[start..][..self.width]);
-        for (px, cell) in row.iter().zip(next) {
+        for (x, (px, cell)) in row.iter().zip(next).enumerate() {
             let v = px.load(Ordering::Relaxed);
-            let retire = retire_tab[usize::from(v >> 8)];
+            let retire = retire_tab[usize::from(wf::group_of(v)) & (GROUPS - 1)];
             if retire.is_null() {
                 continue;
             }
@@ -593,48 +641,57 @@ impl Shared {
             let (target, gray) = (v & 15, u16::from(wf::next_gray(n)));
             retired += 1;
             if gray == target {
-                px.store(0xFF00 | dc << 4 | target, Ordering::Relaxed);
+                px.store(u16::from(G_IDLE) << 8 | dc << 4 | target, Ordering::Relaxed);
                 freed += 1;
                 continue;
             }
-            match wf::next_slot(n).filter(|&s| counters.wf[s].is_some()) {
-                Some(slot) => {
-                    let armed = wf::armed(slot, counters.frame);
-                    px.store(u16::from(armed) << 8 | dc << 4 | gray, Ordering::Relaxed);
+            settled += 1;
+            let pending = u16::from(G_PENDING) << 8 | dc << 4 | gray;
+            let Some(slot) = wf::next_slot(n).filter(|&s| counters.wf[s].is_some()) else {
+                px.store(pending, Ordering::Relaxed);
+                continue;
+            };
+            match joined[slot].or_else(|| counters.join(slot)) {
+                Some(g) => {
+                    joined[slot] = Some(g);
+                    counters.enter(g, 1);
+                    px.store(wf::in_group(pending, g), Ordering::Relaxed);
                     cell.store(gray as u8, Ordering::Relaxed);
-                    counters.group[usize::from(armed)] += 1;
-                    rearmed += 1;
                 }
+                // With every group replaying, it waits for a frame as pending.
                 None => {
-                    px.store(u16::from(B1_PENDING) << 8 | dc << 4 | gray, Ordering::Relaxed);
-                    pending += 1;
+                    px.store(pending, Ordering::Relaxed);
+                    counters.defer(Rect::new(x as i16, y as i16, 1, 1), slot);
                 }
             }
         }
-        let settled = pending + rearmed;
-        counters.group[usize::from(B1_PENDING)] += pending;
-        sub(&self.row_waiting[y], settled as u16);
-        counters.waiting_px -= settled;
-        (retired, freed, rearmed)
+        sub(&self.row_waiting[y], settled);
+        counters.waiting_px -= u32::from(settled);
+        (retired, freed)
     }
 
     /// `arm`, and again between frames for what replaying pixels were
-    /// written.
-    fn refresh_locked(&self, counters: &mut Counters, area: Rect, slot: usize, all: bool) -> bool {
-        let wake = self.arm(counters, area, slot, all);
-        if self.waiting_in(area) {
-            let full = counters.deferred.len() >= MAX_DEFERRED;
-            match counters.deferred.iter_mut().find(|(_, s)| *s == slot) {
-                Some((kept, _)) if full => *kept = kept.union(&area),
-                _ => counters.deferred.push((area, slot)),
-            }
+    /// written. Waits while every group replays.
+    fn refresh_locked<'a>(&'a self, mut guard: MutexGuard<'a, Counters>, area: Rect, slot: usize, all: bool) -> (MutexGuard<'a, Counters>, bool) {
+        if guard.wf[slot].is_none() {
+            return (guard, false);
         }
-        wake
+        let g = loop {
+            if let Some(g) = guard.join(slot) {
+                break g;
+            }
+            guard = self.wait_retire(guard);
+        };
+        let wake = self.arm(&mut guard, area, g, all);
+        if self.waiting_in(area) {
+            guard.defer(area, slot);
+        }
+        (guard, wake)
     }
 
     fn refresh(&self, area: Rect, waveform: display::Waveform, all: bool) {
-        let mut guard = self.lock.lock();
-        let wake = self.refresh_locked(&mut guard, area, slot_of(waveform), all);
+        let guard = self.lock.lock();
+        let (guard, wake) = self.refresh_locked(guard, area, slot_of(waveform), all);
         drop(guard);
         if wake {
             self.wake.give();
@@ -645,37 +702,27 @@ impl Shared {
         let (x0, y0) = (area.x as usize, area.y as usize);
         let (x1, y1) = (x0 + area.w as usize, y0 + area.h as usize);
         let mut guard = self.lock.lock();
-        // Armed at 61 or 62, its b1 would be a marker. With nothing replaying
-        // the frame count is free to move; otherwise the frames move it on.
-        loop {
-            if guard.active_px == 0 && matches!(guard.frame, 61 | 62) {
-                guard.frame = 63;
-            }
-            if !matches!(guard.frame, 61 | 62) && !self.area_has_active(x0, y0, x1, y1) {
-                break;
+        let g = loop {
+            if !self.area_has_active(x0, y0, x1, y1)
+                && let Some(g) = guard.join(SLOT_CLEAR)
+            {
+                break g;
             }
             guard = self.wait_retire(guard);
-        }
-        let b1 = wf::armed(SLOT_CLEAR, guard.frame);
-        let mut armed = 0;
-        let Counters { group, .. } = &mut *guard;
+        };
         for y in y0..y1 {
             let mut now_nonidle = 0u16;
-            for x in x0..x1 {
-                let i = y * self.width + x;
-                let v = self.state[i].load(Ordering::Relaxed);
-                match (v >> 8) as u8 {
-                    B1_PENDING => group[usize::from(B1_PENDING)] -= 1,
-                    _ => now_nonidle += 1,
-                }
-                self.state[i].store(u16::from(b1) << 8 | (v & 0x00F0) | 15, Ordering::Relaxed);
-                self.next[i].store(15, Ordering::Relaxed);
+            let start = y * self.width + x0;
+            let (row, next) = (&self.state[start..][..x1 - x0], &self.next[start..][..x1 - x0]);
+            for (px, n) in row.iter().zip(next) {
+                let v = px.load(Ordering::Relaxed);
+                now_nonidle += u16::from(wf::group_of(v) == G_IDLE);
+                px.store(u16::from(g) << 8 | (v & 0x00F0) | 15, Ordering::Relaxed);
+                n.store(15, Ordering::Relaxed);
             }
             add(&self.row_nonidle[y], now_nonidle);
-            armed += (x1 - x0) as u32;
         }
-        guard.group[usize::from(b1)] += armed;
-        guard.active_px += armed;
+        guard.enter(g, ((x1 - x0) * (y1 - y0)) as u32);
         let wake = self.start(&mut guard);
         drop(guard);
         if wake {
@@ -688,7 +735,7 @@ impl Shared {
         let (x0, y0) = (area.x as usize, area.y as usize);
         let (x1, y1) = (x0 + area.w as usize, y0 + area.h as usize);
         let guard = self.lock.lock();
-        let stopping = (0..usize::from(B1_PENDING)).any(|b1| guard.group[b1] != 0 && guard.wf[b1 >> 6].as_ref().is_some_and(Waveform::stops));
+        let stopping = guard.groups.iter().flatten().any(|group| guard.wf[group.slot].as_ref().is_some_and(Waveform::stops));
         if !stopping {
             return false;
         }
@@ -696,8 +743,8 @@ impl Shared {
             self.row_nonidle[y].load(Ordering::Relaxed) != 0
                 && self.row(y)[x0..x1].iter().any(|px| {
                     let v = px.load(Ordering::Relaxed);
-                    let b1 = (v >> 8) as u8;
-                    wf::is_active(v) && wf::cut_dc(guard.wf[usize::from(b1 >> 6)].as_ref(), guard.frame, b1).is_none()
+                    let (replay, start) = guard.replay_of(v);
+                    wf::is_active(v) && wf::cut_dc(replay, guard.frame, start).is_none()
                 })
         })
     }
@@ -713,89 +760,39 @@ impl Shared {
 /// What only the refresh task touches.
 struct Scan {
     bus: Bus,
-    rowset_tab: [Rowset; 256],
-    retire_tab: [Retire; 256],
-    act_index: [usize; 256],
-    /// Internal RAM, so the scan never reaches the waveforms in flash; the
-    /// last one stays all hold.
-    act_pool: Box<[[u8; 256]; ACT_POOL + 1], Caps>,
+    /// Internal RAM, so the scan never reaches the waveforms in flash.
+    acts: Box<Acts, Caps>,
+    retire_tab: [Retire; GROUPS],
     lines: [DmaBuffer; QUEUE_DEPTH],
     hold_line: DmaBuffer,
-    uni_line: DmaBuffer,
     line_bytes: usize,
 }
 
-// `rowset_tab` and `retire_tab` point into tables that are only replaced
-// while nothing replays, between frames.
+// `retire_tab` points into tables that are only replaced while nothing
+// replays, between frames.
 unsafe impl Send for Scan {}
 
 fn run_frame(shared: &Shared, scan: &mut Scan) {
-    let (w, h) = (shared.width, shared.height);
+    let h = shared.height;
     shared.settle_written();
     let mut guard = shared.lock.lock();
     shared.arm_deferred(&mut guard);
     guard.frame = (guard.frame + 1) & 63;
     let skip_settle = shared.waiters.load(Ordering::SeqCst) > 0;
-    wf::build_frame_tab(&guard.wf, guard.frame, skip_settle, &mut scan.rowset_tab, &mut scan.retire_tab);
-
-    // Whether anything finishes, and whether one frame that drives every
-    // pixel alike is all that replays, so one line serves every full row.
-    let (mut any_retire, mut multiple) = (false, false);
-    let mut only: Option<Rowset> = None;
-    for b1 in 0..256 {
-        if guard.group[b1] == 0 {
-            continue;
-        }
-        any_retire |= !scan.retire_tab[b1].is_null();
-        match only {
-            None => only = Some(scan.rowset_tab[b1]),
-            Some(f) => multiple |= !core::ptr::eq(f, scan.rowset_tab[b1]),
-        }
-    }
-    let uniform = match only {
-        Some(f) if !multiple && guard.group[usize::from(B1_PENDING)] == 0 => wf::rowset_uniform(unsafe { &*f }),
-        _ => None,
-    };
-    if let Some(byte) = uniform {
-        unsafe { scan.uni_line.as_ptr().write_bytes(byte, scan.line_bytes) };
-    }
-
-    let mut flat = true;
-    let mut used = 0;
-    scan.act_index = [ACT_HOLD; 256];
-    for b1 in 0..256 {
-        if guard.group[b1] == 0 || core::ptr::eq(scan.rowset_tab[b1], wf::hold()) {
-            continue;
-        }
-        if used == ACT_POOL {
-            flat = false;
-            break;
-        }
-        wf::build_act256(unsafe { &*scan.rowset_tab[b1] }, &mut scan.act_pool[used]);
-        scan.act_index[b1] = used;
-        used += 1;
-    }
+    wf::build_frame_tab(&guard.wf, &guard.groups, guard.frame, skip_settle, &mut scan.acts, &mut scan.retire_tab);
+    let any_retire = scan.retire_tab.iter().any(|r| !r.is_null());
     drop(guard);
 
-    let pool = &*scan.act_pool;
-    let tabs: [&[u8; 256]; 256] = core::array::from_fn(|b1| &pool[scan.act_index[b1]]);
     let bus = &scan.bus;
     bus.frame_begin();
     for y in 0..h {
         bus.reserve();
-        let nonidle = usize::from(shared.row_nonidle[y].load(Ordering::Relaxed));
-        let line = if nonidle == 0 {
+        let line = if shared.row_nonidle[y].load(Ordering::Relaxed) == 0 {
             &scan.hold_line
-        } else if uniform.is_some() && nonidle == w {
-            &scan.uni_line
         } else {
             let line = &scan.lines[y % QUEUE_DEPTH];
             let dst = unsafe { slice::from_raw_parts_mut(line.as_ptr(), scan.line_bytes) };
-            if flat {
-                wf::blit_line_tab(shared.row(y), &tabs, dst);
-            } else {
-                unsafe { wf::blit_line(shared.row(y), &scan.rowset_tab, dst) };
-            }
+            wf::blit_line(shared.row(y), &scan.acts, dst);
             line
         };
         bus.write_line(line);
@@ -811,20 +808,20 @@ fn run_frame(shared: &Shared, scan: &mut Scan) {
                 continue;
             }
             let mut guard = shared.lock.lock();
-            let (retired, freed, rearmed) = if shared.row_waiting[y].load(Ordering::Relaxed) == 0 {
+            let (retired, freed) = if shared.row_waiting[y].load(Ordering::Relaxed) == 0 {
                 let freed = unsafe { wf::retire_row(shared.row(y), &scan.retire_tab) };
-                (freed, freed, 0)
+                (freed, freed)
             } else {
                 shared.retire_waiting_row(&mut guard, y, &scan.retire_tab)
             };
             sub(&shared.row_nonidle[y], freed);
-            guard.active_px -= u32::from(retired) - rearmed;
             retired_total += u32::from(retired);
         }
         let mut guard = shared.lock.lock();
-        for b1 in 0..256 {
-            if !scan.retire_tab[b1].is_null() {
-                guard.group[b1] = 0;
+        for (g, retire) in scan.retire_tab.iter().enumerate() {
+            if !retire.is_null() {
+                let members = guard.members[g];
+                guard.leave(g as u8, members);
             }
         }
     }
@@ -947,7 +944,7 @@ impl EpdLl {
         }
 
         let mut state = heap::try_vec(width * height, Caps::SPIRAM)?;
-        state.extend((0..width * height).map(|_| AtomicU16::new(0xFF00 | DC_ZERO << 4 | 15)));
+        state.extend((0..width * height).map(|_| AtomicU16::new(u16::from(G_IDLE) << 8 | DC_ZERO << 4 | 15)));
         let mut row_nonidle = heap::try_vec(height, Caps::SPIRAM)?;
         row_nonidle.extend((0..height).map(|_| AtomicU16::new(0)));
         let mut next = heap::try_vec(width * height, Caps::SPIRAM)?;
@@ -969,21 +966,11 @@ impl EpdLl {
         bus.control().power_off();
         let tx_len = bus.tx_len;
         let line = || bus.io.alloc_buffer(tx_len, Caps::DMA | Caps::INTERNAL);
-        let (lines, hold_line, uni_line) = ([line()?, line()?, line()?, line()?], line()?, line()?);
-        let act_pool = heap::zeroed_box::<[[u8; 256]; ACT_POOL + 1]>(Caps::INTERNAL)?;
+        let (lines, hold_line) = ([line()?, line()?, line()?, line()?], line()?);
+        let acts = heap::zeroed_box::<Acts>(Caps::INTERNAL)?;
         // Straight into the heap: on the stack it would take more than a
         // default main task has.
-        let scan = boxed!(Scan {
-            bus,
-            rowset_tab: [wf::hold(); 256],
-            retire_tab: [core::ptr::null(); 256],
-            act_index: [ACT_HOLD; 256],
-            act_pool,
-            lines,
-            hold_line,
-            uni_line,
-            line_bytes: usize::from(line_bytes),
-        });
+        let scan = boxed!(Scan { bus, acts, retire_tab: [core::ptr::null(); GROUPS], lines, hold_line, line_bytes: usize::from(line_bytes) });
 
         let shared = Arc::new(Shared {
             width,
@@ -993,7 +980,8 @@ impl EpdLl {
             next: next.into_boxed_slice(),
             row_waiting: row_waiting.into_boxed_slice(),
             lock: Mutex::new(Counters {
-                group: heap::zeroed_box(Caps::INTERNAL)?,
+                groups: [None; GROUPS],
+                members: [0; GROUPS],
                 active_px: 0,
                 frame: 0,
                 running: false,
