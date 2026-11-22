@@ -14,6 +14,8 @@ pub mod adc;
 pub mod cache;
 mod error;
 pub mod executor;
+#[cfg(target_os = "none")]
+pub mod fat;
 pub mod freertos;
 pub mod fs;
 #[cfg(target_os = "none")]
@@ -35,6 +37,8 @@ pub mod nvs;
 pub mod partition;
 #[cfg(all(target_os = "none", CONFIG_SOC_SDMMC_HOST_SUPPORTED))]
 pub mod sdmmc;
+#[cfg(target_os = "none")]
+pub mod sdspi;
 #[cfg(target_os = "none")]
 pub mod spi;
 pub mod sync;

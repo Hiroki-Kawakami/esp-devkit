@@ -10,7 +10,7 @@ use idf::i2c::{BusConfig, MasterBus};
 use idf::log::{error, info, warn};
 use idf::sync::OnceLock;
 use idf::time::delay_us;
-use idf::{Result, gpio};
+use idf::{Result, gpio, spi};
 
 use super::power::PowerDriver;
 use super::t5::{self, ShiftControl};
@@ -23,9 +23,11 @@ use crate::devices::gt911::{self, Gt911};
 use crate::display::{self, Rotation};
 use crate::driver::epd_ll::{ControlPins, EpdLl};
 use crate::driver::pwm_buzzer::{self, PwmBuzzer};
+use crate::driver::sd_spi::{self, SdSpi};
 use crate::imu::{self, AxisMap, Imu};
 use crate::power;
 use crate::rtc::{self, Rtc};
+use crate::sd::{self, Sd};
 use crate::touch::{self, Touch};
 use crate::{Board, Config};
 
@@ -52,6 +54,14 @@ const BUZZER_CHANNEL: u32 = 0;
 
 // The chip lies turned half a turn in the panel's plane.
 const IMU_AXIS_MAP: AxisMap = AxisMap { x: -1, y: -2, z: 3 };
+
+const SD_SPI_HOST: i32 = 1;
+const SD_PIN_SCK: i32 = 39;
+const SD_PIN_MOSI: i32 = 38;
+const SD_PIN_MISO: i32 = 40;
+const SD_PIN_CS: i32 = 47;
+const SD_FREQ_KHZ: i32 = 20_000;
+const SD_MAX_TRANSFER: usize = 4000;
 
 // The PaperS3 pulls its I2C SDA up for good; on the T5 the pin is the
 // panel's CL, which nothing pulls.
@@ -141,6 +151,7 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
     let bus = i2c_init(model).ok();
     let touch = bus.and_then(|bus| touch_init(bus, model).inspect_err(|err| warn!(TAG, "touch unavailable: {err}")).ok());
     let rtc = bus.and_then(rtc_init);
+    let sd = sd_init(model);
     let imu = match model {
         Model::PaperS3 => bus.and_then(imu_init),
         Model::T5 => None,
@@ -163,7 +174,7 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
         imu,
         power,
         rtc,
-        sd: None,
+        sd,
         touch,
     })
 }
@@ -181,6 +192,17 @@ fn i2c_init(model: Model) -> Result<&'static MasterBus> {
 
 // A BM8563 on the PaperS3, whose INT reaches the power controller; a PCF8563,
 // the same registers, on the T5.
+fn sd_init(model: Model) -> Option<&'static Sd> {
+    let (sclk, mosi, miso, cs) = match model {
+        Model::PaperS3 => (SD_PIN_SCK, SD_PIN_MOSI, SD_PIN_MISO, SD_PIN_CS),
+        Model::T5 => (t5::SD_PIN_SCK, t5::SD_PIN_MOSI, t5::SD_PIN_MISO, t5::SD_PIN_CS),
+    };
+    spi::Bus::new(&spi::BusConfig { host: SD_SPI_HOST, sclk, mosi, miso: Some(miso), quad: None, max_transfer_bytes: SD_MAX_TRANSFER })
+        .and_then(|bus| sd::start(SdSpi::new(sd_spi::Config { bus, cs, max_freq_khz: SD_FREQ_KHZ })))
+        .inspect_err(|err| warn!(TAG, "sd unavailable: {err}"))
+        .ok()
+}
+
 // INT1 switches the power controller's trigger, as the off pulse does: left
 // at its reset state, output disabled, the chip never drives it.
 fn imu_init(bus: &'static MasterBus) -> Option<&'static Imu> {

@@ -8,9 +8,10 @@ use core::ffi::{CStr, c_void};
 use core::ptr;
 use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 
+use idf::fat::{FatConfig, FatMount};
 use idf::heap::Caps;
 use idf::log::error;
-use idf::sdmmc::{self, Command, FatConfig, FatMount, LdoPower, SlotPins};
+use idf::sdmmc::{self, Command, LdoPower, SlotPins};
 use idf::sync::{OnceLock, Semaphore};
 use idf::{Error, Result, sys};
 
@@ -211,7 +212,7 @@ impl Driver for SdmmcCard {
             allocation_unit_size: self.config.allocation_unit_size,
         };
         let _guard = self.controller.acquire();
-        let fat = unsafe { FatMount::mount(path, &host, &slot, &fat) }.inspect_err(|err| error!(TAG, "mount: {err}"))?;
+        let fat = unsafe { sdmmc::mount_fat(path, &host, &slot, &fat) }.inspect_err(|err| error!(TAG, "mount: {err}"))?;
         self.mounted = Some(Mounted { fat, _bounce: bounce });
         Ok(())
     }

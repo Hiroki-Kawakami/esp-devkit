@@ -25,6 +25,11 @@ pub(crate) const I2C_PIN_SCL: i32 = 17;
 pub(crate) const PIN_TOUCH_INT: i32 = 47;
 pub(crate) const RTC_ADDR: u16 = 0x51;
 
+pub(crate) const SD_PIN_SCK: i32 = 11;
+pub(crate) const SD_PIN_MOSI: i32 = 15;
+pub(crate) const SD_PIN_MISO: i32 = 16;
+pub(crate) const SD_PIN_CS: i32 = 42;
+
 const PIN_SR_DATA: i32 = 13;
 const PIN_SR_CLK: i32 = 12;
 const PIN_SR_STR: i32 = 0;

@@ -17,6 +17,8 @@ pub(crate) mod i2s_out;
 pub(crate) mod mipi_dsi;
 #[cfg(CONFIG_BSP_RS_DRIVER_PWM_BUZZER)]
 pub(crate) mod pwm_buzzer;
+#[cfg(CONFIG_BSP_RS_DRIVER_SD_SPI)]
+pub(crate) mod sd_spi;
 #[cfg(CONFIG_BSP_RS_DRIVER_SDMMC)]
 pub(crate) mod sdmmc;
 #[cfg(CONFIG_BSP_RS_DRIVER_SPI_LCD)]

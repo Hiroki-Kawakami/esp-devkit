@@ -3,11 +3,11 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
-use alloc::ffi::CString;
 use core::ffi::CStr;
 use core::mem;
 use core::ptr;
 
+use crate::fat::{FatConfig, FatMount};
 use crate::{Error, Result, sys};
 
 pub const FREQ_DEFAULT_KHZ: i32 = sys::SDMMC_FREQ_DEFAULT as i32;
@@ -117,56 +117,12 @@ impl Drop for LdoPower {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct FatConfig {
-    pub format_if_mount_failed: bool,
-    pub max_files: u8,
-    pub allocation_unit_size: usize,
-}
-
-/// A card mounted as FAT at a VFS path; unmounted on drop.
-pub struct FatMount {
-    path: CString,
-    card: *mut sys::sdmmc_card_t,
-}
-
-unsafe impl Send for FatMount {}
-
-impl FatMount {
-    /// The card and its host must stay set up until the mount is dropped.
-    pub unsafe fn mount(
-        path: &CStr,
-        host: &sys::sdmmc_host_t,
-        slot: &sys::sdmmc_slot_config_t,
-        config: &FatConfig,
-    ) -> Result<Self> {
-        let mut mount: sys::esp_vfs_fat_mount_config_t = unsafe { mem::zeroed() };
-        mount.format_if_mount_failed = config.format_if_mount_failed;
-        mount.max_files = i32::from(config.max_files);
-        mount.allocation_unit_size = config.allocation_unit_size;
-        let mut card = ptr::null_mut();
-        Error::check(unsafe {
-            sys::esp_vfs_fat_sdmmc_mount(path.as_ptr(), host, ptr::from_ref(slot).cast(), &mount, &mut card)
-        })?;
-        Ok(Self { path: path.into(), card })
-    }
-
-    /// Total and free bytes.
-    pub fn info(&self) -> Result<(u64, u64)> {
-        let (mut total, mut free) = (0, 0);
-        Error::check(unsafe { sys::esp_vfs_fat_info(self.path.as_ptr(), &mut total, &mut free) })?;
-        Ok((total, free))
-    }
-
-    pub fn unmount(self) -> Result<()> {
-        let mount = mem::ManuallyDrop::new(self);
-        let path = unsafe { ptr::read(&mount.path) };
-        Error::check(unsafe { sys::esp_vfs_fat_sdcard_unmount(path.as_ptr(), mount.card) })
-    }
-}
-
-impl Drop for FatMount {
-    fn drop(&mut self) {
-        unsafe { sys::esp_vfs_fat_sdcard_unmount(self.path.as_ptr(), self.card) };
+/// Mounts the card in `slot` as FAT. The host must stay set up until the
+/// mount is dropped.
+pub unsafe fn mount_fat(path: &CStr, host: &sys::sdmmc_host_t, slot: &sys::sdmmc_slot_config_t, config: &FatConfig) -> Result<FatMount> {
+    unsafe {
+        FatMount::mount(path, config, |path, mount, card| {
+            sys::esp_vfs_fat_sdmmc_mount(path, host, ptr::from_ref(slot).cast(), mount, card)
+        })
     }
 }

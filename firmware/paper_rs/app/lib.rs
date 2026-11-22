@@ -16,6 +16,7 @@ mod resources {
 
 use alloc::format;
 use alloc::string::{String, ToString};
+use alloc::vec;
 use core::ffi::CStr;
 use core::time::Duration;
 
@@ -24,7 +25,9 @@ use bsp_rs::audio::Note;
 use bsp_rs::display::{Display, Epd, EpdMode, Image, ImageFormat, Rect, Waveform};
 use bsp_rs::power::{Battery, PowerState};
 use bsp_rs::rtc::DateTime;
+use bsp_rs::sd::MountConfig;
 use bsp_rs::touch::{MAX_POINTS, Point};
+use idf::fs::File;
 use idf::log::{error, info};
 use idf::thread;
 use idf::time::Instant;
@@ -75,17 +78,22 @@ enum Action {
     Hold,
     Stop,
     RtcForward,
+    Sd,
     PowerOff,
 }
 
-const BUTTONS: [(Action, &str); 6] = [
+const BUTTONS: [(Action, &str); 7] = [
     (Action::Scale, "Scale"),
     (Action::Beeps, "Beeps"),
-    (Action::Hold, "Hold 440"),
+    (Action::Hold, "440 Hz"),
     (Action::Stop, "Stop"),
-    (Action::RtcForward, "RTC +1 min"),
-    (Action::PowerOff, "Off (hold)"),
+    (Action::RtcForward, "RTC +1m"),
+    (Action::Sd, "SD"),
+    (Action::PowerOff, "Off 2 s"),
 ];
+
+const SD_MOUNT: &CStr = c"/sdcard";
+const SD_FILE: &CStr = c"/sdcard/paper_rs.txt";
 
 struct App {
     board: Board,
@@ -281,30 +289,55 @@ impl App {
 
     fn act(&mut self, action: Action) {
         let name = BUTTONS.iter().find(|(a, _)| *a == action).map_or("?", |(_, n)| n);
+        let ok = |r: idf::Result<()>| r.map(|()| "ok".to_string()).map_err(|e| e.to_string());
         let result = match (action, self.board.audio) {
             (Action::Scale | Action::Beeps | Action::Hold | Action::Stop, None) => Err("no audio".to_string()),
-            (Action::Scale, Some(audio)) => audio.tone(&SCALE).map_err(|e| e.to_string()),
-            (Action::Beeps, Some(audio)) => audio.tone(&BEEPS).map_err(|e| e.to_string()),
-            (Action::Hold, Some(audio)) => audio.tone(&HOLD).map_err(|e| e.to_string()),
+            (Action::Scale, Some(audio)) => ok(audio.tone(&SCALE)),
+            (Action::Beeps, Some(audio)) => ok(audio.tone(&BEEPS)),
+            (Action::Hold, Some(audio)) => ok(audio.tone(&HOLD)),
             (Action::Stop, Some(audio)) => {
                 audio.stop_tone();
-                Ok(())
+                Ok("ok".to_string())
             }
             (Action::RtcForward, _) => self.rtc_forward(),
+            (Action::Sd, _) => self.sd_check(),
             (Action::PowerOff, _) => Err(format!("still on: {}", self.board.power.off())),
         };
         self.last = match result {
-            Ok(()) => format!("{name}: ok"),
-            Err(err) => format!("{name}: {err}"),
+            Ok(text) | Err(text) => format!("{name}: {text}"),
         };
         info!(TAG, "{}", self.last);
         self.update_info();
     }
 
-    fn rtc_forward(&self) -> Result<(), String> {
+    fn rtc_forward(&self) -> Result<String, String> {
         let rtc = self.board.rtc.ok_or("no RTC")?;
         let now = rtc.now().map_err(|e| e.to_string())?;
-        rtc.set(&DateTime::from_seconds(now.seconds() + 60)).map_err(|e| e.to_string())
+        rtc.set(&DateTime::from_seconds(now.seconds() + 60)).map_err(|e| e.to_string())?;
+        Ok("ok".to_string())
+    }
+
+    /// Mounts the card, writes a file and reads it back, then unmounts.
+    fn sd_check(&self) -> Result<String, String> {
+        let sd = self.board.sd.ok_or("no SD slot")?;
+        if !sd.is_mounted() {
+            sd.mount(SD_MOUNT, &MountConfig::default()).map_err(|e| format!("mount: {e}"))?;
+        }
+        let result = (|| {
+            let text = format!("paper_rs {}\n", rtc_line(&self.board));
+            File::create(SD_FILE).and_then(|f| f.write_all(text.as_bytes())).map_err(|e| format!("write: {e}"))?;
+            let mut back = vec![0; text.len()];
+            let n = File::open(SD_FILE).and_then(|f| f.read(&mut back)).map_err(|e| format!("read: {e}"))?;
+            if back[..n] != *text.as_bytes() {
+                return Err("read back differs".to_string());
+            }
+            let space = sd.space().map_err(|e| format!("space: {e}"))?;
+            Ok(format!("{} of {} MB free", space.free >> 20, space.total >> 20))
+        })();
+        let unmounted = sd.unmount().map_err(|e| format!("unmount: {e}"));
+        let free = result?;
+        unmounted?;
+        Ok(format!("wrote and read back, {free}"))
     }
 
     fn dot(&self, p: &Point) {

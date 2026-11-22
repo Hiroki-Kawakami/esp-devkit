@@ -23,14 +23,17 @@ unsafe extern "C" {
     fn libc_rename(from: *const c_char, to: *const c_char) -> c_int;
 }
 
+// From the headers, as newlib and picolibc number them differently.
 #[cfg(target_os = "none")]
 mod flags {
     use core::ffi::c_int;
-    pub(super) const O_WRONLY: c_int = 1;
-    pub(super) const O_RDWR: c_int = 2;
-    pub(super) const O_APPEND: c_int = 0x0008;
-    pub(super) const O_CREAT: c_int = 0x0200;
-    pub(super) const O_TRUNC: c_int = 0x0400;
+
+    use crate::sys;
+    pub(super) const O_WRONLY: c_int = sys::O_WRONLY as c_int;
+    pub(super) const O_RDWR: c_int = sys::O_RDWR as c_int;
+    pub(super) const O_APPEND: c_int = sys::O_APPEND as c_int;
+    pub(super) const O_CREAT: c_int = sys::O_CREAT as c_int;
+    pub(super) const O_TRUNC: c_int = sys::O_TRUNC as c_int;
 }
 
 #[cfg(target_os = "macos")]
