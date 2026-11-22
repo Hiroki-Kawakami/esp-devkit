@@ -17,11 +17,13 @@ use super::t5::{self, ShiftControl};
 use super::{PANEL_PPI, PANEL_SIZE, TAG, check_display};
 use crate::audio::{self, Audio};
 use crate::devices::bm8563::{self, Bm8563};
+use crate::devices::bmi270::{self, Bmi270};
 use crate::devices::ed047tc1;
 use crate::devices::gt911::{self, Gt911};
 use crate::display::{self, Rotation};
 use crate::driver::epd_ll::{ControlPins, EpdLl};
 use crate::driver::pwm_buzzer::{self, PwmBuzzer};
+use crate::imu::{self, AxisMap, Imu};
 use crate::power;
 use crate::rtc::{self, Rtc};
 use crate::touch::{self, Touch};
@@ -47,6 +49,9 @@ const TOUCH_PIN_INT: i32 = 48;
 const BUZZER_PIN: i32 = 21;
 const BUZZER_TIMER: u32 = 0;
 const BUZZER_CHANNEL: u32 = 0;
+
+// The chip lies turned half a turn in the panel's plane.
+const IMU_AXIS_MAP: AxisMap = AxisMap { x: -1, y: -2, z: 3 };
 
 // The PaperS3 pulls its I2C SDA up for good; on the T5 the pin is the
 // panel's CL, which nothing pulls.
@@ -136,6 +141,10 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
     let bus = i2c_init(model).ok();
     let touch = bus.and_then(|bus| touch_init(bus, model).inspect_err(|err| warn!(TAG, "touch unavailable: {err}")).ok());
     let rtc = bus.and_then(rtc_init);
+    let imu = match model {
+        Model::PaperS3 => bus.and_then(imu_init),
+        Model::T5 => None,
+    };
     let audio = match model {
         Model::PaperS3 => audio_init(config),
         Model::T5 => None,
@@ -151,7 +160,7 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
         audio,
         buttons: None,
         display: Some(DISPLAY.get_or_init(|| display::Display::new(panel))),
-        imu: None,
+        imu,
         power,
         rtc,
         sd: None,
@@ -172,6 +181,15 @@ fn i2c_init(model: Model) -> Result<&'static MasterBus> {
 
 // A BM8563 on the PaperS3, whose INT reaches the power controller; a PCF8563,
 // the same registers, on the T5.
+// INT1 switches the power controller's trigger, as the off pulse does: left
+// at its reset state, output disabled, the chip never drives it.
+fn imu_init(bus: &'static MasterBus) -> Option<&'static Imu> {
+    Bmi270::new(bus, bmi270::ADDR, bmi270::DEFAULT_HZ)
+        .and_then(|chip| imu::start(chip, IMU_AXIS_MAP))
+        .inspect_err(|err| warn!(TAG, "imu unavailable: {err}"))
+        .ok()
+}
+
 fn rtc_init(bus: &'static MasterBus) -> Option<&'static Rtc> {
     let rtc = Bm8563::new(bus, bm8563::ADDR).and_then(rtc::start).inspect_err(|err| warn!(TAG, "rtc unavailable: {err}")).ok()?;
     if let Err(err) = rtc.stop_timer() {

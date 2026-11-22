@@ -39,7 +39,7 @@ const LEVELS_H: usize = 60;
 const MARK: usize = 48;
 const INFO_Y: usize = LEVELS_H + MARGIN;
 const LINE_H: usize = 36;
-const INFO_LINES: usize = 3;
+const INFO_LINES: usize = 4;
 const BUTTONS_Y: usize = INFO_Y + LINE_H * INFO_LINES + MARGIN;
 const BUTTON_H: usize = 72;
 const BORDER: usize = 2;
@@ -133,6 +133,9 @@ fn start(board: Board) {
         last: "-".to_string(),
     };
     app.log("set_mode", epd.set_mode(EpdMode::Hold));
+    if let Some(imu) = app.board.imu {
+        imu.set_orientation_enabled(true);
+    }
     app.show_all();
     app.act(Action::Scale);
     app.run();
@@ -180,6 +183,20 @@ fn rtc_line(board: &Board) -> String {
     }
 }
 
+fn imu_line(board: &Board) -> String {
+    let Some(imu) = board.imu else { return "IMU: none".to_string() };
+    match imu.read() {
+        Ok(s) => format!(
+            "IMU: accel {:+.2} {:+.2} {:+.2} g, pose {:?}",
+            s.accel.x,
+            s.accel.y,
+            s.accel.z,
+            imu.orientation()
+        ),
+        Err(err) => format!("IMU: {err}"),
+    }
+}
+
 impl App {
     fn log(&self, what: &str, result: idf::Result<()>) {
         if let Err(err) = result {
@@ -207,7 +224,12 @@ impl App {
     }
 
     fn draw_info(&mut self) -> Rect {
-        let lines = [power_line(self.board.power.read()), rtc_line(&self.board), format!("Last: {}", self.last)];
+        let lines = [
+            power_line(self.board.power.read()),
+            rtc_line(&self.board),
+            imu_line(&self.board),
+            format!("Last: {}", self.last),
+        ];
         for line in &lines {
             info!(TAG, "{line}");
         }

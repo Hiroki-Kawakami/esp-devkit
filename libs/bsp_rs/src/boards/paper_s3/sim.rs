@@ -14,6 +14,7 @@ use crate::power;
 use crate::rtc;
 use crate::sim::audio::SimAudio;
 use crate::sim::gram::{GramConfig, SimGram};
+use crate::sim::imu as sim_imu;
 use crate::sim::power::SimPower;
 use crate::sim::rtc::SimRtc;
 use crate::sim::{self, protocol::Event, touch as sim_touch};
@@ -66,12 +67,13 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
         .inspect_err(|err| warn!(TAG, "audio unavailable: {err}"))
         .ok();
     let power = power::start(SimPower::new(Some(host)), audio);
+    let imu = sim_imu::start(host).inspect_err(|err| warn!(TAG, "imu unavailable: {err}")).ok();
     let rtc = SimRtc::new(host).and_then(|driver| rtc::start(driver).inspect_err(|err| warn!(TAG, "rtc unavailable: {err}")).ok());
     Ok(Board {
         audio,
         buttons: None,
         display: Some(DISPLAY.get_or_init(|| display::Display::new(panel))),
-        imu: None,
+        imu,
         power,
         rtc,
         sd: None,
