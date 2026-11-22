@@ -65,32 +65,31 @@ static QUALITY: [Frame; 34] = [
 ];
 
 #[rustfmt::skip]
-static TEXT: [Frame; 20] = [
+// Six levels with little flashing, the grays only roughly: each target takes
+// white frames, then black ones for the rest; black starts with one white
+// frame and white with one black, to shake off what was shown.
+#[rustfmt::skip]
+static TEXT: [Frame; 18] = [
     CANCEL[0], CANCEL[1], CANCEL[2], CANCEL[3],
     // 0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15
-    t([W, W, W, W, W, W, W, W, B, B, B, B, B, B, B, B]),
-    t([W, W, W, W, W, W, W, W, B, B, B, B, B, B, B, B]),
-    t([B, W, W, W, W, W, W, W, B, B, B, B, B, B, B, W]),
-    t([B, B, 0, W, W, W, W, W, B, B, B, B, 0, 0, W, W]),
-    t([B, B, B, B, B, B, B, B, W, W, W, W, W, W, W, W]),
-    t([B, B, B, B, B, B, B, B, W, W, W, W, W, W, W, W]),
-    t([B, B, B, B, B, B, B, B, W, W, W, W, W, W, W, W]),
-    t([B, B, B, B, B, B, B, B, W, W, W, W, W, W, W, W]),
+    t([W, W, W, W, W, W, W, W, W, W, W, W, W, B, B, B]),
+    t([B, B, W, W, W, W, W, W, W, W, W, W, W, W, W, W]),
+    t([B, B, B, B, W, W, W, W, W, W, W, W, W, W, W, W]),
+    t([B, B, B, B, B, B, W, W, W, W, W, W, W, W, W, W]),
+    t([B, B, B, B, B, B, B, B, B, B, 0, 0, 0, W, W, W]),
+    t([B, B, B, B, B, B, B, B, B, B, B, B, B, W, W, W]),
     SETTLE, SETTLE, SETTLE, SETTLE, SETTLE, SETTLE, SETTLE, SETTLE,
 ];
 
-// Two levels: only black and white targets drive, grays hold.
+// Black and white driven straight; other grays only pushed toward their side,
+// roughly, so nothing of the picture before stays.
 #[rustfmt::skip]
-static FAST: [Frame; 16] = [
+static FAST: [Frame; 12] = [
     CANCEL[0], CANCEL[1], CANCEL[2], CANCEL[3],
     // 0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15
-    t([W, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, B]),
-    t([W, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, B]),
-    t([B, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, W]),
-    t([B, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, W]),
-    t([B, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, W]),
-    t([B, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, W]),
-    t([B, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, W]),
+    t([B, B, B, B, B, B, B, B, W, W, W, W, W, W, W, W]),
+    t([B, B, B, B, B, 0, 0, 0, 0, 0, 0, W, W, W, W, W]),
+    t([B, B, B, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, W, W, W]),
     t([B, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, W]),
     SETTLE, SETTLE, SETTLE, SETTLE,
 ];

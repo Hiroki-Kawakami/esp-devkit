@@ -56,11 +56,13 @@ impl Rotations {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Waveform {
-    /// Two levels, fast.
+    /// Black and white without flashing, other grays roughly: the quickest,
+    /// for highlights.
     Fast,
     /// All grays, flashing, the cleanest picture.
     Quality,
-    /// All grays with fewer flashes, for text and UI.
+    /// All grays with less flashing than `Quality` and less ghosting than
+    /// `Fast`, for changing screens.
     Text,
 }
 
