@@ -2,8 +2,8 @@
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 Hiroki Kawakami
  *
- * Macros behind idf::adc, idf::cache, idf::executor, idf::heap, idf::sync and
- * idf::thread.
+ * Macros behind idf::adc, idf::cache, idf::executor, idf::gpio, idf::heap,
+ * idf::sync and idf::thread.
  */
 
 #pragma once
@@ -38,4 +38,7 @@ bool idf_ptr_dma_capable(const void *p);
    when it has none or its eFuse values are missing. */
 esp_err_t idf_adc_cali_create(adc_unit_t unit, adc_channel_t channel, adc_atten_t atten, adc_cali_handle_t *out);
 void idf_adc_cali_delete(adc_cali_handle_t handle);
+
+/* Drives an output pin straight through its register, without checks. */
+void idf_gpio_set_level_fast(uint32_t pin, uint32_t level);
 #endif

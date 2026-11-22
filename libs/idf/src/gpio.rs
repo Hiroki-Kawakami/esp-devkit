@@ -56,6 +56,13 @@ pub fn set_level(pin: i32, high: bool) -> Result<()> {
     Error::check(unsafe { sys::gpio_set_level(pin as _, high as u32) })
 }
 
+/// `set_level` without its checks, a register write: for bit-banging a pin
+/// already an output, whose `pin` is never out of range.
+#[cfg(target_os = "none")]
+pub fn set_level_fast(pin: i32, high: bool) {
+    unsafe { sys::idf_gpio_set_level_fast(pin as u32, u32::from(high)) }
+}
+
 /// The input level; low on a pin that is not an input.
 pub fn level(pin: i32) -> bool {
     unsafe { sys::gpio_get_level(pin as _) != 0 }

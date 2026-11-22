@@ -44,9 +44,10 @@ const POWER_ENABLE: u8 = 1 << 5;
 const MODE: u8 = 1 << 6;
 const OE: u8 = 1 << 7;
 
-// The pins are outputs since `init`, so setting one cannot fail.
+// The pins are outputs since `init`. Each line shifts out two bytes, which
+// `gpio::set_level`'s checks made the slowest part of a line.
 fn level(pin: i32, high: bool) {
-    let _ = gpio::set_level(pin, high);
+    gpio::set_level_fast(pin, high);
 }
 
 /// What the shift register holds.
