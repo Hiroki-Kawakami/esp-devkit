@@ -30,21 +30,23 @@ const TAG: &CStr = c"paper_s3";
 
 const PANEL_SIZE: Size = Size { width: 960, height: 540 };
 const PANEL_PPI: u16 = 234;
-const PIXEL_FORMAT: ImageFormat = ImageFormat::L8;
+const PIXEL_FORMAT: ImageFormat = ImageFormat::L4;
 
 /// The buzzer sounds at its one loudness, so there is no volume to process.
 fn buzzer_config(config: &Config) -> audio::Config {
     audio::Config { dsp_mode: DspMode::Disable, speaker_mode: config.audio.speaker_mode }
 }
 
-fn check_display(config: &Config) -> Result<()> {
-    if config.display.fb_num != 0 || config.display.pixel_format.is_some_and(|f| f != PIXEL_FORMAT) {
-        error!(TAG, "display: the panel takes {PIXEL_FORMAT:?} without framebuffers");
+/// The pixel format the panel starts with.
+fn resolve_display(config: &Config) -> Result<ImageFormat> {
+    let format = config.display.pixel_format.unwrap_or(PIXEL_FORMAT);
+    if config.display.fb_num != 0 || !matches!(format, ImageFormat::L4 | ImageFormat::L8) {
+        error!(TAG, "display: the panel takes L4 or L8 without framebuffers");
         return Err(Error::NOT_SUPPORTED);
     }
     if config.display.rotation.is_some_and(|r| r != Rotation::R0) {
         error!(TAG, "display: the panel does not turn");
         return Err(Error::NOT_SUPPORTED);
     }
-    Ok(())
+    Ok(format)
 }

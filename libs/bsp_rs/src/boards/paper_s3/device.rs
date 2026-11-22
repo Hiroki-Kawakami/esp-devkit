@@ -14,7 +14,7 @@ use idf::{Result, gpio, spi};
 
 use super::power::PowerDriver;
 use super::t5::{self, ShiftControl};
-use super::{PANEL_PPI, PANEL_SIZE, TAG, check_display};
+use super::{PANEL_PPI, PANEL_SIZE, TAG, resolve_display};
 use crate::audio::{self, Audio};
 use crate::devices::bm8563::{self, Bm8563};
 use crate::devices::bmi270::{self, Bmi270};
@@ -117,7 +117,7 @@ fn detect() -> Model {
 }
 
 pub(crate) fn init(config: &Config) -> Result<Board> {
-    check_display(config)?;
+    let format = resolve_display(config)?;
     let model = detect();
     let panel = match model {
         Model::PaperS3 => {
@@ -128,6 +128,7 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
                 cl: EPD_PIN_CL,
                 dc_dummy: EPD_CONTROL.pwr,
                 control: Box::new(EPD_CONTROL),
+                format,
                 ppi: PANEL_PPI,
                 priority: EPD_PRIORITY,
                 core: Some(EPD_CORE),
@@ -141,6 +142,7 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
                 cl: t5::PIN_CL,
                 dc_dummy: t5::PIN_DC_DUMMY,
                 control: Box::new(ShiftControl::new()),
+                format,
                 ppi: PANEL_PPI,
                 priority: EPD_PRIORITY,
                 core: Some(EPD_CORE),

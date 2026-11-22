@@ -79,8 +79,18 @@
   .cell.na { background: repeating-linear-gradient(45deg, #2a2c33, #2a2c33 4px, #34363e 4px, #34363e 8px); cursor: default; }
   td.rowops { white-space: nowrap; padding-left: 6px; }
   td.rowops button { padding: 1px 7px; margin-left: 2px; font-size: 11px; }
-  #rowadd { margin-top: 8px; }
+  td.kind { color: var(--dim); font-size: 11px; padding-right: 6px; }
+  .rowadd { margin-top: 8px; }
   #stepcount { color: var(--dim); margin-left: 8px; }
+  #editor h2 { font-size: 12px; font-weight: 600; margin: 18px 0 6px; }
+  #editor h2 .note { color: var(--dim); font-weight: normal; margin-left: 6px; }
+  .dccell {
+    width: 30px; height: 20px; border: 1px solid var(--border);
+    text-align: center; line-height: 18px; font-size: 11px;
+  }
+  .dccell.bad { background: var(--err); color: #fff; }
+  #dcstatus { margin-bottom: 6px; color: var(--ok); }
+  #dcstatus.bad { color: var(--err); }
 
   dialog {
     background: var(--panel); color: var(--fg); border: 1px solid var(--border);
@@ -117,8 +127,15 @@
       <span class="sep"></span>
       <span id="stepcount"></span>
     </div>
-    <table id="grid"></table>
-    <button id="rowadd">+ add frame</button>
+    <h2>DC phase <span class="note">by the DC a pixel starts with</span></h2>
+    <table id="dcrows"></table>
+    <button id="dcadd" class="rowadd">+ add frame</button>
+    <h2>target phase <span class="note">by the target gray</span></h2>
+    <table id="targetrows"></table>
+    <button id="targetadd" class="rowadd">+ add frame</button>
+    <h2>DC at the end <span class="note">by start DC (rows) and target (columns); red leaves -8..7 on the way</span></h2>
+    <div id="dcstatus"></div>
+    <table id="dcgrid"></table>
   </div>
 
   <div id="side">
@@ -174,18 +191,25 @@
 'use strict';
 
 // ---------- LUT model ----------
-// row = { type: 'T'|'F'|'SETTLE'|'STOP'|'RAW', acts: Uint8Array(16), raw: Uint32Array(16)|null }
+// A slot replays its DC rows, then its target rows. A DC row drives by the
+// DC a pixel started the replay with, -8..7 left to right (the device's word
+// `dc + 8`); a target row by the target gray. A black frame adds 1 to the DC
+// and a white one takes 1.
+// row = { type: 'D'|'T'|'SETTLE'|'STOP'|'RAW', acts: Uint8Array(16), raw: Uint32Array(16)|null }
 const SETTLE_WORD = 0xFFFFFFFF;
 const SLOT_NAMES = ['FAST', 'QUALITY', 'TEXT', 'CLEAR'];
+const DC_MIN = -8;
 let stepMax = 62;
 let panelW = 0, panelH = 0;
-let luts = SLOT_NAMES.map(() => []);
+let luts = SLOT_NAMES.map(() => ({ dc: [], target: [] }));
 let curSlot = 1;
 let paintAct = 1;
 
 function newRow(type = 'T') {
   return { type, acts: new Uint8Array(16), raw: null };
 }
+
+const allRows = lut => [...lut.dc, ...lut.target];
 
 function rowToWords(row) {
   const w = new Uint32Array(16);
@@ -199,8 +223,8 @@ function rowToWords(row) {
       w.fill(word >>> 0);
       break;
     }
-    case 'F':
-      for (let from = 0; from < 16; from++) w[from] = (row.acts[from] * 0x55555555) >>> 0;
+    case 'D':
+      for (let dc = 0; dc < 16; dc++) w[dc] = (row.acts[dc] * 0x55555555) >>> 0;
       break;
   }
   return w;
@@ -214,27 +238,29 @@ function wordsToRow(w) {
     for (let to = 0; to < 16; to++) row.acts[to] = (w[0] >>> (to * 2)) & 3;
     return row;
   }
-  const f = newRow('F');
-  let isF = true;
-  for (let from = 0; from < 16; from++) {
-    const act = w[from] & 3;
-    if (w[from] !== ((act * 0x55555555) >>> 0)) { isF = false; break; }
-    f.acts[from] = act;
+  const d = newRow('D');
+  let isD = true;
+  for (let dc = 0; dc < 16; dc++) {
+    const act = w[dc] & 3;
+    if (w[dc] !== ((act * 0x55555555) >>> 0)) { isD = false; break; }
+    d.acts[dc] = act;
   }
-  if (isF) return f;
+  if (isD) return d;
   const row = newRow('RAW');
   row.raw = Uint32Array.from(w);
   return row;
 }
 
-function lutToHex(rows) {
+function lutToHex(lut) {
   let hex = '';
-  for (const row of rows) {
+  for (const row of allRows(lut)) {
     for (const w of rowToWords(row)) hex += w.toString(16).padStart(8, '0');
   }
   return hex;
 }
 
+// The leading DC rows make the DC phase; a DC row after the first other one
+// stays where it is, as RAW.
 function hexToLut(hex, steps) {
   const rows = [];
   for (let f = 0; f < steps; f++) {
@@ -244,38 +270,108 @@ function hexToLut(hex, steps) {
     }
     rows.push(wordsToRow(w));
   }
-  return rows;
+  let n = 0;
+  while (n < rows.length && rows[n].type === 'D') n++;
+  const target = rows.slice(n).map(row => {
+    if (row.type !== 'D') return row;
+    const raw = newRow('RAW');
+    raw.raw = rowToWords(row);
+    return raw;
+  });
+  return { dc: rows.slice(0, n), target };
+}
+
+const dcOf = a => a === 1 ? 1 : a === 2 ? -1 : 0;
+
+function action(row, start, to) {
+  switch (row.type) {
+    case 'D':   return row.acts[start];
+    case 'T':   return row.acts[to];
+    case 'RAW': return (row.raw[start] >>> (to * 2)) & 3;
+    default:    return 0;
+  }
+}
+
+// What the device checks: from every start toward every target, each frame
+// keeps the DC in -8..7 (0..15 as stored).
+function dcTable(lut) {
+  const rows = allRows(lut);
+  const end = new Int8Array(256), bad = new Uint8Array(256);
+  for (let start = 0; start < 16; start++) {
+    for (let to = 0; to < 16; to++) {
+      let dc = start;
+      for (const row of rows) {
+        dc += dcOf(action(row, start, to));
+        if (dc < 0 || dc > 15) bad[start << 4 | to] = 1;
+      }
+      end[start << 4 | to] = dc;
+    }
+  }
+  return { end, bad };
 }
 
 // ---------- grid rendering ----------
-const grid = document.getElementById('grid');
 let dragging = false;
 document.addEventListener('mouseup', () => dragging = false);
 
 function render() {
-  const rows = luts[curSlot];
-  grid.innerHTML = '';
-  const head = grid.insertRow();
+  const lut = luts[curSlot];
+  const total = lut.dc.length + lut.target.length;
+  renderRows(document.getElementById('dcrows'), lut.dc, 0, total, true);
+  renderRows(document.getElementById('targetrows'), lut.target, lut.dc.length, total, false);
+  renderDc(lut);
+  document.getElementById('stepcount').textContent = `${total} / ${stepMax} frames`;
+  document.getElementById('dcadd').disabled = total >= stepMax;
+  document.getElementById('targetadd').disabled = total >= stepMax;
+}
+
+function renderDc(lut) {
+  const { end, bad } = dcTable(lut);
+  const table = document.getElementById('dcgrid');
+  table.innerHTML = '';
+  const head = table.insertRow();
+  head.innerHTML = '<th></th>' + Array.from({length: 16}, (_, i) => `<th>${i}</th>`).join('');
+  for (let start = 0; start < 16; start++) {
+    const tr = table.insertRow();
+    tr.innerHTML = `<td class="idx">${start + DC_MIN}</td>` + Array.from({length: 16}, (_, to) => {
+      const i = start << 4 | to;
+      return `<td><div class="dccell${bad[i] ? ' bad' : ''}">${end[i] + DC_MIN}</div></td>`;
+    }).join('');
+  }
+  const pairs = bad.reduce((n, b) => n + b, 0);
+  const status = document.getElementById('dcstatus');
+  status.textContent = pairs ? `${pairs} start/target pairs leave -8..7; the device refuses this table` : 'DC stays in -8..7';
+  status.className = pairs ? 'bad' : '';
+}
+
+// `rows` of the current slot, numbered from `first + 1`.
+function renderRows(table, rows, first, total, byDc) {
+  table.innerHTML = '';
+  const head = table.insertRow();
   head.innerHTML = '<th></th><th></th>' +
-    Array.from({length: 16}, (_, i) => `<th>${i}</th>`).join('') + '<th></th>';
+    Array.from({length: 16}, (_, i) => `<th>${byDc ? i + DC_MIN : i}</th>`).join('') + '<th></th>';
 
   rows.forEach((row, ri) => {
-    const tr = grid.insertRow();
-    tr.insertCell().outerHTML = `<td class="idx">${ri + 1}</td>`;
+    const tr = table.insertRow();
+    tr.insertCell().outerHTML = `<td class="idx">${first + ri + 1}</td>`;
 
-    const tdType = tr.insertCell();
-    tdType.className = 'type';
-    const sel = document.createElement('select');
-    for (const t of ['T', 'F', 'SETTLE', 'STOP', ...(row.type === 'RAW' ? ['RAW'] : [])]) {
-      const o = document.createElement('option');
-      o.value = o.textContent = t;
-      if (t === row.type) o.selected = true;
-      sel.appendChild(o);
+    if (byDc) {
+      tr.insertCell().outerHTML = '<td class="kind">DC</td>';
+    } else {
+      const tdType = tr.insertCell();
+      tdType.className = 'type';
+      const sel = document.createElement('select');
+      for (const t of ['T', 'SETTLE', 'STOP', ...(row.type === 'RAW' ? ['RAW'] : [])]) {
+        const o = document.createElement('option');
+        o.value = o.textContent = t;
+        if (t === row.type) o.selected = true;
+        sel.appendChild(o);
+      }
+      sel.onchange = () => { row.type = sel.value; row.raw = null; render(); };
+      tdType.appendChild(sel);
     }
-    sel.onchange = () => { row.type = sel.value; row.raw = null; render(); };
-    tdType.appendChild(sel);
 
-    const editable = row.type === 'T' || row.type === 'F';
+    const editable = row.type === 'T' || row.type === 'D';
     for (let i = 0; i < 16; i++) {
       const td = tr.insertCell();
       const div = document.createElement('div');
@@ -290,6 +386,7 @@ function render() {
           row.acts[i] = paintAct;
           div.className = 'cell a' + paintAct;
           div.textContent = paintAct === 1 ? 'B' : paintAct === 2 ? 'W' : '·';
+          renderDc(luts[curSlot]);
         };
         div.onmousedown = e => { e.preventDefault(); dragging = true; paint(); };
         div.onmouseenter = () => { if (dragging) paint(); };
@@ -310,15 +407,13 @@ function render() {
       rows.splice(ri, 0, { type: row.type, acts: Uint8Array.from(row.acts),
                            raw: row.raw ? Uint32Array.from(row.raw) : null });
       render();
-    }, rows.length >= stepMax);
-    mk('✕', 'delete',    () => { rows.splice(ri, 1); render(); }, rows.length <= 1);
+    }, total >= stepMax);
+    mk('✕', 'delete',    () => { rows.splice(ri, 1); render(); }, total <= 1);
   });
-
-  document.getElementById('stepcount').textContent = `${rows.length} / ${stepMax} frames`;
-  document.getElementById('rowadd').disabled = rows.length >= stepMax;
 }
 
-document.getElementById('rowadd').onclick = () => { luts[curSlot].push(newRow('T')); render(); };
+document.getElementById('dcadd').onclick = () => { luts[curSlot].dc.push(newRow('D')); render(); };
+document.getElementById('targetadd').onclick = () => { luts[curSlot].target.push(newRow('T')); render(); };
 for (const tab of document.querySelectorAll('.tab')) {
   tab.onclick = () => {
     curSlot = +tab.dataset.slot;
@@ -455,11 +550,13 @@ readBtn.onclick = guard(readBtn, async () => {
 
 const applyBtn = document.getElementById('apply');
 applyBtn.onclick = guard(applyBtn, async () => {
-  const rows = luts[curSlot];
-  if (!rows.length) throw new Error('empty LUT');
-  const hex = lutToHex(rows);
+  const lut = luts[curSlot];
+  const steps = lut.dc.length + lut.target.length;
+  if (!steps) throw new Error('empty LUT');
+  if (dcTable(lut).bad.some(b => b)) throw new Error('DC が -8..7 を外れる組があります');
+  const hex = lutToHex(lut);
   const CHUNK = 56 * 8;                          // words per line, within the 512-byte line
-  await send(`wf begin ${curSlot} ${rows.length}`);
+  await send(`wf begin ${curSlot} ${steps}`);
   try {
     for (let o = 0; o < hex.length; o += CHUNK) await send('wf data ' + hex.slice(o, o + CHUNK));
     await send('wf end', 30000);                 // waits until nothing is being driven
@@ -606,20 +703,27 @@ imgBtn.onclick = guard(imgBtn, async () => {
 
 // ---------- Rust export ----------
 document.getElementById('exportrs').onclick = () => {
-  const rows = luts[curSlot];
-  const lines = ['//   0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15'];
+  const lut = luts[curSlot];
+  const lines = [];
   const sym = a => a === 1 ? 'B' : a === 2 ? 'W' : '0';
-  rows.forEach(row => {
-    if (row.type === 'SETTLE')    lines.push('SETTLE,');
-    else if (row.type === 'STOP') lines.push('STOP,');
-    else if (row.type === 'RAW')
-      lines.push('[' + Array.from(row.raw, w => '0x' + w.toString(16).padStart(8, '0')).join(', ') + '],');
-    else
-      lines.push(`${row.type.toLowerCase()}([` + Array.from(row.acts, sym).join(', ') + ']),');
-  });
+  const rowLine = row => {
+    if (row.type === 'SETTLE') return 'SETTLE,';
+    if (row.type === 'STOP') return 'STOP,';
+    if (row.type === 'RAW')
+      return '[' + Array.from(row.raw, w => '0x' + w.toString(16).padStart(8, '0')).join(', ') + '],';
+    return `${row.type === 'D' ? 'd' : 't'}([` + Array.from(row.acts, sym).join(', ') + ']),';
+  };
+  if (lut.dc.length) {
+    lines.push('//-8 -7 -6 -5 -4 -3 -2 -1  0  1  2  3  4  5  6  7');
+    lut.dc.forEach(row => lines.push(rowLine(row)));
+  }
+  if (lut.target.length) {
+    lines.push('// 0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15');
+    lut.target.forEach(row => lines.push(rowLine(row)));
+  }
   document.getElementById('rstext').value =
     '#[rustfmt::skip]\n' +
-    `static ${SLOT_NAMES[curSlot]}: [Frame; ${rows.length}] = [\n` +
+    `static ${SLOT_NAMES[curSlot]}: [Frame; ${lut.dc.length + lut.target.length}] = [\n` +
     lines.map(l => '    ' + l).join('\n') + '\n];\n';
   document.getElementById('rsdialog').showModal();
 };
@@ -627,7 +731,7 @@ document.getElementById('rscopy').onclick = () =>
   navigator.clipboard.writeText(document.getElementById('rstext').value);
 
 // initial content: an empty single T row per slot (Read from device to import)
-for (const l of luts) l.push(newRow('T'));
+for (const l of luts) l.target.push(newRow('T'));
 render();
 </script>
 </body>

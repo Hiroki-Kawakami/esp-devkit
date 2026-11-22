@@ -57,28 +57,29 @@ pub struct Frame {
     pub rgb: Vec<u8>,
 }
 
-/// The memory of a panel that keeps the picture itself, unturned.
+/// The memory of a panel that keeps the picture itself, unturned, as RGB.
 struct Gram {
     width: usize,
     height: usize,
+    /// Of the writes.
     format: PixelFormat,
     rotation: u8,
     bytes_per_second: u32,
-    pixels: Vec<u8>,
+    rgb: Vec<u8>,
 }
 
 impl Gram {
     /// `false` when the rectangle leaves the turned picture or `payload` is
     /// not its size.
     fn put(&mut self, (x, y, w, h): (usize, usize, usize, usize), payload: &[u8]) -> bool {
-        let bpp = self.format.bytes();
+        let row_bytes = self.format.row_bytes(w);
         let (width, height) = if self.rotation % 2 == 1 { (self.height, self.width) } else { (self.width, self.height) };
-        if w == 0 || h == 0 || x + w > width || y + h > height || payload.len() != w * h * bpp {
+        if w == 0 || h == 0 || x + w > width || y + h > height || payload.len() != row_bytes * h {
             return false;
         }
         let (last_x, last_y) = (self.width - 1, self.height - 1);
-        for (j, row) in payload.chunks_exact(w * bpp).enumerate() {
-            for (i, px) in row.chunks_exact(bpp).enumerate() {
+        for (j, row) in payload.chunks_exact(row_bytes).enumerate() {
+            for i in 0..w {
                 let (lx, ly) = (x + i, y + j);
                 let (sx, sy) = match self.rotation % 4 {
                     0 => (lx, ly),
@@ -86,8 +87,8 @@ impl Gram {
                     2 => (last_x - lx, last_y - ly),
                     _ => (last_x - ly, lx),
                 };
-                let at = (sy * self.width + sx) * bpp;
-                self.pixels[at..at + bpp].copy_from_slice(px);
+                let at = (sy * self.width + sx) * 3;
+                self.rgb[at..at + 3].copy_from_slice(&rgb_at(row, i, self.format));
             }
         }
         true
@@ -394,12 +395,17 @@ impl Device {
                 }
                 Some(Event::GramOpen { width, height, format, rotation, bytes_per_second }) => {
                     let (width, height) = (usize::from(width), usize::from(height));
-                    let pixels = vec![0; width * height * format.bytes()];
-                    state.gram = Some(Gram { width, height, format, rotation, bytes_per_second, pixels });
+                    let rgb = vec![0; width * height * 3];
+                    state.gram = Some(Gram { width, height, format, rotation, bytes_per_second, rgb });
                 }
                 Some(Event::GramRotate { rotation }) => {
                     if let Some(gram) = state.gram.as_mut() {
                         gram.rotation = rotation;
+                    }
+                }
+                Some(Event::GramFormat { format }) => {
+                    if let Some(gram) = state.gram.as_mut() {
+                        gram.format = format;
                     }
                 }
                 Some(Event::GramWrite { ticket, x, y, w, h, bytes }) => {
@@ -560,13 +566,13 @@ impl Device {
         {
             let state = self.state.lock().unwrap();
             if let Some(gram) = &state.gram {
-                return Some(to_rgb(&gram.pixels, gram.width, gram.height, gram.width * gram.format.bytes(), gram.format));
+                return Some(Frame { width: gram.width, height: gram.height, rgb: gram.rgb.clone() });
             }
         }
         let p = self.present()?;
         let (w, h, stride) = (usize::from(p.width), usize::from(p.height), p.stride as usize);
         let start = usize::try_from(p.offset).ok()?;
-        if stride < w * p.format.bytes() || start.checked_add(stride * h)? > self.psram.len {
+        if stride < p.format.row_bytes(w) || start.checked_add(stride * h)? > self.psram.len {
             return None;
         }
         let src = unsafe { std::slice::from_raw_parts(self.psram.ptr.add(start), stride * h) };
@@ -575,23 +581,30 @@ impl Device {
 }
 
 fn to_rgb(src: &[u8], w: usize, h: usize, stride: usize, format: PixelFormat) -> Frame {
-    let bpp = format.bytes();
     let mut rgb = Vec::with_capacity(w * h * 3);
+    for row in src.chunks_exact(stride).take(h) {
+        for i in 0..w {
+            rgb.extend_from_slice(&rgb_at(row, i, format));
+        }
+    }
+    Frame { width: w, height: h, rgb }
+}
+
+fn rgb_at(row: &[u8], i: usize, format: PixelFormat) -> [u8; 3] {
     let from565 = |v: u16| {
         let (r, g, b) = ((v >> 11) & 0x1F, (v >> 5) & 0x3F, v & 0x1F);
         [(r << 3 | r >> 2) as u8, (g << 2 | g >> 4) as u8, (b << 3 | b >> 2) as u8]
     };
-    for row in src.chunks_exact(stride).take(h) {
-        for px in row[..w * bpp].chunks_exact(bpp) {
-            match format {
-                PixelFormat::L8 => rgb.extend_from_slice(&[px[0], px[0], px[0]]),
-                PixelFormat::Rgb565 => rgb.extend_from_slice(&from565(u16::from_le_bytes([px[0], px[1]]))),
-                PixelFormat::Rgb565Be => rgb.extend_from_slice(&from565(u16::from_be_bytes([px[0], px[1]]))),
-                PixelFormat::Bgr888 => rgb.extend_from_slice(&[px[2], px[1], px[0]]),
-            }
+    match format {
+        PixelFormat::L4 => {
+            let v = (row[i / 2] >> (4 - i % 2 * 4)) & 0x0F;
+            [v * 0x11; 3]
         }
+        PixelFormat::L8 => [row[i]; 3],
+        PixelFormat::Rgb565 => from565(u16::from_le_bytes([row[i * 2], row[i * 2 + 1]])),
+        PixelFormat::Rgb565Be => from565(u16::from_be_bytes([row[i * 2], row[i * 2 + 1]])),
+        PixelFormat::Bgr888 => [row[i * 3 + 2], row[i * 3 + 1], row[i * 3]],
     }
-    Frame { width: w, height: h, rgb }
 }
 
 fn read_record(fd: RawFd, record: &mut [u8; RECORD_SIZE]) -> bool {

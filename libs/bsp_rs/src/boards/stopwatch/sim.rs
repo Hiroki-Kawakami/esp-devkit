@@ -32,8 +32,7 @@ pub(crate) type Display = SimGram;
 const PANEL: GramConfig = GramConfig {
     size: PANEL_SIZE,
     ppi: PANEL_PPI,
-    format: PIXEL_FORMAT,
-    alignment: 2,
+    formats: &[(PIXEL_FORMAT, 2)],
     rotations: Rotations::R0.union(Rotations::R180),
     bytes_per_second: 80_000_000 / 2,
     epd: false,
@@ -69,7 +68,7 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
     };
     info!(TAG, "board: StopWatch (simulator)");
     host.send(&Event::device("M5Stack StopWatch"));
-    let panel = SimGram::new(host, &PANEL, rotation)?;
+    let panel = SimGram::new(host, &PANEL, PIXEL_FORMAT, rotation)?;
     let touch = sim_touch::start(host, touch::Config {
         width: PANEL_SIZE.width,
         height: PANEL_SIZE.height,

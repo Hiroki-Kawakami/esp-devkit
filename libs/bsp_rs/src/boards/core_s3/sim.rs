@@ -27,8 +27,7 @@ pub(crate) type Display = SimGram;
 const PANEL: GramConfig = GramConfig {
     size: PANEL_SIZE,
     ppi: PANEL_PPI,
-    format: PIXEL_FORMAT,
-    alignment: 1,
+    formats: &[(PIXEL_FORMAT, 1)],
     rotations: Rotations::all(),
     bytes_per_second: 40_000_000 / 8,
     epd: false,
@@ -46,7 +45,7 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
     };
     info!(TAG, "board: CoreS3 (simulator)");
     host.send(&Event::device("M5Stack CoreS3"));
-    let panel = SimGram::new(host, &PANEL, rotation)?;
+    let panel = SimGram::new(host, &PANEL, PIXEL_FORMAT, rotation)?;
     let touch = sim_touch::start(host, touch::Config {
         width: PANEL_SIZE.width,
         height: PANEL_SIZE.height,

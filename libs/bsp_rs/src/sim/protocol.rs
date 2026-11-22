@@ -6,7 +6,7 @@
  * this crate and tools/devkit_cli. See docs/simulator.md.
  */
 
-pub const VERSION: u32 = 7;
+pub const VERSION: u32 = 8;
 pub const RECORD_SIZE: usize = 64;
 pub const MAX_TOUCH_POINTS: usize = 10;
 pub const MAX_NAME: usize = 48;
@@ -48,15 +48,23 @@ pub enum PixelFormat {
     /// B, G, R in memory.
     Bgr888,
     Rgb565Be,
+    /// Two pixels a byte, the first in the high nibble.
+    L4,
 }
 
 impl PixelFormat {
-    pub const fn bytes(self) -> usize {
+    pub const fn bits(self) -> usize {
         match self {
-            Self::L8 => 1,
-            Self::Rgb565 | Self::Rgb565Be => 2,
-            Self::Bgr888 => 3,
+            Self::L4 => 4,
+            Self::L8 => 8,
+            Self::Rgb565 | Self::Rgb565Be => 16,
+            Self::Bgr888 => 24,
         }
+    }
+
+    /// A row of `width` starts on a byte.
+    pub const fn row_bytes(self, width: usize) -> usize {
+        (width * self.bits()).div_ceil(8)
     }
 
     const fn from_u8(v: u8) -> Option<Self> {
@@ -65,6 +73,7 @@ impl PixelFormat {
             1 => Self::Rgb565,
             2 => Self::Bgr888,
             3 => Self::Rgb565Be,
+            4 => Self::L4,
             _ => return None,
         })
     }
@@ -114,6 +123,9 @@ pub enum Event {
     GramOpen { width: u16, height: u16, format: PixelFormat, rotation: u8, bytes_per_second: u32 },
     /// Firmware to host: writes after it land turned by `rotation`.
     GramRotate { rotation: u8 },
+    /// Firmware to host: writes after it come in `format`; the panel keeps
+    /// what it shows.
+    GramFormat { format: PixelFormat },
     /// Firmware to host: `bytes` of pixels follow the record, the rows of
     /// `x, y, w, h` of the turned picture back to back.
     GramWrite { ticket: u32, x: u16, y: u16, w: u16, h: u16, bytes: u32 },
@@ -138,6 +150,7 @@ const TAG_GRAM_OPEN: u8 = 14;
 const TAG_GRAM_ROTATE: u8 = 15;
 const TAG_GRAM_WRITE: u8 = 16;
 const TAG_GRAM_DONE: u8 = 17;
+const TAG_GRAM_FORMAT: u8 = 18;
 
 struct Writer {
     buf: [u8; RECORD_SIZE],
@@ -256,6 +269,7 @@ impl Event {
                 .put(&bytes_per_second.to_le_bytes())
                 .buf,
             Self::GramRotate { rotation } => Writer::new(TAG_GRAM_ROTATE).put(&[rotation]).buf,
+            Self::GramFormat { format } => Writer::new(TAG_GRAM_FORMAT).put(&[format as u8]).buf,
             Self::GramWrite { ticket, x, y, w, h, bytes } => Writer::new(TAG_GRAM_WRITE)
                 .put(&ticket.to_le_bytes())
                 .put(&x.to_le_bytes())
@@ -312,6 +326,7 @@ impl Event {
                 bytes_per_second: r.u32(),
             },
             TAG_GRAM_ROTATE => Self::GramRotate { rotation: r.u8() },
+            TAG_GRAM_FORMAT => Self::GramFormat { format: PixelFormat::from_u8(r.u8())? },
             TAG_GRAM_WRITE => Self::GramWrite { ticket: r.u32(), x: r.u16(), y: r.u16(), w: r.u16(), h: r.u16(), bytes: r.u32() },
             TAG_GRAM_DONE => Self::GramDone { ticket: r.u32() },
             _ => return None,
@@ -344,6 +359,7 @@ mod tests {
             Event::Rtc { seconds: -1, valid: true },
             Event::GramOpen { width: 320, height: 240, format: PixelFormat::Rgb565Be, rotation: 3, bytes_per_second: 5_000_000 },
             Event::GramRotate { rotation: 1 },
+            Event::GramFormat { format: PixelFormat::L4 },
             Event::GramWrite { ticket: 0xFFFF_FFFE, x: 1, y: 2, w: 319, h: 16, bytes: 10_208 },
             Event::GramDone { ticket: 7 },
         ] {

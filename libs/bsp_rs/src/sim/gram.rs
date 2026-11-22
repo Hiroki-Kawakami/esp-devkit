@@ -27,6 +27,7 @@ const STALL_TIMEOUT: Duration = Duration::from_secs(2);
 enum Command {
     Write { ticket: u32, area: Rect, pixels: *const u8, len: usize },
     Rotate(Rotation),
+    Format(PixelFormat),
 }
 
 // The writer keeps the pixels until `wait`, as for a DMA transfer.
@@ -51,6 +52,7 @@ pub(crate) struct SimGram {
     host: &'static Host,
     size: Size,
     ppi: u16,
+    formats: &'static [(ImageFormat, u16)],
     format: ImageFormat,
     alignment: u16,
     rotations: Rotations,
@@ -86,6 +88,7 @@ fn send(host: &Host, queue: Receiver<Command>) {
                 host.send_with(&event, payload);
             }
             Command::Rotate(rotation) => host.send(&Event::GramRotate { rotation: quarters(rotation) }),
+            Command::Format(format) => host.send(&Event::GramFormat { format }),
         }
     }
 }
@@ -95,8 +98,8 @@ pub(crate) struct GramConfig {
     /// Unturned.
     pub size: Size,
     pub ppi: u16,
-    pub format: ImageFormat,
-    pub alignment: u16,
+    /// Each format the panel takes, with the alignment of its writes.
+    pub formats: &'static [(ImageFormat, u16)],
     pub rotations: Rotations,
     pub bytes_per_second: u32,
     /// Has `Epd`, whose drives the host does not show.
@@ -104,18 +107,15 @@ pub(crate) struct GramConfig {
 }
 
 impl SimGram {
-    pub(crate) fn new(host: &'static Host, config: &GramConfig, rotation: Rotation) -> Result<Self> {
-        let GramConfig { size, ppi, format, alignment, rotations, bytes_per_second, epd } = *config;
+    pub(crate) fn new(host: &'static Host, config: &GramConfig, format: ImageFormat, rotation: Rotation) -> Result<Self> {
+        let GramConfig { size, ppi, formats, rotations, bytes_per_second, epd } = *config;
+        let Some(alignment) = alignment_of(formats, format) else {
+            return Err(Error::NOT_SUPPORTED);
+        };
         if !rotations.has(rotation) {
             return Err(Error::NOT_SUPPORTED);
         }
-        let wire = match format {
-            ImageFormat::L8 => PixelFormat::L8,
-            ImageFormat::Rgb565 => PixelFormat::Rgb565,
-            ImageFormat::Rgb565Be => PixelFormat::Rgb565Be,
-            ImageFormat::Bgr888 => PixelFormat::Bgr888,
-            _ => return Err(Error::NOT_SUPPORTED),
-        };
+        let wire = wire(format)?;
         let progress = Arc::new(Progress { done: AtomicU32::new(0), waiters: AtomicU32::new(0), wake: Semaphore::try_new(0, MAX_WAITERS)? });
         let listener = progress.clone();
         host.set_gram_listener(Box::new(move |ticket| {
@@ -127,8 +127,23 @@ impl SimGram {
         host.send(&Event::GramOpen { width: size.width, height: size.height, format: wire, rotation: quarters(rotation), bytes_per_second });
         let (queue, commands) = channel(QUEUE_DEPTH);
         thread::Builder::new().name("sim_gram").stack_size(4096).spawn(move || send(host, commands))?;
-        Ok(Self { host, size, ppi, format, alignment, rotations, epd, rotation, issued: Mutex::new(0), queue, progress })
+        Ok(Self { host, size, ppi, formats, format, alignment, rotations, epd, rotation, issued: Mutex::new(0), queue, progress })
     }
+}
+
+fn alignment_of(formats: &[(ImageFormat, u16)], format: ImageFormat) -> Option<u16> {
+    formats.iter().find(|(f, _)| *f == format).map(|&(_, alignment)| alignment)
+}
+
+fn wire(format: ImageFormat) -> Result<PixelFormat> {
+    Ok(match format {
+        ImageFormat::L4 => PixelFormat::L4,
+        ImageFormat::L8 => PixelFormat::L8,
+        ImageFormat::Rgb565 => PixelFormat::Rgb565,
+        ImageFormat::Rgb565Be => PixelFormat::Rgb565Be,
+        ImageFormat::Bgr888 => PixelFormat::Bgr888,
+        _ => return Err(Error::NOT_SUPPORTED),
+    })
 }
 
 impl Driver for SimGram {
@@ -184,8 +199,15 @@ impl Driver for SimGram {
     }
 
     fn reconfigure(&mut self, format: ImageFormat, rotation: Rotation) -> Result<()> {
-        if format != self.format || !self.rotations.has(rotation) {
+        let Some(alignment) = alignment_of(self.formats, format) else {
             return Err(Error::NOT_SUPPORTED);
+        };
+        if !self.rotations.has(rotation) {
+            return Err(Error::NOT_SUPPORTED);
+        }
+        if format != self.format {
+            self.queue.send(Command::Format(wire(format)?));
+            (self.format, self.alignment) = (format, alignment);
         }
         self.queue.send(Command::Rotate(rotation));
         self.rotation = rotation;

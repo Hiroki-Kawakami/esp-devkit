@@ -231,7 +231,7 @@ impl App {
 
     fn put(&self, x: usize, y: usize, canvas: &Canvas) -> Rect {
         let area = rect(x, y, canvas.w, canvas.h);
-        let image = Image::from_pixels(ImageFormat::L8, canvas.w as u16, canvas.h as u16, canvas.w, &canvas.px);
+        let image = Image::from_pixels(ImageFormat::L4, canvas.w as u16, canvas.h as u16, canvas.w, &canvas.px);
         self.log("draw", unsafe { self.display.draw(area, &image) });
         area
     }

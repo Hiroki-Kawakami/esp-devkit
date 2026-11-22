@@ -27,7 +27,7 @@ const TAG: &CStr = c"paper";
 
 const PANEL_SIZE: Size = Size { width: 960, height: 540 };
 const PANEL_PPI: u16 = 234;
-const PIXEL_FORMAT: ImageFormat = ImageFormat::L8;
+const PIXEL_FORMAT: ImageFormat = ImageFormat::L4;
 
 /// The pixel format and rotation the panel starts with.
 fn resolve_display(config: &Config) -> Result<(ImageFormat, Rotation)> {

@@ -40,13 +40,21 @@ up (the PaperS3's I2C SDA) is a PaperS3, a PCF8563 answering on GPIO18/17
   glass to white; `wait_idle()` blocks until everything has reached the glass.
 - A glass driven without a controller of its own (the ED047TC1 of the
   PaperS3 and the T5, through `driver/epd_ll`) takes a `Gram::write` before returning, its ticket
-  already done; the write waits while pixels of the area are still being
-  driven to another gray. Every pixel replays its own waveform, so areas
-  refresh independently. `init` takes the glass as white without driving it.
+  already done. Every pixel replays its own waveform, so areas refresh
+  independently. Each pixel keeps the DC its drives have left (-8..=7, a
+  black frame +1, a white one -1); waveforms are indexed by it, not by the
+  gray shown, and start by cancelling it. A write to pixels still being driven
+  to another gray waits for the end of the frame being sent (one step of the
+  waveform) and stops them there, keeping the DC reached so far, so the glass
+  stays balanced; a replay with an all-zero frame still ahead (the end of
+  Clear) is never stopped, and the write waits for it to finish. `init` takes the glass as white without DC and without
+  driving it; `Seed` gives a pixel the DC a Quality drive to its gray would.
+  It takes L4 (the start) or L8 (`reconfigure` switches; L4 aligns to 2
+  pixels) and does not turn.
 - The M5Paper's IT8951E has its own waveforms and tracks the glass itself, so
   `Seed` only loads its memory, and `all` drives with its flashing waveform. A
-  write goes into that memory before returning, turned by the chip, in L8 or L4
-  (`reconfigure` switches; the alignment is 2 or 4 pixels). It waits only when
+  write goes into that memory before returning, turned by the chip, in L4 (the
+  start) or L8 (`reconfigure` switches; the alignment is 4 or 2 pixels). It waits only when
   the area is still being driven. The chip stands by 3 s after the last command
   and wakes on the next.
 - On a board driving the glass itself, `display::epd_ll::Waveforms::of(display)` replaces a

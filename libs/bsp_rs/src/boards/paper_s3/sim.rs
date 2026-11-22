@@ -7,8 +7,8 @@ use idf::Result;
 use idf::log::{info, warn};
 use idf::sync::OnceLock;
 
-use super::{PANEL_PPI, PANEL_SIZE, PIXEL_FORMAT, TAG, check_display};
-use crate::display::{self, Rotation, Rotations};
+use super::{PANEL_PPI, PANEL_SIZE, TAG, resolve_display};
+use crate::display::{self, ImageFormat, Rotation, Rotations};
 use crate::audio;
 use crate::power;
 use crate::rtc;
@@ -32,8 +32,7 @@ pub(crate) type AudioDriver = SimAudio;
 const PANEL: GramConfig = GramConfig {
     size: PANEL_SIZE,
     ppi: PANEL_PPI,
-    format: PIXEL_FORMAT,
-    alignment: 1,
+    formats: &[(ImageFormat::L8, 1), (ImageFormat::L4, 2)],
     rotations: Rotations::R0,
     bytes_per_second: u32::MAX,
     epd: true,
@@ -43,7 +42,7 @@ static DISPLAY: OnceLock<display::Display> = OnceLock::new();
 
 // Without the simulator host there is nothing to show or touch.
 pub(crate) fn init(config: &Config) -> Result<Board> {
-    check_display(config)?;
+    let format = resolve_display(config)?;
     let Some(host) = sim::host() else {
         info!(TAG, "board: PaperS3 (simulator, no host)");
         let power = power::start(SimPower::new(None), None);
@@ -51,7 +50,7 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
     };
     info!(TAG, "board: PaperS3 (simulator)");
     host.send(&Event::device("M5Stack PaperS3"));
-    let panel = SimGram::new(host, &PANEL, Rotation::R0)?;
+    let panel = SimGram::new(host, &PANEL, format, Rotation::R0)?;
     let touch = sim_touch::start(host, touch::Config {
         width: PANEL_SIZE.width,
         height: PANEL_SIZE.height,

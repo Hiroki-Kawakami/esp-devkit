@@ -41,7 +41,9 @@ pub(crate) enum Job {
 }
 
 pub fn run() {
-    let board = match bsp_rs::init(&bsp_rs::Config::default()) {
+    let mut config = bsp_rs::Config::default();
+    config.display.pixel_format = Some(ImageFormat::L8);
+    let board = match bsp_rs::init(&config) {
         Ok(board) => board,
         Err(err) => {
             error!(TAG, "bsp_rs::init failed: {err}");

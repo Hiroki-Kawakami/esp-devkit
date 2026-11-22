@@ -3,8 +3,8 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
-//! Text on an L8 canvas. The renderer has no 8-bit gray target, so each run
-//! is drawn white on black at 16 bits and taken as its coverage.
+//! Text on an L4 canvas. The renderer has no gray target, so each run is
+//! drawn white on black at 16 bits and taken as its coverage.
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -17,21 +17,41 @@ const GLYPH_CACHE: usize = 16 * 1024;
 
 static FONTS: [&Font; 1] = [&resources::BODY_24];
 
-/// `w` x `h` gray pixels.
+/// `w` x `h` pixels in L4. Grays are given and read as 8 bits.
 pub(crate) struct Canvas {
     pub w: usize,
     pub h: usize,
     pub px: Vec<u8>,
 }
 
+fn level(gray: u8) -> u8 {
+    ((u16::from(gray) * 15 + 127) / 255) as u8
+}
+
 impl Canvas {
     pub(crate) fn new(w: usize, h: usize, gray: u8) -> Self {
-        Self { w, h, px: vec![gray; w * h] }
+        Self { w, h, px: vec![level(gray) * 0x11; w.div_ceil(2) * h] }
+    }
+
+    fn at(&self, x: usize, y: usize) -> (usize, u32) {
+        (y * self.w.div_ceil(2) + x / 2, if x % 2 == 0 { 4 } else { 0 })
+    }
+
+    fn get(&self, x: usize, y: usize) -> u8 {
+        let (i, shift) = self.at(x, y);
+        (self.px[i] >> shift & 0x0F) * 0x11
+    }
+
+    fn set(&mut self, x: usize, y: usize, gray: u8) {
+        let (i, shift) = self.at(x, y);
+        self.px[i] = self.px[i] & !(0x0F << shift) | level(gray) << shift;
     }
 
     pub(crate) fn fill(&mut self, x: usize, y: usize, w: usize, h: usize, gray: u8) {
         for row in y..(y + h).min(self.h) {
-            self.px[row * self.w + x..row * self.w + (x + w).min(self.w)].fill(gray);
+            for col in x..(x + w).min(self.w) {
+                self.set(col, row, gray);
+            }
         }
     }
 }
@@ -71,10 +91,11 @@ impl Writer {
         let surface = unsafe { Surface::new(scratch.as_mut_ptr().cast(), rw * 2, area) };
         devkit_gfx::draw::<Rgb565, _, _, _>(&list, &prepared, &mut ClipStore::new(), &surface);
         for (row, src) in scratch.chunks_exact(rw).enumerate() {
-            let dst = &mut canvas.px[(y + row) * canvas.w + x..][..rw];
-            for (d, &s) in dst.iter_mut().zip(src) {
+            for (col, &s) in src.iter().enumerate() {
+                let (cx, cy) = (x + col, y + row);
+                let d = i32::from(canvas.get(cx, cy));
                 let cover = i32::from((s >> 5) & 0x3F) * 255 / 63;
-                *d = (i32::from(*d) + (i32::from(ink) - i32::from(*d)) * cover / 255) as u8;
+                canvas.set(cx, cy, (d + (i32::from(ink) - d) * cover / 255) as u8);
             }
         }
     }

@@ -19,12 +19,13 @@ use idf::sync::{Mutex, MutexGuard, Semaphore};
 use idf::time::delay_us;
 use idf::{Error, Result, gpio, sys, system, thread};
 
-use super::waveform::{self as wf, B1_IDLE, B1_PENDING, Frame, Pixel, Rowset, SLOTS, Waveform};
+use super::waveform::{self as wf, B1_IDLE, B1_PENDING, DC_ZERO, Frame, Pixel, Retire, Rowset, SLOTS, Waveform};
 use crate::Absent;
 use crate::display::{self, Driver, EpdDriver, EpdMode, GramDriver, Image, ImageFormat, Rect, Rotation, Size, Ticket};
 
 const TAG: &CStr = c"epd_ll";
 
+const SLOT_QUALITY: usize = 1;
 const SLOT_CLEAR: usize = 3;
 const QUEUE_DEPTH: usize = 4;
 const DMA_BURST: usize = 64;
@@ -134,6 +135,8 @@ pub(crate) struct Config {
     pub control: Box<dyn Control>,
     pub pclk_hz: u32,
     pub size: Size,
+    /// L4 or L8.
+    pub format: ImageFormat,
     pub ppi: u16,
     pub line_bytes: u16,
     /// Clocked out after each line, holding CKV while the gates settle.
@@ -272,6 +275,8 @@ struct Counters {
     /// The task is driving rather than waiting on `wake`.
     running: bool,
     mode: EpdMode,
+    /// Draws waiting for the scan to stop between frames.
+    cutters: u32,
     wf: [Option<Waveform>; SLOTS],
     /// The table of the slot was a `Box` given to `set_waveform`, leaked
     /// while in use.
@@ -290,6 +295,18 @@ struct Shared {
     /// Given every frame something finishes or someone waits.
     retired: Semaphore,
     wake: Semaphore,
+    /// Given by the scan between frames to one of `cutters`, who gives
+    /// `resumed` once done.
+    boundary: Semaphore,
+    resumed: Semaphore,
+}
+
+/// Pixels a draw left replaying toward another gray.
+struct Pass {
+    /// Some may be stopped at the next boundary.
+    cuttable: bool,
+    /// Some have a STOP frame ahead and must finish.
+    stuck: bool,
 }
 
 fn add(cell: &AtomicU16, n: u16) {
@@ -328,8 +345,17 @@ impl Shared {
         wake
     }
 
-    /// `pixels` are L8 rows `stride` bytes apart.
-    fn draw(&self, area: Rect, pixels: &[u8], stride: usize) -> Result<()> {
+    /// `pixels` are rows of `format`, L4 or L8, `stride` bytes apart.
+    fn draw(&self, area: Rect, pixels: &[u8], stride: usize, format: ImageFormat) -> Result<()> {
+        let row_bytes = format.row_bytes(area.w as usize);
+        match format {
+            ImageFormat::L4 => self.draw_grays(area, |r| wf::grays_l4(&pixels[r * stride..][..row_bytes])),
+            _ => self.draw_grays(area, |r| wf::grays_l8(&pixels[r * stride..][..row_bytes])),
+        }
+    }
+
+    /// `grays(r)` gives row `r` of `area`.
+    fn draw_grays<I: Iterator<Item = u8>>(&self, area: Rect, grays: impl Fn(usize) -> I) -> Result<()> {
         let (x0, y0, w, h) = (area.x as usize, area.y as usize, area.w as usize, area.h as usize);
         let mut guard = self.lock.lock();
         let mode = guard.mode;
@@ -337,43 +363,88 @@ impl Shared {
             while self.area_has_active(x0, y0, x0 + w, y0 + h) {
                 guard = self.wait_retire(guard);
             }
+            let Counters { group, wf: waveforms, .. } = &mut *guard;
+            let end = waveforms[SLOT_QUALITY].as_ref().map_or(&wf::KEEP, |q| q.dc_after(q.steps()));
             for r in 0..h {
-                let src = &pixels[r * stride..][..w];
                 let mut subsumed = 0;
-                for (px, &g) in self.row(y0 + r)[x0..x0 + w].iter().zip(src) {
-                    subsumed += u16::from((px.load(Ordering::Relaxed) >> 8) as u8 == B1_PENDING);
-                    let g = u16::from(g >> 4);
-                    px.store(0xFF00 | g << 4 | g, Ordering::Relaxed);
+                for (px, g) in self.row(y0 + r)[x0..x0 + w].iter().zip(grays(r)) {
+                    let v = px.load(Ordering::Relaxed);
+                    subsumed += u16::from((v >> 8) as u8 == B1_PENDING);
+                    px.store(wf::seed_px(v, g, end), Ordering::Relaxed);
                 }
                 sub(&self.row_nonidle[y0 + r], subsumed);
-                guard.group[usize::from(B1_PENDING)] -= u32::from(subsumed);
+                group[usize::from(B1_PENDING)] -= u32::from(subsumed);
             }
             return Ok(());
         }
+        let mut pass = self.draw_pass(&mut guard, area, &grays, false);
         loop {
-            let mut conflict = false;
-            for r in 0..h {
-                let src = &pixels[r * stride..][..w];
-                let mut gained = 0;
-                for (px, &g) in self.row(y0 + r)[x0..x0 + w].iter().zip(src) {
-                    let drawn = wf::draw_px(px.load(Ordering::Relaxed), g >> 4);
-                    px.store(drawn.px, Ordering::Relaxed);
-                    conflict |= drawn.conflict;
-                    gained += u16::from(drawn.now_nonidle);
-                }
-                add(&self.row_nonidle[y0 + r], gained);
-                guard.group[usize::from(B1_PENDING)] += u32::from(gained);
+            if pass.cuttable {
+                guard = self.at_boundary(guard);
+                pass = self.draw_pass(&mut guard, area, &grays, true);
+                guard.cutters -= 1;
+                drop(guard);
+                self.resumed.give();
+                guard = self.lock.lock();
             }
-            if !conflict {
+            if !pass.stuck {
                 break;
             }
+            // Holding the scan at every boundary would slow the replays the
+            // draw waits for.
             guard = self.wait_retire(guard);
+            pass = self.draw_pass(&mut guard, area, &grays, false);
         }
         drop(guard);
         match mode {
             EpdMode::Refresh(waveform) => self.refresh(area, waveform, false),
             _ => Ok(()),
         }
+    }
+
+    /// Draws `area`, leaving pixels replaying toward another gray as they
+    /// were. With `cut`, which only a draw between frames may ask, those a
+    /// draw may stop stop where the steps they have run leave them instead.
+    fn draw_pass<I: Iterator<Item = u8>>(&self, guard: &mut Counters, area: Rect, grays: &impl Fn(usize) -> I, cut: bool) -> Pass {
+        let (x0, y0, w, h) = (area.x as usize, area.y as usize, area.w as usize, area.h as usize);
+        let Counters { group, wf: waveforms, frame, active_px, .. } = guard;
+        let mut pass = Pass { cuttable: false, stuck: false };
+        for r in 0..h {
+            let mut gained = 0;
+            for (px, g) in self.row(y0 + r)[x0..x0 + w].iter().zip(grays(r)) {
+                let v = px.load(Ordering::Relaxed);
+                let drawn = wf::draw_px(v, g);
+                if drawn.conflict {
+                    let b1 = (v >> 8) as u8;
+                    match wf::cut_dc(waveforms[usize::from(b1 >> 6)].as_ref(), *frame, b1) {
+                        Some(dc) if cut => {
+                            px.store(wf::cut_px(v, g, dc), Ordering::Relaxed);
+                            group[usize::from(b1)] -= 1;
+                            group[usize::from(B1_PENDING)] += 1;
+                            *active_px -= 1;
+                        }
+                        Some(_) => pass.cuttable = true,
+                        None => pass.stuck = true,
+                    }
+                    continue;
+                }
+                px.store(drawn.px, Ordering::Relaxed);
+                gained += u16::from(drawn.now_nonidle);
+            }
+            add(&self.row_nonidle[y0 + r], gained);
+            group[usize::from(B1_PENDING)] += u32::from(gained);
+        }
+        pass
+    }
+
+    /// Waits for the scan to finish the frame it is sending and holds `lock`
+    /// again before the next one starts. `cutters` stays raised until the
+    /// caller lowers it and gives `resumed`.
+    fn at_boundary<'a>(&'a self, mut guard: MutexGuard<'a, Counters>) -> MutexGuard<'a, Counters> {
+        guard.cutters += 1;
+        drop(guard);
+        self.boundary.take();
+        self.lock.lock()
     }
 
     fn refresh(&self, area: Rect, waveform: display::Waveform, all: bool) -> Result<()> {
@@ -469,7 +540,7 @@ impl Shared {
 struct Scan {
     bus: Bus,
     rowset_tab: [Rowset; 256],
-    retire_tab: [bool; 256],
+    retire_tab: [Retire; 256],
     act_index: [usize; 256],
     /// Internal RAM, so the scan never reaches the waveforms in flash; the
     /// last one stays all hold.
@@ -480,8 +551,8 @@ struct Scan {
     line_bytes: usize,
 }
 
-// `rowset_tab` points into tables that are only replaced while nothing
-// replays, between frames.
+// `rowset_tab` and `retire_tab` point into tables that are only replaced
+// while nothing replays, between frames.
 unsafe impl Send for Scan {}
 
 fn run_frame(shared: &Shared, scan: &mut Scan) {
@@ -499,7 +570,7 @@ fn run_frame(shared: &Shared, scan: &mut Scan) {
         if guard.group[b1] == 0 {
             continue;
         }
-        any_retire |= scan.retire_tab[b1];
+        any_retire |= !scan.retire_tab[b1].is_null();
         match only {
             None => only = Some(scan.rowset_tab[b1]),
             Some(f) => multiple |= !core::ptr::eq(f, scan.rowset_tab[b1]),
@@ -555,23 +626,30 @@ fn run_frame(shared: &Shared, scan: &mut Scan) {
     bus.frame_end();
 
     let mut freed_total = 0;
+    let mut guard = shared.lock.lock();
     if any_retire {
-        let mut guard = shared.lock.lock();
         for y in 0..h {
             if shared.row_nonidle[y].load(Ordering::Relaxed) == 0 {
                 continue;
             }
-            let freed = wf::retire_row(shared.row(y), &scan.retire_tab);
+            let freed = unsafe { wf::retire_row(shared.row(y), &scan.retire_tab) };
             sub(&shared.row_nonidle[y], freed);
             freed_total += u32::from(freed);
         }
         for b1 in 0..256 {
-            if scan.retire_tab[b1] {
+            if !scan.retire_tab[b1].is_null() {
                 guard.group[b1] = 0;
             }
         }
         guard.active_px -= freed_total;
     }
+    while guard.cutters > 0 {
+        drop(guard);
+        shared.boundary.give();
+        shared.resumed.take();
+        guard = shared.lock.lock();
+    }
+    drop(guard);
     if freed_total != 0 || shared.waiters.load(Ordering::SeqCst) > 0 {
         shared.retired.give();
     }
@@ -604,31 +682,36 @@ fn refresh_task(shared: Arc<Shared>, mut scan: Box<Scan>) {
     }
 }
 
-/// The glass starts as it was, taken as white: clear or seed it before
-/// trusting what a refresh drives.
+/// The glass starts as it was, taken as white and without DC: clear or seed
+/// it before trusting what a refresh drives.
 pub(crate) struct EpdLl {
     shared: Arc<Shared>,
     size: Size,
     ppi: u16,
+    format: ImageFormat,
+}
+
+fn takes(format: ImageFormat) -> bool {
+    matches!(format, ImageFormat::L4 | ImageFormat::L8)
 }
 
 impl EpdLl {
     pub(crate) fn new(config: Config) -> Result<Self> {
         let Config { size, line_bytes, ref waveforms, .. } = config;
         let (width, height) = (usize::from(size.width), usize::from(size.height));
-        if width % 4 != 0 || usize::from(line_bytes) < width / 4 {
+        if width % 4 != 0 || usize::from(line_bytes) < width / 4 || !takes(config.format) {
             return Err(Error::INVALID_ARG);
         }
-        let mut slots = [None; SLOTS];
+        let mut slots = [const { None }; SLOTS];
         let tables = [waveforms.fast, waveforms.quality, waveforms.text, Some(waveforms.clear)];
         for (slot, table) in slots.iter_mut().zip(tables) {
             if let Some(table) = table {
-                *slot = Some(Waveform::new(table).ok_or(Error::INVALID_ARG)?);
+                *slot = Some(Waveform::new(table).inspect_err(|err| error!(TAG, "waveform: {err}"))?);
             }
         }
 
         let mut state = heap::try_vec(width * height, Caps::SPIRAM)?;
-        state.extend((0..width * height).map(|_| AtomicU16::new(0xFFFF)));
+        state.extend((0..width * height).map(|_| AtomicU16::new(0xFF00 | DC_ZERO << 4 | 15)));
         let mut row_nonidle = heap::try_vec(height, Caps::SPIRAM)?;
         row_nonidle.extend((0..height).map(|_| AtomicU16::new(0)));
 
@@ -652,7 +735,7 @@ impl EpdLl {
         let scan = boxed!(Scan {
             bus,
             rowset_tab: [wf::hold(); 256],
-            retire_tab: [false; 256],
+            retire_tab: [core::ptr::null(); 256],
             act_index: [ACT_HOLD; 256],
             act_pool,
             lines,
@@ -672,12 +755,15 @@ impl EpdLl {
                 frame: 0,
                 running: false,
                 mode: EpdMode::Hold,
+                cutters: 0,
                 wf: slots,
                 owned: [false; SLOTS],
             }),
             waiters: AtomicU32::new(0),
             retired: Semaphore::try_new(0, 1)?,
             wake: Semaphore::try_new(0, 1)?,
+            boundary: Semaphore::try_new(0, 1)?,
+            resumed: Semaphore::try_new(0, 1)?,
         });
         let task = shared.clone();
         thread::Builder::new()
@@ -687,7 +773,7 @@ impl EpdLl {
             .core(config.core)
             .spawn(move || refresh_task(task, scan))
             .inspect_err(|err| error!(TAG, "task: {err}"))?;
-        Ok(Self { shared, size, ppi: config.ppi })
+        Ok(Self { shared, size, ppi: config.ppi, format: config.format })
     }
 
     /// Waits until nothing replays, then binds `lut` to `slot` and returns the
@@ -697,7 +783,7 @@ impl EpdLl {
             return Err(Error::INVALID_ARG);
         }
         let lut: &'static [Frame] = Box::leak(lut);
-        let Some(waveform) = Waveform::new(lut) else { unreachable!() };
+        let waveform = Waveform::new(lut).inspect_err(|_| drop(unsafe { Box::from_raw(core::ptr::from_ref(lut).cast_mut()) }))?;
         let mut guard = self.shared.lock.lock();
         while guard.active_px != 0 {
             guard = self.shared.wait_retire(guard);
@@ -711,7 +797,7 @@ impl EpdLl {
     /// A copy of the table bound to `slot`.
     pub(crate) fn waveform(&self, slot: usize) -> Option<Box<[Frame]>> {
         let guard = self.shared.lock.lock();
-        guard.wf.get(slot)?.map(|w| Box::from(w.lut()))
+        guard.wf.get(slot)?.as_ref().map(|w| Box::from(w.lut()))
     }
 }
 
@@ -729,7 +815,11 @@ impl Driver for EpdLl {
     }
 
     fn pixel_format(&self) -> ImageFormat {
-        ImageFormat::L8
+        self.format
+    }
+
+    fn alignment(&self) -> u16 {
+        if self.format == ImageFormat::L4 { 2 } else { 1 }
     }
 
     fn gram(&self) -> Option<&Self> {
@@ -741,13 +831,14 @@ impl Driver for EpdLl {
     }
 
     fn draw(&self, area: Rect, image: &Image) -> Result<()> {
-        self.shared.draw(area, image.pixels(), image.stride_bytes())
+        self.shared.draw(area, image.pixels(), image.stride_bytes(), self.format)
     }
 
     fn reconfigure(&mut self, format: ImageFormat, rotation: Rotation) -> Result<()> {
-        if format != ImageFormat::L8 || rotation != Rotation::R0 {
+        if !takes(format) || rotation != Rotation::R0 {
             return Err(Error::NOT_SUPPORTED);
         }
+        self.format = format;
         Ok(())
     }
 }
@@ -756,7 +847,7 @@ impl Driver for EpdLl {
 /// the area still replaying.
 impl GramDriver for EpdLl {
     unsafe fn write(&self, area: Rect, pixels: &[u8]) -> Result<Ticket> {
-        self.shared.draw(area, pixels, area.w as usize)?;
+        self.shared.draw(area, pixels, self.format.row_bytes(area.w as usize), self.format)?;
         Ok(Ticket(0))
     }
 

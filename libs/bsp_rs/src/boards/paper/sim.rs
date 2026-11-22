@@ -12,7 +12,7 @@ use idf::sync::OnceLock;
 
 use super::{PANEL_PPI, PANEL_SIZE, TAG, resolve_display};
 use crate::button::{self, Provider};
-use crate::display::{self, Rotations};
+use crate::display::{self, ImageFormat, Rotations};
 use crate::power;
 use crate::rtc;
 use crate::sd;
@@ -62,13 +62,12 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
     let panel = GramConfig {
         size: PANEL_SIZE,
         ppi: PANEL_PPI,
-        format,
-        alignment: 2,
+        formats: &[(ImageFormat::L8, 2), (ImageFormat::L4, 4)],
         rotations: Rotations::all(),
         bytes_per_second: u32::MAX,
         epd: true,
     };
-    let panel = SimGram::new(host, &panel, rotation)?;
+    let panel = SimGram::new(host, &panel, format, rotation)?;
     let touch = sim_touch::start(host, touch::Config {
         width: PANEL_SIZE.width,
         height: PANEL_SIZE.height,

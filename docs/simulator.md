@@ -119,6 +119,7 @@ Only `GramWrite` carries more: its pixels follow the record on the socket.
 | `Imu` | host → firmware | accel and gyro in panel axes; sent at `Hello` and when the window's rotation changes |
 | `GramOpen` | firmware → host | a panel with its own memory: unturned width and height, pixel format, rotation, bytes per second of its link |
 | `GramRotate` | firmware → host | rotation of the writes after it |
+| `GramFormat` | firmware → host | pixel format of the writes after it; what the panel shows stays |
 | `GramWrite` | firmware → host | ticket, rectangle of the turned picture, byte count; the pixels follow |
 | `GramDone` | host → firmware | every write up to the ticket has gone out |
 
