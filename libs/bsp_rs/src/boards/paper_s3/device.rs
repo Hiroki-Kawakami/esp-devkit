@@ -38,7 +38,7 @@ const EPD_PINS_DATA: [i32; 8] = [6, 14, 7, 12, 9, 11, 8, 10];
 const EPD_PIN_SPH: i32 = 13;
 const EPD_PIN_CL: i32 = 16;
 const EPD_CONTROL: ControlPins = ControlPins { ckv: 18, spv: 17, le: 15, oe: 45, pwr: 46 };
-const EPD_PRIORITY: u32 = 5;
+const EPD_PRIORITY: u32 = 20;
 // Keeps its waits for the bus off the core apps draw on.
 const EPD_CORE: u32 = 0;
 
