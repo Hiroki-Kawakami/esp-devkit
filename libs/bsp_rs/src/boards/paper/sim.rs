@@ -15,9 +15,11 @@ use crate::button::{self, Provider};
 use crate::display::{self, Rotations};
 use crate::power;
 use crate::rtc;
+use crate::sd;
 use crate::sim::gram::{GramConfig, SimGram};
 use crate::sim::power::SimPower;
 use crate::sim::rtc::SimRtc;
+use crate::sim::sd::SimSd;
 use crate::sim::{self, protocol::Event, touch as sim_touch};
 use crate::touch;
 use crate::{Absent, Board, Config};
@@ -82,6 +84,7 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
     let buttons = button::start(vec![Provider::Level(Box::new(Keys))]).inspect_err(|err| warn!(TAG, "buttons unavailable: {err}")).ok();
     let power = power::start(SimPower::new(Some(host)), None);
     let rtc = SimRtc::new(host).and_then(|driver| rtc::start(driver).inspect_err(|err| warn!(TAG, "rtc unavailable: {err}")).ok());
+    let sd = sd::start(SimSd::new()).inspect_err(|err| warn!(TAG, "sd unavailable: {err}")).ok();
     Ok(Board {
         audio: None,
         buttons,
@@ -89,7 +92,7 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
         imu: None,
         power,
         rtc,
-        sd: None,
+        sd,
         touch,
     })
 }

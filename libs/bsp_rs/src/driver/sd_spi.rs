@@ -10,7 +10,7 @@ use core::ffi::CStr;
 use idf::fat::{FatConfig, FatMount};
 use idf::log::error;
 use idf::spi::Bus;
-use idf::{Error, Result, sdspi};
+use idf::{Error, Result, gpio, sdspi};
 
 use crate::sd::{Driver, MountConfig, Space};
 
@@ -29,9 +29,17 @@ pub(crate) struct SdSpi {
     fat: Option<FatMount>,
 }
 
+// A card whose select floats may answer what the bus carries for others, and
+// unmounting leaves the select an input.
+fn deselect(cs: i32) -> Result<()> {
+    gpio::configure(&[cs], gpio::Mode::Output)?;
+    gpio::set_level(cs, true)
+}
+
 impl SdSpi {
-    pub(crate) fn new(config: Config) -> Self {
-        Self { config, fat: None }
+    pub(crate) fn new(config: Config) -> Result<Self> {
+        deselect(config.cs)?;
+        Ok(Self { config, fat: None })
     }
 }
 
@@ -47,14 +55,18 @@ impl Driver for SdSpi {
         };
         let khz = config.max_freq_khz.map_or(self.config.max_freq_khz, |khz| khz as i32);
         // The bus lives in `config` as long as the mount.
-        let fat = unsafe { sdspi::mount_fat(path, &self.config.bus, self.config.cs, khz, &fat) }
-            .inspect_err(|err| error!(TAG, "mount: {err}"))?;
+        let fat = unsafe { sdspi::mount_fat(path, &self.config.bus, self.config.cs, khz, &fat) }.inspect_err(|err| {
+            error!(TAG, "mount: {err}");
+            let _ = deselect(self.config.cs);
+        })?;
         self.fat = Some(fat);
         Ok(())
     }
 
     fn unmount(&mut self) -> Result<()> {
-        self.fat.take().ok_or(Error::INVALID_STATE)?.unmount()
+        let result = self.fat.take().ok_or(Error::INVALID_STATE)?.unmount();
+        deselect(self.config.cs)?;
+        result
     }
 
     fn is_mounted(&self) -> bool {

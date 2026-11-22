@@ -198,7 +198,8 @@ fn sd_init(model: Model) -> Option<&'static Sd> {
         Model::T5 => (t5::SD_PIN_SCK, t5::SD_PIN_MOSI, t5::SD_PIN_MISO, t5::SD_PIN_CS),
     };
     spi::Bus::new(&spi::BusConfig { host: SD_SPI_HOST, sclk, mosi, miso: Some(miso), quad: None, max_transfer_bytes: SD_MAX_TRANSFER })
-        .and_then(|bus| sd::start(SdSpi::new(sd_spi::Config { bus, cs, max_freq_khz: SD_FREQ_KHZ })))
+        .and_then(|bus| SdSpi::new(sd_spi::Config { bus, cs, max_freq_khz: SD_FREQ_KHZ }))
+        .and_then(sd::start)
         .inspect_err(|err| warn!(TAG, "sd unavailable: {err}"))
         .ok()
 }

@@ -20,8 +20,10 @@ use crate::devices::gt911::{self, Gt911};
 use crate::devices::it8951e::{self, It8951e};
 use crate::display::{self, Rotation};
 use crate::driver::gpio_button::{GpioButtons, Pin};
+use crate::driver::sd_spi::{self, SdSpi};
 use crate::power;
 use crate::rtc::{self, Rtc};
+use crate::sd;
 use crate::touch::{self, Touch};
 use crate::{Absent, Board, Config};
 
@@ -42,6 +44,10 @@ const SPI_PIN_SCK: i32 = 14;
 const SPI_PIN_MOSI: i32 = 12;
 const SPI_PIN_MISO: i32 = 13;
 const SPI_MAX_TRANSFER: usize = 4096;
+
+const SD_PIN_CS: i32 = 4;
+// Unstable at 40 MHz.
+const SD_FREQ_KHZ: i32 = 20_000;
 
 const EPD_PIN_CS: i32 = 15;
 const EPD_PIN_HRDY: i32 = 27;
@@ -83,6 +89,9 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
         max_transfer_bytes: SPI_MAX_TRANSFER,
     })
     .inspect_err(|err| error!(TAG, "spi bus: {err}"))?;
+    let sd = SdSpi::new(sd_spi::Config { bus: bus.clone(), cs: SD_PIN_CS, max_freq_khz: SD_FREQ_KHZ })
+        .inspect_err(|err| warn!(TAG, "sd unavailable: {err}"))
+        .ok();
     let panel = It8951e::new(it8951e::Config {
         bus: bus.clone(),
         cs: EPD_PIN_CS,
@@ -107,6 +116,7 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
     let rtc = bus.and_then(rtc_init);
     let buttons = buttons_init().inspect_err(|err| warn!(TAG, "buttons unavailable: {err}")).ok();
     let power = power::start(PowerDriver::new(PIN_MAIN_PWR), None);
+    let sd = sd.and_then(|sd| sd::start(sd).inspect_err(|err| warn!(TAG, "sd unavailable: {err}")).ok());
     Ok(Board {
         audio: None,
         buttons,
@@ -114,7 +124,7 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
         imu: None,
         power,
         rtc,
-        sd: None,
+        sd,
         touch,
     })
 }
