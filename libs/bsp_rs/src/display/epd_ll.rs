@@ -18,9 +18,9 @@ use crate::driver::epd_ll::waveform;
 /// hold, 1 toward black, 2 toward white). A black frame adds 1 to the DC and
 /// a white one takes 1, and the replay leaves the pixel with the DC it
 /// reaches; a draw that cuts it short leaves the DC reached so far. A row of
-/// `0xFFFF_FFFF` words drives nothing and may be cut short while a draw
-/// waits; only a tail of them may be. A row of zeros drives nothing, and a
-/// draw never cuts short a replay with one still ahead.
+/// `0xFFFF_FFFF` words drives nothing and may be cut short while something
+/// waits for the glass; only a tail of them may be. A row of zeros drives
+/// nothing, and a draw never cuts short a replay with one still ahead.
 pub type Lut = Box<[[u32; 16]]>;
 
 pub const STEP_MAX: usize = waveform::STEP_MAX;

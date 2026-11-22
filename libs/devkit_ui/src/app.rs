@@ -23,12 +23,13 @@ use idf::thread;
 use idf::time::Instant;
 
 use crate::component::{Component, Screen};
+use crate::epd::{EpdAction, EpdPolicy, EpdScope};
 use crate::erased::Erased;
 use crate::external::{self, ExternalSurface, Overlay, Picture, Policy};
 use crate::keyboard::KeyboardMode;
 use crate::plugin::{Plugin, PluginContext, PluginInit, Store, UiEvent};
 use crate::paint::Effects;
-use crate::presenter::{Config, GramPresenter, Presenter, Strips};
+use crate::presenter::{Config, EpdPresenter, GramPresenter, Presenter, Strips};
 use crate::text_buffer::TextInput;
 use crate::theme::{ColorMode, Theme};
 use crate::node::NodeIndex;
@@ -54,11 +55,22 @@ pub struct AppConfig {
     pub plugins: Vec<Box<dyn Plugin>>,
     /// Where `Store` keeps its keys.
     pub nvs_namespace: &'static CStr,
+    /// What a panel driving electrophoretic glass does with each change.
+    pub epd: EpdPolicy,
 }
 
 impl AppConfig {
     pub fn new(theme: &'static Theme) -> Self {
-        Self { theme, presenter: Config::default(), glyph_cache_bytes: 128 * 1024, glyph_cache_caps: Caps::SPIRAM, keyboard: KeyboardMode::Auto, plugins: Vec::new(), nvs_namespace: c"devkit_ui" }
+        Self {
+            theme,
+            presenter: Config::default(),
+            glyph_cache_bytes: 128 * 1024,
+            glyph_cache_caps: Caps::SPIRAM,
+            keyboard: KeyboardMode::Auto,
+            plugins: Vec::new(),
+            nvs_namespace: c"devkit_ui",
+            epd: EpdPolicy::DEFAULT,
+        }
     }
 }
 
@@ -333,6 +345,9 @@ fn render_overlay(
 fn presenter(display: &'static Display, config: Config) -> idf::Result<Box<dyn Presenter>> {
     let Some(frame_buffers) = display.frame_buffers() else {
         let gram = display.gram().ok_or(idf::Error::NOT_SUPPORTED)?;
+        if let Some(epd) = display.epd() {
+            return Ok(Box::new(EpdPresenter::new(gram, epd, config)?));
+        }
         return Ok(Box::new(GramPresenter::new(gram, config)?));
     };
     #[cfg(any(not(target_os = "none"), CONFIG_SOC_PPA_SUPPORTED))]
@@ -379,6 +394,7 @@ pub struct AppState<C: Screen> {
     requested: Rotation,
     rotation: Rotation,
     rotated: bool,
+    epd: EpdPolicy,
     plugins: Vec<Box<dyn Plugin>>,
     context: PluginContext,
     _root: PhantomData<fn(C)>,
@@ -482,6 +498,7 @@ impl<C: Screen> AppState<C> {
             requested: rotation,
             rotation,
             rotated: false,
+            epd: config.epd,
             plugins: config.plugins,
             context,
             _root: PhantomData,
@@ -530,7 +547,8 @@ impl<C: Screen> AppState<C> {
             Event::SetColorMode(mode) => {
                 if mode != self.tree.color_mode {
                     self.tree.set_color_mode(mode);
-                    self.presenter.invalidate_all();
+                    let action = self.policy().screen;
+                    self.presenter.invalidate_all(action);
                     self.notify(UiEvent::ColorMode(mode));
                 }
             }
@@ -621,6 +639,42 @@ impl<C: Screen> AppState<C> {
 
     /// Whether UI over a surface is laid on before the frame shows, rather
     /// than written over it after.
+    /// The shown screen's over the app's.
+    fn policy(&self) -> EpdPolicy {
+        self.tree.screen_style.epd.unwrap_or(self.epd)
+    }
+
+    /// What changed, each with what electrophoretic glass does with it: what a
+    /// component asked for the frame, else what the nearest element around it
+    /// asks, else the policy for its causes. Drives what components asked to
+    /// drive again on the way.
+    fn take_damage(&mut self) -> Vec<(Rect, EpdAction)> {
+        let policy = self.policy();
+        let damaged = self.tree.take_damage();
+        let next = if damaged.is_empty() { None } else { self.tree.epd.next.take() };
+        let mut damage: Vec<(Rect, EpdAction)> = damaged
+            .into_iter()
+            .map(|d| (d.rect, next.or(d.epd).or_else(|| policy.resolve(d.causes)).unwrap_or(policy.content)))
+            .collect();
+        for (scope, action) in core::mem::take(&mut self.tree.epd.refresh) {
+            let rect = match scope {
+                EpdScope::Screen => self.presenter.area(),
+                EpdScope::Element(id) => match self.tree.find(id) {
+                    Some(node) => self.tree.nodes[node as usize].screen,
+                    None => {
+                        error!(TAG, "epd refresh: no element {id:?}");
+                        continue;
+                    }
+                },
+            };
+            match action {
+                EpdAction::CleanThen(_) => damage.push((rect, action)),
+                _ => self.presenter.redrive(rect, action),
+            }
+        }
+        damage
+    }
+
     fn composites(&self) -> bool {
         self.presenter.buffers().count >= 2 && self.presenter.blitter().is_some()
     }
@@ -722,12 +776,12 @@ impl<C: Screen> AppState<C> {
         }
         let mut update = (0, 0);
         let updated = note(&mut update, start);
-        let mut damage = self.tree.take_damage();
+        let mut damage = self.take_damage();
         let shown = self.attach_surface();
         if let Some((surface, _)) = &shown {
             let overwritten = surface.take_overwritten();
             if !overwritten.is_empty() {
-                damage.push(overwritten);
+                damage.push((overwritten, self.policy().content));
             }
         }
         let mut waited = self.waiting.is_some();
@@ -740,18 +794,19 @@ impl<C: Screen> AppState<C> {
                 if !core::mem::replace(&mut self.exclusive, true) || core::mem::take(&mut self.rotated) {
                     surface.request_refresh(self.presenter.area());
                 }
-                for rect in damage {
-                    self.presenter.invalidate(rect);
+                for (rect, action) in damage {
+                    self.presenter.invalidate(rect, action);
                 }
                 return;
             }
             if core::mem::take(&mut self.exclusive) {
-                self.presenter.invalidate_all();
+                let action = self.policy().screen;
+                self.presenter.invalidate_all(action);
                 waited = true;
             }
             if self.move_hole(surface, *hole) {
-                for rect in damage {
-                    self.presenter.invalidate(rect);
+                for (rect, action) in damage {
+                    self.presenter.invalidate(rect, action);
                 }
                 return;
             }
@@ -764,8 +819,12 @@ impl<C: Screen> AppState<C> {
         }
         self.timing.frames += 1;
         self.timing.update = (update.0, self.timing.update.1.max(update.0));
-        for rect in &damage {
-            self.presenter.invalidate(*rect);
+        if self.presenter.has_new_damage() {
+            let action = self.policy().screen;
+            self.presenter.invalidate_all(action);
+        }
+        for (rect, action) in &damage {
+            self.presenter.invalidate(*rect, *action);
         }
         let mut list = DisplayList::new_in(self.data_caps);
         let regions = match self.presenter.regions() {
@@ -825,7 +884,7 @@ impl<C: Screen> AppState<C> {
                 return;
             }
             self.slide = None;
-            let changed = overlap != self.overlay || overlap.is_some_and(|o| damage.iter().any(|d| d.intersects(&o)));
+            let changed = overlap != self.overlay || overlap.is_some_and(|o| damage.iter().any(|(d, _)| d.intersects(&o)));
             if changed {
                 match overlap {
                     Some(rect) => match render_overlay(&*self.presenter, self.shared.display, self.rotation, &list, self.tree.external_split.get(), rect, &mut self.cache) {

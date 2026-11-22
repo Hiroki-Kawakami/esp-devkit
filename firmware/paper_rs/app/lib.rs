@@ -115,7 +115,9 @@ struct App {
 // `bsp_rs::init` stays on the main task, whose default stack it must fit; the
 // app draws text, which takes more.
 pub fn run() {
-    let board = match bsp_rs::init(&bsp_rs::Config::default()) {
+    let mut config = bsp_rs::Config::default();
+    config.display.pixel_format = Some(ImageFormat::L4);
+    let board = match bsp_rs::init(&config) {
         Ok(board) => board,
         Err(err) => {
             error!(TAG, "bsp_rs::init failed: {err}");
@@ -283,7 +285,7 @@ impl App {
     }
 
     fn show_all(&mut self) {
-        self.log("clear", self.epd.clear());
+        self.log("clear", self.epd.clear(rect(0, 0, self.w, self.h)));
         self.draw_levels();
         self.draw_info();
         for i in 0..BUTTONS.len() {

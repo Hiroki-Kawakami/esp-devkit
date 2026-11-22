@@ -75,6 +75,20 @@ pub enum EpdMode {
     Seed,
     /// The written area is driven with the waveform.
     Refresh(Waveform),
+    /// As `Refresh`, driving every pixel written, not only the changed ones.
+    RefreshAll(Waveform),
+}
+
+/// What refreshes of separate areas can do together.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RefreshUnit {
+    /// Every pixel drives on its own: any areas, at any time.
+    Pixel,
+    /// Up to this many rectangles drive at once; one more waits for those it
+    /// overlaps.
+    Rects(u8),
+    /// The whole panel drives at once, whatever area is asked.
+    Panel,
 }
 
 /// A transfer queued by `Gram::write`.
@@ -223,7 +237,11 @@ pub(crate) trait EpdDriver {
     fn set_mode(&self, mode: EpdMode) -> Result<()>;
     /// `area` is inside the panel.
     fn refresh(&self, area: Rect, waveform: Waveform, all: bool) -> Result<()>;
-    fn clear(&self) -> Result<()>;
+    /// `area` is inside the panel and on its alignment.
+    fn clear(&self, area: Rect) -> Result<()>;
+    fn refresh_unit(&self) -> RefreshUnit;
+    /// `area` is inside the panel.
+    fn busy(&self, area: Rect) -> Result<bool>;
     fn wait_idle(&self) -> Result<()>;
 }
 
@@ -294,7 +312,15 @@ impl EpdDriver for Absent {
         match *self {}
     }
 
-    fn clear(&self) -> Result<()> {
+    fn clear(&self, _area: Rect) -> Result<()> {
+        match *self {}
+    }
+
+    fn refresh_unit(&self) -> RefreshUnit {
+        match *self {}
+    }
+
+    fn busy(&self, _area: Rect) -> Result<bool> {
         match *self {}
     }
 
@@ -554,17 +580,36 @@ impl<'a> Epd<'a> {
     /// mode. `all` drives every pixel of it, not only the changed ones, which
     /// clears ghosting. Returns before the glass settles.
     pub fn refresh(self, area: Rect, waveform: Waveform, all: bool) -> Result<()> {
+        self.inside(area)?;
+        self.driver().refresh(area, waveform, all)
+    }
+
+    /// Drives `area` to white, the known start for later drives; the panel's
+    /// memory there turns white too. `area` keeps to `Display::alignment`.
+    /// Writes to it wait until the glass settles.
+    pub fn clear(self, area: Rect) -> Result<()> {
+        self.0.check(area, self.0.pixel_format())?;
+        self.driver().clear(area)
+    }
+
+    pub fn refresh_unit(self) -> RefreshUnit {
+        self.driver().refresh_unit()
+    }
+
+    /// Whether what is written to `area` now would wait to reach the glass,
+    /// beyond the end of a frame being driven.
+    pub fn busy(self, area: Rect) -> Result<bool> {
+        self.inside(area)?;
+        self.driver().busy(area)
+    }
+
+    fn inside(self, area: Rect) -> Result<()> {
         let size = self.0.size();
         let (x, y, w, h) = unsigned(area).ok_or(Error::INVALID_ARG)?;
         if x + w > u32::from(size.width) || y + h > u32::from(size.height) {
             return Err(Error::INVALID_ARG);
         }
-        self.driver().refresh(area, waveform, all)
-    }
-
-    /// Drives the whole glass to white, the known start for later drives.
-    pub fn clear(self) -> Result<()> {
-        self.driver().clear()
+        Ok(())
     }
 
     /// Blocks until every draw, write and refresh has reached the glass.

@@ -22,7 +22,7 @@ use idf::{Error, Result, gpio, thread};
 
 use crate::Absent;
 use crate::dispatch::{self, Next, Notifier, Source};
-use crate::display::{Driver, EpdDriver, EpdMode, GramDriver, Image, ImageFormat, Rect, Rotation, Rotations, Size, Ticket, Waveform};
+use crate::display::{Driver, EpdDriver, EpdMode, GramDriver, Image, ImageFormat, Rect, RefreshUnit, Rotation, Rotations, Size, Ticket, Waveform};
 
 const TAG: &CStr = c"it8951e";
 
@@ -400,6 +400,9 @@ const fn encode(mode: EpdMode) -> u8 {
         EpdMode::Refresh(Waveform::Fast) => 2,
         EpdMode::Refresh(Waveform::Quality) => 3,
         EpdMode::Refresh(Waveform::Text) => 4,
+        EpdMode::RefreshAll(Waveform::Fast) => 5,
+        EpdMode::RefreshAll(Waveform::Quality) => 6,
+        EpdMode::RefreshAll(Waveform::Text) => 7,
     }
 }
 
@@ -409,6 +412,9 @@ const fn decode(mode: u8) -> EpdMode {
         2 => EpdMode::Refresh(Waveform::Fast),
         3 => EpdMode::Refresh(Waveform::Quality),
         4 => EpdMode::Refresh(Waveform::Text),
+        5 => EpdMode::RefreshAll(Waveform::Fast),
+        6 => EpdMode::RefreshAll(Waveform::Quality),
+        7 => EpdMode::RefreshAll(Waveform::Text),
         _ => EpdMode::Hold,
     }
 }
@@ -475,6 +481,7 @@ impl It8951e {
             match mode {
                 EpdMode::Hold | EpdMode::Seed => Ok(()),
                 EpdMode::Refresh(waveform) => state.drive(placed, mode_of(waveform, false), panel),
+                EpdMode::RefreshAll(waveform) => state.drive(placed, mode_of(waveform, true), panel),
             }
         })
     }
@@ -587,16 +594,36 @@ impl EpdDriver for It8951e {
         self.with(|state| state.drive(placed, mode_of(waveform, all), panel))
     }
 
-    fn clear(&self) -> Result<()> {
+    fn clear(&self, area: Rect) -> Result<()> {
         let panel = self.size;
-        let whole = Rect::new(0, 0, panel.width as i16, panel.height as i16);
-        let bytes = usize::from(panel.width) * usize::from(panel.height) / 2;
+        let placed = unturn(area, self.rotation, panel);
+        let arg0 = BIG_ENDIAN << 8 | bpp(self.format).unwrap_or(BPP_8) << 4 | quarters(self.rotation);
+        let bytes = self.format.row_bytes(area.w as usize) * area.h as usize;
         let rows = iter::repeat_n(&WHITE[..], bytes / WHITE.len()).chain(iter::once(&WHITE[..bytes % WHITE.len()]));
         self.with(|state| {
-            state.settle(whole)?;
-            state.io.load(BIG_ENDIAN << 8 | BPP_4 << 4, whole, rows)?;
-            state.drive(whole, MODE_INIT, panel)
+            state.settle(placed)?;
+            state.io.load(arg0, area, rows)?;
+            state.drive(placed, MODE_INIT, panel)
         })
+    }
+
+    // How many areas the chip's engines drive at once is not settled yet, so
+    // drives are kept to one.
+    fn refresh_unit(&self) -> RefreshUnit {
+        RefreshUnit::Rects(1)
+    }
+
+    fn busy(&self, area: Rect) -> Result<bool> {
+        let placed = unturn(area, self.rotation, self.size);
+        let mut state = self.state.lock();
+        if !state.driving.is_some_and(|d| d.intersects(&placed)) {
+            return Ok(false);
+        }
+        if state.io.drives_done()? {
+            state.driving = None;
+            return Ok(false);
+        }
+        Ok(true)
     }
 
     fn wait_idle(&self) -> Result<()> {

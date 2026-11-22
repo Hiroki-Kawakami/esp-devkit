@@ -192,7 +192,11 @@ fn theme() -> &'static Theme {
 
 fn run(tree: &mut Tree) -> Vec<Rect> {
     tree.update();
-    tree.take_damage()
+    rects(tree)
+}
+
+fn rects(tree: &mut Tree) -> Vec<Rect> {
+    tree.take_damage().into_iter().map(|d| d.rect).collect()
 }
 
 fn rect_of(tree: &Tree, id: &str) -> Rect {
@@ -815,7 +819,7 @@ fn a_scroll_reports_every_move_and_shows_the_border_only_away_from_the_start() {
     let drag = |tree: &mut Tree, y: i16, at: u32| {
         tree.touch(&[(0, (100, y))], at);
         tree.update();
-        tree.take_damage()
+        rects(tree)
     };
     drag(&mut tree, 300, 0);
     let first = drag(&mut tree, 260, 16);
@@ -855,7 +859,7 @@ fn tap_runs_the_handler_and_changes_only_what_changed() {
     tap(&mut tree, "button");
     let NodeContent::Text(text) = &tree.nodes[id as usize].content else { panic!() };
     assert_eq!(text.text(), "n=1");
-    let damage = tree.take_damage();
+    let damage = rects(&mut tree);
     assert!(damage.iter().all(|r| r.bottom() <= 40), "{damage:?}");
     assert!(!damage.is_empty());
 }
@@ -1392,6 +1396,33 @@ fn repeated_samples_leave_the_speed_alone_and_a_short_tick_keeps_the_fling() {
     let before = offset(&tree);
     tree.tick(10);
     assert!(offset(&tree) - before >= 30, "still at the drag's 4 px/ms");
+}
+
+#[test]
+fn a_fling_lasts_as_long_and_goes_as_far_whatever_the_frame_time() {
+    let throw = |step_ms: u32| {
+        let mut tree = Tree::new(Sample::new(), SCREEN, Caps::INTERNAL, theme());
+        run(&mut tree);
+        let viewport = rect_of(&tree, "list");
+        let x = viewport.x + 10;
+        tree.touch(&[(0, (x, viewport.y + 300))], 0);
+        tree.touch(&[(0, (x, viewport.y + 280))], 10);
+        tree.touch(&[(0, (x, viewport.y + 260))], 20);
+        tree.touch(&[(0, (x, viewport.y + 240))], 30);
+        tree.touch(&[], 35);
+        let mut elapsed = 0;
+        while tree.animating() && elapsed < 10_000 {
+            tree.tick(step_ms);
+            elapsed += step_ms;
+        }
+        let NodeContent::Collection(list) = &tree.nodes[tree.find(id!("list")).unwrap() as usize].content else { panic!() };
+        (elapsed, list.offset)
+    };
+    let (smooth_ms, smooth_px) = throw(16);
+    let (slow_ms, slow_px) = throw(300);
+    assert!(smooth_px > 100, "{smooth_px}");
+    assert!(slow_ms.abs_diff(smooth_ms) <= 300, "{smooth_ms} ms at 16 ms a frame, {slow_ms} ms at 300");
+    assert!(slow_px.abs_diff(smooth_px) <= smooth_px.unsigned_abs() / 10,"{smooth_px} px at 16 ms a frame, {slow_px} px at 300");
 }
 
 #[test]
@@ -3413,7 +3444,7 @@ fn redrawing_a_part_damages_it_alone_without_a_view() {
     tree.touch(&[(0, point)], 0);
     tree.touch(&[], 10);
     tree.update();
-    let damage = tree.take_damage();
+    let damage = rects(&mut tree);
     assert!(damage.contains(&Rect::new(r.x + 15, r.y + 25, 30, 4)), "{damage:?}");
     assert!(damage.iter().all(|d| d.h <= 10), "{damage:?}");
     assert_eq!(VIEWS.load(core::sync::atomic::Ordering::Relaxed), views);
@@ -4732,7 +4763,7 @@ fn a_clear_scrim_damages_only_what_draws() {
     let mut play = |tree: &mut Tree| {
         for _ in 0..40 {
             tree.update();
-            damage.extend(tree.take_damage());
+            damage.extend(rects(tree));
             tree.tick(16);
         }
     };
@@ -5160,4 +5191,128 @@ fn a_shared_image_repaints_when_swapped_and_is_released_by_its_node() {
     assert_eq!((last.w, last.h), (6, 5));
     drop(tree);
     assert!(watch.iter().all(|w| w.strong_count() == 0));
+}
+
+#[derive(Clone, Copy)]
+enum EpdMsg {
+    Inc,
+    Next,
+    Again,
+    Open,
+}
+
+static PHOTO: [u8; 4] = [0, 85, 170, 255];
+
+const PHOTO_ACTION: EpdAction = EpdAction::CleanThen(bsp_rs::display::Waveform::Quality);
+const SCREEN_POLICY: EpdPolicy = EpdPolicy { content: EpdAction::RefreshAll(bsp_rs::display::Waveform::Text), ..EpdPolicy::DEFAULT };
+
+struct Glass {
+    count: u32,
+    policy: Option<EpdPolicy>,
+}
+
+impl Component for Glass {
+    type Msg = EpdMsg;
+
+    fn update(&mut self, msg: EpdMsg, cx: &mut Cx<Self>) {
+        match msg {
+            EpdMsg::Inc => self.count += 1,
+            EpdMsg::Next => {
+                self.count += 1;
+                cx.epd.next(EpdAction::RefreshAll(bsp_rs::display::Waveform::Quality));
+            }
+            EpdMsg::Again => cx.epd.refresh(EpdScope::Element(id!("photo")), PHOTO_ACTION),
+            EpdMsg::Open => cx.nav_of::<Root>().push(Glass { count: 0, policy: Some(SCREEN_POLICY) }),
+        }
+        cx.rebuild();
+    }
+
+    fn view<'a>(&'a self, ui: &'a Ui<EpdMsg>) -> Element<'a, EpdMsg> {
+        let photo = devkit_gfx::Image::from_pixels(ImageFormat::L8, 2, 2, 2, &PHOTO);
+        ui.column([
+            ui.column([]).size(40, 30).style(&PRESS_STYLE).id(id!("button")).on_tap(EpdMsg::Inc),
+            ui.text(chain(), ui.format(format_args!("n={}", self.count))).id(id!("count")),
+            ui.column([ui.text(chain(), ui.format(format_args!("m={}", self.count)))]).epd(PHOTO_ACTION).id(id!("photo")),
+            ui.image(ImageRef::Static(photo)).size(2 + self.count as i16, 2).id(id!("image")),
+        ])
+    }
+}
+
+impl Screen for Glass {
+    fn style(&self) -> ScreenStyle {
+        ScreenStyle { epd: self.policy, ..ScreenStyle::default() }
+    }
+}
+
+fn glass() -> Tree {
+    let mut tree = Tree::new(Glass { count: 0, policy: None }, SCREEN, Caps::INTERNAL, theme());
+    settle(&mut tree);
+    tree
+}
+
+fn damaged_in(damage: &[crate::tree::Damaged], tree: &Tree, id: &str) -> Vec<crate::tree::Damaged> {
+    let area = rect_of(tree, id);
+    damage.iter().filter(|d| d.rect.intersects(&area)).copied().collect()
+}
+
+#[test]
+fn a_press_is_a_change_of_state_and_what_it_does_is_content() {
+    let mut tree = glass();
+    let point = tree.tap_point("button").unwrap();
+    tree.touch(&[(0, point)], 0);
+    tree.update();
+    let pressed = tree.take_damage();
+    assert!(!pressed.is_empty());
+    assert!(pressed.iter().all(|d| d.causes == crate::epd::Causes::of(EpdCause::State)), "{pressed:?}");
+    assert_eq!(EpdPolicy::DEFAULT.resolve(pressed[0].causes), Some(EpdAction::Refresh(bsp_rs::display::Waveform::Fast)));
+
+    tree.touch(&[], 10);
+    tree.update();
+    let damage = tree.take_damage();
+    let count = damaged_in(&damage, &tree, "count");
+    assert!(count.iter().any(|d| d.causes.has(EpdCause::Content) && d.epd.is_none()), "{damage:?}");
+}
+
+#[test]
+fn an_element_asks_for_its_own_action_and_images_are_their_own_cause() {
+    let mut tree = glass();
+    tree.post(tree.root_id, Erased::new(EpdMsg::Inc));
+    tree.update();
+    let damage = tree.take_damage();
+    let photo = damaged_in(&damage, &tree, "photo");
+    assert!(!photo.is_empty() && photo.iter().all(|d| d.epd == Some(PHOTO_ACTION)), "{damage:?}");
+    assert!(damaged_in(&damage, &tree, "count").iter().any(|d| d.epd.is_none()));
+    let image = damaged_in(&damage, &tree, "image");
+    assert!(image.iter().any(|d| d.causes.has(EpdCause::Image)), "{damage:?}");
+    assert_eq!(EpdPolicy::DEFAULT.resolve(crate::epd::Causes::of(EpdCause::Image).with(EpdCause::State)), Some(EpdAction::Refresh(bsp_rs::display::Waveform::Quality)));
+}
+
+#[test]
+fn a_new_screen_marks_the_frame_and_brings_its_policy() {
+    let mut tree = glass();
+    assert_eq!(tree.screen_style.epd, None);
+    tree.post(tree.root_id, Erased::new(EpdMsg::Open));
+    tree.update();
+    let damage = tree.take_damage();
+    assert!(!damage.is_empty() && damage.iter().all(|d| d.causes.has(EpdCause::Screen)), "{damage:?}");
+    assert_eq!(tree.screen_style.epd, Some(SCREEN_POLICY));
+    settle(&mut tree);
+    let point = tree.tap_point("button").unwrap();
+    tree.touch(&[(0, point)], 100);
+    tree.update();
+    assert!(tree.take_damage().iter().all(|d| !d.causes.has(EpdCause::Screen)));
+}
+
+#[test]
+fn a_component_asks_for_the_next_frame_and_to_drive_again() {
+    let mut tree = glass();
+    tree.post(tree.root_id, Erased::new(EpdMsg::Next));
+    tree.post(tree.root_id, Erased::new(EpdMsg::Again));
+    tree.update();
+    assert_eq!(tree.epd.next, Some(EpdAction::RefreshAll(bsp_rs::display::Waveform::Quality)));
+    assert!(matches!(tree.epd.refresh.as_slice(), [(EpdScope::Element(_), PHOTO_ACTION)]));
+    let mut more = EpdRequests::default();
+    more.next(EpdAction::Refresh(bsp_rs::display::Waveform::Fast));
+    tree.epd.merge(more);
+    assert_eq!(tree.epd.next, Some(EpdAction::RefreshAll(bsp_rs::display::Waveform::Quality)), "the stronger stays");
 }

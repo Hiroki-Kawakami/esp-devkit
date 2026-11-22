@@ -22,6 +22,7 @@ use idf::{Error, Result, thread};
 use super::ppa::PpaBlitter;
 use super::{Config, Grid, MAX_FRAME_BUFFERS, MAX_LANES, PresentMode, Presenter, STRIPS_PER_LANE, Stats, StripSource, Strips, cut};
 use crate::blit::{self, Blit, Blitter, NewBlitter};
+use crate::epd::EpdAction;
 use crate::external::{Buffers, NO_BACK};
 
 const TAG: &CStr = c"presenter";
@@ -446,13 +447,15 @@ impl Presenter for FbPresenter {
         GRID
     }
 
-    fn invalidate(&mut self, rect: Rect) {
+    fn invalidate(&mut self, rect: Rect, _action: EpdAction) {
         FbPresenter::invalidate(self, rect);
     }
 
-    fn invalidate_all(&mut self) {
+    fn invalidate_all(&mut self, _action: EpdAction) {
         FbPresenter::invalidate_all(self);
     }
+
+    fn redrive(&mut self, _rect: Rect, _action: EpdAction) {}
 
     fn has_new_damage(&self) -> bool {
         self.fresh

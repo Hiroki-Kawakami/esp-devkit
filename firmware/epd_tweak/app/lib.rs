@@ -94,7 +94,8 @@ pub fn run() {
                 }));
             }
             Job::Clean => {
-                if let Err(err) = epd.clear() {
+                let size = display.size();
+                if let Err(err) = epd.clear(Rect::new(0, 0, size.width as i16, size.height as i16)) {
                     error!(TAG, "clear: {err}");
                 }
                 if let Some(picture) = shown.take() {

@@ -17,6 +17,7 @@ use core::future::Future;
 use core::marker::PhantomData;
 
 use crate::element::{Element, Ui};
+use crate::epd::EpdRequests;
 use crate::erased::Erased;
 use crate::id::Id;
 use crate::nav::{Action, NavOp};
@@ -133,6 +134,7 @@ pub(crate) struct Requests {
     pub(crate) scrolls: Vec<(Id, ScrollTarget, bool)>,
     pub(crate) guards: Vec<Box<dyn Any>>,
     pub(crate) tasks: Vec<Task>,
+    pub(crate) epd: EpdRequests,
 }
 
 /// Where `Cx::scroll_to` moves a `scroll` or `list`. `Index` is a row of a
@@ -185,6 +187,8 @@ pub struct Animation {
 /// What `Component::update` can ask for.
 pub struct Cx<C: Component> {
     pub(crate) requests: Requests,
+    /// What a panel driving electrophoretic glass does with the changes.
+    pub epd: EpdRequests,
     id: u32,
     link: Link,
     local: Rc<Local>,
@@ -194,7 +198,11 @@ pub struct Cx<C: Component> {
 impl<C: Component> Cx<C> {
     pub(crate) fn new(replaced: Option<Strips>, tap_rect: Option<Rect>, id: u32, link: &Link, local: &Rc<Local>) -> Self {
         let requests = Requests { replaced, tap_rect, ..Requests::default() };
-        Self { requests, id, link: link.clone(), local: local.clone(), _component: PhantomData }
+        Self { requests, epd: EpdRequests::default(), id, link: link.clone(), local: local.clone(), _component: PhantomData }
+    }
+
+    pub(crate) fn into_requests(self) -> Requests {
+        Requests { epd: self.epd, ..self.requests }
     }
 
     /// Reaches this component from any task, for as long as it lives, whether
@@ -437,7 +445,7 @@ impl<C: Component> AnyHost for Host<C> {
         let mut cx = Cx::<C>::new(replaced, tap_rect, self.id, link, local);
         self.component.update(unsafe { msg.get::<C::Msg>() }, &mut cx);
         self.adopt(&mut cx.requests.tasks);
-        cx.requests
+        cx.into_requests()
     }
 
     fn build(&self, tree: &mut Tree, id: u16, node: NodeIndex) {
@@ -516,7 +524,7 @@ impl<S: Screen> AnyHost for ScreenHost<S> {
             Hook::DidDisappear => screen.did_disappear(&mut cx),
         }
         self.inner.adopt(&mut cx.requests.tasks);
-        cx.requests
+        cx.into_requests()
     }
 
     fn screen_style(&self) -> Option<ScreenStyle> {

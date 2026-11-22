@@ -30,7 +30,7 @@ mod target;
 mod text;
 
 pub use color::Color;
-pub use copy::{copy, swap_rgb565};
+pub use copy::{copy, pack_l1, pack_l4, swap_rgb565};
 pub use damage::Damage;
 pub use effect::{ArcMask, CornerMask, ShadowMask};
 pub use font::Font;
@@ -39,7 +39,7 @@ pub use geom::{Corners, Rect, Rotation, Sides, Size};
 pub use glyph_cache::GlyphCache;
 pub use image::{DeferredImage, Image, ImageBuf, ImageSource};
 pub use list::{DisplayList, Op, overlap};
-pub use pixel::{Argb8888, Bgr888, Pixel, Rgb565};
+pub use pixel::{Argb8888, Bgr888, L8, Pixel, Rgb565};
 pub use raster::{Raster, RasterTarget};
 pub use render::{ClipStore, Prepared, draw, draw_from};
 pub use slot::ResourceSlot;

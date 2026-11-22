@@ -189,6 +189,69 @@ impl Pixel for Bgr888 {
     }
 }
 
+#[derive(Clone, Copy)]
+pub struct L8(u8);
+
+#[inline(always)]
+fn blend8(d: *mut u8, s: u8, a: u32) {
+    let a = a + (a >> 7);
+    let v = i32::from(unsafe { d.read() });
+    unsafe { d.write((v + ((i32::from(s) - v) * a as i32 >> 8)) as u8) };
+}
+
+impl Pixel for L8 {
+    const BYTES: usize = 1;
+    const NATIVE: ImageFormat = ImageFormat::L8;
+
+    #[inline]
+    fn pack(c: Color) -> Self {
+        Self(((u32::from(c.r) * 54 + u32::from(c.g) * 183 + u32::from(c.b) * 19 + 128) >> 8) as u8)
+    }
+
+    #[inline]
+    unsafe fn load(src: *const u8) -> Self {
+        Self(unsafe { src.read() })
+    }
+
+    #[inline]
+    unsafe fn fill(dst: *mut u8, n: usize, c: Self) {
+        unsafe { ptr::write_bytes(dst, c.0, n) };
+    }
+
+    #[inline]
+    unsafe fn blend(dst: *mut u8, n: usize, c: Self, alpha: u8) {
+        for i in 0..n {
+            blend8(unsafe { dst.add(i) }, c.0, u32::from(alpha));
+        }
+    }
+
+    #[inline]
+    unsafe fn blend_mask(dst: *mut u8, mask: *const u8, n: usize, c: Self) {
+        for i in 0..n {
+            let a = u32::from(unsafe { *mask.add(i) });
+            if a == 0 {
+                continue;
+            }
+            let d = unsafe { dst.add(i) };
+            if a >= 252 {
+                unsafe { d.write(c.0) };
+            } else {
+                blend8(d, c.0, a);
+            }
+        }
+    }
+
+    #[inline]
+    unsafe fn blend_mask_alpha(dst: *mut u8, mask: *const u8, n: usize, c: Self, alpha: u8) {
+        for i in 0..n {
+            let a = mul8(unsafe { *mask.add(i) }, alpha);
+            if a != 0 {
+                blend8(unsafe { dst.add(i) }, c.0, u32::from(a));
+            }
+        }
+    }
+}
+
 /// B, G, R, A in memory, not premultiplied, for pictures laid over others.
 #[derive(Clone, Copy)]
 pub struct Argb8888([u8; 4]);

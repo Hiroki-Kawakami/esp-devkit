@@ -424,6 +424,56 @@ rotation.set_locked(true);
   they lift, flings stop, and an `ExternalSurface` is asked to write again, with
   `frame.rotation` and `frame.area` new from the next frame.
 
+## Electrophoretic glass
+
+On a panel that drives electrophoretic glass, each change is driven with an
+`EpdAction`: `Refresh(waveform)` drives the pixels that changed,
+`RefreshAll(waveform)` every pixel of the area, which clears ghosting, and
+`CleanThen(waveform)` drives the area to white before drawing it. Other panels
+ignore all of this.
+
+What a change gets comes from its cause, through `AppConfig::epd`:
+
+| `EpdCause` | what changed | `EpdPolicy::DEFAULT` |
+|---|---|---|
+| `State` | pressed, focused, selected and other states, the caret | `Refresh(Fast)` |
+| `Scroll` | scrolling | `Refresh(Fast)` |
+| `Content` | what an element shows, elements coming and going | `Refresh(Text)` |
+| `Layout` | elements moving, nothing else changed | `Refresh(Text)` |
+| `Screen` | screens and popups coming and going, the picture turning | `RefreshAll(Text)` |
+| `Image` | what an image shows | `Refresh(Quality)` |
+
+Where causes meet, the action that does more wins: `CleanThen` over
+`RefreshAll` over `Refresh`, then `Quality` over `Text` over `Fast`. A whole
+new picture, the first and one turned, takes `screen`: with
+`RefreshAll` every pixel is driven, whatever the glass showed before;
+with `Refresh` what was on the glass stays where the picture is white.
+Where the panel drives each pixel on its own, `Fast` starts on what is written
+as it is written; the other waveforms start together once the whole frame is.
+
+```rust
+config.epd = EpdPolicy { scroll: EpdAction::Refresh(Waveform::Text), ..EpdPolicy::DEFAULT };
+
+// A screen of its own.
+fn style(&self) -> ScreenStyle {
+    ScreenStyle { epd: Some(PHOTOS), ..ScreenStyle::default() }
+}
+
+// An element, whatever changes in it.
+ui.image(&self.photo).epd(EpdAction::CleanThen(Waveform::Quality))
+
+// From update.
+cx.epd.next(EpdAction::RefreshAll(Waveform::Quality));
+cx.epd.refresh(EpdScope::Screen, EpdAction::RefreshAll(Waveform::Text));
+```
+
+- Of these, what comes first wins: `cx.epd.next` for everything the next frame
+  changes, the nearest element around a change with `.epd`, the screen in front,
+  then `AppConfig::epd`.
+- `cx.epd.refresh` drives the screen or an element again as it shows, changed or
+  not: `RefreshAll` clears ghosting, `CleanThen` draws it again from white.
+  Clearing ghosting is the app's to do; nothing does it by itself.
+
 ## Plugins
 
 `AppConfig::plugins` adds behaviour the app does not otherwise see. `init` runs
@@ -587,6 +637,10 @@ config.plugins.push(Box::new(SavedColorMode::new()));
   not have UI over it.
 - When the rectangle shrinks, the UI holds back until the frame being written
   has ended, for 100 ms at most.
+- On electrophoretic glass the writer drives its own area: it writes with
+  `frame.write`, which leaves the glass as it was, then calls `Epd::refresh`
+  for what it wrote. It never changes the `EpdMode`, which the whole panel
+  shares; the UI over it is driven by the UI.
 
 ## Memory
 
@@ -649,6 +703,16 @@ loop {
 - Call `acquire` before reading input: it may wait for a framebuffer. `render`
   takes it by itself otherwise.
 - A stalled copy logs `blit stalled` every second and keeps waiting.
+
+`App` picks the presenter for the panel. One that keeps the picture in its own
+memory gets strips written into that memory, drawn in `Rgb565`, `Bgr888` or
+`L8` and put in the panel's format on the way (`Rgb565Be` swapped, `L4` and
+`L1` packed); a turn the panel cannot take is done on each strip.
+Electrophoretic glass is written the same way without being driven, and once a
+frame is written each change is driven as its `EpdAction` says, the actions
+that do more first, each area once. Areas still being driven in a way a write
+would wait for hold the frame back until they settle. A panel that drives only
+the whole of it, or few areas at once, gets one area around all of a frame.
 
 ## Test harnesses
 

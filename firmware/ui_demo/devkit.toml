@@ -24,6 +24,18 @@ kind = "idf"
 [targets.simulator_stopwatch]
 kind = "sim"
 
+[targets.paper_s3]
+kind = "idf"
+
+[targets.simulator_paper_s3]
+kind = "sim"
+
+[targets.paper]
+kind = "idf"
+
+[targets.simulator_paper]
+kind = "sim"
+
 [targets.test]
 kind = "sim"
 dir = "simulator"

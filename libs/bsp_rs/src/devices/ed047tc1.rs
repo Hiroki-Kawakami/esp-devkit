@@ -11,7 +11,7 @@ use idf::Result;
 
 use crate::display::{ImageFormat, Size};
 use crate::driver::epd_ll::{self, Control, EpdLl, Waveforms};
-use crate::driver::epd_ll::waveform::{B, Frame, SETTLE, STOP, W, by_dc as d, by_to as t, check};
+use crate::driver::epd_ll::waveform::{B, Frame, SETTLE, STOP, W, by_dc as d, by_dc_side as s, by_to as t, check};
 
 pub(crate) const SIZE: Size = Size { width: 960, height: 540 };
 const PCLK_HZ: u32 = 20_000_000;
@@ -81,16 +81,27 @@ static TEXT: [Frame; 18] = [
     SETTLE, SETTLE, SETTLE, SETTLE, SETTLE, SETTLE, SETTLE, SETTLE,
 ];
 
-// Black and white driven straight; other grays only pushed toward their side,
-// roughly, so nothing of the picture before stays.
+// Black and white only, grays to the nearer: driven from the first frame
+// toward its side, until the DC reaches 4 that way.
 #[rustfmt::skip]
 static FAST: [Frame; 12] = [
-    CANCEL[0], CANCEL[1], CANCEL[2], CANCEL[3],
-    // 0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15
-    t([B, B, B, B, B, B, B, B, W, W, W, W, W, W, W, W]),
-    t([B, B, B, B, B, 0, 0, 0, 0, 0, 0, W, W, W, W, W]),
-    t([B, B, B, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, W, W, W]),
-    t([B, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, W]),
+    //       -8 -7 -6 -5 -4 -3 -2 -1  0  1  2  3  4  5  6  7
+    s(/*0-7*/ [B, B, B, B, B, B, B, B, B, B, B, B, 0, 0, 0, 0],
+      /*8-F*/ [0, 0, 0, 0, 0, W, W, W, W, W, W, W, W, W, W, W]),
+    s(        [B, B, B, B, B, B, B, B, B, B, B, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, W, W, W, W, W, W, W, W, W, W]),
+    s(        [B, B, B, B, B, B, B, B, B, B, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, W, W, W, W, W, W, W, W, W]),
+    s(        [B, B, B, B, B, B, B, B, B, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, W, W, W, W, W, W, W, W]),
+    s(        [B, B, B, B, B, B, B, B, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, W, W, W, W, W, W, W]),
+    s(        [B, B, B, B, B, B, B, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, W, W, W, W, W, W]),
+    s(        [B, B, B, B, B, B, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, W, W, W, W, W]),
+    s(        [B, B, B, B, B, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, W, W, W, W]),
     SETTLE, SETTLE, SETTLE, SETTLE,
 ];
 

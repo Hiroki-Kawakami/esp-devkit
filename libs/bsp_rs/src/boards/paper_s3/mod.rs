@@ -30,7 +30,7 @@ const TAG: &CStr = c"paper_s3";
 
 const PANEL_SIZE: Size = Size { width: 960, height: 540 };
 const PANEL_PPI: u16 = 234;
-const PIXEL_FORMAT: ImageFormat = ImageFormat::L4;
+const PIXEL_FORMAT: ImageFormat = ImageFormat::L8;
 
 /// The buzzer sounds at its one loudness, so there is no volume to process.
 fn buzzer_config(config: &Config) -> audio::Config {

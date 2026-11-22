@@ -7,21 +7,22 @@
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::ffi::{CStr, c_void};
 use core::slice;
-use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU16, AtomicU32, Ordering};
 
 use devkit_core::boxed;
 use idf::heap::{self, Caps};
 use idf::lcd::i80::{self, DmaBuffer, Io};
 use idf::log::error;
-use idf::sync::{Mutex, MutexGuard, Semaphore};
+use idf::sync::{Mutex, MutexGuard, Receiver, Semaphore, Sender, channel};
 use idf::time::delay_us;
 use idf::{Error, Result, gpio, sys, system, thread};
 
-use super::waveform::{self as wf, B1_IDLE, B1_PENDING, DC_ZERO, Frame, Pixel, Retire, Rowset, SLOTS, Waveform};
+use super::waveform::{self as wf, B1_IDLE, B1_PENDING, DC_ZERO, Frame, Next, Pixel, Retire, Rowset, SLOTS, Waveform};
 use crate::Absent;
-use crate::display::{self, Driver, EpdDriver, EpdMode, GramDriver, Image, ImageFormat, Rect, Rotation, Size, Ticket};
+use crate::display::{self, Driver, EpdDriver, EpdMode, GramDriver, Image, ImageFormat, Rect, RefreshUnit, Rotation, Size, Ticket};
 
 const TAG: &CStr = c"epd_ll";
 
@@ -34,6 +35,11 @@ const DMA_BURST: usize = 64;
 const ACT_POOL: usize = 16;
 const ACT_HOLD: usize = ACT_POOL;
 const TASK_STACK: usize = 6144;
+const WRITE_STACK: usize = 4096;
+/// Writes, refreshes and the like a writer may have queued.
+const JOB_DEPTH: usize = 16;
+const MAX_WAKES: u32 = 8;
+const MAX_DEFERRED: usize = 8;
 
 /// The gate driver, the source latch and the power, as a board wires them.
 pub(crate) trait Control: Send + Sync {
@@ -155,14 +161,15 @@ fn level(pin: i32, high: bool) {
 /// Read by the bus interrupt.
 struct Latch {
     control: Box<dyn Control>,
-    busy: AtomicBool,
+    /// Held while a line is on the bus; the bus interrupt gives it back.
+    free: Semaphore,
 }
 
 // The bus interrupt is not allocated IRAM-safe, so this may stay in flash.
 unsafe extern "C" fn line_sent(_io: sys::esp_lcd_panel_io_handle_t, _data: *mut sys::esp_lcd_panel_io_event_data_t, ctx: *mut c_void) -> bool {
     let latch = unsafe { &*ctx.cast::<Latch>() };
     latch.control.line_latch();
-    latch.busy.store(false, Ordering::Release);
+    latch.free.give_from_isr();
     false
 }
 
@@ -235,10 +242,11 @@ impl Bus {
         &*self.latch.control
     }
 
+    /// Blocks, rather than spinning, so the core stays with other tasks
+    /// whatever this one's priority.
     fn wait(&self) {
-        while self.latch.busy.load(Ordering::Acquire) {
-            thread::yield_now();
-        }
+        self.latch.free.take();
+        self.latch.free.give();
     }
 
     fn frame_begin(&self) {
@@ -249,13 +257,12 @@ impl Bus {
     /// Waits for the line before, which the bus interrupt latched; `line`
     /// stays in use until the next call.
     fn write_line(&self, line: &DmaBuffer) {
-        self.wait();
-        self.latch.busy.store(true, Ordering::Release);
+        self.latch.free.take();
         self.control().line_begin();
         let data = unsafe { slice::from_raw_parts(line.as_ptr(), self.tx_len) };
         if let Err(err) = unsafe { self.io.tx_color(-1, data) } {
             error!(TAG, "line: {err}");
-            self.latch.busy.store(false, Ordering::Release);
+            self.latch.free.give();
         }
     }
 
@@ -275,8 +282,11 @@ struct Counters {
     /// The task is driving rather than waiting on `wake`.
     running: bool,
     mode: EpdMode,
-    /// Draws waiting for the scan to stop between frames.
-    cutters: u32,
+    /// Pixels with a gray to go to after their replay.
+    waiting_px: u32,
+    /// Refreshes, by area and slot, of pixels that were replaying, done again
+    /// between frames once those are drawn.
+    deferred: Vec<(Rect, usize)>,
     wf: [Option<Waveform>; SLOTS],
     /// The table of the slot was a `Box` given to `set_waveform`, leaked
     /// while in use.
@@ -290,23 +300,23 @@ struct Shared {
     state: Box<[Pixel], Caps>,
     /// Pixels per row that are not idle; written under `lock`.
     row_nonidle: Box<[AtomicU16], Caps>,
+    /// Under `lock`.
+    next: Box<[Next], Caps>,
+    /// Pixels per row with a gray to go to after their replay; under `lock`.
+    row_waiting: Box<[AtomicU16], Caps>,
     lock: Mutex<Counters>,
     waiters: AtomicU32,
     /// Given every frame something finishes or someone waits.
     retired: Semaphore,
     wake: Semaphore,
-    /// Given by the scan between frames to one of `cutters`, who gives
-    /// `resumed` once done.
-    boundary: Semaphore,
-    resumed: Semaphore,
 }
 
-/// Pixels a draw left replaying toward another gray.
-struct Pass {
-    /// Some may be stopped at the next boundary.
-    cuttable: bool,
-    /// Some have a STOP frame ahead and must finish.
-    stuck: bool,
+fn slot_of(waveform: display::Waveform) -> usize {
+    match waveform {
+        display::Waveform::Fast => 0,
+        display::Waveform::Quality => 1,
+        display::Waveform::Text => 2,
+    }
 }
 
 fn add(cell: &AtomicU16, n: u16) {
@@ -366,161 +376,285 @@ impl Shared {
             let Counters { group, wf: waveforms, .. } = &mut *guard;
             let end = waveforms[SLOT_QUALITY].as_ref().map_or(&wf::KEEP, |q| q.dc_after(q.steps()));
             for r in 0..h {
+                let y = y0 + r;
                 let mut subsumed = 0;
-                for (px, g) in self.row(y0 + r)[x0..x0 + w].iter().zip(grays(r)) {
-                    let v = px.load(Ordering::Relaxed);
+                for (x, g) in (x0..x0 + w).zip(grays(r)) {
+                    let i = y * self.width + x;
+                    let v = self.state[i].load(Ordering::Relaxed);
                     subsumed += u16::from((v >> 8) as u8 == B1_PENDING);
-                    px.store(wf::seed_px(v, g, end), Ordering::Relaxed);
+                    self.state[i].store(wf::seed_px(v, g, end), Ordering::Relaxed);
                 }
-                sub(&self.row_nonidle[y0 + r], subsumed);
+                sub(&self.row_nonidle[y], subsumed);
                 group[usize::from(B1_PENDING)] -= u32::from(subsumed);
             }
             return Ok(());
         }
-        let mut pass = self.draw_pass(&mut guard, area, &grays, false);
-        loop {
-            if pass.cuttable {
-                guard = self.at_boundary(guard);
-                pass = self.draw_pass(&mut guard, area, &grays, true);
-                guard.cutters -= 1;
-                drop(guard);
-                self.resumed.give();
-                guard = self.lock.lock();
-            }
-            if !pass.stuck {
-                break;
-            }
-            // Holding the scan at every boundary would slow the replays the
-            // draw waits for.
-            guard = self.wait_retire(guard);
-            pass = self.draw_pass(&mut guard, area, &grays, false);
-        }
         drop(guard);
-        match mode {
-            EpdMode::Refresh(waveform) => self.refresh(area, waveform, false),
-            _ => Ok(()),
-        }
-    }
-
-    /// Draws `area`, leaving pixels replaying toward another gray as they
-    /// were. With `cut`, which only a draw between frames may ask, those a
-    /// draw may stop stop where the steps they have run leave them instead.
-    fn draw_pass<I: Iterator<Item = u8>>(&self, guard: &mut Counters, area: Rect, grays: &impl Fn(usize) -> I, cut: bool) -> Pass {
-        let (x0, y0, w, h) = (area.x as usize, area.y as usize, area.w as usize, area.h as usize);
-        let Counters { group, wf: waveforms, frame, active_px, .. } = guard;
-        let mut pass = Pass { cuttable: false, stuck: false };
+        let (slot, all) = match mode {
+            EpdMode::Refresh(waveform) => (Some(slot_of(waveform)), false),
+            EpdMode::RefreshAll(waveform) => (Some(slot_of(waveform)), true),
+            _ => (None, false),
+        };
+        let mut wake = false;
+        // A row at a time, so the scan never waits for a whole area.
         for r in 0..h {
-            let mut gained = 0;
-            for (px, g) in self.row(y0 + r)[x0..x0 + w].iter().zip(grays(r)) {
+            let y = y0 + r;
+            let start = y * self.width + x0;
+            let (row, next) = (&self.state[start..][..w], &self.next[start..][..w]);
+            let mut guard = self.lock.lock();
+            let counters = &mut *guard;
+            let slot = slot.filter(|&s| counters.wf[s].is_some());
+            let b1 = slot.map(|s| wf::armed(s, counters.frame));
+            let (mut gained, mut armed, mut pending, mut waiting) = (0u16, 0u32, 0i32, 0i32);
+            for ((px, n), g) in row.iter().zip(next).zip(grays(r)) {
                 let v = px.load(Ordering::Relaxed);
-                let drawn = wf::draw_px(v, g);
-                if drawn.conflict {
-                    let b1 = (v >> 8) as u8;
-                    match wf::cut_dc(waveforms[usize::from(b1 >> 6)].as_ref(), *frame, b1) {
-                        Some(dc) if cut => {
-                            px.store(wf::cut_px(v, g, dc), Ordering::Relaxed);
-                            group[usize::from(b1)] -= 1;
-                            group[usize::from(B1_PENDING)] += 1;
-                            *active_px -= 1;
-                        }
-                        Some(_) => pass.cuttable = true,
-                        None => pass.stuck = true,
+                if wf::is_active(v) {
+                    let target = (v & 15) as u8;
+                    let (old, new) = (n.load(Ordering::Relaxed), wf::next_byte(g, slot));
+                    if old != new {
+                        n.store(new, Ordering::Relaxed);
+                        waiting += i32::from(g != target) - i32::from(wf::next_gray(old) != target);
                     }
                     continue;
                 }
-                px.store(drawn.px, Ordering::Relaxed);
-                gained += u16::from(drawn.now_nonidle);
-            }
-            add(&self.row_nonidle[y0 + r], gained);
-            group[usize::from(B1_PENDING)] += u32::from(gained);
-        }
-        pass
-    }
-
-    /// Waits for the scan to finish the frame it is sending and holds `lock`
-    /// again before the next one starts. `cutters` stays raised until the
-    /// caller lowers it and gives `resumed`.
-    fn at_boundary<'a>(&'a self, mut guard: MutexGuard<'a, Counters>) -> MutexGuard<'a, Counters> {
-        guard.cutters += 1;
-        drop(guard);
-        self.boundary.take();
-        self.lock.lock()
-    }
-
-    fn refresh(&self, area: Rect, waveform: display::Waveform, all: bool) -> Result<()> {
-        let slot = match waveform {
-            display::Waveform::Fast => 0,
-            display::Waveform::Quality => 1,
-            display::Waveform::Text => 2,
-        };
-        let (x0, y0) = (area.x as usize, area.y as usize);
-        let (x1, y1) = (x0 + area.w as usize, y0 + area.h as usize);
-        let mut guard = self.lock.lock();
-        if guard.wf[slot].is_none() {
-            return Ok(());
-        }
-        if all {
-            while self.area_has_active(x0, y0, x1, y1) {
-                guard = self.wait_retire(guard);
-            }
-        }
-        let b1 = wf::armed(slot, guard.frame);
-        let mut armed = 0;
-        for y in y0..y1 {
-            if !all && self.row_nonidle[y].load(Ordering::Relaxed) == 0 {
-                continue;
-            }
-            let (mut row_armed, mut new_nonidle) = (0u32, 0u16);
-            for px in &self.row(y)[x0..x1] {
-                let v = px.load(Ordering::Relaxed);
-                let pb1 = (v >> 8) as u8;
-                if pb1 == B1_PENDING {
-                    guard.group[usize::from(B1_PENDING)] -= 1;
-                } else if !(all && pb1 == B1_IDLE) {
+                let d = wf::draw_px(v, g, b1, all);
+                if d == v {
                     continue;
-                } else {
-                    new_nonidle += 1;
                 }
-                px.store((v & 0x00FF) | u16::from(b1) << 8, Ordering::Relaxed);
-                row_armed += 1;
+                px.store(d, Ordering::Relaxed);
+                let (was, now) = ((v >> 8) as u8, (d >> 8) as u8);
+                gained += u16::from(was == B1_IDLE);
+                pending += i32::from(now == B1_PENDING) - i32::from(was == B1_PENDING);
+                if now < B1_PENDING {
+                    n.store(g, Ordering::Relaxed);
+                    armed += 1;
+                }
             }
-            add(&self.row_nonidle[y], new_nonidle);
-            armed += row_armed;
+            add(&self.row_nonidle[y], gained);
+            let p = &mut counters.group[usize::from(B1_PENDING)];
+            *p = p.wrapping_add_signed(pending);
+            if waiting != 0 {
+                add(&self.row_waiting[y], waiting as u16);
+                counters.waiting_px = counters.waiting_px.wrapping_add_signed(waiting);
+            }
+            if let Some(b1) = b1.filter(|_| armed != 0) {
+                counters.group[usize::from(b1)] += armed;
+                counters.active_px += armed;
+                wake |= self.start(counters);
+            }
         }
-        let mut wake = false;
-        if armed != 0 {
-            guard.group[usize::from(b1)] += armed;
-            guard.active_px += armed;
-            wake = self.start(&mut guard);
-        }
-        drop(guard);
         if wake {
             self.wake.give();
         }
         Ok(())
     }
 
-    fn clear(&self) {
+    fn waiting_in(&self, area: Rect) -> bool {
+        (area.y as usize..area.bottom() as usize).any(|y| self.row_waiting[y].load(Ordering::Relaxed) != 0)
+    }
+
+    /// Between frames, before the next is counted: replaying pixels a draw
+    /// may stop now go to what was written for them. A row at a time, so
+    /// draws go on meanwhile.
+    fn settle_written(&self) {
+        for y in 0..self.height {
+            if self.row_waiting[y].load(Ordering::Relaxed) == 0 {
+                continue;
+            }
+            let start = y * self.width;
+            let (row, next) = (&self.state[start..][..self.width], &self.next[start..][..self.width]);
+            let mut guard = self.lock.lock();
+            let Counters { group, wf: waveforms, frame, active_px, waiting_px, .. } = &mut *guard;
+            let (mut settled, mut rearmed) = (0u16, 0u32);
+            for (px, cell) in row.iter().zip(next) {
+                let v = px.load(Ordering::Relaxed);
+                if !wf::is_active(v) {
+                    continue;
+                }
+                let n = cell.load(Ordering::Relaxed);
+                let gray = wf::next_gray(n);
+                if u16::from(gray) == v & 15 {
+                    continue;
+                }
+                let b1 = (v >> 8) as u8;
+                let Some(dc) = wf::cut_dc(waveforms[usize::from(b1 >> 6)].as_ref(), *frame, b1) else { continue };
+                let cut = wf::cut_px(v, gray, dc);
+                group[usize::from(b1)] -= 1;
+                settled += 1;
+                match wf::next_slot(n).filter(|&s| waveforms[s].is_some()) {
+                    Some(slot) => {
+                        let armed = wf::armed(slot, *frame);
+                        px.store((cut & 0x00FF) | u16::from(armed) << 8, Ordering::Relaxed);
+                        cell.store(gray, Ordering::Relaxed);
+                        group[usize::from(armed)] += 1;
+                        rearmed += 1;
+                    }
+                    None => {
+                        px.store(cut, Ordering::Relaxed);
+                        group[usize::from(B1_PENDING)] += 1;
+                    }
+                }
+            }
+            *active_px -= u32::from(settled) - rearmed;
+            sub(&self.row_waiting[y], settled);
+            *waiting_px -= u32::from(settled);
+        }
+    }
+
+    /// The refreshes pixels that were replaying missed, once those are drawn.
+    fn arm_deferred(&self, counters: &mut Counters) {
+        for (area, slot) in core::mem::take(&mut counters.deferred) {
+            self.arm(counters, area, slot, false);
+            if self.waiting_in(area) {
+                counters.deferred.push((area, slot));
+            }
+        }
+    }
+
+    /// Arms the pending pixels of `area` with `slot`, and the idle ones too
+    /// with `all`; those replaying go on. Whether the scan is to be woken.
+    fn arm(&self, counters: &mut Counters, area: Rect, slot: usize, all: bool) -> bool {
+        if counters.wf[slot].is_none() {
+            return false;
+        }
+        let (x0, y0) = (area.x as usize, area.y as usize);
+        let (x1, y1) = (x0 + area.w as usize, y0 + area.h as usize);
+        let b1 = wf::armed(slot, counters.frame);
+        let mut armed = 0;
+        for y in y0..y1 {
+            if !all && self.row_nonidle[y].load(Ordering::Relaxed) == 0 {
+                continue;
+            }
+            let (mut row_armed, mut new_nonidle) = (0u32, 0u16);
+            for x in x0..x1 {
+                let i = y * self.width + x;
+                let px = &self.state[i];
+                let v = px.load(Ordering::Relaxed);
+                let pb1 = (v >> 8) as u8;
+                if pb1 == B1_PENDING {
+                    counters.group[usize::from(B1_PENDING)] -= 1;
+                } else if !(all && pb1 == B1_IDLE) {
+                    continue;
+                } else {
+                    new_nonidle += 1;
+                }
+                px.store((v & 0x00FF) | u16::from(b1) << 8, Ordering::Relaxed);
+                self.next[i].store((v & 15) as u8, Ordering::Relaxed);
+                row_armed += 1;
+            }
+            add(&self.row_nonidle[y], new_nonidle);
+            armed += row_armed;
+        }
+        if armed == 0 {
+            return false;
+        }
+        counters.group[usize::from(b1)] += armed;
+        counters.active_px += armed;
+        self.start(counters)
+    }
+
+    /// `waveform::retire_row` for a row where some replaying pixels were
+    /// written: those go on to what was written. How many finished, how many
+    /// of them went idle, and how many replay again.
+    fn retire_waiting_row(&self, counters: &mut Counters, y: usize, retire_tab: &[Retire; 256]) -> (u16, u16, u32) {
+        let (mut retired, mut freed, mut pending, mut rearmed) = (0u16, 0u16, 0u32, 0u32);
+        let start = y * self.width;
+        let (row, next) = (&self.state[start..][..self.width], &self.next[start..][..self.width]);
+        for (px, cell) in row.iter().zip(next) {
+            let v = px.load(Ordering::Relaxed);
+            let retire = retire_tab[usize::from(v >> 8)];
+            if retire.is_null() {
+                continue;
+            }
+            // `retire_tab` points at live tables, as for `waveform::retire_row`.
+            let dc = u16::from(unsafe { &*retire }[usize::from(v & 0xFF)]);
+            let n = cell.load(Ordering::Relaxed);
+            let (target, gray) = (v & 15, u16::from(wf::next_gray(n)));
+            retired += 1;
+            if gray == target {
+                px.store(0xFF00 | dc << 4 | target, Ordering::Relaxed);
+                freed += 1;
+                continue;
+            }
+            match wf::next_slot(n).filter(|&s| counters.wf[s].is_some()) {
+                Some(slot) => {
+                    let armed = wf::armed(slot, counters.frame);
+                    px.store(u16::from(armed) << 8 | dc << 4 | gray, Ordering::Relaxed);
+                    cell.store(gray as u8, Ordering::Relaxed);
+                    counters.group[usize::from(armed)] += 1;
+                    rearmed += 1;
+                }
+                None => {
+                    px.store(u16::from(B1_PENDING) << 8 | dc << 4 | gray, Ordering::Relaxed);
+                    pending += 1;
+                }
+            }
+        }
+        let settled = pending + rearmed;
+        counters.group[usize::from(B1_PENDING)] += pending;
+        sub(&self.row_waiting[y], settled as u16);
+        counters.waiting_px -= settled;
+        (retired, freed, rearmed)
+    }
+
+    /// `arm`, and again between frames for what replaying pixels were
+    /// written.
+    fn refresh_locked(&self, counters: &mut Counters, area: Rect, slot: usize, all: bool) -> bool {
+        let wake = self.arm(counters, area, slot, all);
+        if self.waiting_in(area) {
+            let full = counters.deferred.len() >= MAX_DEFERRED;
+            match counters.deferred.iter_mut().find(|(_, s)| *s == slot) {
+                Some((kept, _)) if full => *kept = kept.union(&area),
+                _ => counters.deferred.push((area, slot)),
+            }
+        }
+        wake
+    }
+
+    fn refresh(&self, area: Rect, waveform: display::Waveform, all: bool) {
         let mut guard = self.lock.lock();
-        while guard.active_px != 0 {
+        let wake = self.refresh_locked(&mut guard, area, slot_of(waveform), all);
+        drop(guard);
+        if wake {
+            self.wake.give();
+        }
+    }
+
+    fn clear(&self, area: Rect) {
+        let (x0, y0) = (area.x as usize, area.y as usize);
+        let (x1, y1) = (x0 + area.w as usize, y0 + area.h as usize);
+        let mut guard = self.lock.lock();
+        // Armed at 61 or 62, its b1 would be a marker. With nothing replaying
+        // the frame count is free to move; otherwise the frames move it on.
+        loop {
+            if guard.active_px == 0 && matches!(guard.frame, 61 | 62) {
+                guard.frame = 63;
+            }
+            if !matches!(guard.frame, 61 | 62) && !self.area_has_active(x0, y0, x1, y1) {
+                break;
+            }
             guard = self.wait_retire(guard);
         }
-        // Armed at 61 or 62, its b1 would be a marker; nothing replays, so the
-        // frame count is free to move.
-        if matches!(guard.frame, 61 | 62) {
-            guard.frame = 63;
-        }
         let b1 = wf::armed(SLOT_CLEAR, guard.frame);
-        for px in self.state.iter() {
-            px.store(u16::from(b1) << 8 | (px.load(Ordering::Relaxed) & 0x00F0) | 15, Ordering::Relaxed);
+        let mut armed = 0;
+        let Counters { group, .. } = &mut *guard;
+        for y in y0..y1 {
+            let mut now_nonidle = 0u16;
+            for x in x0..x1 {
+                let i = y * self.width + x;
+                let v = self.state[i].load(Ordering::Relaxed);
+                match (v >> 8) as u8 {
+                    B1_PENDING => group[usize::from(B1_PENDING)] -= 1,
+                    _ => now_nonidle += 1,
+                }
+                self.state[i].store(u16::from(b1) << 8 | (v & 0x00F0) | 15, Ordering::Relaxed);
+                self.next[i].store(15, Ordering::Relaxed);
+            }
+            add(&self.row_nonidle[y], now_nonidle);
+            armed += (x1 - x0) as u32;
         }
-        for row in self.row_nonidle.iter() {
-            row.store(self.width as u16, Ordering::Relaxed);
-        }
-        let total = (self.width * self.height) as u32;
-        guard.group[usize::from(B1_PENDING)] = 0;
-        guard.group[usize::from(b1)] = total;
-        guard.active_px = total;
+        guard.group[usize::from(b1)] += armed;
+        guard.active_px += armed;
         let wake = self.start(&mut guard);
         drop(guard);
         if wake {
@@ -528,9 +662,28 @@ impl Shared {
         }
     }
 
+    /// Whether `area` holds a pixel a draw could not stop.
+    fn busy(&self, area: Rect) -> bool {
+        let (x0, y0) = (area.x as usize, area.y as usize);
+        let (x1, y1) = (x0 + area.w as usize, y0 + area.h as usize);
+        let guard = self.lock.lock();
+        let stopping = (0..usize::from(B1_PENDING)).any(|b1| guard.group[b1] != 0 && guard.wf[b1 >> 6].as_ref().is_some_and(Waveform::stops));
+        if !stopping {
+            return false;
+        }
+        (y0..y1).any(|y| {
+            self.row_nonidle[y].load(Ordering::Relaxed) != 0
+                && self.row(y)[x0..x1].iter().any(|px| {
+                    let v = px.load(Ordering::Relaxed);
+                    let b1 = (v >> 8) as u8;
+                    wf::is_active(v) && wf::cut_dc(guard.wf[usize::from(b1 >> 6)].as_ref(), guard.frame, b1).is_none()
+                })
+        })
+    }
+
     fn wait_idle(&self) {
         let mut guard = self.lock.lock();
-        while guard.active_px != 0 {
+        while guard.active_px != 0 || guard.waiting_px != 0 {
             guard = self.wait_retire(guard);
         }
     }
@@ -557,7 +710,9 @@ unsafe impl Send for Scan {}
 
 fn run_frame(shared: &Shared, scan: &mut Scan) {
     let (w, h) = (shared.width, shared.height);
+    shared.settle_written();
     let mut guard = shared.lock.lock();
+    shared.arm_deferred(&mut guard);
     guard.frame = (guard.frame + 1) & 63;
     let skip_settle = shared.waiters.load(Ordering::SeqCst) > 0;
     wf::build_frame_tab(&guard.wf, guard.frame, skip_settle, &mut scan.rowset_tab, &mut scan.retire_tab);
@@ -625,32 +780,33 @@ fn run_frame(shared: &Shared, scan: &mut Scan) {
     }
     bus.frame_end();
 
-    let mut freed_total = 0;
-    let mut guard = shared.lock.lock();
+    let mut retired_total = 0;
     if any_retire {
+        // A row at a time, so draws go on meanwhile; they arm nothing that
+        // finishes now.
         for y in 0..h {
             if shared.row_nonidle[y].load(Ordering::Relaxed) == 0 {
                 continue;
             }
-            let freed = unsafe { wf::retire_row(shared.row(y), &scan.retire_tab) };
+            let mut guard = shared.lock.lock();
+            let (retired, freed, rearmed) = if shared.row_waiting[y].load(Ordering::Relaxed) == 0 {
+                let freed = unsafe { wf::retire_row(shared.row(y), &scan.retire_tab) };
+                (freed, freed, 0)
+            } else {
+                shared.retire_waiting_row(&mut guard, y, &scan.retire_tab)
+            };
             sub(&shared.row_nonidle[y], freed);
-            freed_total += u32::from(freed);
+            guard.active_px -= u32::from(retired) - rearmed;
+            retired_total += u32::from(retired);
         }
+        let mut guard = shared.lock.lock();
         for b1 in 0..256 {
             if !scan.retire_tab[b1].is_null() {
                 guard.group[b1] = 0;
             }
         }
-        guard.active_px -= freed_total;
     }
-    while guard.cutters > 0 {
-        drop(guard);
-        shared.boundary.give();
-        shared.resumed.take();
-        guard = shared.lock.lock();
-    }
-    drop(guard);
-    if freed_total != 0 || shared.waiters.load(Ordering::SeqCst) > 0 {
+    if retired_total != 0 || shared.waiters.load(Ordering::SeqCst) > 0 {
         shared.retired.give();
     }
 }
@@ -661,10 +817,11 @@ fn refresh_task(shared: Arc<Shared>, mut scan: Box<Scan>) {
     loop {
         let active = {
             let mut guard = shared.lock.lock();
-            if guard.active_px == 0 {
+            let active = guard.active_px != 0 || guard.waiting_px != 0;
+            if !active {
                 guard.running = false;
             }
-            guard.active_px != 0
+            active
         };
         if !active {
             if powered {
@@ -689,6 +846,63 @@ pub(crate) struct EpdLl {
     size: Size,
     ppi: u16,
     format: ImageFormat,
+    jobs: Sender<Job>,
+    issued: Mutex<u32>,
+    progress: Arc<Progress>,
+}
+
+/// What the write task does, in the order given.
+enum Job {
+    Write { area: Rect, pixels: *const u8, len: usize, stride: usize, format: ImageFormat },
+    Refresh { area: Rect, waveform: display::Waveform, all: bool },
+    Clear(Rect),
+    Mode(EpdMode),
+}
+
+// A writer keeps its pixels until it has waited for the ticket.
+unsafe impl Send for Job {}
+
+/// How many jobs the write task has done.
+struct Progress {
+    done: AtomicU32,
+    waiters: AtomicU32,
+    wake: Semaphore,
+}
+
+impl Progress {
+    fn reached(&self, ticket: Ticket) -> bool {
+        self.done.load(Ordering::SeqCst).wrapping_sub(ticket.0) as i32 >= 0
+    }
+
+    fn wait(&self, ticket: Ticket) {
+        while !self.reached(ticket) {
+            self.waiters.fetch_add(1, Ordering::SeqCst);
+            if !self.reached(ticket) {
+                self.wake.take();
+            }
+            self.waiters.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+}
+
+fn write_task(shared: Arc<Shared>, jobs: Receiver<Job>, progress: Arc<Progress>) {
+    loop {
+        match jobs.recv() {
+            Job::Write { area, pixels, len, stride, format } => {
+                let pixels = unsafe { slice::from_raw_parts(pixels, len) };
+                if let Err(err) = shared.draw(area, pixels, stride, format) {
+                    error!(TAG, "write {area:?}: {err}");
+                }
+            }
+            Job::Refresh { area, waveform, all } => shared.refresh(area, waveform, all),
+            Job::Clear(area) => shared.clear(area),
+            Job::Mode(mode) => shared.lock.lock().mode = mode,
+        }
+        progress.done.fetch_add(1, Ordering::SeqCst);
+        for _ in 0..progress.waiters.load(Ordering::SeqCst) {
+            progress.wake.give();
+        }
+    }
 }
 
 fn takes(format: ImageFormat) -> bool {
@@ -714,6 +928,10 @@ impl EpdLl {
         state.extend((0..width * height).map(|_| AtomicU16::new(0xFF00 | DC_ZERO << 4 | 15)));
         let mut row_nonidle = heap::try_vec(height, Caps::SPIRAM)?;
         row_nonidle.extend((0..height).map(|_| AtomicU16::new(0)));
+        let mut next = heap::try_vec(width * height, Caps::SPIRAM)?;
+        next.extend((0..width * height).map(|_| Next::new(15)));
+        let mut row_waiting = heap::try_vec(height, Caps::SPIRAM)?;
+        row_waiting.extend((0..height).map(|_| AtomicU16::new(0)));
 
         let wiring = Wiring {
             data: config.data,
@@ -723,7 +941,7 @@ impl EpdLl {
             pclk_hz: config.pclk_hz,
             tx_len: usize::from(line_bytes) + usize::from(config.line_padding),
         };
-        let latch = Box::new(Latch { control: config.control, busy: AtomicBool::new(false) });
+        let latch = Box::new(Latch { control: config.control, free: Semaphore::try_new(1, 1)? });
         let bus = Bus::new_off(&wiring, latch, config.core).inspect_err(|err| error!(TAG, "bus: {err}"))?;
         bus.control().power_off();
         let tx_len = bus.tx_len;
@@ -749,21 +967,22 @@ impl EpdLl {
             height,
             state: state.into_boxed_slice(),
             row_nonidle: row_nonidle.into_boxed_slice(),
+            next: next.into_boxed_slice(),
+            row_waiting: row_waiting.into_boxed_slice(),
             lock: Mutex::new(Counters {
                 group: heap::zeroed_box(Caps::INTERNAL)?,
                 active_px: 0,
                 frame: 0,
                 running: false,
                 mode: EpdMode::Hold,
-                cutters: 0,
+                waiting_px: 0,
+                deferred: Vec::new(),
                 wf: slots,
                 owned: [false; SLOTS],
             }),
             waiters: AtomicU32::new(0),
             retired: Semaphore::try_new(0, 1)?,
             wake: Semaphore::try_new(0, 1)?,
-            boundary: Semaphore::try_new(0, 1)?,
-            resumed: Semaphore::try_new(0, 1)?,
         });
         let task = shared.clone();
         thread::Builder::new()
@@ -773,7 +992,32 @@ impl EpdLl {
             .core(config.core)
             .spawn(move || refresh_task(task, scan))
             .inspect_err(|err| error!(TAG, "task: {err}"))?;
-        Ok(Self { shared, size, ppi: config.ppi, format: config.format })
+        let progress = Arc::new(Progress { done: AtomicU32::new(0), waiters: AtomicU32::new(0), wake: Semaphore::try_new(0, MAX_WAKES)? });
+        let (jobs, receiver) = channel(JOB_DEPTH);
+        let (task, done) = (shared.clone(), progress.clone());
+        // Off the scan's core, which it keeps busy while it drives.
+        let core = config.core.map(|core| (core + 1) % system::CORE_COUNT);
+        thread::Builder::new()
+            .name("epd_write")
+            .stack_size(WRITE_STACK)
+            .priority(config.priority)
+            .core(core)
+            .spawn(move || write_task(task, receiver, done))
+            .inspect_err(|err| error!(TAG, "write task: {err}"))?;
+        Ok(Self { shared, size, ppi: config.ppi, format: config.format, jobs, issued: Mutex::new(0), progress })
+    }
+
+    fn submit(&self, job: Job) -> Ticket {
+        let mut issued = self.issued.lock();
+        *issued = issued.wrapping_add(1);
+        self.jobs.send(job);
+        Ticket(*issued)
+    }
+
+    /// Waits until the write task has done everything given so far.
+    fn drain(&self) {
+        let last = Ticket(*self.issued.lock());
+        self.progress.wait(last);
     }
 
     /// Waits until nothing replays, then binds `lut` to `slot` and returns the
@@ -784,8 +1028,9 @@ impl EpdLl {
         }
         let lut: &'static [Frame] = Box::leak(lut);
         let waveform = Waveform::new(lut).inspect_err(|_| drop(unsafe { Box::from_raw(core::ptr::from_ref(lut).cast_mut()) }))?;
+        self.drain();
         let mut guard = self.shared.lock.lock();
-        while guard.active_px != 0 {
+        while guard.active_px != 0 || guard.waiting_px != 0 {
             guard = self.shared.wait_retire(guard);
         }
         let old = guard.wf[slot].replace(waveform);
@@ -831,7 +1076,10 @@ impl Driver for EpdLl {
     }
 
     fn draw(&self, area: Rect, image: &Image) -> Result<()> {
-        self.shared.draw(area, image.pixels(), image.stride_bytes(), self.format)
+        let pixels = image.pixels();
+        let job = Job::Write { area, pixels: pixels.as_ptr(), len: pixels.len(), stride: image.stride_bytes(), format: self.format };
+        self.progress.wait(self.submit(job));
+        Ok(())
     }
 
     fn reconfigure(&mut self, format: ImageFormat, rotation: Rotation) -> Result<()> {
@@ -845,33 +1093,47 @@ impl Driver for EpdLl {
 
 /// Pixels are taken in before `write` returns, which may wait for pixels of
 /// the area still replaying.
+/// Writes queue for a task of their own and never wait for the glass: a
+/// pixel still replaying takes what is written once a frame ends.
 impl GramDriver for EpdLl {
     unsafe fn write(&self, area: Rect, pixels: &[u8]) -> Result<Ticket> {
-        self.shared.draw(area, pixels, self.format.row_bytes(area.w as usize), self.format)?;
-        Ok(Ticket(0))
+        let stride = self.format.row_bytes(area.w as usize);
+        Ok(self.submit(Job::Write { area, pixels: pixels.as_ptr(), len: pixels.len(), stride, format: self.format }))
     }
 
-    fn wait(&self, _ticket: Ticket) -> Result<()> {
+    fn wait(&self, ticket: Ticket) -> Result<()> {
+        self.progress.wait(ticket);
         Ok(())
     }
 }
 
+/// In order with the writes queued before.
 impl EpdDriver for EpdLl {
     fn set_mode(&self, mode: EpdMode) -> Result<()> {
-        self.shared.lock.lock().mode = mode;
+        self.submit(Job::Mode(mode));
         Ok(())
     }
 
     fn refresh(&self, area: Rect, waveform: display::Waveform, all: bool) -> Result<()> {
-        self.shared.refresh(area, waveform, all)
-    }
-
-    fn clear(&self) -> Result<()> {
-        self.shared.clear();
+        self.submit(Job::Refresh { area, waveform, all });
         Ok(())
     }
 
+    fn clear(&self, area: Rect) -> Result<()> {
+        self.submit(Job::Clear(area));
+        Ok(())
+    }
+
+    fn refresh_unit(&self) -> RefreshUnit {
+        RefreshUnit::Pixel
+    }
+
+    fn busy(&self, area: Rect) -> Result<bool> {
+        Ok(self.shared.busy(area))
+    }
+
     fn wait_idle(&self) -> Result<()> {
+        self.drain();
         self.shared.wait_idle();
         Ok(())
     }

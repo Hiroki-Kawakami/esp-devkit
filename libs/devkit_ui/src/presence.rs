@@ -12,6 +12,7 @@ use devkit_gfx::simd::{blend565, mix565};
 use devkit_gfx::{Argb8888, Bgr888, GlyphCache, ImageFormat, Pixel, Raster, RasterTarget, Rect, Rgb565};
 use idf::heap::Caps;
 
+use crate::epd::{Causes, EpdCause};
 use crate::motion::{Clock, Motion, MotionKind, ease_out};
 use crate::node::{NONE, NodeContent, NodeIndex};
 use crate::paint::Effects;
@@ -460,7 +461,7 @@ impl Tree {
 
     fn drop_left(&mut self, id: NodeIndex) {
         let parent = self.nodes[id as usize].parent;
-        self.damage_painted(id);
+        self.damage_painted(id, EpdCause::Content);
         self.unlink(parent, id);
         self.free_subtree(id);
         self.layout_dirty = true;
@@ -488,7 +489,7 @@ impl Tree {
                     self.apply_pose(i);
                     let node = &self.nodes[id as usize];
                     let reach = node.pose.map_or(0, |p| p.reach);
-                    self.damage.push(node.screen.expand(reach));
+                    self.add_damage(node.screen.expand(reach), Causes::of(EpdCause::Content), id);
                 }
                 None => idf::log::warn!(c"ui", "no picture to scale a presence, moving it unscaled"),
             }

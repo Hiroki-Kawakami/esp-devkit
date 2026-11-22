@@ -138,6 +138,54 @@ impl Walk {
     }
 }
 
+/// Packs rows of `width` `L8` pixels, back to back in `pixels`, into `L4` rows
+/// in place, each starting on a byte, and returns the bytes they take.
+pub fn pack_l4(pixels: &mut [u8], width: usize) -> usize {
+    if width == 0 {
+        return 0;
+    }
+    let row_bytes = width.div_ceil(2);
+    let rows = pixels.len() / width;
+    let p = pixels.as_mut_ptr();
+    for r in 0..rows {
+        // In place: each byte lands before the pixels it takes.
+        unsafe {
+            let (src, dst) = (p.add(r * width), p.add(r * row_bytes));
+            for i in 0..width / 2 {
+                let pair = src.add(2 * i);
+                dst.add(i).write((pair.read() & 0xF0) | (pair.add(1).read() >> 4));
+            }
+            if width % 2 == 1 {
+                dst.add(width / 2).write(src.add(width - 1).read() & 0xF0);
+            }
+        }
+    }
+    rows * row_bytes
+}
+
+/// [`pack_l4`] for `L1`, white from half up.
+pub fn pack_l1(pixels: &mut [u8], width: usize) -> usize {
+    if width == 0 {
+        return 0;
+    }
+    let row_bytes = width.div_ceil(8);
+    let rows = pixels.len() / width;
+    // Each byte goes no later than the first pixel it takes.
+    for r in 0..rows {
+        for i in 0..row_bytes {
+            let mut byte = 0;
+            for k in 0..8 {
+                let x = i * 8 + k;
+                if x < width {
+                    byte |= (pixels[r * width + x] >> 7) << (7 - k);
+                }
+            }
+            pixels[r * row_bytes + i] = byte;
+        }
+    }
+    rows * row_bytes
+}
+
 /// Turns `Rgb565` pixels into `Rgb565Be` in place, and back.
 pub fn swap_rgb565(pixels: &mut [u8]) {
     let done = unsafe { crate::simd::swap565(pixels.as_mut_ptr(), pixels.len() / 2) };

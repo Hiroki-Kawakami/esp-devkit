@@ -8,6 +8,7 @@ use alloc::vec::Vec;
 use core::any::TypeId;
 
 use crate::component::{AnyHost, Component, Cx, Requests, Screen, screen_host};
+use crate::epd::{Causes, EpdCause};
 use crate::erased::Erased;
 use crate::id::Id;
 use crate::node::{NONE, Node, NodeContent, NodeIndex};
@@ -230,7 +231,7 @@ impl Tree {
             self.clear_overlay(nav);
         }
         let pane = self.nodes[nav as usize].screen;
-        let stale: Vec<Rect> = if self.finish_transit(nav) { Vec::from([pane]) } else { self.damage.iter().filter(|r| r.intersects(&pane)).copied().collect() };
+        let stale: Vec<Rect> = if self.finish_transit(nav) { Vec::from([pane]) } else { self.damaged().filter(|r| r.intersects(&pane)).collect() };
         let asked = op.transition;
         match op.action {
             Action::Push(host) => self.push_screen(nav, host, asked),
@@ -311,6 +312,7 @@ impl Tree {
             }
             self.layout_dirty = true;
             self.nodes[nav as usize].paint_dirty = true;
+            self.add_frame_cause(EpdCause::Screen);
             self.refresh_shown(nav);
             changed = true;
         }
@@ -397,7 +399,7 @@ impl Tree {
             }
             host.adopt(&mut cx.requests.tasks);
             cx.requests.rebuild = true;
-            cx.requests
+            cx.into_requests()
         };
         if let Some(slot) = self.slot_of(id) {
             let index = usize::from(slot);
@@ -434,6 +436,7 @@ impl Tree {
         for (id, msg) in requests.posts {
             self.post(id, msg);
         }
+        self.epd.merge(requests.epd);
     }
 
     fn disappear_begin_node(&mut self, node: NodeIndex) {
@@ -475,6 +478,7 @@ impl Tree {
         self.build_component(slot);
         self.restoring.pop();
         self.layout_dirty = true;
+        self.add_frame_cause(EpdCause::Screen);
         node
     }
 
@@ -641,7 +645,8 @@ impl Tree {
             }
         }
         let host = self.take_host(node);
-        self.damage_painted(node);
+        self.add_frame_cause(EpdCause::Screen);
+        self.damage_painted(node, EpdCause::Screen);
         self.unlink(nav, node);
         self.free_subtree(node);
         self.layout_dirty = true;
@@ -713,7 +718,7 @@ impl Tree {
 
     fn mark_dirty_rect(&mut self, nav: NodeIndex) {
         let screen = self.nodes[nav as usize].screen;
-        self.damage.push(screen);
+        self.add_damage(screen, Causes::of(EpdCause::Screen), nav);
         self.nodes[nav as usize].scrolled = true;
     }
 

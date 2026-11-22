@@ -45,7 +45,7 @@ pub(crate) fn register(display: &'static Display, jobs: idf::sync::Sender<Job>) 
         Ok(None)
     });
     harness_rs::register("clear", move |_| {
-        epd.clear().map_err(|err| err.to_string())?;
+        epd.clear(full).map_err(|err| err.to_string())?;
         Ok(None)
     });
     let pattern = jobs.clone();

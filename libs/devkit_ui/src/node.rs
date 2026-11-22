@@ -13,6 +13,7 @@ use devkit_gfx::{Color, FontChain, Image, ImageSource, Rect, TextOptions, TextRu
 use idf::heap::Caps;
 
 use crate::component::ScrollEdge;
+use crate::epd::{Causes, EpdAction, EpdCause};
 use crate::popover::Anchored;
 use crate::animate::Fades;
 use crate::external::ExternalSurface;
@@ -347,6 +348,9 @@ pub(crate) struct Node {
     /// Where it was last painted.
     pub(crate) screen: Rect,
     pub(crate) paint_dirty: bool,
+    /// Why it is to be painted again; `Content` when nothing else says.
+    pub(crate) dirty_causes: Causes,
+    pub(crate) epd: Option<EpdAction>,
     pub(crate) state: State,
     /// The states set on this node, and those taken from its `state_source`.
     pub(crate) own_state: State,
@@ -367,6 +371,11 @@ impl Node {
     pub(crate) fn shift(&self) -> (i16, i16) {
         let (x, y) = self.pose.map_or((0, 0), |p| p.offset);
         (self.translate.0 + x, self.translate.1 + y)
+    }
+
+    pub(crate) fn mark_dirty(&mut self, cause: EpdCause) {
+        self.paint_dirty = true;
+        self.dirty_causes = self.dirty_causes.with(cause);
     }
 
     pub(crate) fn new(content: NodeContent, owner: u16, caps: Caps) -> Self {
@@ -411,6 +420,8 @@ impl Node {
             rect: Rect::default(),
             screen: Rect::default(),
             paint_dirty: true,
+            dirty_causes: Causes::default(),
+            epd: None,
             state: State::empty(),
             own_state: State::empty(),
             source_state: State::empty(),

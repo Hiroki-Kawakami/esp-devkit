@@ -3,11 +3,13 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
+mod epd;
 #[cfg(any(not(target_os = "none"), CONFIG_SOC_PPA_SUPPORTED))]
 mod fb;
 mod gram;
 #[cfg(any(not(target_os = "none"), CONFIG_SOC_PPA_SUPPORTED))]
 mod ppa;
+mod writer;
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -20,10 +22,12 @@ use idf::heap::Caps;
 use idf::{Error, Result};
 
 use crate::blit::NewBlitter;
+use crate::epd::EpdAction;
 use crate::external::Buffers;
 
 #[cfg(any(not(target_os = "none"), CONFIG_SOC_PPA_SUPPORTED))]
 pub use fb::FbPresenter;
+pub(crate) use epd::EpdPresenter;
 pub(crate) use gram::GramPresenter;
 
 pub(crate) const MAX_LANES: usize = 2;
@@ -292,8 +296,12 @@ pub(crate) trait Presenter {
     fn area(&self) -> Rect;
     /// What damage and external rectangles are kept to.
     fn grid(&self) -> Grid;
-    fn invalidate(&mut self, rect: Rect);
-    fn invalidate_all(&mut self);
+    /// `action` is for a panel driving electrophoretic glass.
+    fn invalidate(&mut self, rect: Rect, action: EpdAction);
+    fn invalidate_all(&mut self, action: EpdAction);
+    /// Drives `rect` of electrophoretic glass again as it shows, without
+    /// drawing it.
+    fn redrive(&mut self, rect: Rect, action: EpdAction);
     /// Whether a frame is due without new damage: the first one, or one after
     /// a change of the display or the rotation.
     fn has_new_damage(&self) -> bool;

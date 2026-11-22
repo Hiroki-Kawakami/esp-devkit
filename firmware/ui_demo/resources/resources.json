@@ -7,6 +7,10 @@
     "SMALL": {
       "base": "@small",
       "fonts": { "title": "title_24", "body": ["body_16", "jp_16"], "caption": ["body_16", "jp_16"] }
+    },
+    "EPD": {
+      "base": "@epd",
+      "fonts": { "title": "title_28", "body": ["body_24", "jp_24"], "caption": ["caption_20", "jp_20"] }
     }
   },
   "font": {

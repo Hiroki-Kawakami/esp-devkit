@@ -20,12 +20,12 @@
 //!
 //! A waveform is one [`Frame`] per step: 16 words indexed by `dc + 8`, each
 //! holding a 2-bit action per target gray (0 hold, 1 black, 2 white). A frame
-//! of [`SETTLE_WORD`]s drives nothing and may be cut short while a draw
-//! waits; a frame of zeros drives nothing but always runs, and a draw never
-//! stops a replay with one still ahead.
+//! of [`SETTLE_WORD`]s drives nothing and may be cut short while something
+//! waits for the glass; a frame of zeros drives nothing but always runs, and
+//! a draw never stops a replay with one still ahead.
 
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU16, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU16, Ordering};
 
 use idf::heap::{self, Caps};
 use idf::{Error, Result};
@@ -70,6 +70,24 @@ pub(crate) const fn by_dc(actions: [u8; 16]) -> Frame {
     let mut dc = 0;
     while dc < 16 {
         frame[dc] = word([actions[dc]; 16]);
+        dc += 1;
+    }
+    frame
+}
+
+/// A frame whose action depends on the DC, -8 to 7 left to right: `dark` for
+/// targets 0 to 7, `light` for 8 to 15.
+pub(crate) const fn by_dc_side(dark: [u8; 16], light: [u8; 16]) -> Frame {
+    let mut frame = [0; 16];
+    let mut dc = 0;
+    while dc < 16 {
+        let mut actions = [light[dc]; 16];
+        let mut to = 0;
+        while to < 8 {
+            actions[to] = dark[dc];
+            to += 1;
+        }
+        frame[dc] = word(actions);
         dc += 1;
     }
     frame
@@ -198,6 +216,11 @@ impl Waveform {
     pub(crate) fn dc_after(&self, steps: usize) -> &DcTab {
         &self.dc[steps.min(self.lut.len())]
     }
+
+    /// Whether a draw may be held off a replay of it, by a STOP frame.
+    pub(crate) fn stops(&self) -> bool {
+        self.cuttable_from > 0
+    }
 }
 
 pub(crate) fn is_active(px: u16) -> bool {
@@ -247,26 +270,35 @@ pub(crate) fn grays_l4(row: &[u8]) -> impl Iterator<Item = u8> + '_ {
     row.iter().flat_map(|b| [b >> 4, b & 0x0F])
 }
 
-pub(crate) struct Drawn {
-    pub px: u16,
-    /// The pixel replays toward another gray; it is left as it was.
-    pub conflict: bool,
-    /// It went from idle to pending.
-    pub now_nonidle: bool,
+/// What a replaying pixel goes to after its replay, a byte per pixel: the
+/// gray, and the slot to drive it with, or none to leave it pending. Of a
+/// replaying pixel only; its target when nothing waits.
+#[allow(dead_code)]
+pub(crate) type Next = AtomicU8;
+
+pub(crate) fn next_byte(gray: u8, slot: Option<usize>) -> u8 {
+    slot.map_or(0, |s| s as u8 + 1) << 4 | gray
 }
 
-/// Stamps `gray` as the target of `px` unless it is already, never touching
-/// one that replays.
-pub(crate) fn draw_px(px: u16, gray: u8) -> Drawn {
+pub(crate) fn next_gray(next: u8) -> u8 {
+    next & 15
+}
+
+pub(crate) fn next_slot(next: u8) -> Option<usize> {
+    (next >> 4).checked_sub(1).map(usize::from)
+}
+
+/// Draws `gray` on an idle or pending `px`: pending when it changes, or
+/// replaying as `armed`, which takes the pending ones too, and with `all` the
+/// unchanged ones.
+pub(crate) fn draw_px(px: u16, gray: u8, armed: Option<u8>, all: bool) -> u16 {
     let gray = u16::from(gray);
-    if is_active(px) {
-        return Drawn { px, conflict: px & 15 != gray, now_nonidle: false };
+    let changed = px & 15 != gray;
+    match armed {
+        Some(b1) if changed || all || (px >> 8) as u8 == B1_PENDING => u16::from(b1) << 8 | (px & 0x00F0) | gray,
+        None if changed => u16::from(B1_PENDING) << 8 | (px & 0x00F0) | gray,
+        _ => px,
     }
-    if px & 15 == gray {
-        return Drawn { px, conflict: false, now_nonidle: false };
-    }
-    let now_nonidle = (px >> 8) as u8 == B1_IDLE;
-    Drawn { px: u16::from(B1_PENDING) << 8 | (px & 0x00F0) | gray, conflict: false, now_nonidle }
 }
 
 /// The DCs pixels finishing a frame keep, or null for those that go on. A
@@ -458,6 +490,10 @@ mod tests {
         assert_eq!(LUT_Q[1][7] & 3, u32::from(B));
         assert_eq!((LUT_Q[1][7] >> 30) & 3, u32::from(W));
         assert_eq!((LUT_Q[1][7] >> 10) & 3, 0);
+
+        let side = by_dc_side([B, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, W]);
+        assert_eq!((action(&side, 0, 7), action(&side, 0, 8)), (u32::from(B), 0));
+        assert_eq!((action(&side, 15, 7), action(&side, 15, 8)), (0, u32::from(W)));
     }
 
     #[test]
@@ -512,6 +548,8 @@ mod tests {
     fn stop_ahead_holds_off_cuts() {
         let b1 = armed(0, 10);
         let q = Waveform::new(&LUT_Q).unwrap();
+        assert!(!q.stops());
+        assert!(Waveform::new(&LUT_C).unwrap().stops());
         assert!(core::ptr::eq(cut_dc(Some(&q), 10, b1).unwrap(), q.dc_after(0)));
         assert!(core::ptr::eq(cut_dc(Some(&q), 12, b1).unwrap(), q.dc_after(2)));
 
@@ -525,6 +563,14 @@ mod tests {
         assert!(core::ptr::eq(cut_dc(Some(&s), 12, b1).unwrap(), s.dc_after(2)));
 
         assert!(core::ptr::eq(cut_dc(None, 12, b1).unwrap(), &KEEP));
+    }
+
+    #[test]
+    fn next_bytes() {
+        for slot in [None, Some(0), Some(SLOTS - 1)] {
+            let n = next_byte(9, slot);
+            assert_eq!((next_gray(n), next_slot(n)), (9, slot));
+        }
     }
 
     #[test]
@@ -543,25 +589,20 @@ mod tests {
     #[test]
     fn draw() {
         let idle9 = px(9, 9, B1_IDLE);
-        let d = draw_px(idle9, 9);
-        assert!(d.px == idle9 && !d.conflict && !d.now_nonidle);
-
-        let d = draw_px(idle9, 4);
-        assert!(d.px == px(9, 4, B1_PENDING) && !d.conflict && d.now_nonidle);
+        assert_eq!(draw_px(idle9, 9, None, false), idle9);
+        assert_eq!(draw_px(idle9, 4, None, false), px(9, 4, B1_PENDING));
 
         let pend = px(9, 4, B1_PENDING);
-        let d = draw_px(pend, 7);
-        assert!(d.px == px(9, 7, B1_PENDING) && !d.conflict && !d.now_nonidle);
-        let d = draw_px(pend, 4);
-        assert!(d.px == pend && !d.conflict && !d.now_nonidle);
+        assert_eq!(draw_px(pend, 7, None, false), px(9, 7, B1_PENDING));
+        assert_eq!(draw_px(pend, 4, None, false), pend);
 
-        let act = px(9, 4, armed(0, 10));
-        assert!(is_active(act));
-        let d = draw_px(act, 4);
-        assert!(d.px == act && !d.conflict && !d.now_nonidle);
-        let d = draw_px(act, 12);
-        assert!(d.px == act && d.conflict && !d.now_nonidle);
+        let b1 = armed(0, 10);
+        assert_eq!(draw_px(idle9, 4, Some(b1), false), px(9, 4, b1));
+        assert_eq!(draw_px(idle9, 9, Some(b1), false), idle9);
+        assert_eq!(draw_px(idle9, 9, Some(b1), true), px(9, 9, b1));
+        assert_eq!(draw_px(pend, 4, Some(b1), false), px(9, 4, b1));
 
+        assert!(is_active(px(9, 4, b1)));
         assert!(!is_active(idle9));
         assert!(!is_active(pend));
     }
@@ -693,10 +734,8 @@ mod tests {
         let mut state = [px(15, 15, B1_IDLE); 8];
         let mut row_nonidle = 0;
         for p in &mut state[..4] {
-            let d = draw_px(*p, 0);
-            assert!(!d.conflict);
-            *p = d.px;
-            row_nonidle += u16::from(d.now_nonidle);
+            row_nonidle += u16::from((*p >> 8) as u8 == B1_IDLE);
+            *p = draw_px(*p, 0, None, false);
         }
         assert_eq!(row_nonidle, 4);
 
@@ -732,8 +771,7 @@ mod tests {
         assert!(state[..4].iter().all(|&p| p == px(15, 0, B1_IDLE)));
         assert!(state[4..].iter().all(|&p| p == px(15, 15, B1_IDLE)));
 
-        let d = draw_px(state[0], 0);
-        assert!(d.px == state[0] && !d.now_nonidle);
+        assert_eq!(draw_px(state[0], 0, None, false), state[0]);
     }
 
     #[test]

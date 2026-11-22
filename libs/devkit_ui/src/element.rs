@@ -18,6 +18,7 @@ use devkit_gfx::{Align as TextAlign, Color, Corners, Elide, FontChain, Image, Im
 use crate::bump::Bump;
 use crate::popover::Anchored;
 use crate::component::{AnyHost, Child, Component, EventMap, Host, Screen, ScrollEdge, ScrollPosition, call_event_map, screen_host};
+use crate::epd::EpdAction;
 use crate::erased::Erased;
 use crate::id::Id;
 use crate::task::{TaskElement, TaskSpec, This};
@@ -300,12 +301,13 @@ pub struct ElementData<'a, M: Copy> {
     pub(crate) task: Option<&'a dyn TaskSpec>,
     pub(crate) disappear: Option<Presence>,
     pub(crate) spacing_below: i16,
+    pub(crate) epd: Option<EpdAction>,
     _msg: PhantomData<fn() -> M>,
 }
 
 impl<'a, M: Copy> Element<'a, M> {
     fn new(bump: NonNull<Bump>, content: Content<'a>, children: &'a mut [Element<'a, M>]) -> Self {
-        let data = ElementData { bump, content, children: NonNull::from(children), style: Style::default(), when: &[], inherit: State::empty(), state_source: false, id: None, part: None, role: Role::None, tap: None, drag: None, on_scroll: None, bounce: true, scrollbar: true, anchor: ScrollEdge::Start, anchored: None, pull: None, gestures: None, size: None, input: None, focusable: false, keep_focus: false, keyboard: None, input_kind: InputKind::Text, repeat: false, state: State::empty(), appear: None, disappear: None, task: None, spacing_below: 0, _msg: PhantomData };
+        let data = ElementData { bump, content, children: NonNull::from(children), style: Style::default(), when: &[], inherit: State::empty(), state_source: false, id: None, part: None, role: Role::None, tap: None, drag: None, on_scroll: None, bounce: true, scrollbar: true, anchor: ScrollEdge::Start, anchored: None, pull: None, gestures: None, size: None, input: None, focusable: false, keep_focus: false, keyboard: None, input_kind: InputKind::Text, repeat: false, state: State::empty(), appear: None, disappear: None, task: None, spacing_below: 0, epd: None, _msg: PhantomData };
         Self { data: unsafe { NonNull::new_unchecked(bump.as_ref().alloc(data)) } }
     }
 
@@ -492,6 +494,14 @@ impl<'a, M: Copy> Element<'a, M> {
         if let Content::Navigator { transition: own, .. } = &mut self.content {
             *own = Some(transition);
         }
+        self
+    }
+
+    /// What a panel driving electrophoretic glass does with every change in
+    /// this element, inner ones too unless they ask otherwise, whatever the
+    /// cause.
+    pub fn epd(mut self, action: EpdAction) -> Self {
+        self.epd = Some(action);
         self
     }
 

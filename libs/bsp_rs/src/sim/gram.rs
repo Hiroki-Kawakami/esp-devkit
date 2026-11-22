@@ -17,7 +17,7 @@ use idf::{Error, Result, thread};
 use super::Host;
 use super::protocol::{Event, PixelFormat};
 use crate::Absent;
-use crate::display::{Driver, EpdDriver, EpdMode, GramDriver, Image, ImageFormat, Rect, Rotation, Rotations, Size, Ticket, Waveform};
+use crate::display::{Driver, EpdDriver, EpdMode, GramDriver, Image, ImageFormat, Rect, RefreshUnit, Rotation, Rotations, Size, Ticket, Waveform};
 
 const TAG: &CStr = c"sim_gram";
 const QUEUE_DEPTH: usize = 10;
@@ -245,14 +245,21 @@ impl EpdDriver for SimGram {
         Ok(())
     }
 
-    fn clear(&self) -> Result<()> {
-        let size = Driver::size(self);
-        let white = vec![0xFF; self.format.row_bytes(usize::from(size.width))];
+    fn clear(&self, area: Rect) -> Result<()> {
+        let white = vec![0xFF; self.format.row_bytes(area.w as usize)];
         let mut last = None;
-        for y in 0..size.height as i16 {
-            last = Some(unsafe { self.write(Rect::new(0, y, size.width as i16, 1), &white) }?);
+        for y in area.y..area.bottom() {
+            last = Some(unsafe { self.write(Rect::new(area.x, y, area.w, 1), &white) }?);
         }
         last.map_or(Ok(()), |ticket| self.wait(ticket))
+    }
+
+    fn refresh_unit(&self) -> RefreshUnit {
+        RefreshUnit::Pixel
+    }
+
+    fn busy(&self, _area: Rect) -> Result<bool> {
+        Ok(false)
     }
 
     fn wait_idle(&self) -> Result<()> {

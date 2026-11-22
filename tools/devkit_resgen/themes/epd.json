@@ -61,37 +61,37 @@
   "colors": {
     "light": {
       "surface": "#ffffff",
-      "background": "#eeeeee",
+      "background": "#ffffff",
       "text": "#000000",
-      "muted": "#777777",
+      "muted": "#000000",
       "primary": "#000000",
       "on_primary": "#ffffff",
-      "primary_pressed": "#444444",
+      "primary_pressed": "#ffffff",
       "destructive": "#000000",
       "on_destructive": "#ffffff",
-      "divider": "#bbbbbb",
-      "pressed": "#cccccc",
-      "selected": "#dddddd",
-      "scrim": "#00000080",
+      "divider": "#000000",
+      "pressed": "#ffffff",
+      "selected": "#000000",
+      "scrim": "#00000000",
       "shadow": "#00000000",
-      "scrollbar": "#00000077"
+      "scrollbar": "#000000"
     },
     "dark": {
       "surface": "#000000",
-      "background": "#111111",
+      "background": "#000000",
       "text": "#ffffff",
-      "muted": "#888888",
+      "muted": "#ffffff",
       "primary": "#ffffff",
       "on_primary": "#000000",
-      "primary_pressed": "#bbbbbb",
+      "primary_pressed": "#000000",
       "destructive": "#ffffff",
       "on_destructive": "#000000",
-      "divider": "#444444",
-      "pressed": "#333333",
-      "selected": "#222222",
-      "scrim": "#00000080",
+      "divider": "#ffffff",
+      "pressed": "#000000",
+      "selected": "#ffffff",
+      "scrim": "#00000000",
       "shadow": "#00000000",
-      "scrollbar": "#ffffff77"
+      "scrollbar": "#ffffff"
     }
   },
   "vars": {
@@ -100,7 +100,25 @@
     "text_secondary": "color.muted",
     "label_font": "font.caption",
     "pressed": {
-      "background": "color.pressed"
+      "border": [
+        "color.text",
+        2
+      ],
+      "border_sides": "all"
+    },
+    "inverted": {
+      "background": "color.surface",
+      "foreground": "color.text",
+      "border": [
+        "color.text",
+        2
+      ]
+    },
+    "boxed": {
+      "border": [
+        "color.text",
+        1
+      ]
     },
     "dimmed": {
       "opacity": 102
@@ -121,7 +139,9 @@
       "background": "color.surface",
       "border_width": 2,
       "states": {
-        "pressed": "vars.pressed"
+        "pressed": {
+          "border_width": 4
+        }
       }
     },
     "plain": {
@@ -156,9 +176,7 @@
         "background": "color.primary",
         "foreground": "color.on_primary",
         "states": {
-          "pressed": {
-            "background": "color.primary_pressed"
-          }
+          "pressed": "vars.inverted"
         }
       },
       "secondary": {
@@ -172,9 +190,7 @@
         "background": "color.destructive",
         "foreground": "color.on_destructive",
         "states": {
-          "pressed": {
-            "opacity": 200
-          }
+          "pressed": "vars.inverted"
         }
       },
       "plain": {
@@ -246,7 +262,8 @@
         "border_sides": "bottom",
         "states": {
           "selected": {
-            "background": "color.selected"
+            "background": "color.selected",
+            "foreground": "color.surface"
           },
           "pressed": "vars.pressed",
           "disabled": "vars.dimmed"
@@ -294,7 +311,11 @@
         "height": 44,
         "radius": 22,
         "padding_x": 4,
-        "background": "color.divider",
+        "background": "color.surface",
+        "border": [
+          "color.text",
+          2
+        ],
         "animate": "vars.toggle_color",
         "states": {
           "checked": {
@@ -307,6 +328,10 @@
         "height": 36,
         "radius": 18,
         "background": "color.surface",
+        "border": [
+          "color.text",
+          2
+        ],
         "animate": "vars.toggle_position"
       }
     },
@@ -315,7 +340,11 @@
         "width": 28,
         "height": 28,
         "radius": 6,
-        "background": "color.divider",
+        "background": "color.surface",
+        "border": [
+          "color.text",
+          2
+        ],
         "states": {
           "checked": {
             "background": "color.primary"
@@ -337,9 +366,10 @@
         "padding_x": "widgets.slider.inset"
       },
       "track": {
+        "extends": "vars.boxed",
         "height": 8,
         "radius": 4,
-        "background": "color.selected"
+        "background": "color.surface"
       },
       "fill": {
         "radius": 4,
@@ -356,9 +386,10 @@
       "segment": 40,
       "period_ms": 1100,
       "track": {
+        "extends": "vars.boxed",
         "height": 8,
         "radius": 4,
-        "background": "color.selected"
+        "background": "color.surface"
       },
       "fill": {
         "radius": 4,
@@ -369,7 +400,7 @@
       "stroke": 6,
       "sweep": 270,
       "period_ms": 1000,
-      "track_color": "color.selected",
+      "track_color": "color.surface",
       "fill_color": "color.primary",
       "root": {
         "width": 48,
@@ -380,7 +411,11 @@
       "root": {
         "padding": 4,
         "radius": "widgets.unit.radius",
-        "background": "color.background"
+        "background": "color.background",
+        "border": [
+          "color.text",
+          2
+        ]
       },
       "item": {
         "height": 48,
@@ -433,7 +468,8 @@
         "foreground": "color.text",
         "states": {
           "selected": {
-            "background": "color.selected"
+            "background": "color.selected",
+            "foreground": "color.surface"
           },
           "pressed": "vars.pressed",
           "disabled": "vars.dimmed"
@@ -497,6 +533,10 @@
         "padding_y": "widgets.unit.gap",
         "radius": 20,
         "background": "color.surface",
+        "border": [
+          "color.text",
+          1
+        ],
         "shadow": [
           6,
           12,
@@ -568,6 +608,10 @@
         "gap": 16,
         "radius": 20,
         "background": "color.surface",
+        "border": [
+          "color.text",
+          1
+        ],
         "animate": []
       },
       "title": {
@@ -620,7 +664,7 @@
         ],
         "states": {
           "focused": {
-            "border_color": "color.primary"
+            "border_width": 4
           },
           "disabled": "vars.dimmed"
         }
@@ -640,9 +684,7 @@
         "justify": "Justify.Center",
         "foreground": "vars.text_secondary",
         "states": {
-          "pressed": {
-            "opacity": 160
-          }
+          "pressed": "vars.pressed"
         }
       }
     },
@@ -655,6 +697,7 @@
         "font": "font.body"
       },
       "key": {
+        "extends": "vars.boxed",
         "radius": 7,
         "background": "color.surface",
         "foreground": "color.text",
@@ -664,10 +707,10 @@
       },
       "special": {
         "radius": 7,
-        "background": "color.divider",
-        "foreground": "color.text",
+        "background": "color.text",
+        "foreground": "color.surface",
         "states": {
-          "pressed": "vars.pressed"
+          "pressed": "vars.inverted"
         }
       },
       "primary": {
@@ -675,9 +718,7 @@
         "background": "color.primary",
         "foreground": "color.on_primary",
         "states": {
-          "pressed": {
-            "background": "color.primary_pressed"
-          },
+          "pressed": "vars.inverted",
           "disabled": "vars.dimmed"
         }
       }

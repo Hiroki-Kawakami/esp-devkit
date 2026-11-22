@@ -131,7 +131,13 @@ pub fn run() {
 fn run_demo(board: &Board, display: &'static Display, settings: &Settings) {
     screens::set_display(display);
     let small = !cfg!(CONFIG_BSP_RS_BOARD_TAB5);
-    let theme = if small { &resources::SMALL } else { &resources::TOUCH };
+    let theme = if display.epd().is_some() {
+        &resources::EPD
+    } else if small {
+        &resources::SMALL
+    } else {
+        &resources::TOUCH
+    };
     let mut config = AppConfig::new(theme);
     config.plugins.push(Box::new(SavedColorMode::new()));
     if settings.rotated {

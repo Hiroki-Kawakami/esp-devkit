@@ -224,6 +224,52 @@ fn formats_agree_within_quantization() {
 }
 
 #[test]
+fn gray_is_the_luma_of_color() {
+    let chain = test_chain();
+    let scene = Scene::new(&chain);
+    let list = scene.list();
+    let mut cache = GlyphCache::new(4096);
+    let area = [Rect::new(0, 0, 100, 80)];
+    let color = render::<Bgr888>(&list, &mut cache, 100, 80, &area);
+    let gray = render::<L8>(&list, &mut cache, 100, 80, &area);
+    for (i, (&g, c)) in gray.iter().zip(color.chunks_exact(3)).enumerate() {
+        let luma = (u32::from(c[2]) * 54 + u32::from(c[1]) * 183 + u32::from(c[0]) * 19 + 128) >> 8;
+        assert!((i32::from(g) - luma as i32).abs() <= 3, "{} {g} {c:?}", i);
+    }
+}
+
+#[test]
+fn gray_packs_into_rows_on_bytes() {
+    let mut l4 = vec![0x00, 0x1F, 0xF0, 0x80, 0x20, 0xFF];
+    assert_eq!(pack_l4(&mut l4, 3), 4);
+    assert_eq!(&l4[..4], &[0x01, 0xF0, 0x82, 0xF0]);
+
+    let mut seed: u32 = 7;
+    for width in 1..10 {
+        let src: Vec<u8> = (0..width * 3)
+            .map(|_| {
+                seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
+                (seed >> 16) as u8
+            })
+            .collect();
+        let expected: Vec<u8> = src
+            .chunks(width)
+            .flat_map(|row| row.chunks(2).map(|p| (p[0] & 0xF0) | p.get(1).map_or(0, |b| b >> 4)).collect::<Vec<_>>())
+            .collect();
+        let mut packed = src.clone();
+        assert_eq!(pack_l4(&mut packed, width), expected.len());
+        assert_eq!(&packed[..expected.len()], &expected[..], "width {width}");
+    }
+
+    let mut l1 = vec![0xFF, 0x7F, 0x80, 0x00, 0xFF, 0xFF, 0x00, 0xFF, 0xFF, 0x80];
+    assert_eq!(pack_l1(&mut l1, 10), 2);
+    assert_eq!(&l1[..2], &[0b1010_1101, 0b1100_0000]);
+    let mut l1 = vec![0xFF, 0x00, 0x00, 0x00, 0xFF, 0xFF];
+    assert_eq!(pack_l1(&mut l1, 3), 2);
+    assert_eq!(&l1[..2], &[0b1000_0000, 0b0110_0000]);
+}
+
+#[test]
 fn fill_clips_and_blends() {
     let mut list = DisplayList::new();
     list.fill(Rect::new(0, 0, 4, 4), Color::rgb(0, 0, 0));

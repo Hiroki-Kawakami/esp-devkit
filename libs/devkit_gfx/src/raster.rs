@@ -6,7 +6,7 @@
 use crate::color::Color;
 use crate::format::ImageFormat;
 use crate::geom::Rect;
-use crate::pixel::{Argb8888, Bgr888, Pixel, Rgb565};
+use crate::pixel::{Argb8888, Bgr888, L8, Pixel, Rgb565};
 use crate::surface::Surface;
 
 /// Writes pixels itself. Runs on every task that draws, at the same time, each
@@ -45,6 +45,7 @@ impl<'a> RasterTarget<'a> {
         let row = match self.format {
             ImageFormat::Argb8888 => self.surface.bytes::<Argb8888>(self.area.x, screen, pixels),
             ImageFormat::Bgr888 => self.surface.bytes::<Bgr888>(self.area.x, screen, pixels),
+            ImageFormat::L8 => self.surface.bytes::<L8>(self.area.x, screen, pixels),
             _ => self.surface.bytes::<Rgb565>(self.area.x, screen, pixels),
         };
         unsafe { &mut *row }
@@ -56,6 +57,7 @@ impl<'a> RasterTarget<'a> {
         match self.format {
             ImageFormat::Argb8888 => self.surface.fill::<Argb8888>(&rect, &self.area, color),
             ImageFormat::Bgr888 => self.surface.fill::<Bgr888>(&rect, &self.area, color),
+            ImageFormat::L8 => self.surface.fill::<L8>(&rect, &self.area, color),
             _ => self.surface.fill::<Rgb565>(&rect, &self.area, color),
         }
     }

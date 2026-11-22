@@ -5,6 +5,7 @@
 
 use devkit_gfx::{Corners, FontChain, Sides};
 
+use crate::epd::EpdPolicy;
 use crate::id::Id;
 use crate::rotation::Rotations;
 use crate::theme::ColorRole;
@@ -336,6 +337,8 @@ impl Style {
 pub struct ScreenStyle {
     pub bars: Bars,
     pub rotations: Rotations,
+    /// Over `AppConfig::epd` while the screen shows.
+    pub epd: Option<EpdPolicy>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]

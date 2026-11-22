@@ -25,6 +25,7 @@ use crate::app::Link;
 use crate::bump::Bump;
 use crate::component::{Animation, AnyHost, EventMap, Hook, Host, Property, RenderRequest, Requests, Screen, ScrollEdge, ScrollPosition, ScrollTarget, screen_host};
 use crate::element::{BuildContext, Content, Drag, Element};
+use crate::epd::{Causes, EpdAction, EpdCause, EpdRequests};
 use crate::gesture::{Gestures, Tracker};
 use crate::id::Id;
 use crate::external::{ExternalSurface, Policy, TouchPoint};
@@ -54,9 +55,8 @@ const FLING_STALE_MS: u32 = 80;
 /// A scroller's bar stays this long after it stops, then fades for `BAR_FADE_MS`.
 const BAR_HOLD_MS: u32 = 600;
 const BAR_FADE_MS: u32 = 300;
-/// Share of the speed lost per millisecond.
+/// Per millisecond, of the speed's exponential decay.
 const FLING_DECAY: f32 = 0.0025;
-const MAX_FLING_STEP_MS: f32 = 32.0;
 /// How hard a drag past an end pulls, at the end itself.
 const STRETCH: f32 = 0.3;
 /// What a drag past an end approaches and never reaches, by the viewport.
@@ -327,7 +327,11 @@ pub(crate) struct Tree {
     pub(crate) layout_dirty: bool,
     /// The state of the nearest `state_source` around what is being reconciled.
     source: State,
-    pub(crate) damage: Vec<Rect>,
+    damage: Vec<Damaged>,
+    /// Causes of everything damaged this frame.
+    frame_causes: Causes,
+    /// What components asked of the glass, until the frame takes it.
+    pub(crate) epd: EpdRequests,
     pub(crate) contacts: Vec<Contact>,
     pub(crate) trackers: Vec<Tracker>,
     /// What the fingers on a surface were last reported to, until it hears
@@ -335,6 +339,14 @@ pub(crate) struct Tree {
     touched: Option<ExternalSurface>,
     /// During a hit test, something drawn over the point was passed.
     covered: Cell<bool>,
+}
+
+/// A damaged rectangle, why, and what the elements around it ask of the glass.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Damaged {
+    pub(crate) rect: Rect,
+    pub(crate) causes: Causes,
+    pub(crate) epd: Option<EpdAction>,
 }
 
 pub(crate) fn shadow_extent(style: &Style) -> i16 {
@@ -396,6 +408,8 @@ impl Tree {
             layout_dirty: true,
             source: State::empty(),
             damage: Vec::new(),
+            frame_causes: Causes::default(),
+            epd: EpdRequests::default(),
             canvases: Vec::new(),
             scrolls: Vec::new(),
             external: NONE,
@@ -908,7 +922,7 @@ impl Tree {
             if self.leave(id) {
                 left.push(id);
             } else {
-                self.damage_painted(id);
+                self.damage_painted(id, EpdCause::Content);
                 self.free_subtree(id);
             }
         }
@@ -929,7 +943,7 @@ impl Tree {
     // at every level of a tree.
     /// Makes `node.style` what `base` comes to in the node's state.
     #[inline(never)]
-    fn restyle(&mut self, id: NodeIndex, base: Style) {
+    fn restyle(&mut self, id: NodeIndex, base: Style, cause: EpdCause) {
         let node = &mut self.nodes[id as usize];
         let mut style = base;
         let selected = style.resolve(node.state, &node.when);
@@ -937,16 +951,21 @@ impl Tree {
             self.layout_dirty = true;
         }
         let changed = node.style != style;
+        let mut shadow = None;
         if changed {
             node.paint_dirty = true;
+            node.dirty_causes = node.dirty_causes.with(cause);
             if node.style.shadow != style.shadow {
-                self.damage.push(node.screen.expand(shadow_extent(&node.style)));
+                shadow = Some(node.screen.expand(shadow_extent(&node.style)));
             }
         }
         let old = core::mem::replace(&mut node.style, style);
         match &mut node.base {
             Some(kept) if selected => **kept = base,
             _ => node.base = selected.then(|| Box::new_in(base, self.caps)),
+        }
+        if let Some(rect) = shadow {
+            self.add_damage(rect, Causes::of(cause), id);
         }
         if changed {
             self.ease_style(id, &old);
@@ -964,7 +983,7 @@ impl Tree {
         node.state = state;
         let base = node.base.as_deref().copied().unwrap_or(node.style);
         let source = node.state_source;
-        self.restyle(id, base);
+        self.restyle(id, base, EpdCause::State);
         if source {
             self.pass_state(id, state);
         }
@@ -1025,6 +1044,7 @@ impl Tree {
         node.repeat = element.repeat;
         node.appear = element.appear;
         node.disappear = element.disappear;
+        node.epd = element.epd;
         node.own_state = (node.own_state & (State::PRESSED | State::HOVERED | State::FOCUSED)) | element.state;
         node.source_state = source & element.inherit;
         node.state = node.own_state | node.source_state;
@@ -1034,7 +1054,7 @@ impl Tree {
             node.when.clear();
             node.when.extend_from_slice(element.when);
         }
-        self.restyle(id, element.style);
+        self.restyle(id, element.style, EpdCause::Content);
         self.sync_pull(id, element.pull);
         self.sync_task(id, element.task);
     }
@@ -1395,6 +1415,7 @@ impl Tree {
             self.input(input);
         }
         self.pending_redraw.extend(requests.redraw);
+        self.epd.merge(requests.epd);
         for op in requests.nav {
             self.apply_nav(slot, op);
         }
@@ -1546,7 +1567,8 @@ impl Tree {
         let alpha = self.scrim_alpha();
         let was = core::mem::replace(&mut self.scrim, alpha);
         if alpha != was {
-            self.damage.push(self.nodes[self.overlay as usize].screen);
+            let overlay = self.overlay;
+            self.add_damage(self.nodes[overlay as usize].screen, Causes::of(EpdCause::Screen), overlay);
         }
     }
 
@@ -1583,20 +1605,37 @@ impl Tree {
         shadow_extent(&node.style) + node.pose.map_or(0, |p| p.reach)
     }
 
+    /// Damages `rect` for `causes`, under what `id` or the nearest element
+    /// around it asks of the glass.
+    pub(crate) fn add_damage(&mut self, rect: Rect, causes: Causes, id: NodeIndex) {
+        let mut at = id;
+        let mut epd = None;
+        while at != NONE {
+            let node = &self.nodes[at as usize];
+            if node.epd.is_some() {
+                epd = node.epd;
+                break;
+            }
+            at = node.parent;
+        }
+        self.damage.push(Damaged { rect, causes, epd });
+    }
+
     /// Damages what `id` and what is in it drew, and nothing else.
-    pub(crate) fn damage_painted(&mut self, id: NodeIndex) {
+    pub(crate) fn damage_painted(&mut self, id: NodeIndex, cause: EpdCause) {
         let node = &self.nodes[id as usize];
         if !node.screen.is_empty() && self.paints(id) {
-            self.damage.push(node.screen.expand(Self::damage_extent(node)));
+            let rect = node.screen.expand(Self::damage_extent(node));
+            self.add_damage(rect, Causes::of(cause), id);
         }
         if let NodeContent::Collection(list) = &self.nodes[id as usize].content {
             for (_, row) in list.items.clone() {
-                self.damage_painted(row);
+                self.damage_painted(row, cause);
             }
         }
         let mut child = self.nodes[id as usize].first_child;
         while child != NONE {
-            self.damage_painted(child);
+            self.damage_painted(child, cause);
             child = self.nodes[child as usize].next;
         }
     }
@@ -1726,7 +1765,8 @@ impl Tree {
             let node = &self.nodes[id as usize];
             let [left, top, _, _] = node.style.padding;
             let screen = node.screen;
-            self.damage.push(rect.map_or(screen, |r| r.offset(screen.x + left, screen.y + top).intersect(&screen)));
+            let rect = rect.map_or(screen, |r| r.offset(screen.x + left, screen.y + top).intersect(&screen));
+            self.add_damage(rect, Causes::of(EpdCause::Content), id);
         }
     }
 
@@ -1761,12 +1801,12 @@ impl Tree {
         if self.focus != NONE {
             self.hide_reveal(self.focus);
             self.set_state(self.focus, State::FOCUSED, false);
-            self.nodes[self.focus as usize].paint_dirty = true;
+            self.nodes[self.focus as usize].mark_dirty(EpdCause::State);
         }
         self.focus = id;
         if id != NONE {
             self.set_state(id, State::FOCUSED, true);
-            self.nodes[id as usize].paint_dirty = true;
+            self.nodes[id as usize].mark_dirty(EpdCause::State);
         }
         self.caret_on = true;
         self.caret_ms = 0;
@@ -1872,12 +1912,21 @@ impl Tree {
             let extent = Self::damage_extent(node);
             let old = node.screen.expand(extent);
             let new = screen.expand(extent);
-            self.damage.push(old);
-            self.damage.push(new);
+            let mut causes = match node.paint_dirty {
+                true if node.dirty_causes.is_empty() => Causes::of(EpdCause::Content),
+                true => node.dirty_causes,
+                false => Causes::of(EpdCause::Layout),
+            };
+            if matches!(node.content, NodeContent::Image { .. }) {
+                causes = causes.with(EpdCause::Image);
+            }
+            self.add_damage(old, causes, id);
+            self.add_damage(new, causes, id);
         }
         let node = &mut self.nodes[id as usize];
         node.screen = screen;
         node.paint_dirty = false;
+        node.dirty_causes = Causes::default();
         if !visible {
             return;
         }
@@ -1908,8 +1957,23 @@ impl Tree {
         }
     }
 
-    pub(crate) fn take_damage(&mut self) -> Vec<Rect> {
-        core::mem::take(&mut self.damage)
+    /// With the causes of the whole frame added to each.
+    pub(crate) fn take_damage(&mut self) -> Vec<Damaged> {
+        let frame = core::mem::take(&mut self.frame_causes);
+        let mut damage = core::mem::take(&mut self.damage);
+        for d in &mut damage {
+            d.causes = d.causes.union(frame);
+        }
+        damage
+    }
+
+    /// Damages everything changed this frame for `cause` too.
+    pub(crate) fn add_frame_cause(&mut self, cause: EpdCause) {
+        self.frame_causes = self.frame_causes.with(cause);
+    }
+
+    pub(crate) fn damaged(&self) -> impl Iterator<Item = Rect> + '_ {
+        self.damage.iter().map(|d| d.rect)
     }
 
     pub(crate) fn idle(&self) -> bool {
@@ -1953,7 +2017,7 @@ impl Tree {
                 node.bar = Bar::Moved;
             }
             let screen = node.screen;
-            self.damage.push(screen);
+            self.add_damage(screen, Causes::of(EpdCause::Scroll), id);
             self.stop_motions(id, |kind| matches!(kind, MotionKind::Scrollbar));
             self.scroll_moved(id, before);
         }
@@ -1992,7 +2056,7 @@ impl Tree {
 
     pub(crate) fn damage_scrollbar(&mut self, id: NodeIndex) {
         if let Some(bar) = self.scrollbar_rect(id, self.nodes[id as usize].screen) {
-            self.damage.push(bar);
+            self.add_damage(bar, Causes::of(EpdCause::Scroll), id);
         }
     }
 
@@ -2096,7 +2160,7 @@ impl Tree {
         if after != before {
             node.scrolled = true;
             let screen = node.screen;
-            self.damage.push(screen);
+            self.add_damage(screen, Causes::of(EpdCause::Scroll), id);
             self.scroll_moved(id, before);
         }
     }
@@ -2148,7 +2212,7 @@ impl Tree {
         let id = self.motions[i].node;
         let Fling { mut position, mut velocity, anchor } = fling;
         let bounds = self.bounds(id);
-        let dt = (dt_ms as f32).min(MAX_FLING_STEP_MS);
+        let dt = dt_ms as f32;
         let rest = match anchor.or_else(|| bounds.past(position).map(|p| p.0)) {
             Some(target) => {
                 let past = position - target;
@@ -2165,8 +2229,11 @@ impl Tree {
                 rest
             }
             None => {
-                position += velocity * dt_ms as f32;
-                velocity *= 1.0 - FLING_DECAY * dt;
+                // Integrated over the step, so a long one goes neither too far
+                // nor past where the speed would have died.
+                let fade = exp_neg(FLING_DECAY * dt);
+                position += velocity * (1.0 - fade) / FLING_DECAY;
+                velocity *= fade;
                 match bounds.past(position) {
                     Some((edge, false)) => {
                         position = edge;
@@ -2221,12 +2288,14 @@ impl Tree {
         }
         let Some(name) = name.filter(|_| (before > 0) != (offset > 0)) else { return };
         let mut bars = Vec::new();
-        self.walk(self.root, &mut |_, node| {
+        self.walk(self.root, &mut |at, node| {
             if node.owner == owner && node.style.scroll_border == Some(name) {
-                bars.push(node.screen);
+                bars.push((at, node.screen));
             }
         });
-        self.damage.extend(bars);
+        for (at, bar) in bars {
+            self.add_damage(bar, Causes::of(EpdCause::Scroll), at);
+        }
     }
 
     /// Whether the scroller `name` of `owner` is away from its start.
@@ -2574,7 +2643,7 @@ impl Tree {
         if self.caret_ms >= CARET_BLINK_MS {
             self.caret_ms = 0;
             self.caret_on = !self.caret_on;
-            self.nodes[self.focus as usize].paint_dirty = true;
+            self.nodes[self.focus as usize].mark_dirty(EpdCause::State);
         }
     }
 
