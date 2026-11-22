@@ -4,6 +4,7 @@
  */
 
 use core::ffi::c_void;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::{Error, Result, sys};
 
@@ -82,8 +83,16 @@ pub fn set_interrupt(pin: i32, interrupt: Interrupt) -> Result<()> {
 }
 
 pub fn install_isr_service() -> Result<()> {
+    // IDF logs an error on a repeated install even though it returns INVALID_STATE.
+    static INSTALLED: AtomicBool = AtomicBool::new(false);
+    if INSTALLED.load(Ordering::Acquire) {
+        return Ok(());
+    }
     match Error::check(unsafe { sys::gpio_install_isr_service(0) }) {
-        Err(Error::INVALID_STATE) => Ok(()),
+        Ok(()) | Err(Error::INVALID_STATE) => {
+            INSTALLED.store(true, Ordering::Release);
+            Ok(())
+        }
         r => r,
     }
 }
