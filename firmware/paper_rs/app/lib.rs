@@ -14,6 +14,7 @@ mod resources {
     include!(concat!(env!("OUT_DIR"), "/resources.rs"));
 }
 
+use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
@@ -22,6 +23,7 @@ use core::time::Duration;
 
 use bsp_rs::Board;
 use bsp_rs::audio::Note;
+use bsp_rs::button::Event;
 use bsp_rs::display::{Display, Epd, EpdMode, Image, ImageFormat, Rect, Waveform};
 use bsp_rs::power::{Battery, PowerState};
 use bsp_rs::rtc::DateTime;
@@ -29,6 +31,7 @@ use bsp_rs::sd::MountConfig;
 use bsp_rs::touch::{MAX_POINTS, Point};
 use idf::fs::File;
 use idf::log::{error, info};
+use idf::sync::{Receiver, channel};
 use idf::thread;
 use idf::time::Instant;
 
@@ -53,6 +56,7 @@ const UPDATE: Duration = Duration::from_secs(5);
 const TOUCH_POLL: Duration = Duration::from_millis(10);
 const OFF_HOLD: Duration = Duration::from_secs(2);
 const APP_STACK: usize = 16 * 1024;
+const KEY_QUEUE: usize = 8;
 
 const fn note(hz: u16, ms: u16) -> Note {
     Note { hz, ms }
@@ -105,6 +109,7 @@ struct App {
     h: usize,
     align: usize,
     last: String,
+    keys: Option<Receiver<(u8, Event)>>,
 }
 
 // `bsp_rs::init` stays on the main task, whose default stack it must fit; the
@@ -142,7 +147,15 @@ fn start(board: Board) {
         h: usize::from(size.height),
         align: usize::from(display.alignment()),
         last: "-".to_string(),
+        keys: None,
     };
+    if let Some(buttons) = app.board.buttons {
+        let (sender, receiver) = channel(KEY_QUEUE);
+        buttons.set_event_cb(Some(Box::new(move |id, event| {
+            let _ = sender.try_send((id, event));
+        })));
+        app.keys = Some(receiver);
+    }
     app.log("set_mode", epd.set_mode(EpdMode::Hold));
     if let Some(imu) = app.board.imu {
         imu.set_orientation_enabled(true);
@@ -408,6 +421,15 @@ impl App {
                 self.update_info();
             }
             last = n;
+            let mut key = None;
+            while let Some(event) = self.keys.as_ref().and_then(|keys| keys.try_recv()) {
+                key = Some(event);
+            }
+            if let Some((id, event)) = key {
+                self.last = format!("button {id}: {event:?}");
+                info!(TAG, "{}", self.last);
+                self.update_info();
+            }
             if updated.elapsed() >= UPDATE {
                 updated = Instant::now();
                 self.update_info();

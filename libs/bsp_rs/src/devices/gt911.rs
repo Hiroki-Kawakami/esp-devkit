@@ -32,6 +32,8 @@ pub(crate) struct Config {
     pub address: u16,
     pub clock_hz: u32,
     pub int_pin: Option<i32>,
+    /// Pulls INT up inside the SoC; off on a pad that has no pull.
+    pub int_pull_up: bool,
 }
 
 pub(crate) struct Gt911 {
@@ -45,7 +47,9 @@ impl Gt911 {
     pub(crate) fn new(bus: &'static MasterBus, config: &Config) -> Result<Self> {
         if let Some(pin) = config.int_pin {
             gpio::set_direction(pin, gpio::Mode::Input)?;
-            gpio::set_pull(pin, gpio::Pull::Up)?;
+            if config.int_pull_up {
+                gpio::set_pull(pin, gpio::Pull::Up)?;
+            }
         }
         let other = if config.address == ADDR_PRIMARY { ADDR_SECONDARY } else { ADDR_PRIMARY };
         let address = [config.address, other]

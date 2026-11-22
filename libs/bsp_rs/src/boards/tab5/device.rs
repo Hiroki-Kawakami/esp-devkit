@@ -228,6 +228,7 @@ fn touch_init(bus: &'static MasterBus, panel: Panel) -> Option<&'static Touch> {
             address: gt911::ADDR_PRIMARY,
             clock_hz: gt911::DEFAULT_HZ,
             int_pin: Some(TOUCH_PIN_INT),
+            int_pull_up: true,
         })
         .and_then(|gt911| touch::start(gt911, config)),
         Panel::St7121 | Panel::St7123 => St712xTouch::new(bus, &st712x_touch::Config {

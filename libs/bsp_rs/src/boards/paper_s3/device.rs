@@ -224,7 +224,7 @@ fn rtc_init(bus: &'static MasterBus) -> Option<&'static Rtc> {
 // and its reset is not on a GPIO, so either address may answer.
 fn touch_init(bus: &'static MasterBus, model: Model) -> Result<&'static Touch> {
     let int = model.touch_int();
-    let gt911 = Gt911::new(bus, &gt911::Config { address: gt911::ADDR_PRIMARY, clock_hz: gt911::DEFAULT_HZ, int_pin: Some(int) })?;
+    let gt911 = Gt911::new(bus, &gt911::Config { address: gt911::ADDR_PRIMARY, clock_hz: gt911::DEFAULT_HZ, int_pin: Some(int), int_pull_up: true })?;
     touch::start(gt911, touch::Config {
         width: PANEL_SIZE.width,
         height: PANEL_SIZE.height,

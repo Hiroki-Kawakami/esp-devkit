@@ -3,16 +3,23 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
+use alloc::boxed::Box;
+use alloc::vec;
 use core::time::Duration;
 
-use idf::log::{error, info};
+use idf::i2c::{BusConfig, MasterBus};
+use idf::log::{error, info, warn};
 use idf::sync::OnceLock;
 use idf::{Result, gpio, spi, thread};
 
 use super::{PANEL_PPI, PANEL_SIZE, TAG, resolve_display};
+use crate::button::{self, Buttons, Provider};
+use crate::devices::gt911::{self, Gt911};
 use crate::devices::it8951e::{self, It8951e};
-use crate::display;
+use crate::display::{self, Rotation};
+use crate::driver::gpio_button::{GpioButtons, Pin};
 use crate::power;
+use crate::touch::{self, Touch};
 use crate::{Absent, Board, Config};
 
 pub(crate) type Display = It8951e;
@@ -43,6 +50,21 @@ const EPD_VCOM_MV: u16 = 2300;
 const EPD_FALLBACK_ADDRESS: u32 = 0x0012_36E0;
 const EPD_REST_AFTER: Duration = Duration::from_secs(3);
 
+// Shared by the touch and the RTC.
+const I2C_PORT: i32 = 1;
+const I2C_PIN_SDA: i32 = 21;
+const I2C_PIN_SCL: i32 = 22;
+// An input-only pad, without a pull of its own.
+const TOUCH_PIN_INT: i32 = 36;
+
+// The wheel's push, up and down: input-only pads pulled up on the board.
+static KEYS: [Pin; 3] = [
+    Pin { gpio: 38, active_low: true, pull: false },
+    Pin { gpio: 37, active_low: true, pull: false },
+    Pin { gpio: 39, active_low: true, pull: false },
+];
+
+static I2C: OnceLock<MasterBus> = OnceLock::new();
 static DISPLAY: OnceLock<display::Display> = OnceLock::new();
 
 struct UnknownPower;
@@ -78,16 +100,47 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
         rest_after: EPD_REST_AFTER,
     })
     .inspect_err(|err| error!(TAG, "panel: {err}"))?;
+    let bus = I2C
+        .get_or_try_init(|| MasterBus::new(&BusConfig { port: I2C_PORT, sda: I2C_PIN_SDA, scl: I2C_PIN_SCL, glitch_ignore_cnt: 7, internal_pullup: true }))
+        .inspect_err(|err| error!(TAG, "i2c bus: {err}"))
+        .ok();
+    let touch = bus.and_then(|bus| touch_init(bus, rotation).inspect_err(|err| warn!(TAG, "touch unavailable: {err}")).ok());
+    let buttons = buttons_init().inspect_err(|err| warn!(TAG, "buttons unavailable: {err}")).ok();
     let power = power::start(UnknownPower, None);
     Ok(Board {
         audio: None,
-        buttons: None,
+        buttons,
         display: Some(DISPLAY.get_or_init(|| display::Display::new(panel))),
         imu: None,
         power,
         rtc: None,
         sd: None,
-        touch: None,
+        touch,
+    })
+}
+
+fn buttons_init() -> Result<&'static Buttons> {
+    button::start(vec![Provider::Level(Box::new(GpioButtons::new(&KEYS)?))])
+}
+
+// The chip reports the panel's portrait axes with Y mirrored, and its reset
+// is not on a GPIO, so either address may answer.
+fn touch_init(bus: &'static MasterBus, rotation: Rotation) -> Result<&'static Touch> {
+    let gt911 = Gt911::new(bus, &gt911::Config {
+        address: gt911::ADDR_SECONDARY,
+        clock_hz: gt911::DEFAULT_HZ,
+        int_pin: Some(TOUCH_PIN_INT),
+        int_pull_up: false,
+    })?;
+    touch::start(gt911, touch::Config {
+        width: PANEL_SIZE.width,
+        height: PANEL_SIZE.height,
+        swap_xy: true,
+        mirror_x: false,
+        mirror_y: true,
+        rotation,
+        int: touch::Int::Gpio(TOUCH_PIN_INT),
+        zones: &[],
     })
 }
 
