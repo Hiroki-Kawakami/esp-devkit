@@ -14,8 +14,10 @@ use super::{PANEL_PPI, PANEL_SIZE, TAG, resolve_display};
 use crate::button::{self, Provider};
 use crate::display::{self, Rotations};
 use crate::power;
+use crate::rtc;
 use crate::sim::gram::{GramConfig, SimGram};
 use crate::sim::power::SimPower;
+use crate::sim::rtc::SimRtc;
 use crate::sim::{self, protocol::Event, touch as sim_touch};
 use crate::touch;
 use crate::{Absent, Board, Config};
@@ -79,13 +81,14 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
     .ok();
     let buttons = button::start(vec![Provider::Level(Box::new(Keys))]).inspect_err(|err| warn!(TAG, "buttons unavailable: {err}")).ok();
     let power = power::start(SimPower::new(Some(host)), None);
+    let rtc = SimRtc::new(host).and_then(|driver| rtc::start(driver).inspect_err(|err| warn!(TAG, "rtc unavailable: {err}")).ok());
     Ok(Board {
         audio: None,
         buttons,
         display: Some(DISPLAY.get_or_init(|| display::Display::new(panel))),
         imu: None,
         power,
-        rtc: None,
+        rtc,
         sd: None,
         touch,
     })

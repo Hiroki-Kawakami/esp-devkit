@@ -12,13 +12,16 @@ use idf::log::{error, info, warn};
 use idf::sync::OnceLock;
 use idf::{Result, gpio, spi, thread};
 
+use super::power::PowerDriver;
 use super::{PANEL_PPI, PANEL_SIZE, TAG, resolve_display};
 use crate::button::{self, Buttons, Provider};
+use crate::devices::bm8563::{self, Bm8563};
 use crate::devices::gt911::{self, Gt911};
 use crate::devices::it8951e::{self, It8951e};
 use crate::display::{self, Rotation};
 use crate::driver::gpio_button::{GpioButtons, Pin};
 use crate::power;
+use crate::rtc::{self, Rtc};
 use crate::touch::{self, Touch};
 use crate::{Absent, Board, Config};
 
@@ -67,10 +70,6 @@ static KEYS: [Pin; 3] = [
 static I2C: OnceLock<MasterBus> = OnceLock::new();
 static DISPLAY: OnceLock<display::Display> = OnceLock::new();
 
-struct UnknownPower;
-
-impl power::Driver for UnknownPower {}
-
 pub(crate) fn init(config: &Config) -> Result<Board> {
     let (pixel_format, rotation) = resolve_display(config)?;
     info!(TAG, "board: Paper");
@@ -105,18 +104,28 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
         .inspect_err(|err| error!(TAG, "i2c bus: {err}"))
         .ok();
     let touch = bus.and_then(|bus| touch_init(bus, rotation).inspect_err(|err| warn!(TAG, "touch unavailable: {err}")).ok());
+    let rtc = bus.and_then(rtc_init);
     let buttons = buttons_init().inspect_err(|err| warn!(TAG, "buttons unavailable: {err}")).ok();
-    let power = power::start(UnknownPower, None);
+    let power = power::start(PowerDriver::new(PIN_MAIN_PWR), None);
     Ok(Board {
         audio: None,
         buttons,
         display: Some(DISPLAY.get_or_init(|| display::Display::new(panel))),
         imu: None,
         power,
-        rtc: None,
+        rtc,
         sd: None,
         touch,
     })
+}
+
+// Its INT turns the power on, and holds it while the timer flag stays set.
+fn rtc_init(bus: &'static MasterBus) -> Option<&'static Rtc> {
+    let rtc = Bm8563::new(bus, bm8563::ADDR).and_then(rtc::start).inspect_err(|err| warn!(TAG, "rtc unavailable: {err}")).ok()?;
+    if let Err(err) = rtc.stop_timer() {
+        error!(TAG, "rtc timer stop: {err}");
+    }
+    Some(rtc)
 }
 
 fn buttons_init() -> Result<&'static Buttons> {
