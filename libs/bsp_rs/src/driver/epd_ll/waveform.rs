@@ -220,8 +220,15 @@ impl Waveform {
     }
 }
 
+/// Set on a replaying pixel written a gray other than its target, and on a
+/// pending one that waits for a group: `Next` says what it goes to.
+pub(crate) const REDIRECT: u16 = 0x1000;
+
+/// In an action of `Acts`: the group's pixels finish with this frame.
+pub(crate) const ACT_RETIRE: u8 = 0x80;
+
 pub(crate) fn group_of(px: u16) -> u8 {
-    (px >> 8) as u8
+    (px >> 8) as u8 & 15
 }
 
 /// `px` moved to `group`, its DC and target kept.
@@ -258,12 +265,6 @@ pub(crate) fn cut_dc(replay: Option<&Waveform>, frame: u8, start: u8) -> Option<
     let Some(replay) = replay else { return Some(&KEEP) };
     let run = steps_run(frame, start);
     (run >= replay.cuttable_from).then(|| replay.dc_after(run))
-}
-
-/// Stops a replaying `px` where `dc`, the DCs after the steps it has run,
-/// leaves it, and draws `gray` from there.
-pub(crate) fn cut_px(px: u16, gray: u8, dc: &DcTab) -> u16 {
-    u16::from(G_PENDING) << 8 | u16::from(dc[usize::from(px & 0xFF)]) << 4 | u16::from(gray)
 }
 
 /// `px` idle at `gray`, with the DC `end` leaves a drive toward it.
@@ -318,42 +319,58 @@ pub(crate) fn draw_px(px: u16, gray: u8, armed: Option<u8>, all: bool) -> u16 {
 /// unread.
 pub(crate) type Retire = *const DcTab;
 
-/// The action of each pixel value this frame, 256 per group.
-pub(crate) type Acts = [u8; GROUPS * 256];
+/// The action of each pixel value this frame, 256 per group, with
+/// `ACT_RETIRE`. The scan reads it while a group that starts is filled in.
+pub(crate) type Acts = [AtomicU8];
 
-/// For each group at `frame`: its actions, and how its pixels finish with it.
-/// With `skip_settle`, pixels left with only SETTLE frames finish. Groups not
-/// replaying hold, those armed since included.
-pub(crate) fn build_frame_tab(
-    wf: &[Option<Waveform>; SLOTS],
-    groups: &[Option<Group>; GROUPS],
-    frame: u8,
-    skip_settle: bool,
-    acts: &mut Acts,
-    retire_tab: &mut [Retire; GROUPS],
-) {
-    for (g, (act, retire_out)) in acts.chunks_exact_mut(256).zip(retire_tab.iter_mut()).enumerate() {
-        let mut rowset = &HOLD;
-        let mut retire: Retire = core::ptr::null();
-        if let Some(Group { slot, start }) = groups[g] {
-            let step = usize::from(frame.wrapping_sub(start) & 63);
-            match &wf[slot] {
-                Some(w) if step < w.steps() => {
-                    let row = &w.lut[step];
-                    if row[0] != SETTLE_WORD {
-                        rowset = row;
-                    }
-                    if step + 1 >= w.steps() || (skip_settle && step + 1 >= w.first_skippable) {
-                        retire = w.dc_after(step + 1);
-                    }
+pub(crate) const ACTS_LEN: usize = GROUPS * 256;
+
+/// What a group does at `frame`.
+pub(crate) struct GroupTab {
+    pub rowset: &'static Frame,
+    /// The DCs its pixels keep as they finish with this frame, or null.
+    pub retire: Retire,
+    /// The DCs a pixel stopped before this frame keeps, or null while a draw
+    /// may not stop it.
+    pub cut: Retire,
+}
+
+/// With `skip_settle`, pixels left with only SETTLE frames finish. A group
+/// that starts later holds.
+pub(crate) fn group_tab(wf: &[Option<Waveform>; SLOTS], group: Option<Group>, frame: u8, skip_settle: bool) -> GroupTab {
+    let mut tab = GroupTab { rowset: &HOLD, retire: core::ptr::null(), cut: &KEEP };
+    let Some(Group { slot, start }) = group else { return tab };
+    let step = usize::from(frame.wrapping_sub(start) & 63);
+    match &wf[slot] {
+        Some(w) => {
+            let run = if step == 63 { 0 } else { step };
+            tab.cut = if run >= w.cuttable_from { w.dc_after(run) } else { core::ptr::null() };
+            if step < w.steps() {
+                let row = &w.lut[step];
+                if row[0] != SETTLE_WORD {
+                    tab.rowset = row;
                 }
-                // An empty slot or a stale step goes back to idle.
-                _ if step != 63 => retire = &KEEP,
-                _ => {}
+                if step + 1 >= w.steps() || (skip_settle && step + 1 >= w.first_skippable) {
+                    tab.retire = w.dc_after(step + 1);
+                }
+            } else if step != 63 {
+                tab.retire = &KEEP;
             }
         }
-        build_act256(rowset, act);
-        *retire_out = retire;
+        // An empty slot goes back to idle.
+        None if step != 63 => tab.retire = &KEEP,
+        None => {}
+    }
+    tab
+}
+
+/// Flattens a frame into an action per `dc << 4 | target`.
+pub(crate) fn fill_acts(rowset: &Frame, retire: bool, act: &Acts) {
+    let flag = if retire { ACT_RETIRE } else { 0 };
+    for (dc, &w) in rowset.iter().enumerate() {
+        for to in 0..16 {
+            act[dc << 4 | to].store(((w >> (to * 2)) & 3) as u8 | flag, Ordering::Relaxed);
+        }
     }
 }
 
@@ -361,87 +378,54 @@ fn pack(a: [u32; 4]) -> u8 {
     (a[0] << 6 | a[1] << 4 | a[2] << 2 | a[3]) as u8
 }
 
+#[cfg(test)]
 fn get(px: &Pixel) -> u16 {
     px.load(Ordering::Relaxed)
 }
 
-/// Packs a row's actions 4 pixels a byte, the leftmost in the top bits, and
-/// returns whether any drives. `dst` holds a byte per 4 pixels of `row`.
-/// Unrolled by 8 so the table lookups overlap.
-fn blit(row: &[Pixel], dst: &mut [u8], act: impl Fn(u16) -> u32) -> bool {
-    let act = |px: &Pixel| act(get(px));
-    let mut acc = 0;
-    let mut chunks = row.chunks_exact(8);
-    for (px, d) in (&mut chunks).zip(dst.chunks_exact_mut(2)) {
-        let a = [act(&px[0]), act(&px[1]), act(&px[2]), act(&px[3]), act(&px[4]), act(&px[5]), act(&px[6]), act(&px[7])];
-        d[0] = pack([a[0], a[1], a[2], a[3]]);
-        d[1] = pack([a[4], a[5], a[6], a[7]]);
-        acc |= a.iter().fold(0, |acc, a| acc | a);
-    }
-    let rest = chunks.remainder();
-    if rest.len() == 4 {
-        let a = [act(&rest[0]), act(&rest[1]), act(&rest[2]), act(&rest[3])];
-        dst[row.len() / 4 - 1] = pack(a);
-        acc |= a.iter().fold(0, |acc, a| acc | a);
-    }
-    acc != 0
+fn act_of(acts: &[AtomicU8; ACTS_LEN], v: u32) -> u32 {
+    u32::from(acts[v as usize & (ACTS_LEN - 1)].load(Ordering::Relaxed))
 }
 
-fn act_of(acts: &Acts, v: u32) -> u32 {
-    u32::from(acts[v as usize & (GROUPS * 256 - 1)])
-}
+const REDIRECT_PAIR: u32 = (REDIRECT as u32) << 16 | REDIRECT as u32;
+/// In a pair of pixels: one replays or is redirected.
+const BUSY_PAIR: u32 = 0x0E00_0E00 | REDIRECT_PAIR;
 
-/// `row.len()` is a multiple of 4.
-pub(crate) fn blit_line(row: &[Pixel], acts: &Acts, dst: &mut [u8]) -> bool {
-    if row.as_ptr() as usize % 4 != 0 {
-        return blit(row, dst, |v| act_of(acts, u32::from(v)));
-    }
+/// Packs a row's actions 4 pixels a byte, the leftmost in the top bits.
+/// `row` starts on a 4-byte boundary and holds a multiple of 4 pixels, a
+/// byte of `dst` each 4. Pixels that finish or are redirected go to
+/// `special`, by the index of the first and how many, 8 or 4, which packs
+/// them itself.
+pub(crate) fn blit_line(row: &[Pixel], acts: &[AtomicU8; ACTS_LEN], dst: &mut [u8], mut special: impl FnMut(usize, usize) -> [u8; 2]) {
+    debug_assert!(row.as_ptr() as usize % 4 == 0);
     // Two pixels a load, the first in the low half: each half is as one
     // 16-bit store left it, which is all a pixel needs.
     let pairs = unsafe { core::slice::from_raw_parts(row.as_ptr().cast::<AtomicU32>(), row.len() / 2) };
-    let mut acc = 0;
     let mut chunks = pairs.chunks_exact(4);
-    for (p, d) in (&mut chunks).zip(dst.chunks_exact_mut(2)) {
+    for (k, (p, d)) in (&mut chunks).zip(dst.chunks_exact_mut(2)).enumerate() {
         let w = [p[0].load(Ordering::Relaxed), p[1].load(Ordering::Relaxed), p[2].load(Ordering::Relaxed), p[3].load(Ordering::Relaxed)];
+        let any = w[0] | w[1] | w[2] | w[3];
+        if any & BUSY_PAIR == 0 {
+            d[0] = 0;
+            d[1] = 0;
+            continue;
+        }
         let a = [act_of(acts, w[0]), act_of(acts, w[0] >> 16), act_of(acts, w[1]), act_of(acts, w[1] >> 16)];
         let b = [act_of(acts, w[2]), act_of(acts, w[2] >> 16), act_of(acts, w[3]), act_of(acts, w[3] >> 16)];
+        let flags = a[0] | a[1] | a[2] | a[3] | b[0] | b[1] | b[2] | b[3];
+        if flags & u32::from(ACT_RETIRE) != 0 || any & REDIRECT_PAIR != 0 {
+            d.copy_from_slice(&special(k * 8, 8));
+            continue;
+        }
         d[0] = pack(a);
         d[1] = pack(b);
-        acc |= d[0] | d[1];
     }
     if let [p0, p1] = chunks.remainder() {
         let (w0, w1) = (p0.load(Ordering::Relaxed), p1.load(Ordering::Relaxed));
-        let last = pack([act_of(acts, w0), act_of(acts, w0 >> 16), act_of(acts, w1), act_of(acts, w1 >> 16)]);
-        dst[row.len() / 4 - 1] = last;
-        acc |= last;
+        let a = [act_of(acts, w0), act_of(acts, w0 >> 16), act_of(acts, w1), act_of(acts, w1 >> 16)];
+        let flags = a[0] | a[1] | a[2] | a[3];
+        dst[row.len() / 4 - 1] = if flags & u32::from(ACT_RETIRE) != 0 || (w0 | w1) & REDIRECT_PAIR != 0 { special(row.len() - 4, 4)[0] } else { pack(a) };
     }
-    acc != 0
-}
-
-/// Flattens a frame into an action per `dc << 4 | target`.
-fn build_act256(rowset: &Frame, act: &mut [u8]) {
-    for (dc, &w) in rowset.iter().enumerate() {
-        for to in 0..16 {
-            act[dc << 4 | to] = ((w >> (to * 2)) & 3) as u8;
-        }
-    }
-}
-
-/// Puts the pixels that finish this frame back to idle with the DC their
-/// replay left, and returns how many did. Every entry of `retire_tab` a pixel
-/// of `row` reaches is null or points at a live table.
-pub(crate) unsafe fn retire_row(row: &[Pixel], retire_tab: &[Retire; GROUPS]) -> u16 {
-    let mut freed = 0;
-    for px in row {
-        let v = get(px);
-        let retire = retire_tab[usize::from(group_of(v)) & (GROUPS - 1)];
-        if !retire.is_null() {
-            let dc = unsafe { &*retire }[usize::from(v & 0xFF)];
-            px.store(u16::from(G_IDLE) << 8 | u16::from(dc) << 4 | (v & 15), Ordering::Relaxed);
-            freed += 1;
-        }
-    }
-    freed
 }
 
 #[cfg(test)]
@@ -489,28 +473,74 @@ mod tests {
         wf
     }
 
-    fn tables(wf: &[Option<Waveform>; SLOTS], groups: &[Option<Group>; GROUPS], frame: u8, skip: bool) -> (Box<Acts>, [Retire; GROUPS]) {
-        let mut acts = Box::new([0xEE; GROUPS * 256]);
+    type Table = [AtomicU8; ACTS_LEN];
+
+    /// What the scan fills in for every group as `frame` begins.
+    fn tables(wf: &[Option<Waveform>; SLOTS], groups: &[Option<Group>; GROUPS], frame: u8, skip: bool) -> (Box<Table>, [Retire; GROUPS]) {
+        let acts: Box<Table> = Box::new(core::array::from_fn(|_| AtomicU8::new(0xEE)));
         let mut retire = [core::ptr::null(); GROUPS];
-        build_frame_tab(wf, groups, frame, skip, &mut acts, &mut retire);
+        for (g, retire) in retire.iter_mut().enumerate() {
+            let tab = group_tab(wf, groups[g], frame, skip);
+            let act = &acts[g * 256..][..256];
+            fill_acts(tab.rowset, !tab.retire.is_null(), act);
+            assert!(act.iter().all(|a| (a.load(Ordering::Relaxed) & ACT_RETIRE != 0) == !tab.retire.is_null()));
+            *retire = tab.retire;
+        }
         (acts, retire)
     }
 
-    fn finish(row: &[Pixel], retire: &[Retire; GROUPS]) -> u16 {
-        unsafe { retire_row(row, retire) }
+    fn act(acts: &Table, v: u16) -> u8 {
+        acts[usize::from(v & 0x0FFF)].load(Ordering::Relaxed)
+    }
+
+    /// What the scan does to the pixels of a row none of which is
+    /// redirected: those that finish go idle. How many did.
+    fn finish(row: &[Pixel], acts: &Table, retire: &[Retire; GROUPS]) -> u16 {
+        let mut freed = 0;
+        for px in row {
+            let v = get(px);
+            let retire = retire[usize::from(group_of(v))];
+            if act(acts, v) & ACT_RETIRE != 0 && !retire.is_null() {
+                let dc = unsafe { &*retire }[usize::from(v & 0xFF)];
+                px.store(u16::from(G_IDLE) << 8 | u16::from(dc) << 4 | (v & 15), Ordering::Relaxed);
+                freed += 1;
+            }
+        }
+        freed
     }
 
     /// Whether `group` acts as `frame` does in `acts`.
-    fn acts_as(acts: &Acts, group: u8, frame: &Frame) -> bool {
-        (0..256).all(|i| u32::from(acts[usize::from(group) * 256 + i]) == action(frame, i >> 4, i & 15))
+    fn acts_as(acts: &Table, group: u8, frame: &Frame) -> bool {
+        (0..256).all(|i| u32::from(acts[usize::from(group) * 256 + i].load(Ordering::Relaxed) & 3) == action(frame, i >> 4, i & 15))
     }
 
-    fn line(row: &[Pixel], acts: &Acts, dst: &mut [u8]) -> bool {
-        blit_line(row, acts, dst)
+    /// `blit_line`, packing the runs it hands over as the scan would, and
+    /// whether any pixel drives.
+    fn line(row: &[Pixel], acts: &Table, dst: &mut [u8]) -> bool {
+        blit_line(row, acts, dst, |x, n| {
+            let mut out = [0; 2];
+            for k in 0..n {
+                out[k / 4] |= (act(acts, get(&row[x + k])) & 3) << (6 - 2 * (k % 4));
+            }
+            out
+        });
+        dst.iter().any(|&b| b != 0)
     }
 
-    fn cells<const N: usize>(v: [u16; N]) -> [Pixel; N] {
-        v.map(AtomicU16::new)
+    /// Four-byte aligned, as the scan's rows are.
+    #[repr(align(4))]
+    struct Row<const N: usize>([Pixel; N]);
+
+    impl<const N: usize> core::ops::Deref for Row<N> {
+        type Target = [Pixel];
+
+        fn deref(&self) -> &[Pixel] {
+            &self.0
+        }
+    }
+
+    fn cells<const N: usize>(v: [u16; N]) -> Row<N> {
+        Row(v.map(AtomicU16::new))
     }
 
     fn values(row: &[Pixel]) -> Vec<u16> {
@@ -613,14 +643,8 @@ mod tests {
     }
 
     #[test]
-    fn cut_and_seed() {
+    fn seed() {
         let q = Waveform::new(&LUT_Q).unwrap();
-        let start = start_after(10);
-        let replaying = px(15, 0, G2);
-        let cut = cut_px(replaying, 9, q.dc_after(steps_run(11, start)));
-        assert_eq!(cut, px(14, 9, G_PENDING));
-        assert_eq!(cut_px(replaying, 9, q.dc_after(steps_run(10, start))), px(15, 9, G_PENDING));
-
         assert_eq!(seed_px(px(DC_ZERO, 3, G_IDLE), 0, q.dc_after(q.steps())), px(DC_ZERO + 1, 0, G_IDLE));
         assert_eq!(seed_px(px(DC_ZERO, 3, G_PENDING), 7, &KEEP), px(DC_ZERO, 7, G_IDLE));
     }
@@ -679,6 +703,44 @@ mod tests {
     }
 
     #[test]
+    fn group_tab_cuts_as_cut_dc() {
+        let wf = slots(Some(0), Some(1));
+        let start = start_after(10);
+        for slot in [0, 1, 2] {
+            let replay = wf[slot].as_ref();
+            for frame in start..start + 6 {
+                let cut = group_tab(&wf, Some(Group { slot, start }), frame, false).cut;
+                match cut_dc(replay, frame.wrapping_sub(1), start) {
+                    Some(dc) => assert!(core::ptr::eq(cut, dc), "slot {slot} frame {frame}"),
+                    None => assert!(cut.is_null(), "slot {slot} frame {frame}"),
+                }
+            }
+        }
+        assert!(core::ptr::eq(group_tab(&wf, None, 10, false).cut, &KEEP));
+    }
+
+    #[test]
+    fn blit_hands_over_finishing_and_redirected_runs() {
+        let wf = slots(Some(0), None);
+        // Finishing at frame 3, and replaying.
+        let (acts, _) = tables(&wf, &groups(&[(0, 0), (0, 2)]), 3, false);
+        let mut row = [px(9, 9, G_IDLE); 28];
+        row[1] = px(15, 0, G3);
+        row[9] = px(15, 0, G2);
+        row[17] = px(15, 0, G3) | REDIRECT;
+        row[25] = px(9, 4, G_PENDING) | REDIRECT;
+        let row = cells(row);
+        let mut runs = Vec::new();
+        let mut dst = [0xEE; 7];
+        blit_line(&row, &acts, &mut dst, |x, n| {
+            runs.push((x, n));
+            [0x55, 0x55]
+        });
+        assert_eq!(runs, [(8, 8), (16, 8), (24, 4)]);
+        assert_eq!(dst, [a4(0, B, 0, 0), 0, 0x55, 0x55, 0x55, 0x55, 0x55]);
+    }
+
+    #[test]
     fn blit_packs_actions() {
         let wf = slots(Some(0), None);
         // Step 0, step 1, and armed for the next frame.
@@ -715,8 +777,8 @@ mod tests {
                 seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
                 AtomicU16::new((seed >> 8) as u16 & 0x0FFF)
             }));
-            // In pairs, with a tail of four, and one pixel off the pairs.
-            let row = if frame % 2 == 0 { &pixels.0[..68] } else { &pixels.0[1..69] };
+            // With and without a tail of four.
+            let row = if frame % 2 == 0 { &pixels.0[..68] } else { &pixels.0[..64] };
             let mut dst = [0; 17];
             line(row, &acts, &mut dst);
             for (i, px) in row.iter().enumerate() {
@@ -749,10 +811,10 @@ mod tests {
     #[test]
     fn retire() {
         let wf = slots(Some(0), None);
-        let (_, retire) = tables(&wf, &groups(&[(0, 0), (0, 2)]), 3, false);
+        let (acts, retire) = tables(&wf, &groups(&[(0, 0), (0, 2)]), 3, false);
         let (ending, running) = (G2, G3);
         let row = cells([px(9, 9, G_IDLE), px(15, 4, ending), px(15, 2, running), px(15, 7, ending)]);
-        assert_eq!(finish(&row, &retire), 2);
+        assert_eq!(finish(&row, &acts, &retire), 2);
         assert_eq!(values(&row), [px(9, 9, G_IDLE), px(14, 4, G_IDLE), px(15, 2, running), px(14, 7, G_IDLE)]);
     }
 
@@ -792,7 +854,7 @@ mod tests {
                 _ => {}
             }
             frames_driven += u32::from(driven);
-            row_nonidle -= finish(&row, &retire);
+            row_nonidle -= finish(&row, &acts, &retire);
         }
         assert_eq!(frames_driven, 2);
         assert_eq!(row_nonidle, 0);
@@ -814,22 +876,22 @@ mod tests {
         assert!(line(&state, &acts, &mut dst));
         assert_eq!(dst[0], a4(W, 0, 0, 0));
         state[2].store(px(15, 0, G3), Ordering::Relaxed);
-        assert_eq!(finish(&state, &retire), 0);
+        assert_eq!(finish(&state, &acts, &retire), 0);
 
         let (acts, retire) = tables(&wf, &gs, 2, false);
         assert!(line(&state, &acts, &mut dst));
         assert_eq!(dst[0], a4(B, 0, W, 0));
-        finish(&state, &retire);
+        finish(&state, &acts, &retire);
 
         let (acts, retire) = tables(&wf, &gs, 3, false);
         assert!(!line(&state, &acts, &mut dst) || dst[0] == a4(0, 0, B, 0));
-        finish(&state, &retire);
-        let (_, retire) = tables(&wf, &gs, 4, false);
-        finish(&state, &retire);
+        finish(&state, &acts, &retire);
+        let (acts, retire) = tables(&wf, &gs, 4, false);
+        finish(&state, &acts, &retire);
         assert_eq!(get(&state[0]), px(15, 0, G_IDLE));
         assert!(is_active(get(&state[2])));
-        let (_, retire) = tables(&wf, &gs, 5, false);
-        finish(&state, &retire);
+        let (acts, retire) = tables(&wf, &gs, 5, false);
+        finish(&state, &acts, &retire);
         assert_eq!(get(&state[2]), px(15, 0, G_IDLE));
     }
 
@@ -839,18 +901,18 @@ mod tests {
         let gs = groups(&[(0, 1), (1, 1)]);
         let state = cells([px(15, 0, G2), px(15, 15, G3), px(15, 15, G_IDLE), px(15, 15, G_IDLE)]);
 
-        let (_, retire) = tables(&wf, &gs, 1, true);
-        assert_eq!(finish(&state, &retire), 0);
-        let (_, retire) = tables(&wf, &gs, 2, true);
-        assert_eq!(finish(&state, &retire), 1);
+        let (acts, retire) = tables(&wf, &gs, 1, true);
+        assert_eq!(finish(&state, &acts, &retire), 0);
+        let (acts, retire) = tables(&wf, &gs, 2, true);
+        assert_eq!(finish(&state, &acts, &retire), 1);
         assert_eq!(get(&state[0]), px(15, 0, G_IDLE));
         assert!(is_active(get(&state[1])));
-        let (_, retire) = tables(&wf, &gs, 3, true);
-        assert_eq!(finish(&state, &retire), 1);
+        let (acts, retire) = tables(&wf, &gs, 3, true);
+        assert_eq!(finish(&state, &acts, &retire), 1);
         assert_eq!(get(&state[1]), px(14, 15, G_IDLE));
 
         let s2 = cells([px(15, 0, G2)]);
-        let (_, retire) = tables(&wf, &gs, 2, false);
-        assert_eq!(finish(&s2, &retire), 0);
+        let (acts, retire) = tables(&wf, &gs, 2, false);
+        assert_eq!(finish(&s2, &acts, &retire), 0);
     }
 }
