@@ -132,6 +132,7 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
                 ppi: PANEL_PPI,
                 priority: EPD_PRIORITY,
                 core: Some(EPD_CORE),
+                irq_core: config.display.interrupt_core,
             }
         }
         Model::T5 => {
@@ -146,6 +147,7 @@ pub(crate) fn init(config: &Config) -> Result<Board> {
                 ppi: PANEL_PPI,
                 priority: EPD_PRIORITY,
                 core: Some(EPD_CORE),
+                irq_core: config.display.interrupt_core,
             }
         }
     };

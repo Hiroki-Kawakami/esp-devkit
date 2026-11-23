@@ -244,7 +244,7 @@ impl StripWriter {
                 .name("ui_lane")
                 .stack_size(LANE_STACK)
                 .priority(config.priority)
-                .core(Some(id as u32))
+                .core(Some(config.lane_cores[id]))
                 .stack_caps(config.lane_stack_caps);
             builder.spawn(move || lane.run(shared))?;
         }

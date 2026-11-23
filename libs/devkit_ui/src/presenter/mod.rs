@@ -50,8 +50,10 @@ pub struct Config {
     /// At most this many framebuffers of the display.
     pub frame_buffers: usize,
     pub rotation: Rotation,
-    /// Tasks drawing strips, one per core.
+    /// Tasks drawing strips, the first `lanes` of `lane_cores`.
     pub lanes: usize,
+    /// The core of each lane.
+    pub lane_cores: [u32; MAX_LANES],
     pub priority: u32,
     /// Split evenly into two buffers per lane.
     pub strips: StripSource,
@@ -76,6 +78,7 @@ impl Default for Config {
             frame_buffers: MAX_FRAME_BUFFERS,
             rotation: Rotation::R0,
             lanes: MAX_LANES,
+            lane_cores: core::array::from_fn(|lane| lane as u32),
             priority: 10,
             strips: StripSource::Allocate { bytes: 4 * 64 * 1024, caps: Caps::DMA | Caps::INTERNAL },
             data_caps: Caps::SPIRAM,

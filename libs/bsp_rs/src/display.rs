@@ -27,6 +27,9 @@ pub struct Config {
     pub pixel_format: Option<ImageFormat>,
     /// `None` selects R0. Only one of `Display::rotations` is taken.
     pub rotation: Option<Rotation>,
+    /// The core the panel driver's interrupt runs on; `None` selects the
+    /// driver's choice. A driver without one of its own ignores it.
+    pub interrupt_core: Option<u32>,
 }
 
 devkit_core::bitflags! {

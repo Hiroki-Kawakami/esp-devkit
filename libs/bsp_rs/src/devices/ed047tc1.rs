@@ -28,6 +28,7 @@ pub(crate) struct Config {
     pub ppi: u16,
     pub priority: u32,
     pub core: Option<u32>,
+    pub irq_core: Option<u32>,
 }
 
 // Takes the DC a replay starts from back toward zero, a frame per unit. The
@@ -150,5 +151,6 @@ pub(crate) fn create(config: Config) -> Result<EpdLl> {
         waveforms: Waveforms { fast: Some(&FAST), quality: Some(&QUALITY), text: Some(&TEXT), clear: &CLEAR },
         priority: config.priority,
         core: config.core,
+        irq_core: config.irq_core,
     })
 }

@@ -99,12 +99,19 @@ fn register_mode() {
     });
 }
 
+// On the T5 the panel's line interrupt takes most of a core while the glass is
+// driven: it joins the scan on core 0, and a single lane runs on core 1.
+const PAPER_S3: bool = cfg!(all(target_os = "none", CONFIG_BSP_RS_BOARD_PAPER_S3));
+
 pub fn run() {
     let value = settings();
     let mut config = bsp_rs::Config::default();
     if cfg!(CONFIG_BSP_RS_BOARD_TAB5) {
         config.display.fb_num = 3;
         config.display.pixel_format = Some(if value.rgb888 { ImageFormat::Bgr888 } else { ImageFormat::Rgb565 });
+    }
+    if PAPER_S3 {
+        config.display.interrupt_core = Some(0);
     }
     let board = match bsp_rs::init(&config) {
         Ok(board) => board,
@@ -153,6 +160,10 @@ fn run_demo(board: &Board, display: &'static Display, settings: &Settings) {
     }
     if settings.stack_psram {
         config.presenter.lane_stack_caps = Caps::SPIRAM;
+    }
+    if PAPER_S3 {
+        config.presenter.lanes = 1;
+        config.presenter.lane_cores = [1, 0];
     }
     let Some(sram) = SRAM.alloc(STRIP_BYTES, 64) else {
         error!(TAG, "strips: taken");

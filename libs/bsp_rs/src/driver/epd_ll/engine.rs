@@ -147,8 +147,11 @@ pub(crate) struct Config {
     pub line_padding: u8,
     pub waveforms: Waveforms,
     pub priority: u32,
-    /// Of the refresh task; the bus interrupt goes to another core.
+    /// Of the refresh task.
     pub core: Option<u32>,
+    /// Of the bus interrupt; `None` puts it on another core than the refresh
+    /// task.
+    pub irq_core: Option<u32>,
 }
 
 #[inline(always)]
@@ -233,10 +236,11 @@ impl Bus {
     /// The bus interrupt lands on the core that creates the bus, and runs
     /// inline in `tx_color` there: on the other core it overlaps the next
     /// line's packing instead.
-    fn new_off(wiring: &Wiring, latch: Box<Latch>, core: Option<u32>) -> Result<Self> {
+    fn new_on(wiring: &Wiring, latch: Box<Latch>, core: Option<u32>, irq_core: Option<u32>) -> Result<Self> {
         let cores = system::CORE_COUNT;
-        let core = match core {
-            Some(core) if core < cores => (core + 1) % cores,
+        let core = match (irq_core, core) {
+            (Some(irq), _) if irq < cores => irq,
+            (_, Some(core)) if core < cores => (core + 1) % cores,
             _ => (system::core_id() + 1) % cores,
         };
         thread::scope(|scope| {
@@ -1422,7 +1426,7 @@ impl EpdLl {
         };
         let depth = QUEUE_DEPTH as u32;
         let latch = Box::new(Latch { control: config.control, free: Semaphore::try_new(depth, depth)?, queued: AtomicU32::new(0) });
-        let bus = Bus::new_off(&wiring, latch, config.core).inspect_err(|err| error!(TAG, "bus: {err}"))?;
+        let bus = Bus::new_on(&wiring, latch, config.core, config.irq_core).inspect_err(|err| error!(TAG, "bus: {err}"))?;
         bus.control().power_off();
         let tx_len = bus.tx_len;
         let line = || bus.io.alloc_buffer(tx_len, Caps::DMA | Caps::INTERNAL);
