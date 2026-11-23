@@ -20,6 +20,7 @@ use idf::sync::{Mutex, MutexGuard, Receiver, Semaphore, Sender, channel};
 use idf::time::delay_us;
 use idf::{Error, Result, gpio, sys, system, thread};
 
+use super::blocks::{BLOCK, Blocks};
 use super::waveform::{self as wf, ACT_RETIRE, ACTS_LEN, Acts, DC_ZERO, DcTab, Frame, G_FIRST, G_IDLE, G_PENDING, GROUPS, Group, Next, Pixel, REDIRECT, SLOTS, Waveform};
 use crate::Absent;
 use crate::display::{self, Driver, EpdDriver, EpdMode, GramDriver, Image, ImageFormat, Rect, RefreshUnit, Rotation, Size, Ticket};
@@ -389,6 +390,11 @@ struct Shared {
     row_nonidle: Box<[AtomicU16], Caps>,
     /// Pixels per row with `REDIRECT`.
     row_redirect: Box<[AtomicU16], Caps>,
+    /// The blocks that may hold a pixel replaying or redirected.
+    row_mask: Blocks,
+    /// Blocks whose pixels are all idle at white, and at black.
+    row_white: Blocks,
+    row_black: Blocks,
     /// `frame << 16 | rows`: the frame the scan is at and the rows it has
     /// taken; every row while it sleeps.
     pos: AtomicU32,
@@ -432,6 +438,9 @@ fn pending_px(dc: u8, gray: u8) -> u16 {
 /// Every group replays.
 struct Busy;
 
+/// A pair of pixels neither replaying, pending nor redirected.
+const PAIR_STATE: u32 = 0x1F0F_1F0F;
+
 /// What a writer changes in one row, under its flag.
 struct RowDraw<'a> {
     shared: &'a Shared,
@@ -446,7 +455,7 @@ struct RowDraw<'a> {
     redirected: i32,
 }
 
-impl RowDraw<'_> {
+impl<'a> RowDraw<'a> {
     fn group(&mut self) -> core::result::Result<Option<u8>, Busy> {
         let Some(slot) = self.slot else { return Ok(None) };
         if self.group.is_none() {
@@ -497,6 +506,92 @@ impl RowDraw<'_> {
         px.store(d, Ordering::Relaxed);
         self.gained += u16::from(wf::group_of(v) == G_IDLE);
         self.armed += u32::from(wf::is_active(d));
+        Ok(())
+    }
+
+    /// `src` holds a gray per pixel in its high nibble. Whether the pixels
+    /// were all idle at those grays already.
+    fn span(&mut self, row: &[Pixel], next: &[Next], src: &[u8]) -> core::result::Result<bool, Busy> {
+        let lead = usize::from(row.as_ptr() as usize % 4 != 0).min(row.len());
+        for i in 0..lead {
+            self.one(&row[i], &next[i], src[i] >> 4)?;
+        }
+        let mut same = lead == 0;
+        let (row, next, src) = (&row[lead..], &next[lead..], &src[lead..]);
+        let quads = row.len() / 4;
+        let pairs = unsafe { slice::from_raw_parts(row.as_ptr().cast::<AtomicU32>(), quads * 2) };
+        for ((p, s4), (px, n)) in pairs.chunks_exact(2).zip(src.chunks_exact(4)).zip(row.chunks_exact(4).zip(next.chunks_exact(4))) {
+            let s = u32::from_le_bytes([s4[0], s4[1], s4[2], s4[3]]) >> 4 & 0x0F0F_0F0F;
+            if !self.all {
+                let (e0, e1) = ((s & 0xF) | (s & 0xF00) << 8, (s >> 16 & 0xF) | (s >> 24 & 0xF) << 16);
+                if p[0].load(Ordering::Relaxed) & PAIR_STATE == e0 && p[1].load(Ordering::Relaxed) & PAIR_STATE == e1 {
+                    continue;
+                }
+            }
+            same = false;
+            for j in 0..4 {
+                self.one(&px[j], &n[j], (s >> (8 * j)) as u8 & 15)?;
+            }
+        }
+        for i in quads * 4..row.len() {
+            same = false;
+            self.one(&row[i], &next[i], src[i] >> 4)?;
+        }
+        Ok(same)
+    }
+
+    /// `span` for pixels from `x` on within one block, which is then no
+    /// longer known to be all white or all black.
+    fn part(&mut self, x: usize, row: &[Pixel], next: &[Next], src: &[u8]) -> core::result::Result<bool, Busy> {
+        let shared = self.shared;
+        shared.row_white.clear_span(self.y, x, x + row.len());
+        shared.row_black.clear_span(self.y, x, x + row.len());
+        let armed = self.armed;
+        let same = self.span(row, next, src);
+        if self.armed != armed {
+            shared.row_mask.set(self.y, x / BLOCK);
+        }
+        same
+    }
+
+    /// Where a block of `src`, 4-byte aligned, all white or all black, is
+    /// known to show that.
+    fn known(&self, src: &[u8]) -> Option<&'a Blocks> {
+        let words = unsafe { slice::from_raw_parts(src.as_ptr().cast::<u32>(), src.len() / 4) };
+        let (and, or) = words.iter().fold((!0u32, 0u32), |(and, or), w| (and & w, or | w));
+        if and & 0xF0F0_F0F0 == 0xF0F0_F0F0 {
+            Some(&self.shared.row_white)
+        } else if or & 0xF0F0_F0F0 == 0 {
+            Some(&self.shared.row_black)
+        } else {
+            None
+        }
+    }
+
+    /// The L8 pixels from `x0` on. A block written all white or all black
+    /// where it is known to show just that is left alone.
+    fn l8(&mut self, x0: usize, row: &[Pixel], next: &[Next], src: &[u8]) -> core::result::Result<(), Busy> {
+        let len = row.len();
+        let head = ((BLOCK - x0 % BLOCK) % BLOCK).min(len);
+        if head != 0 {
+            self.part(x0, &row[..head], &next[..head], &src[..head])?;
+        }
+        let blocks = !self.all && (src.as_ptr() as usize + head) % 4 == 0;
+        let mut i = head;
+        while len - i >= BLOCK {
+            let (x, s) = (x0 + i, &src[i..i + BLOCK]);
+            let known = if blocks { self.known(s) } else { None };
+            if known.is_none_or(|known| !known.has(self.y, x / BLOCK)) {
+                let same = self.part(x, &row[i..i + BLOCK], &next[i..i + BLOCK], s)?;
+                if same && let Some(known) = known {
+                    known.set(self.y, x / BLOCK);
+                }
+            }
+            i += BLOCK;
+        }
+        if i < len {
+            self.part(x0 + i, &row[i..], &next[i..], &src[i..])?;
+        }
         Ok(())
     }
 
@@ -695,6 +790,28 @@ impl<'a> Pass<'a> {
         out
     }
 
+    /// `chunk` for pixels none of which is redirected.
+    fn retire_chunk(&mut self, acts: &[AtomicU8; ACTS_LEN], first: usize, n: usize) -> [u8; 2] {
+        let shared = self.shared;
+        let mut out = [0u32; 2];
+        let mut freed = 0;
+        for (k, px) in shared.state[first..first + n].iter().enumerate() {
+            let v = px.load(Ordering::Relaxed);
+            let a = u32::from(acts[usize::from(v & 0x0FFF)].load(Ordering::Relaxed));
+            if a & u32::from(ACT_RETIRE) != 0
+                && let Some(dc) = self.dc(&shared.retire[usize::from(wf::group_of(v))], v)
+            {
+                px.store(idle_px(dc, v & 15), Ordering::Relaxed);
+                self.leave[usize::from(wf::group_of(v))] += 1;
+                freed += 1;
+            }
+            out[k / 4] |= (a & 3) << (6 - 2 * (k % 4));
+        }
+        self.retired += freed;
+        self.row_freed += freed as u16;
+        [out[0] as u8, out[1] as u8]
+    }
+
     /// Counts what changed in row `y`, its flag still held.
     fn row_done(&mut self, y: usize) {
         if self.row_freed != 0 {
@@ -745,6 +862,13 @@ impl Shared {
             }
         }
         RowGuard(flag)
+    }
+
+    /// The pixels `x0..x1` of row `y`, whose flag is held, may no longer be
+    /// idle at white or at black.
+    fn forget(&self, y: usize, x0: usize, x1: usize) {
+        self.row_white.clear_span(y, x0, x1);
+        self.row_black.clear_span(y, x0, x1);
     }
 
     /// The frame the scan is at and the rows it has taken.
@@ -828,10 +952,16 @@ impl Shared {
             loop {
                 let flag = self.lock_row(y);
                 let mut draw = RowDraw { shared: self, y, slot, all, group: None, gained: 0, armed: 0, redirected: 0 };
-                let mut one = |((px, n), g): ((&Pixel, &Next), u8)| draw.one(px, n, g);
                 let done = match format {
-                    ImageFormat::L4 => row.iter().zip(next).zip(wf::grays_l4(src)).try_for_each(&mut one),
-                    _ => row.iter().zip(next).zip(wf::grays_l8(src)).try_for_each(&mut one),
+                    ImageFormat::L4 => {
+                        self.forget(y, x0, x0 + w);
+                        let done = row.iter().zip(next).zip(wf::grays_l4(src)).try_for_each(|((px, n), g)| draw.one(px, n, g));
+                        if draw.armed != 0 {
+                            self.row_mask.set_span(y, x0, x0 + w);
+                        }
+                        done
+                    }
+                    _ => draw.l8(x0, row, next, src),
                 };
                 wake |= draw.finish();
                 drop(flag);
@@ -862,6 +992,7 @@ impl Shared {
             let y = y0 + r;
             let src = &pixels[r * stride..][..row_bytes];
             let _flag = self.lock_row(y);
+            self.forget(y, x0, x0 + w);
             let (mut subsumed, mut row_settled) = (0u16, 0u16);
             let mut one = |x: usize, g: u8| {
                 let px = &self.state[y * self.width + x];
@@ -979,6 +1110,10 @@ impl Shared {
             } else {
                 row.iter().zip(next).for_each(|(px, n)| one(px, n));
             }
+            if row_armed != 0 {
+                self.forget(y, x0, x1);
+                self.row_mask.set_span(y, x0, x1);
+            }
             add(&self.row_nonidle[y], gained);
             sub(&self.row_redirect[y], row_settled);
             armed += row_armed;
@@ -1007,6 +1142,8 @@ impl Shared {
                 }
                 px.store(u16::from(g) << 8 | (v & 0x00F0) | 15, Ordering::Relaxed);
             }
+            self.forget(y, x0, x1);
+            self.row_mask.set_span(y, x0, x1);
             add(&self.row_nonidle[y], gained);
             sub(&self.row_redirect[y], row_settled);
             settled += u32::from(row_settled);
@@ -1049,6 +1186,38 @@ struct Scan {
     line_bytes: usize,
 }
 
+/// Packs row `y`, whose flag is held, a block of `row_mask` at a time; the
+/// rest holds. A block left with nothing replaying leaves the mask.
+fn blit_blocks(shared: &Shared, pass: &mut Pass, acts: &[AtomicU8; ACTS_LEN], y: usize, dst: &mut [u8]) {
+    let row = shared.row(y);
+    let first = y * shared.width;
+    let redirected = shared.row_redirect[y].load(Ordering::Relaxed) != 0;
+    dst.fill(0);
+    for (w, word) in shared.row_mask.row(y).iter().enumerate() {
+        let (mut left, mut keep) = (word.load(Ordering::Relaxed), 0);
+        while left != 0 {
+            let bit = left & left.wrapping_neg();
+            left &= left - 1;
+            let x0 = (w * 32 + bit.trailing_zeros() as usize) * BLOCK;
+            let x1 = (x0 + BLOCK).min(row.len());
+            let (pixels, out) = (&row[x0..x1], &mut dst[x0 / 4..x1 / 4]);
+            let busy = if redirected {
+                let from = first + x0;
+                wf::blit_marked(pixels, acts, out, |x, n, redirect| if redirect { pass.chunk(from + x, n) } else { pass.retire_chunk(acts, from + x, n) })
+            } else {
+                let (freed, busy) = wf::blit_retire(pixels, acts, &shared.retire, out, &mut pass.leave);
+                pass.retired += u32::from(freed);
+                pass.row_freed += freed;
+                busy
+            };
+            if busy {
+                keep |= bit;
+            }
+        }
+        word.store(keep, Ordering::Relaxed);
+    }
+}
+
 fn run_frame(shared: &Shared, scan: &mut Scan) {
     let h = shared.height;
     let mut guard = shared.lock.lock();
@@ -1069,19 +1238,27 @@ fn run_frame(shared: &Shared, scan: &mut Scan) {
     let bus = &scan.bus;
     let acts: &[AtomicU8; ACTS_LEN] = (&*shared.acts).try_into().expect("acts");
     let mut pass = Pass::new(shared, frame);
+    let sparse = (shared.width / 4) as u16;
     bus.frame_begin();
     for y in 0..h {
         bus.reserve();
         let flag = shared.lock_row(y);
         shared.pos.store(u32::from(frame) << 16 | (y + 1) as u32, Ordering::SeqCst);
-        let line = if shared.row_nonidle[y].load(Ordering::Relaxed) == 0 {
+        let nonidle = shared.row_nonidle[y].load(Ordering::Relaxed);
+        let line = if nonidle == 0 {
             drop(flag);
             &scan.hold_line
         } else {
             let line = &scan.lines[y % QUEUE_DEPTH];
             let dst = unsafe { slice::from_raw_parts_mut(line.as_ptr(), scan.line_bytes) };
-            let first = y * shared.width;
-            wf::blit_line(shared.row(y), acts, dst, |x, n| pass.chunk(first + x, n));
+            // Per row: a group that starts with this frame may finish with
+            // it, and is filled in as a writer joins it.
+            let retiring = shared.retire.iter().any(|r| !r.load(Ordering::Relaxed).is_null());
+            if retiring || nonidle < sparse || shared.row_redirect[y].load(Ordering::Relaxed) != 0 {
+                blit_blocks(shared, &mut pass, acts, y, dst);
+            } else {
+                wf::blit_line(shared.row(y), acts, dst);
+            }
             pass.row_done(y);
             drop(flag);
             line
@@ -1232,6 +1409,7 @@ impl EpdLl {
         let row_flag = cells(height, Caps::INTERNAL, || AtomicBool::new(false))?;
         let row_nonidle = cells(height, Caps::INTERNAL, || AtomicU16::new(0))?;
         let row_redirect = cells(height, Caps::INTERNAL, || AtomicU16::new(0))?;
+        let (row_mask, row_white, row_black) = (Blocks::new(width, height)?, Blocks::new(width, height)?, Blocks::new(width, height)?);
         let acts = cells(ACTS_LEN, Caps::INTERNAL, || AtomicU8::new(0))?;
 
         let wiring = Wiring {
@@ -1261,6 +1439,9 @@ impl EpdLl {
             row_flag,
             row_nonidle,
             row_redirect,
+            row_mask,
+            row_white,
+            row_black,
             pos: AtomicU32::new(height as u32),
             acts,
             retire: [const { AtomicPtr::new(core::ptr::null_mut()) }; GROUPS],

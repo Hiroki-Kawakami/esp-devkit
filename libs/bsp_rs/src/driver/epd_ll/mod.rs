@@ -8,6 +8,7 @@
 //! through the board's `Control`. Each pixel replays its own waveform
 //! (`waveform`) on a task of its own.
 
+pub(crate) mod blocks;
 #[cfg(CONFIG_BSP_RS_DRIVER_EPD_LL)]
 mod engine;
 pub(crate) mod waveform;
