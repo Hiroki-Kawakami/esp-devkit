@@ -48,7 +48,7 @@ if(CONFIG_BSP_RS_DRIVER_ESP_HOSTED)
         PROTO "${CMAKE_CURRENT_LIST_DIR}/../esp_hosted_enhanced/third_party/esp_hosted_rpc/esp_hosted_rpc.proto")
     set(depends ${rpc_SOURCES})
 endif()
-devkit_rust_crate(ROOT "src/lib.rs" TESTS
+devkit_rust_crate(ROOT "src/lib.rs" TESTS OPT_LEVEL 3
     BINDGEN_HEADERS ${bindgen_headers}
     BINDGEN_OPTIONS ${bindgen_options}
     DEPENDS ${depends})

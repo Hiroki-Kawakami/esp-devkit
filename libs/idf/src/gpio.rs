@@ -63,6 +63,42 @@ pub fn set_level_fast(pin: i32, high: bool) {
     unsafe { sys::idf_gpio_set_level_fast(pin as u32, u32::from(high)) }
 }
 
+/// The output levels of a bank of 32 pins, a store setting or clearing any
+/// of them together: for bit-banging pins already outputs.
+#[cfg(target_os = "none")]
+#[derive(Clone, Copy)]
+pub struct OutputBank {
+    set: *mut u32,
+    clear: *mut u32,
+}
+
+#[cfg(target_os = "none")]
+unsafe impl Send for OutputBank {}
+#[cfg(target_os = "none")]
+unsafe impl Sync for OutputBank {}
+
+#[cfg(target_os = "none")]
+impl OutputBank {
+    /// The bank holding `pin`, and the bit of `pin` in it.
+    pub fn of(pin: i32) -> (Self, u32) {
+        let (mut set, mut clear) = (core::ptr::null_mut(), core::ptr::null_mut());
+        unsafe { sys::idf_gpio_out_regs(pin as u32 / 32, &mut set, &mut clear) };
+        (Self { set, clear }, 1 << (pin as u32 % 32))
+    }
+
+    /// Drives the pins of `mask` high.
+    #[inline(always)]
+    pub fn set(&self, mask: u32) {
+        unsafe { self.set.write_volatile(mask) }
+    }
+
+    /// Drives the pins of `mask` low.
+    #[inline(always)]
+    pub fn clear(&self, mask: u32) {
+        unsafe { self.clear.write_volatile(mask) }
+    }
+}
+
 /// The input level; low on a pin that is not an input.
 pub fn level(pin: i32) -> bool {
     unsafe { sys::gpio_get_level(pin as _) != 0 }

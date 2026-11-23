@@ -3,4 +3,4 @@ idf_component_register(
     SRCS "/dev/null"
     REQUIRES bsp_rs devkit_core devkit_gfx idf media_engine
     PRIV_REQUIRES rust_rt)
-devkit_rust_crate(ROOT "src/lib.rs" TESTS)
+devkit_rust_crate(ROOT "src/lib.rs" TESTS OPT_LEVEL 2)

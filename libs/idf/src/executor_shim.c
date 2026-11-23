@@ -10,6 +10,8 @@
 #include "hal/cache_ll.h"
 #include "esp_adc/adc_cali_scheme.h"
 #include "hal/gpio_ll.h"
+#include "soc/gpio_reg.h"
+#include "soc/soc_caps.h"
 #endif
 
 static portMUX_TYPE s_mux __attribute__((unused)) = portMUX_INITIALIZER_UNLOCKED;
@@ -91,5 +93,18 @@ void idf_adc_cali_delete(adc_cali_handle_t handle) {
 
 void idf_gpio_set_level_fast(uint32_t pin, uint32_t level) {
     gpio_ll_set_level(GPIO_LL_GET_HW(0), pin, level);
+}
+
+void idf_gpio_out_regs(uint32_t bank, volatile uint32_t **set, volatile uint32_t **clear) {
+#if SOC_GPIO_PIN_COUNT > 32
+    if (bank != 0) {
+        *set = (volatile uint32_t *)GPIO_OUT1_W1TS_REG;
+        *clear = (volatile uint32_t *)GPIO_OUT1_W1TC_REG;
+        return;
+    }
+#endif
+    (void)bank;
+    *set = (volatile uint32_t *)GPIO_OUT_W1TS_REG;
+    *clear = (volatile uint32_t *)GPIO_OUT_W1TC_REG;
 }
 #endif

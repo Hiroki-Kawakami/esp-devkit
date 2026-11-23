@@ -41,4 +41,8 @@ void idf_adc_cali_delete(adc_cali_handle_t handle);
 
 /* Drives an output pin straight through its register, without checks. */
 void idf_gpio_set_level_fast(uint32_t pin, uint32_t level);
+
+/* The registers setting and clearing the output levels of the 32 pins in
+   `bank`, from pin `32 * bank`. */
+void idf_gpio_out_regs(uint32_t bank, volatile uint32_t **set, volatile uint32_t **clear);
 #endif

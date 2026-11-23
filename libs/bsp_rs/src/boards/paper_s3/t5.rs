@@ -9,7 +9,8 @@
 use core::sync::atomic::{AtomicU8, Ordering};
 
 use idf::time::delay_us;
-use idf::{Result, gpio};
+use idf::Result;
+use idf::gpio::{self, OutputBank};
 
 use crate::driver::epd_ll::Control;
 
@@ -44,38 +45,53 @@ const POWER_ENABLE: u8 = 1 << 5;
 const MODE: u8 = 1 << 6;
 const OE: u8 = 1 << 7;
 
-// The pins are outputs since `init`. Each line shifts out two bytes, which
-// `gpio::set_level`'s checks made the slowest part of a line.
+// The pins are outputs since `init`. CKV toggles every line, too often for
+// `gpio::set_level`'s checks.
 fn level(pin: i32, high: bool) {
     gpio::set_level_fast(pin, high);
 }
 
 /// What the shift register holds.
-pub(crate) struct ShiftControl(AtomicU8);
+pub(crate) struct ShiftControl {
+    value: AtomicU8,
+    // The three pins share a bank.
+    out: OutputBank,
+    data: u32,
+    clk: u32,
+    strobe: u32,
+}
 
 impl ShiftControl {
     pub(crate) fn new() -> Self {
-        Self(AtomicU8::new(0))
+        let (out, data) = OutputBank::of(PIN_SR_DATA);
+        let (_, clk) = OutputBank::of(PIN_SR_CLK);
+        let (_, strobe) = OutputBank::of(PIN_SR_STR);
+        Self { value: AtomicU8::new(0), out, data, clk, strobe }
     }
 
     /// QP7 first, then latches all eight together.
     fn push(&self, value: u8) {
-        level(PIN_SR_STR, false);
+        let out = &self.out;
+        out.clear(self.strobe);
         for bit in (0..8).rev() {
-            level(PIN_SR_CLK, false);
-            level(PIN_SR_DATA, value & 1 << bit != 0);
-            level(PIN_SR_CLK, true);
+            if value & 1 << bit != 0 {
+                out.clear(self.clk);
+                out.set(self.data);
+            } else {
+                out.clear(self.clk | self.data);
+            }
+            out.set(self.clk);
         }
-        level(PIN_SR_STR, true);
+        out.set(self.strobe);
     }
 
     fn store(&self, value: u8) {
-        self.0.store(value, Ordering::Relaxed);
+        self.value.store(value, Ordering::Relaxed);
         self.push(value);
     }
 
     fn set(&self, mask: u8, on: bool) {
-        let old = if on { self.0.fetch_or(mask, Ordering::Relaxed) } else { self.0.fetch_and(!mask, Ordering::Relaxed) };
+        let old = if on { self.value.fetch_or(mask, Ordering::Relaxed) } else { self.value.fetch_and(!mask, Ordering::Relaxed) };
         self.push(if on { old | mask } else { old & !mask });
     }
 
