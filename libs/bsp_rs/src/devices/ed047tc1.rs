@@ -6,6 +6,7 @@
 //! The ED047TC1 4.7" 960x540 EPD: its timing and waveforms on `epd_ll`.
 
 use alloc::boxed::Box;
+use core::time::Duration;
 
 use idf::Result;
 
@@ -17,6 +18,8 @@ pub(crate) const SIZE: Size = Size { width: 960, height: 540 };
 const PCLK_HZ: u32 = 20_000_000;
 const LINE_BYTES: u16 = SIZE.width / 4;
 const LINE_PADDING: u8 = 16;
+// The frame counts of the waveforms below take frames at least this long.
+const MIN_FRAME: Duration = Duration::from_millis(20);
 
 pub(crate) struct Config {
     pub data: [i32; 8],
@@ -149,6 +152,7 @@ pub(crate) fn create(config: Config) -> Result<EpdLl> {
         line_bytes: LINE_BYTES,
         line_padding: LINE_PADDING,
         waveforms: Waveforms { fast: Some(&FAST), quality: Some(&QUALITY), text: Some(&TEXT), clear: &CLEAR },
+        min_frame: MIN_FRAME,
         priority: config.priority,
         core: config.core,
         irq_core: config.irq_core,

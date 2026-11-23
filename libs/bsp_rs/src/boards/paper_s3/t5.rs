@@ -45,6 +45,9 @@ const POWER_ENABLE: u8 = 1 << 5;
 const MODE: u8 = 1 << 6;
 const OE: u8 = 1 << 7;
 
+const SKIP_CKV_HIGH_US: u32 = 4;
+const SKIP_CKV_LOW_US: u32 = 1;
+
 // The pins are outputs since `init`. CKV toggles every line, too often for
 // `gpio::set_level`'s checks.
 fn level(pin: i32, high: bool) {
@@ -176,5 +179,16 @@ impl Control for ShiftControl {
 
     fn line_latch(&self) {
         level(PIN_CKV, false);
+    }
+
+    fn skips_rows(&self) -> bool {
+        true
+    }
+
+    fn skip_rows(&self, rows: usize) {
+        self.latch_row();
+        for _ in 0..rows {
+            ckv_pulse(SKIP_CKV_HIGH_US, SKIP_CKV_LOW_US);
+        }
     }
 }

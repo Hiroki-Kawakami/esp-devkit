@@ -17,7 +17,7 @@ use idf::heap::{self, Caps};
 use idf::lcd::i80::{self, DmaBuffer, Io};
 use idf::log::error;
 use idf::sync::{Mutex, MutexGuard, Receiver, Semaphore, Sender, channel};
-use idf::time::delay_us;
+use idf::time::{Instant, delay_us};
 use idf::{Error, Result, gpio, sys, system, thread};
 
 use super::blocks::{BLOCK, Blocks};
@@ -37,6 +37,9 @@ const WRITE_STACK: usize = 4096;
 const JOB_DEPTH: usize = 16;
 const MAX_WAKES: u32 = 8;
 const GATE_POLL: Duration = Duration::from_millis(1);
+/// Shorter runs of idle rows go out as hold lines: a skip first waits for the
+/// bus to drain.
+const SKIP_MIN_ROWS: usize = 4;
 
 /// The gate driver, the source latch and the power, as a board wires them.
 pub(crate) trait Control: Send + Sync {
@@ -53,6 +56,13 @@ pub(crate) trait Control: Send + Sync {
     fn line_begin(&self);
     /// Once a line has gone out, from the bus interrupt.
     fn line_latch(&self);
+    /// Whether the board has `skip_rows`.
+    fn skips_rows(&self) -> bool {
+        false
+    }
+    /// Steps the gate driver over `rows` rows, which show the line sent last.
+    /// Called with nothing queued on the bus.
+    fn skip_rows(&self, _rows: usize) {}
 }
 
 /// CKV, SPV, LE, OE and the power rail each on a GPIO.
@@ -146,6 +156,9 @@ pub(crate) struct Config {
     /// Clocked out after each line, holding CKV while the gates settle.
     pub line_padding: u8,
     pub waveforms: Waveforms,
+    /// The shortest a frame takes, idle rows or not: the waveforms' frame
+    /// counts drive the glass for so long.
+    pub min_frame: Duration,
     pub priority: u32,
     /// Of the refresh task.
     pub core: Option<u32>,
@@ -286,6 +299,11 @@ impl Bus {
             self.latch.queued.fetch_sub(1, Ordering::AcqRel);
             self.latch.free.give();
         }
+    }
+
+    fn skip_rows(&self, rows: usize) {
+        self.wait();
+        self.control().skip_rows(rows);
     }
 
     fn frame_end(&self) {
@@ -1185,6 +1203,7 @@ impl Shared {
 /// What only the refresh task touches.
 struct Scan {
     bus: Bus,
+    min_frame: Duration,
     lines: [DmaBuffer; QUEUE_DEPTH],
     hold_line: DmaBuffer,
     line_bytes: usize,
@@ -1223,6 +1242,7 @@ fn blit_blocks(shared: &Shared, pass: &mut Pass, acts: &[AtomicU8; ACTS_LEN], y:
 }
 
 fn run_frame(shared: &Shared, scan: &mut Scan) {
+    let began = Instant::now();
     let h = shared.height;
     let mut guard = shared.lock.lock();
     while guard.gate {
@@ -1243,13 +1263,41 @@ fn run_frame(shared: &Shared, scan: &mut Scan) {
     let acts: &[AtomicU8; ACTS_LEN] = (&*shared.acts).try_into().expect("acts");
     let mut pass = Pass::new(shared, frame);
     let sparse = (shared.width / 4) as u16;
+    let skips = bus.control().skips_rows();
+    // The line sent last holds every pixel.
+    let mut held = false;
     bus.frame_begin();
-    for y in 0..h {
+    let mut y = 0;
+    while y < h {
+        if skips && held {
+            let mut run = 0;
+            while y + run < h {
+                let _flag = shared.lock_row(y + run);
+                if shared.row_nonidle[y + run].load(Ordering::Relaxed) != 0 {
+                    break;
+                }
+                shared.pos.store(u32::from(frame) << 16 | (y + run + 1) as u32, Ordering::SeqCst);
+                run += 1;
+            }
+            if run >= SKIP_MIN_ROWS {
+                bus.skip_rows(run);
+            } else {
+                for _ in 0..run {
+                    bus.reserve();
+                    bus.write_line(&scan.hold_line);
+                }
+            }
+            y += run;
+            if y == h {
+                break;
+            }
+        }
         bus.reserve();
         let flag = shared.lock_row(y);
         shared.pos.store(u32::from(frame) << 16 | (y + 1) as u32, Ordering::SeqCst);
         let nonidle = shared.row_nonidle[y].load(Ordering::Relaxed);
-        let line = if nonidle == 0 {
+        held = nonidle == 0;
+        let line = if held {
             drop(flag);
             &scan.hold_line
         } else {
@@ -1268,6 +1316,7 @@ fn run_frame(shared: &Shared, scan: &mut Scan) {
             line
         };
         bus.write_line(line);
+        y += 1;
     }
     bus.frame_end();
     shared.pos.store(u32::from(frame) << 16 | h as u32, Ordering::SeqCst);
@@ -1285,6 +1334,9 @@ fn run_frame(shared: &Shared, scan: &mut Scan) {
     drop(guard);
     if retired != 0 || shared.waiters.load(Ordering::SeqCst) > 0 {
         shared.retired.give();
+    }
+    if let Some(rest) = scan.min_frame.checked_sub(began.elapsed()) {
+        thread::sleep(rest);
     }
 }
 
@@ -1433,7 +1485,7 @@ impl EpdLl {
         let (lines, hold_line) = ([line()?, line()?, line()?, line()?], line()?);
         // Straight into the heap: on the stack it would take more than a
         // default main task has.
-        let scan = boxed!(Scan { bus, lines, hold_line, line_bytes: usize::from(line_bytes) });
+        let scan = boxed!(Scan { bus, min_frame: config.min_frame, lines, hold_line, line_bytes: usize::from(line_bytes) });
 
         let shared = Arc::new(Shared {
             width,
