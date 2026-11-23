@@ -21,7 +21,7 @@ use idf::time::{Instant, delay_us};
 use idf::{Error, Result, gpio, sys, system, thread};
 
 use super::blocks::{BLOCK, Blocks};
-use super::waveform::{self as wf, ACT_RETIRE, ACTS_LEN, Acts, DC_ZERO, DcTab, Frame, G_FIRST, G_IDLE, G_PENDING, GROUPS, Group, Next, Pixel, REDIRECT, SLOTS, Waveform};
+use super::waveform::{self as wf, ACTS_LEN, Acts, DC_ZERO, DcTab, Frame, G_FIRST, G_IDLE, G_PENDING, GROUPS, Group, Pixel, SLOTS, Waveform};
 use crate::Absent;
 use crate::display::{self, Driver, EpdDriver, EpdMode, GramDriver, Image, ImageFormat, Rect, RefreshUnit, Rotation, Size, Ticket};
 
@@ -328,8 +328,6 @@ struct Counters {
     /// The task is driving rather than waiting on `wake`.
     running: bool,
     mode: EpdMode,
-    /// Pixels with `REDIRECT`.
-    waiting_px: u32,
     /// A refresh is arming an area for the next frame, which waits for it.
     gate: bool,
     /// The scan cuts SETTLE tails short this frame.
@@ -405,14 +403,11 @@ struct Shared {
     width: usize,
     height: usize,
     state: Box<[Pixel], Caps>,
-    next: Box<[Next], Caps>,
     /// Internal RAM, as are the tables below: the scan reads them every row.
     row_flag: Box<[AtomicBool], Caps>,
     /// Pixels per row that are not idle.
     row_nonidle: Box<[AtomicU16], Caps>,
-    /// Pixels per row with `REDIRECT`.
-    row_redirect: Box<[AtomicU16], Caps>,
-    /// The blocks that may hold a pixel replaying or redirected.
+    /// The blocks that may hold a pixel replaying.
     row_mask: Blocks,
     /// Blocks whose pixels are all idle at white, and at black.
     row_white: Blocks,
@@ -424,7 +419,6 @@ struct Shared {
     /// begins, and for a group that starts later by whoever joins it first.
     acts: Box<Acts, Caps>,
     retire: [AtomicPtr<DcTab>; GROUPS],
-    cut: [AtomicPtr<DcTab>; GROUPS],
     has_wf: [AtomicBool; SLOTS],
     lock: Mutex<Counters>,
     waiters: AtomicU32,
@@ -457,11 +451,12 @@ fn pending_px(dc: u8, gray: u8) -> u16 {
     u16::from(G_PENDING) << 8 | u16::from(dc) << 4 | u16::from(gray)
 }
 
-/// Every group replays.
-struct Busy;
+/// A row can take no more for now: every group replays, or a pixel replays a
+/// waveform a draw may not stop.
+struct Blocked;
 
-/// A pair of pixels neither replaying, pending nor redirected.
-const PAIR_STATE: u32 = 0x1F0F_1F0F;
+/// A pair of pixels neither replaying nor pending.
+const PAIR_STATE: u32 = 0x0F0F_0F0F;
 
 /// What a writer changes in one row, under its flag.
 struct RowDraw<'a> {
@@ -472,50 +467,48 @@ struct RowDraw<'a> {
     all: bool,
     /// Joined when the first pixel needs it.
     group: Option<u8>,
+    /// Read when the first replaying pixel is drawn.
+    cuts: Option<[Cut; GROUPS]>,
     gained: u16,
     armed: u32,
-    redirected: i32,
+    /// Replaying pixels stopped, per group they left.
+    left: [u32; GROUPS],
 }
 
 impl<'a> RowDraw<'a> {
-    fn group(&mut self) -> core::result::Result<Option<u8>, Busy> {
+    fn new(shared: &'a Shared, y: usize, slot: Option<usize>, all: bool) -> Self {
+        Self { shared, y, slot, all, group: None, cuts: None, gained: 0, armed: 0, left: [0; GROUPS] }
+    }
+
+    fn group(&mut self) -> core::result::Result<Option<u8>, Blocked> {
         let Some(slot) = self.slot else { return Ok(None) };
         if self.group.is_none() {
-            self.group = Some(self.shared.join_row(slot, self.y).ok_or(Busy)?);
+            self.group = Some(self.shared.join_row(slot, self.y).ok_or(Blocked)?);
         }
         Ok(self.group)
     }
 
-    fn one(&mut self, px: &Pixel, next: &Next, gray: u8) -> core::result::Result<(), Busy> {
-        let v = px.load(Ordering::Relaxed);
-        let redirect = v & REDIRECT != 0;
-        if wf::is_active(v) {
-            if u16::from(gray) != v & 15 {
-                next.store(wf::next_byte(gray, self.slot), Ordering::Relaxed);
-                if !redirect {
-                    px.store(v | REDIRECT, Ordering::Relaxed);
-                    self.redirected += 1;
-                }
-            } else if redirect {
-                px.store(v & !REDIRECT, Ordering::Relaxed);
-                self.redirected -= 1;
-            }
-            return Ok(());
+    /// Stops a pixel replaying in `g` where its replay has taken it.
+    fn cut(&mut self, g: u8, v: u16, gray: u8) -> core::result::Result<u16, Blocked> {
+        let (shared, y) = (self.shared, self.y);
+        let tab = self.cuts.get_or_insert_with(|| shared.cuts(y))[usize::from(g)];
+        if tab.is_null() {
+            return Err(Blocked);
         }
-        if redirect {
-            // Pending, waiting for a group with the slot in `next`.
-            match self.group()? {
-                Some(g) => {
-                    px.store(u16::from(g) << 8 | (v & 0x00F0) | u16::from(gray), Ordering::Relaxed);
-                    self.armed += 1;
-                    self.redirected -= 1;
-                }
-                None => {
-                    px.store((v & !15) | u16::from(gray), Ordering::Relaxed);
-                    next.store(next.load(Ordering::Relaxed) & 0xF0 | gray, Ordering::Relaxed);
-                }
+        // A table of a waveform that stays while a pixel of the row replays it.
+        let dc = unsafe { &*tab }[usize::from(v & 0xFF)];
+        self.left[usize::from(g)] += 1;
+        Ok(pending_px(dc, gray))
+    }
+
+    fn one(&mut self, px: &Pixel, gray: u8) -> core::result::Result<(), Blocked> {
+        let mut v = px.load(Ordering::Relaxed);
+        if wf::is_active(v) {
+            if v & 15 == u16::from(gray) {
+                return Ok(());
             }
-            return Ok(());
+            v = self.cut(wf::group_of(v), v, gray)?;
+            px.store(v, Ordering::Relaxed);
         }
         let changed = v & 15 != u16::from(gray);
         if !(changed || self.slot.is_some() && (self.all || wf::group_of(v) == G_PENDING)) {
@@ -533,16 +526,16 @@ impl<'a> RowDraw<'a> {
 
     /// `src` holds a gray per pixel in its high nibble. Whether the pixels
     /// were all idle at those grays already.
-    fn span(&mut self, row: &[Pixel], next: &[Next], src: &[u8]) -> core::result::Result<bool, Busy> {
+    fn span(&mut self, row: &[Pixel], src: &[u8]) -> core::result::Result<bool, Blocked> {
         let lead = usize::from(row.as_ptr() as usize % 4 != 0).min(row.len());
         for i in 0..lead {
-            self.one(&row[i], &next[i], src[i] >> 4)?;
+            self.one(&row[i], src[i] >> 4)?;
         }
         let mut same = lead == 0;
-        let (row, next, src) = (&row[lead..], &next[lead..], &src[lead..]);
+        let (row, src) = (&row[lead..], &src[lead..]);
         let quads = row.len() / 4;
         let pairs = unsafe { slice::from_raw_parts(row.as_ptr().cast::<AtomicU32>(), quads * 2) };
-        for ((p, s4), (px, n)) in pairs.chunks_exact(2).zip(src.chunks_exact(4)).zip(row.chunks_exact(4).zip(next.chunks_exact(4))) {
+        for ((p, s4), px) in pairs.chunks_exact(2).zip(src.chunks_exact(4)).zip(row.chunks_exact(4)) {
             let s = u32::from_le_bytes([s4[0], s4[1], s4[2], s4[3]]) >> 4 & 0x0F0F_0F0F;
             if !self.all {
                 let (e0, e1) = ((s & 0xF) | (s & 0xF00) << 8, (s >> 16 & 0xF) | (s >> 24 & 0xF) << 16);
@@ -551,25 +544,25 @@ impl<'a> RowDraw<'a> {
                 }
             }
             same = false;
-            for j in 0..4 {
-                self.one(&px[j], &n[j], (s >> (8 * j)) as u8 & 15)?;
+            for (j, px) in px.iter().enumerate() {
+                self.one(px, (s >> (8 * j)) as u8 & 15)?;
             }
         }
         for i in quads * 4..row.len() {
             same = false;
-            self.one(&row[i], &next[i], src[i] >> 4)?;
+            self.one(&row[i], src[i] >> 4)?;
         }
         Ok(same)
     }
 
     /// `span` for pixels from `x` on within one block, which is then no
     /// longer known to be all white or all black.
-    fn part(&mut self, x: usize, row: &[Pixel], next: &[Next], src: &[u8]) -> core::result::Result<bool, Busy> {
+    fn part(&mut self, x: usize, row: &[Pixel], src: &[u8]) -> core::result::Result<bool, Blocked> {
         let shared = self.shared;
         shared.row_white.clear_span(self.y, x, x + row.len());
         shared.row_black.clear_span(self.y, x, x + row.len());
         let armed = self.armed;
-        let same = self.span(row, next, src);
+        let same = self.span(row, src);
         if self.armed != armed {
             shared.row_mask.set(self.y, x / BLOCK);
         }
@@ -592,11 +585,11 @@ impl<'a> RowDraw<'a> {
 
     /// The L8 pixels from `x0` on. A block written all white or all black
     /// where it is known to show just that is left alone.
-    fn l8(&mut self, x0: usize, row: &[Pixel], next: &[Next], src: &[u8]) -> core::result::Result<(), Busy> {
+    fn l8(&mut self, x0: usize, row: &[Pixel], src: &[u8]) -> core::result::Result<(), Blocked> {
         let len = row.len();
         let head = ((BLOCK - x0 % BLOCK) % BLOCK).min(len);
         if head != 0 {
-            self.part(x0, &row[..head], &next[..head], &src[..head])?;
+            self.part(x0, &row[..head], &src[..head])?;
         }
         let blocks = !self.all && (src.as_ptr() as usize + head) % 4 == 0;
         let mut i = head;
@@ -604,7 +597,7 @@ impl<'a> RowDraw<'a> {
             let (x, s) = (x0 + i, &src[i..i + BLOCK]);
             let known = if blocks { self.known(s) } else { None };
             if known.is_none_or(|known| !known.has(self.y, x / BLOCK)) {
-                let same = self.part(x, &row[i..i + BLOCK], &next[i..i + BLOCK], s)?;
+                let same = self.part(x, &row[i..i + BLOCK], s)?;
                 if same && let Some(known) = known {
                     known.set(self.y, x / BLOCK);
                 }
@@ -612,7 +605,7 @@ impl<'a> RowDraw<'a> {
             i += BLOCK;
         }
         if i < len {
-            self.part(x0 + i, &row[i..], &next[i..], &src[i..])?;
+            self.part(x0 + i, &row[i..], &src[i..])?;
         }
         Ok(())
     }
@@ -621,247 +614,53 @@ impl<'a> RowDraw<'a> {
     fn finish(self) -> bool {
         let shared = self.shared;
         add(&shared.row_nonidle[self.y], self.gained);
-        add(&shared.row_redirect[self.y], self.redirected as u16);
-        if self.group.is_none() && self.redirected == 0 {
+        let stopped = self.left.iter().any(|&n| n != 0);
+        if self.group.is_none() && !stopped {
             return false;
         }
         let mut guard = shared.lock.lock();
-        guard.waiting_px = guard.waiting_px.wrapping_add_signed(self.redirected);
-        let mut wake = false;
-        if let Some(g) = self.group {
-            guard.enter(g, self.armed);
-            guard.unpin(g);
-            wake = self.armed != 0 && shared.start(&mut guard);
+        for (g, &n) in self.left.iter().enumerate() {
+            if n != 0 {
+                guard.leave(g as u8, n);
+            }
         }
-        wake
+        let Some(g) = self.group else { return false };
+        guard.enter(g, self.armed);
+        guard.unpin(g);
+        self.armed != 0 && shared.start(&mut guard)
     }
 }
 
-/// A group of the frame under way, or of the next, for a slot.
-#[derive(Clone, Copy)]
-enum Joined {
-    Untried,
-    /// No waveform in the slot.
-    Absent,
-    Busy,
-    Group(u8),
-}
+/// The DCs a pixel of a group keeps as a draw stops it, or null while it may
+/// not stop.
+type Cut = *const DcTab;
 
 /// What the scan changes in a frame, counted once it is through.
-struct Pass<'a> {
-    shared: &'a Shared,
-    frame: u8,
-    now: [Joined; SLOTS],
-    later: [Joined; SLOTS],
-    enter: [u32; GROUPS],
+struct Pass {
     leave: [u32; GROUPS],
-    settled: u32,
     retired: u32,
     row_freed: u16,
-    row_settled: u16,
 }
 
-impl<'a> Pass<'a> {
-    fn new(shared: &'a Shared, frame: u8) -> Self {
-        Self {
-            shared,
-            frame,
-            now: [Joined::Untried; SLOTS],
-            later: [Joined::Untried; SLOTS],
-            enter: [0; GROUPS],
-            leave: [0; GROUPS],
-            settled: 0,
-            retired: 0,
-            row_freed: 0,
-            row_settled: 0,
-        }
+impl Pass {
+    fn new() -> Self {
+        Self { leave: [0; GROUPS], retired: 0, row_freed: 0 }
     }
 
-    /// The group pixels redirected to `slot` join: one at its first step this
-    /// frame with `now`, else one that starts with the next.
-    fn group(&mut self, slot: usize, now: bool) -> Joined {
-        let cached = if now { self.now[slot] } else { self.later[slot] };
-        if !matches!(cached, Joined::Untried) {
-            return cached;
-        }
-        let shared = self.shared;
-        let mut guard = shared.lock.lock();
-        let start = if now { self.frame } else { wf::start_after(self.frame) };
-        let joined = if guard.wf[slot].is_none() {
-            Joined::Absent
-        } else {
-            match guard.join(slot, start) {
-                Some((g, new)) => {
-                    if new {
-                        shared.fill_group(&guard, usize::from(g));
-                    }
-                    Joined::Group(g)
-                }
-                None => Joined::Busy,
-            }
-        };
-        drop(guard);
-        *(if now { &mut self.now[slot] } else { &mut self.later[slot] }) = joined;
-        joined
-    }
-
-    fn act(&self, px: u16) -> u8 {
-        self.shared.acts[usize::from(px & 0x0FFF)].load(Ordering::Relaxed)
-    }
-
-    fn dc(&self, tab: &AtomicPtr<DcTab>, px: u16) -> Option<u8> {
-        let tab = tab.load(Ordering::Relaxed);
-        // Null, or a table of a waveform that stays while its group replays.
-        (!tab.is_null()).then(|| unsafe { &*tab }[usize::from(px & 0xFF)])
-    }
-
-    /// The action of pixel `i` this frame, as it finishes or goes on to what
-    /// was written for it.
-    fn pixel(&mut self, i: usize) -> u8 {
-        let shared = self.shared;
-        let px = &shared.state[i];
-        let v = px.load(Ordering::Relaxed);
-        let a = self.act(v);
-        let g = wf::group_of(v);
-        let redirect = v & REDIRECT != 0;
-        if g < G_FIRST {
-            if !redirect {
-                return 0;
-            }
-            // Pending since no group was free.
-            let n = shared.next[i].load(Ordering::Relaxed);
-            return match wf::next_slot(n).map(|slot| self.group(slot, true)) {
-                Some(Joined::Group(to)) => {
-                    let armed = wf::in_group(v, to);
-                    px.store(armed, Ordering::Relaxed);
-                    self.enter[usize::from(to)] += 1;
-                    self.settle();
-                    self.act(armed) & 3
-                }
-                Some(Joined::Busy) => 0,
-                _ => {
-                    px.store(v & !REDIRECT, Ordering::Relaxed);
-                    self.settle();
-                    0
-                }
-            };
-        }
-        let retiring = a & ACT_RETIRE != 0;
-        if !redirect {
-            if retiring && let Some(dc) = self.dc(&shared.retire[usize::from(g)], v) {
-                px.store(idle_px(dc, v & 15), Ordering::Relaxed);
-                self.leave[usize::from(g)] += 1;
-                self.retired += 1;
-                self.row_freed += 1;
-            }
-            return a & 3;
-        }
-        let n = shared.next[i].load(Ordering::Relaxed);
-        let (gray, slot) = (wf::next_gray(n), wf::next_slot(n));
-        if retiring && let Some(dc) = self.dc(&shared.retire[usize::from(g)], v) {
-            let pending = pending_px(dc, gray);
-            self.leave[usize::from(g)] += 1;
-            self.retired += 1;
-            match slot.map(|slot| self.group(slot, false)) {
-                Some(Joined::Group(to)) => {
-                    px.store(wf::in_group(pending, to), Ordering::Relaxed);
-                    self.enter[usize::from(to)] += 1;
-                    self.settle();
-                }
-                Some(Joined::Busy) => px.store(pending | REDIRECT, Ordering::Relaxed),
-                _ => {
-                    px.store(pending, Ordering::Relaxed);
-                    self.settle();
-                }
-            }
-            return a & 3;
-        }
-        // Stopped before this frame's step, unless a STOP frame is ahead.
-        let Some(dc) = self.dc(&shared.cut[usize::from(g)], v) else { return a & 3 };
-        let pending = pending_px(dc, gray);
-        match slot.map(|slot| self.group(slot, true)) {
-            Some(Joined::Group(to)) => {
-                let armed = wf::in_group(pending, to);
-                px.store(armed, Ordering::Relaxed);
-                self.leave[usize::from(g)] += 1;
-                self.enter[usize::from(to)] += 1;
-                self.settle();
-                self.act(armed) & 3
-            }
-            // Goes on, and is stopped a frame later.
-            Some(Joined::Busy) => a & 3,
-            _ => {
-                px.store(pending, Ordering::Relaxed);
-                self.leave[usize::from(g)] += 1;
-                self.settle();
-                0
-            }
-        }
-    }
-
-    fn settle(&mut self) {
-        self.settled += 1;
-        self.row_settled += 1;
-    }
-
-    fn chunk(&mut self, first: usize, n: usize) -> [u8; 2] {
-        let mut out = [0; 2];
-        for k in 0..n {
-            out[k / 4] |= self.pixel(first + k) << (6 - 2 * (k % 4));
-        }
-        out
-    }
-
-    /// `chunk` for pixels none of which is redirected.
-    fn retire_chunk(&mut self, acts: &[AtomicU8; ACTS_LEN], first: usize, n: usize) -> [u8; 2] {
-        let shared = self.shared;
-        let mut out = [0u32; 2];
-        let mut freed = 0;
-        for (k, px) in shared.state[first..first + n].iter().enumerate() {
-            let v = px.load(Ordering::Relaxed);
-            let a = u32::from(acts[usize::from(v & 0x0FFF)].load(Ordering::Relaxed));
-            if a & u32::from(ACT_RETIRE) != 0
-                && let Some(dc) = self.dc(&shared.retire[usize::from(wf::group_of(v))], v)
-            {
-                px.store(idle_px(dc, v & 15), Ordering::Relaxed);
-                self.leave[usize::from(wf::group_of(v))] += 1;
-                freed += 1;
-            }
-            out[k / 4] |= (a & 3) << (6 - 2 * (k % 4));
-        }
-        self.retired += freed;
-        self.row_freed += freed as u16;
-        [out[0] as u8, out[1] as u8]
-    }
-
-    /// Counts what changed in row `y`, its flag still held.
-    fn row_done(&mut self, y: usize) {
+    /// Counts what finished in row `y`, its flag still held.
+    fn row_done(&mut self, shared: &Shared, y: usize) {
         if self.row_freed != 0 {
-            sub(&self.shared.row_nonidle[y], core::mem::take(&mut self.row_freed));
-        }
-        if self.row_settled != 0 {
-            sub(&self.shared.row_redirect[y], core::mem::take(&mut self.row_settled));
+            sub(&shared.row_nonidle[y], core::mem::take(&mut self.row_freed));
         }
     }
 
     /// Counts the frame, and returns how many pixels finished.
     fn finish(self, counters: &mut Counters) -> u32 {
         for g in usize::from(G_FIRST)..GROUPS {
-            if self.enter[g] != 0 {
-                counters.enter(g as u8, self.enter[g]);
-            }
-        }
-        for joined in self.now.iter().chain(&self.later) {
-            if let Joined::Group(g) = joined {
-                counters.unpin(*g);
-            }
-        }
-        for g in usize::from(G_FIRST)..GROUPS {
             if self.leave[g] != 0 {
                 counters.leave(g as u8, self.leave[g]);
             }
         }
-        counters.waiting_px = counters.waiting_px.wrapping_sub(self.settled);
         self.retired
     }
 }
@@ -904,7 +703,20 @@ impl Shared {
         let tab = wf::group_tab(&counters.wf, counters.groups[g], counters.frame, counters.skip_settle);
         wf::fill_acts(tab.rowset, !tab.retire.is_null(), &self.acts[g * 256..][..256]);
         self.retire[g].store(tab.retire.cast_mut(), Ordering::Release);
-        self.cut[g].store(tab.cut.cast_mut(), Ordering::Release);
+    }
+
+    /// Per group, what a replaying pixel of row `y`, whose flag is held, keeps
+    /// as a draw stops it now: the steps it has run count this frame's once
+    /// the scan has taken the row.
+    fn cuts(&self, y: usize) -> [Cut; GROUPS] {
+        let guard = self.lock.lock();
+        let (_, taken) = self.pos();
+        core::array::from_fn(|g| {
+            let Some(Group { slot, start }) = guard.groups[g].filter(|_| g >= usize::from(G_FIRST)) else { return core::ptr::null() };
+            let step = usize::from(guard.frame.wrapping_sub(start) & 63);
+            let run = if step == 63 { 0 } else { step + usize::from(taken > y) };
+            wf::cut_at(guard.wf[slot].as_ref(), run).map_or(core::ptr::null(), core::ptr::from_ref)
+        })
     }
 
     /// The group pixels of row `y`, whose flag is held, are armed in with
@@ -969,29 +781,28 @@ impl Shared {
         for r in 0..h {
             let y = y0 + r;
             let start = y * self.width + x0;
-            let (row, next) = (&self.state[start..][..w], &self.next[start..][..w]);
+            let row = &self.state[start..][..w];
             let src = &pixels[r * stride..][..row_bytes];
             loop {
                 let flag = self.lock_row(y);
-                let mut draw = RowDraw { shared: self, y, slot, all, group: None, gained: 0, armed: 0, redirected: 0 };
+                let mut draw = RowDraw::new(self, y, slot, all);
                 let done = match format {
                     ImageFormat::L4 => {
                         self.forget(y, x0, x0 + w);
-                        let done = row.iter().zip(next).zip(wf::grays_l4(src)).try_for_each(|((px, n), g)| draw.one(px, n, g));
+                        let done = row.iter().zip(wf::grays_l4(src)).try_for_each(|(px, g)| draw.one(px, g));
                         if draw.armed != 0 {
                             self.row_mask.set_span(y, x0, x0 + w);
                         }
                         done
                     }
-                    _ => draw.l8(x0, row, next, src),
+                    _ => draw.l8(x0, row, src),
                 };
                 wake |= draw.finish();
                 drop(flag);
                 match done {
                     Ok(()) => break,
-                    // What the row took so far stays; the rest once a group
-                    // has finished.
-                    Err(Busy) => drop(self.wait_retire(self.lock.lock())),
+                    // What the row took so far stays; the rest after a frame.
+                    Err(Blocked) => drop(self.wait_retire(self.lock.lock())),
                 }
             }
         }
@@ -1009,13 +820,12 @@ impl Shared {
         // A waveform's tables stay while nothing replaces it, which waits
         // for the write task.
         let end = unsafe { &*end };
-        let mut settled = 0u32;
         for r in 0..h {
             let y = y0 + r;
             let src = &pixels[r * stride..][..row_bytes];
             let _flag = self.lock_row(y);
             self.forget(y, x0, x0 + w);
-            let (mut subsumed, mut row_settled) = (0u16, 0u16);
+            let mut subsumed = 0u16;
             let mut one = |x: usize, g: u8| {
                 let px = &self.state[y * self.width + x];
                 let v = px.load(Ordering::Relaxed);
@@ -1023,7 +833,6 @@ impl Shared {
                     return;
                 }
                 subsumed += u16::from(wf::group_of(v) == G_PENDING);
-                row_settled += u16::from(v & REDIRECT != 0);
                 px.store(wf::seed_px(v, g, end), Ordering::Relaxed);
             };
             match format {
@@ -1031,12 +840,6 @@ impl Shared {
                 _ => (x0..x0 + w).zip(wf::grays_l8(src)).for_each(|(x, g)| one(x, g)),
             }
             sub(&self.row_nonidle[y], subsumed);
-            sub(&self.row_redirect[y], row_settled);
-            settled += u32::from(row_settled);
-        }
-        if settled != 0 {
-            let mut guard = self.lock.lock();
-            guard.waiting_px = guard.waiting_px.wrapping_sub(settled);
         }
     }
 
@@ -1057,16 +860,10 @@ impl Shared {
         }
     }
 
-    fn ungate(&self, g: u8, armed: u32, left: &[u32; GROUPS], settled: u32) {
+    fn ungate(&self, g: u8, armed: u32) {
         let mut guard = self.lock.lock();
         guard.enter(g, armed);
         guard.unpin(g);
-        for (from, &n) in left.iter().enumerate() {
-            if n != 0 {
-                guard.leave(from as u8, n);
-            }
-        }
-        guard.waiting_px = guard.waiting_px.wrapping_sub(settled);
         guard.gate = false;
         let wake = armed != 0 && self.start(&mut guard);
         drop(guard);
@@ -1076,7 +873,7 @@ impl Shared {
     }
 
     /// Arms the pending pixels of `area`, and the idle ones too with `all`;
-    /// those replaying go on, to what was written for them with `waveform`.
+    /// those replaying go on.
     fn refresh(&self, area: Rect, waveform: display::Waveform, all: bool) {
         let slot = slot_of(waveform);
         if !self.has_wf[slot].load(Ordering::Relaxed) {
@@ -1085,27 +882,21 @@ impl Shared {
         let (x0, y0) = (area.x as usize, area.y as usize);
         let (x1, y1) = (x0 + area.w as usize, y0 + area.h as usize);
         let g = self.gate(slot);
-        let (mut armed, mut settled) = (0u32, 0u32);
+        let mut armed = 0u32;
         for y in y0..y1 {
             if !all && self.row_nonidle[y].load(Ordering::Relaxed) == 0 {
                 continue;
             }
             let start = y * self.width + x0;
-            let (row, next) = (&self.state[start..][..x1 - x0], &self.next[start..][..x1 - x0]);
+            let row = &self.state[start..][..x1 - x0];
             let _flag = self.lock_row(y);
-            let (mut row_armed, mut gained, mut row_settled) = (0u32, 0u16, 0u16);
-            let mut one = |px: &Pixel, n: &Next| {
+            let (mut row_armed, mut gained) = (0u32, 0u16);
+            let mut one = |px: &Pixel| {
                 let v = px.load(Ordering::Relaxed);
                 match wf::group_of(v) {
-                    G_PENDING => row_settled += u16::from(v & REDIRECT != 0),
+                    G_PENDING => {}
                     G_IDLE if all => gained += 1,
-                    G_IDLE => return,
-                    _ => {
-                        if v & REDIRECT != 0 {
-                            n.store(wf::next_byte(wf::next_gray(n.load(Ordering::Relaxed)), Some(slot)), Ordering::Relaxed);
-                        }
-                        return;
-                    }
+                    _ => return,
                 }
                 px.store(wf::in_group(v, g), Ordering::Relaxed);
                 row_armed += 1;
@@ -1114,34 +905,32 @@ impl Shared {
                 let pairs = unsafe { slice::from_raw_parts(row.as_ptr().cast::<AtomicU32>(), row.len() / 2) };
                 let both = u32::from(g) << 8 | u32::from(g) << 24;
                 let mut idle_pairs = 0u32;
-                for (p, (px, n)) in pairs.iter().zip(row.chunks_exact(2).zip(next.chunks_exact(2))) {
+                for (p, px) in pairs.iter().zip(row.chunks_exact(2)) {
                     let w = p.load(Ordering::Relaxed);
-                    if w & 0x1F00_1F00 == 0 {
+                    if w & 0x0F00_0F00 == 0 {
                         p.store(w & 0x00FF_00FF | both, Ordering::Relaxed);
                         idle_pairs += 1;
                     } else {
-                        one(&px[0], &n[0]);
-                        one(&px[1], &n[1]);
+                        one(&px[0]);
+                        one(&px[1]);
                     }
                 }
                 if row.len() % 2 != 0 {
-                    one(&row[row.len() - 1], &next[row.len() - 1]);
+                    one(&row[row.len() - 1]);
                 }
                 row_armed += idle_pairs * 2;
                 gained += (idle_pairs * 2) as u16;
             } else {
-                row.iter().zip(next).for_each(|(px, n)| one(px, n));
+                row.iter().for_each(&mut one);
             }
             if row_armed != 0 {
                 self.forget(y, x0, x1);
                 self.row_mask.set_span(y, x0, x1);
             }
             add(&self.row_nonidle[y], gained);
-            sub(&self.row_redirect[y], row_settled);
             armed += row_armed;
-            settled += u32::from(row_settled);
         }
-        self.ungate(g, armed, &[0; GROUPS], settled);
+        self.ungate(g, armed);
     }
 
     fn clear(&self, area: Rect) {
@@ -1149,28 +938,19 @@ impl Shared {
         let (x1, y1) = (x0 + area.w as usize, y0 + area.h as usize);
         self.wait_inactive(x0, y0, x1, y1);
         let g = self.gate(SLOT_CLEAR);
-        let mut left = [0u32; GROUPS];
-        let mut settled = 0u32;
         for y in y0..y1 {
             let _flag = self.lock_row(y);
-            let (mut gained, mut row_settled) = (0u16, 0u16);
+            let mut gained = 0u16;
             for px in &self.row(y)[x0..x1] {
                 let v = px.load(Ordering::Relaxed);
-                let from = wf::group_of(v);
-                gained += u16::from(from == G_IDLE);
-                row_settled += u16::from(v & REDIRECT != 0);
-                if from >= G_FIRST {
-                    left[usize::from(from)] += 1;
-                }
+                gained += u16::from(wf::group_of(v) == G_IDLE);
                 px.store(u16::from(g) << 8 | (v & 0x00F0) | 15, Ordering::Relaxed);
             }
             self.forget(y, x0, x1);
             self.row_mask.set_span(y, x0, x1);
             add(&self.row_nonidle[y], gained);
-            sub(&self.row_redirect[y], row_settled);
-            settled += u32::from(row_settled);
         }
-        self.ungate(g, ((x1 - x0) * (y1 - y0)) as u32, &left, settled);
+        self.ungate(g, ((x1 - x0) * (y1 - y0)) as u32);
     }
 
     /// Whether `area` holds a pixel a draw could not stop.
@@ -1194,7 +974,7 @@ impl Shared {
 
     fn wait_idle(&self) {
         let mut guard = self.lock.lock();
-        while guard.active_px != 0 || guard.waiting_px != 0 {
+        while guard.active_px != 0 {
             guard = self.wait_retire(guard);
         }
     }
@@ -1213,8 +993,6 @@ struct Scan {
 /// rest holds. A block left with nothing replaying leaves the mask.
 fn blit_blocks(shared: &Shared, pass: &mut Pass, acts: &[AtomicU8; ACTS_LEN], y: usize, dst: &mut [u8]) {
     let row = shared.row(y);
-    let first = y * shared.width;
-    let redirected = shared.row_redirect[y].load(Ordering::Relaxed) != 0;
     dst.fill(0);
     for (w, word) in shared.row_mask.row(y).iter().enumerate() {
         let (mut left, mut keep) = (word.load(Ordering::Relaxed), 0);
@@ -1223,16 +1001,9 @@ fn blit_blocks(shared: &Shared, pass: &mut Pass, acts: &[AtomicU8; ACTS_LEN], y:
             left &= left - 1;
             let x0 = (w * 32 + bit.trailing_zeros() as usize) * BLOCK;
             let x1 = (x0 + BLOCK).min(row.len());
-            let (pixels, out) = (&row[x0..x1], &mut dst[x0 / 4..x1 / 4]);
-            let busy = if redirected {
-                let from = first + x0;
-                wf::blit_marked(pixels, acts, out, |x, n, redirect| if redirect { pass.chunk(from + x, n) } else { pass.retire_chunk(acts, from + x, n) })
-            } else {
-                let (freed, busy) = wf::blit_retire(pixels, acts, &shared.retire, out, &mut pass.leave);
-                pass.retired += u32::from(freed);
-                pass.row_freed += freed;
-                busy
-            };
+            let (freed, busy) = wf::blit_retire(&row[x0..x1], acts, &shared.retire, &mut dst[x0 / 4..x1 / 4], &mut pass.leave);
+            pass.retired += u32::from(freed);
+            pass.row_freed += freed;
             if busy {
                 keep |= bit;
             }
@@ -1261,7 +1032,7 @@ fn run_frame(shared: &Shared, scan: &mut Scan) {
 
     let bus = &scan.bus;
     let acts: &[AtomicU8; ACTS_LEN] = (&*shared.acts).try_into().expect("acts");
-    let mut pass = Pass::new(shared, frame);
+    let mut pass = Pass::new();
     let sparse = (shared.width / 4) as u16;
     let skips = bus.control().skips_rows();
     // The line sent last holds every pixel.
@@ -1306,12 +1077,12 @@ fn run_frame(shared: &Shared, scan: &mut Scan) {
             // Per row: a group that starts with this frame may finish with
             // it, and is filled in as a writer joins it.
             let retiring = shared.retire.iter().any(|r| !r.load(Ordering::Relaxed).is_null());
-            if retiring || nonidle < sparse || shared.row_redirect[y].load(Ordering::Relaxed) != 0 {
+            if retiring || nonidle < sparse {
                 blit_blocks(shared, &mut pass, acts, y, dst);
             } else {
                 wf::blit_line(shared.row(y), acts, dst);
             }
-            pass.row_done(y);
+            pass.row_done(shared, y);
             drop(flag);
             line
         };
@@ -1346,7 +1117,7 @@ fn refresh_task(shared: Arc<Shared>, mut scan: Box<Scan>) {
     loop {
         let active = {
             let mut guard = shared.lock.lock();
-            let active = guard.active_px != 0 || guard.waiting_px != 0;
+            let active = guard.active_px != 0;
             if !active {
                 guard.running = false;
             }
@@ -1461,10 +1232,8 @@ impl EpdLl {
         let has_wf = core::array::from_fn(|slot| AtomicBool::new(slots[slot].is_some()));
 
         let state = cells(width * height, Caps::SPIRAM, || AtomicU16::new(idle_px(DC_ZERO as u8, 15)))?;
-        let next = cells(width * height, Caps::SPIRAM, || Next::new(15))?;
         let row_flag = cells(height, Caps::INTERNAL, || AtomicBool::new(false))?;
         let row_nonidle = cells(height, Caps::INTERNAL, || AtomicU16::new(0))?;
-        let row_redirect = cells(height, Caps::INTERNAL, || AtomicU16::new(0))?;
         let (row_mask, row_white, row_black) = (Blocks::new(width, height)?, Blocks::new(width, height)?, Blocks::new(width, height)?);
         let acts = cells(ACTS_LEN, Caps::INTERNAL, || AtomicU8::new(0))?;
 
@@ -1491,17 +1260,14 @@ impl EpdLl {
             width,
             height,
             state,
-            next,
             row_flag,
             row_nonidle,
-            row_redirect,
             row_mask,
             row_white,
             row_black,
             pos: AtomicU32::new(height as u32),
             acts,
             retire: [const { AtomicPtr::new(core::ptr::null_mut()) }; GROUPS],
-            cut: [const { AtomicPtr::new(core::ptr::null_mut()) }; GROUPS],
             has_wf,
             lock: Mutex::new(Counters {
                 groups: [None; GROUPS],
@@ -1511,7 +1277,6 @@ impl EpdLl {
                 frame: 0,
                 running: false,
                 mode: EpdMode::Hold,
-                waiting_px: 0,
                 gate: false,
                 skip_settle: false,
                 wf: slots,
@@ -1567,7 +1332,7 @@ impl EpdLl {
         let waveform = Waveform::new(lut).inspect_err(|_| drop(unsafe { Box::from_raw(core::ptr::from_ref(lut).cast_mut()) }))?;
         self.drain();
         let mut guard = self.shared.lock.lock();
-        while guard.active_px != 0 || guard.waiting_px != 0 {
+        while guard.active_px != 0 {
             guard = self.shared.wait_retire(guard);
         }
         let old = guard.wf[slot].replace(waveform);
@@ -1629,8 +1394,9 @@ impl Driver for EpdLl {
     }
 }
 
-/// Writes queue for a task of their own and never wait for the glass: a
-/// pixel still replaying takes what is written once a frame ends.
+/// Writes queue for a task of their own. A pixel still replaying stops where
+/// it is and takes what is written; one replaying a waveform a draw may not
+/// stop holds the queue until it finishes.
 impl GramDriver for EpdLl {
     unsafe fn write(&self, area: Rect, pixels: &[u8]) -> Result<Ticket> {
         let stride = self.format.row_bytes(area.w as usize);

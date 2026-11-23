@@ -220,10 +220,6 @@ impl Waveform {
     }
 }
 
-/// Set on a replaying pixel written a gray other than its target, and on a
-/// pending one that waits for a group: `Next` says what it goes to.
-pub(crate) const REDIRECT: u16 = 0x1000;
-
 /// In an action of `Acts`: the group's pixels finish with this frame.
 pub(crate) const ACT_RETIRE: u8 = 0x80;
 
@@ -258,13 +254,17 @@ pub(crate) fn steps_run(frame: u8, start: u8) -> usize {
     (usize::from(frame.wrapping_sub(start) & 63) + 1) & 63
 }
 
-/// Whether a draw may stop a pixel replaying `replay` from `start` once the
-/// scan has sent `frame`, and the DCs it leaves; an empty slot leaves the DC
-/// as it is.
-pub(crate) fn cut_dc(replay: Option<&Waveform>, frame: u8, start: u8) -> Option<&DcTab> {
+/// Whether a draw may stop a pixel replaying `replay` once it has run `run`
+/// steps, and the DCs it leaves; an empty slot leaves the DC as it is.
+pub(crate) fn cut_at(replay: Option<&Waveform>, run: usize) -> Option<&DcTab> {
     let Some(replay) = replay else { return Some(&KEEP) };
-    let run = steps_run(frame, start);
     (run >= replay.cuttable_from).then(|| replay.dc_after(run))
+}
+
+/// `cut_at` for a pixel replaying from `start` once the scan has sent
+/// `frame`.
+pub(crate) fn cut_dc(replay: Option<&Waveform>, frame: u8, start: u8) -> Option<&DcTab> {
+    cut_at(replay, steps_run(frame, start))
 }
 
 /// `px` idle at `gray`, with the DC `end` leaves a drive toward it.
@@ -281,24 +281,6 @@ pub(crate) fn grays_l8(row: &[u8]) -> impl Iterator<Item = u8> + '_ {
 /// The grays of an L4 row, the first pixel in the high nibble.
 pub(crate) fn grays_l4(row: &[u8]) -> impl Iterator<Item = u8> + '_ {
     row.iter().flat_map(|b| [b >> 4, b & 0x0F])
-}
-
-/// What a replaying pixel goes to after its replay, a byte per pixel: the
-/// gray, and the slot to drive it with, or none to leave it pending. Of a
-/// replaying pixel only; its target when nothing waits.
-#[allow(dead_code)]
-pub(crate) type Next = AtomicU8;
-
-pub(crate) fn next_byte(gray: u8, slot: Option<usize>) -> u8 {
-    slot.map_or(0, |s| s as u8 + 1) << 4 | gray
-}
-
-pub(crate) fn next_gray(next: u8) -> u8 {
-    next & 15
-}
-
-pub(crate) fn next_slot(next: u8) -> Option<usize> {
-    (next >> 4).checked_sub(1).map(usize::from)
 }
 
 /// Draws `gray` on an idle or pending `px`: pending when it changes, or
@@ -330,21 +312,16 @@ pub(crate) struct GroupTab {
     pub rowset: &'static Frame,
     /// The DCs its pixels keep as they finish with this frame, or null.
     pub retire: Retire,
-    /// The DCs a pixel stopped before this frame keeps, or null while a draw
-    /// may not stop it.
-    pub cut: Retire,
 }
 
 /// With `skip_settle`, pixels left with only SETTLE frames finish. A group
 /// that starts later holds.
 pub(crate) fn group_tab(wf: &[Option<Waveform>; SLOTS], group: Option<Group>, frame: u8, skip_settle: bool) -> GroupTab {
-    let mut tab = GroupTab { rowset: &HOLD, retire: core::ptr::null(), cut: &KEEP };
+    let mut tab = GroupTab { rowset: &HOLD, retire: core::ptr::null() };
     let Some(Group { slot, start }) = group else { return tab };
     let step = usize::from(frame.wrapping_sub(start) & 63);
     match &wf[slot] {
         Some(w) => {
-            let run = if step == 63 { 0 } else { step };
-            tab.cut = if run >= w.cuttable_from { w.dc_after(run) } else { core::ptr::null() };
             if step < w.steps() {
                 let row = &w.lut[step];
                 if row[0] != SETTLE_WORD {
@@ -387,9 +364,8 @@ fn act_of(acts: &[AtomicU8; ACTS_LEN], v: u32) -> u32 {
     u32::from(acts[v as usize & (ACTS_LEN - 1)].load(Ordering::Relaxed))
 }
 
-const REDIRECT_PAIR: u32 = (REDIRECT as u32) << 16 | REDIRECT as u32;
-/// In a pair of pixels: one replays or is redirected.
-const BUSY_PAIR: u32 = 0x0E00_0E00 | REDIRECT_PAIR;
+/// In a pair of pixels: one replays.
+const BUSY_PAIR: u32 = 0x0E00_0E00;
 
 /// Two pixels a load, the first in the low half: each half is as one 16-bit
 /// store left it, which is all a pixel needs.
@@ -400,8 +376,7 @@ fn pairs(row: &[Pixel]) -> &[AtomicU32] {
 
 /// Packs a row's actions 4 pixels a byte, the leftmost in the top bits.
 /// `row` starts on a 4-byte boundary and holds a multiple of 4 pixels, a
-/// byte of `dst` each 4. For a row with no pixel redirected, in a frame no
-/// group finishes with.
+/// byte of `dst` each 4. For a frame no group finishes with.
 pub(crate) fn blit_line(row: &[Pixel], acts: &[AtomicU8; ACTS_LEN], dst: &mut [u8]) {
     let mut chunks = pairs(row).chunks_exact(4);
     for (p, d) in (&mut chunks).zip(dst.chunks_exact_mut(2)) {
@@ -415,7 +390,7 @@ pub(crate) fn blit_line(row: &[Pixel], acts: &[AtomicU8; ACTS_LEN], dst: &mut [u
     }
 }
 
-/// `blit_line` for a row with no pixel redirected, in any frame: pixels that
+/// `blit_line` for any frame: pixels that
 /// finish go idle with the DC `retire` gives their group, counted per group
 /// in `left`. Returns how many did, and whether any pixel replayed.
 pub(crate) fn blit_retire(row: &[Pixel], acts: &[AtomicU8; ACTS_LEN], retire: &[AtomicPtr<DcTab>; GROUPS], dst: &mut [u8], left: &mut [u32; GROUPS]) -> (u16, bool) {
@@ -468,36 +443,6 @@ pub(crate) fn blit_retire(row: &[Pixel], acts: &[AtomicU8; ACTS_LEN], retire: &[
         p[1].store(w[1], Ordering::Relaxed);
     }
     (freed, busy & BUSY_PAIR != 0)
-}
-
-/// `blit_line` for any row and frame, skipping runs of 8 pixels with none
-/// replaying. Runs with pixels that finish or are redirected go to
-/// `special`, by the index of the first pixel, how many, 8 or 4, and whether
-/// any is redirected, which packs them itself. Whether any pixel replayed.
-pub(crate) fn blit_marked(row: &[Pixel], acts: &[AtomicU8; ACTS_LEN], dst: &mut [u8], mut special: impl FnMut(usize, usize, bool) -> [u8; 2]) -> bool {
-    let mut chunks = pairs(row).chunks_exact(4);
-    let mut busy = 0;
-    for (k, (p, d)) in (&mut chunks).zip(dst.chunks_exact_mut(2)).enumerate() {
-        let w = [p[0].load(Ordering::Relaxed), p[1].load(Ordering::Relaxed), p[2].load(Ordering::Relaxed), p[3].load(Ordering::Relaxed)];
-        let any = w[0] | w[1] | w[2] | w[3];
-        busy |= any;
-        let out = if any & BUSY_PAIR == 0 {
-            [0, 0]
-        } else if any & REDIRECT_PAIR != 0 {
-            special(k * 8, 8, true)
-        } else {
-            let a = [act_of(acts, w[0]), act_of(acts, w[0] >> 16), act_of(acts, w[1]), act_of(acts, w[1] >> 16)];
-            let b = [act_of(acts, w[2]), act_of(acts, w[2] >> 16), act_of(acts, w[3]), act_of(acts, w[3] >> 16)];
-            if (a[0] | a[1] | a[2] | a[3] | b[0] | b[1] | b[2] | b[3]) & u32::from(ACT_RETIRE) != 0 { special(k * 8, 8, false) } else { [pack(a), pack(b)] }
-        };
-        d.copy_from_slice(&out);
-    }
-    if let [p0, p1] = chunks.remainder() {
-        let any = p0.load(Ordering::Relaxed) | p1.load(Ordering::Relaxed);
-        busy |= any;
-        dst[row.len() / 4 - 1] = special(row.len() - 4, 4, any & REDIRECT_PAIR != 0)[0];
-    }
-    busy & BUSY_PAIR != 0
 }
 
 #[cfg(test)]
@@ -586,16 +531,11 @@ mod tests {
         (0..256).all(|i| u32::from(acts[usize::from(group) * 256 + i].load(Ordering::Relaxed) & 3) == action(frame, i >> 4, i & 15))
     }
 
-    /// `blit_marked`, packing the runs it hands over as the scan would, and
+    /// `blit_line` with what `acts` drives, finishing groups or not, and
     /// whether any pixel drives.
     fn line(row: &[Pixel], acts: &Table, dst: &mut [u8]) -> bool {
-        blit_marked(row, acts, dst, |x, n, _| {
-            let mut out = [0; 2];
-            for k in 0..n {
-                out[k / 4] |= (act(acts, get(&row[x + k])) & 3) << (6 - 2 * (k % 4));
-            }
-            out
-        });
+        let drives: Box<Table> = Box::new(core::array::from_fn(|i| AtomicU8::new(acts[i].load(Ordering::Relaxed) & 3)));
+        blit_line(row, &drives, dst);
         dst.iter().any(|&b| b != 0)
     }
 
@@ -711,14 +651,6 @@ mod tests {
     }
 
     #[test]
-    fn next_bytes() {
-        for slot in [None, Some(0), Some(SLOTS - 1)] {
-            let n = next_byte(9, slot);
-            assert_eq!((next_gray(n), next_slot(n)), (9, slot));
-        }
-    }
-
-    #[test]
     fn seed() {
         let q = Waveform::new(&LUT_Q).unwrap();
         assert_eq!(seed_px(px(DC_ZERO, 3, G_IDLE), 0, q.dc_after(q.steps())), px(DC_ZERO + 1, 0, G_IDLE));
@@ -779,59 +711,14 @@ mod tests {
     }
 
     #[test]
-    fn group_tab_cuts_as_cut_dc() {
+    fn cuts_by_steps_run() {
         let wf = slots(Some(0), Some(1));
-        let start = start_after(10);
-        for slot in [0, 1, 2] {
-            let replay = wf[slot].as_ref();
-            for frame in start..start + 6 {
-                let cut = group_tab(&wf, Some(Group { slot, start }), frame, false).cut;
-                match cut_dc(replay, frame.wrapping_sub(1), start) {
-                    Some(dc) => assert!(core::ptr::eq(cut, dc), "slot {slot} frame {frame}"),
-                    None => assert!(cut.is_null(), "slot {slot} frame {frame}"),
-                }
-            }
+        let (q, c) = (wf[0].as_ref().unwrap(), wf[1].as_ref().unwrap());
+        for run in 0..q.steps() {
+            assert!(core::ptr::eq(cut_at(Some(q), run).unwrap(), q.dc_after(run)));
         }
-        assert!(core::ptr::eq(group_tab(&wf, None, 10, false).cut, &KEEP));
-    }
-
-    #[test]
-    fn blit_hands_over_finishing_and_redirected_runs() {
-        let wf = slots(Some(0), None);
-        // Finishing at frame 3, and replaying.
-        let (acts, _) = tables(&wf, &groups(&[(0, 0), (0, 2)]), 3, false);
-        let mut row = [px(9, 9, G_IDLE); 28];
-        row[1] = px(15, 0, G3);
-        row[9] = px(15, 0, G2);
-        row[17] = px(15, 0, G3) | REDIRECT;
-        row[25] = px(9, 4, G_PENDING) | REDIRECT;
-        let row = cells(row);
-        let mut runs = Vec::new();
-        let mut dst = [0xEE; 7];
-        let busy = blit_marked(&row, &acts, &mut dst, |x, n, redirect| {
-            runs.push((x, n, redirect));
-            [0x55, 0x55]
-        });
-        assert!(busy);
-        assert_eq!(runs, [(8, 8, false), (16, 8, true), (24, 4, true)]);
-        assert_eq!(dst, [a4(0, B, 0, 0), 0, 0x55, 0x55, 0x55, 0x55, 0x55]);
-
-        let idle = cells([px(9, 9, G_IDLE); 8]);
-        assert!(!blit_marked(&idle, &acts, &mut dst[..2], |_, _, _| unreachable!()));
-        assert_eq!(dst[..2], [0, 0]);
-    }
-
-    #[test]
-    fn blit_line_matches_marked_while_nothing_finishes() {
-        let wf = slots(Some(0), None);
-        let (acts, retire) = tables(&wf, &groups(&[(0, 0), (0, 63), (0, 1)]), 1, false);
-        assert!(retire.iter().all(|r| r.is_null()));
-        let row = cells(core::array::from_fn::<u16, 36, _>(|i| [px(0, 15, G2), px(15, 0, G3), px(9, 9, G_IDLE), px(9, 4, G_PENDING)][i % 4] ^ (i as u16 & 0x30)));
-        let (mut plain, mut marked) = ([0xEE; 9], [0xEE; 9]);
-        blit_line(&row, &acts, &mut plain);
-        line(&row, &acts, &mut marked);
-        assert_eq!(plain, marked);
-        assert_ne!(plain, [0; 9]);
+        assert!((0..c.steps()).all(|run| cut_at(Some(c), run).is_none()));
+        assert!(core::ptr::eq(cut_at(None, 2).unwrap(), &KEEP));
     }
 
     #[test]
